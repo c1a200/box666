@@ -807,38 +807,30 @@ async function appendAggLog(storage: Storage, log: AggregationLog): Promise<void
 }
 
 function normalizeConfigCenterSites(sites: TVBoxSite[]): TVBoxSite[] {
-  const configCenters = sites.filter(isConfigCenterSite);
-  if (configCenters.length === 0) return sites;
+  // 移除所有原有的配置中心，以便统一插入重新构建的配置中心
+  const cleanSites = sites.filter((site) => !isConfigCenterSite(site));
 
-  const keep = chooseConfigCenter(configCenters);
-  const normalizedKeep: TVBoxSite = {
-    ...keep,
+  const unifiedConfigCenter: TVBoxSite = {
+    key: 'csp_Config',
     name: '配置┃中心 「176111」',
+    type: 3,
+    api: 'csp_Config',
     searchable: 0,
     quickSearch: 0,
-    filterable: keep.filterable ?? 1,
+    filterable: 0,
+    changeable: 0,
+    ext: `${BASE_URL_PLACEHOLDER}/token.json`,
   };
-
-  // 移除所有原有的配置中心，以便统一插入指定序列
-  const cleanSites = sites.filter((site) => !isConfigCenterSite(site));
 
   // 统一插到第二序列（索引 1），如果列表为空则放第一位
   const result = [...cleanSites];
   if (result.length > 0) {
-    result.splice(1, 0, normalizedKeep);
+    result.splice(1, 0, unifiedConfigCenter);
   } else {
-    result.push(normalizedKeep);
+    result.push(unifiedConfigCenter);
   }
 
   return result;
-}
-
-function chooseConfigCenter(sites: TVBoxSite[]): TVBoxSite {
-  return (
-    sites.find((site) => site.key === '配置中心' || site.api === 'csp_AweSomeGuard') ||
-    sites.find((site) => site.key === 'config' || site.api === 'csp_Config') ||
-    sites[0]
-  );
 }
 
 function isConfigCenterSite(site: TVBoxSite): boolean {
@@ -847,5 +839,5 @@ function isConfigCenterSite(site: TVBoxSite): boolean {
   const api = site.api || '';
   const text = `${key} ${name} ${api}`;
 
-  return /配置|设置\s*[┃|｜-]?\s*中心|我配置|config/i.test(text);
+  return /配置|设置\s*[┃|｜-]?\s*中心|我配置|config/i.test(text) || api === 'csp_Config' || key === 'csp_Config';
 }
