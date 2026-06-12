@@ -1383,6 +1383,53 @@ export function createApp(deps: AppDeps): Hono {
     return c.json({ success: true });
   });
 
+  app.put('/admin/lives', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+
+    let body: { oldUrl?: string; name?: string; url?: string };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'Invalid JSON' }, 400);
+    }
+
+    const oldUrl = body.oldUrl?.trim();
+    if (!oldUrl) return c.json({ error: 'Old URL is required' }, 400);
+
+    const url = body.url?.trim();
+    if (!url) return c.json({ error: 'URL is required' }, 400);
+
+    try {
+      new URL(url);
+    } catch {
+      return c.json({ error: 'Invalid URL format' }, 400);
+    }
+
+    const name = body.name?.trim() || '';
+    const raw = await storage.get(KV_LIVE_SOURCES);
+    const entries: LiveSourceEntry[] = raw ? JSON.parse(raw) : [];
+
+    const index = entries.findIndex((e) => e.url === oldUrl);
+    if (index === -1) {
+      return c.json({ error: 'Live source not found' }, 404);
+    }
+
+    // 确保修改后的新 URL 不与其它已有直播源的 URL 冲突
+    if (entries.some((e, idx) => idx !== index && e.url === url)) {
+      return c.json({ error: 'Live source already exists' }, 409);
+    }
+
+    const entry = entries[index];
+    entry.name = name;
+    entry.url = url;
+
+    await storage.put(KV_LIVE_SOURCES, JSON.stringify(entries));
+
+    return c.json({ success: true });
+  });
+
   app.post('/admin/lives/toggle', async (c) => {
     if (!verifyAdmin(c.req.raw, config)) {
       return c.json({ error: 'Unauthorized' }, 401);
@@ -1481,6 +1528,58 @@ export function createApp(deps: AppDeps): Hono {
     const sources: MacCMSSourceEntry[] = raw ? JSON.parse(raw) : [];
     const filtered = sources.filter((s) => s.key !== key);
     await storage.put(KV_MACCMS_SOURCES, JSON.stringify(filtered));
+
+    return c.json({ success: true });
+  });
+
+  app.put('/admin/maccms', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+
+    let body: { oldKey?: string; key?: string; name?: string; api?: string };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'Invalid JSON' }, 400);
+    }
+
+    const oldKey = body.oldKey?.trim();
+    if (!oldKey) return c.json({ error: 'Old Key is required' }, 400);
+
+    const key = body.key?.trim();
+    const name = body.name?.trim();
+    const api = body.api?.trim();
+
+    if (!key || !name || !api) {
+      return c.json({ error: 'key, name, and api are required' }, 400);
+    }
+
+    try {
+      new URL(api);
+    } catch {
+      return c.json({ error: `Invalid URL: ${api}` }, 400);
+    }
+
+    const raw = await storage.get(KV_MACCMS_SOURCES);
+    const sources: MacCMSSourceEntry[] = raw ? JSON.parse(raw) : [];
+
+    const index = sources.findIndex((s) => s.key === oldKey);
+    if (index === -1) {
+      return c.json({ error: 'MacCMS Source not found' }, 404);
+    }
+
+    // 确保修改后的新 Key 不与其它已有 MacCMS 源冲突
+    if (sources.some((s, idx) => idx !== index && s.key === key)) {
+      return c.json({ error: 'MacCMS Key already exists' }, 409);
+    }
+
+    const entry = sources[index];
+    entry.key = key;
+    entry.name = name;
+    entry.api = api;
+
+    await storage.put(KV_MACCMS_SOURCES, JSON.stringify(sources));
 
     return c.json({ success: true });
   });

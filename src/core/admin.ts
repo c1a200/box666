@@ -342,12 +342,14 @@ ${sharedStyles}
   <div class="tab-panel" id="panelMaccms">
     <!-- Add MacCMS -->
     <div class="section">
-      <div class="section-title" data-i18n="addMacCMS">Add MacCMS Source</div>
+      <div class="section-title" id="mcFormTitle" data-i18n="addMacCMS">Add MacCMS Source</div>
       <div class="add-form">
         <input class="name-input" type="text" id="mcKey" placeholder="Key (e.g. hongniuzy)" data-i18n-placeholder="mcKeyPh">
         <input class="name-input" type="text" id="mcName" placeholder="Name" data-i18n-placeholder="mcNamePh">
         <input type="url" id="mcApi" placeholder="MacCMS API URL" data-i18n-placeholder="mcApiPh">
-        <button class="btn" id="mcAddBtn" onclick="addMacCMS()" data-i18n="add">Add</button>
+        <div style="display:flex;gap:8px" id="mcFormButtons">
+          <button class="btn" id="mcAddBtn" onclick="addMacCMS()" data-i18n="add">Add</button>
+        </div>
       </div>
       <!-- Batch import (collapsible) -->
       <div class="collapsible-toggle" onclick="toggleCollapsible(this)" data-i18n="batchImport">Batch Import</div>
@@ -373,11 +375,13 @@ ${sharedStyles}
   <div class="tab-panel" id="panelLive">
     <!-- Add live source -->
     <div class="section">
-      <div class="section-title" data-i18n="addLiveSource">Add Live Source</div>
+      <div class="section-title" id="liveFormTitle" data-i18n="addLiveSource">Add Live Source</div>
       <div class="add-form">
         <input class="name-input" type="text" id="liveName" placeholder="Name (e.g. iptv365)" data-i18n-placeholder="liveNamePh">
         <input type="url" id="liveUrl" placeholder="m3u/txt URL" data-i18n-placeholder="liveUrlPh">
-        <button class="btn" id="liveAddBtn" onclick="addLive()" data-i18n="add">Add</button>
+        <div style="display:flex;gap:8px" id="liveFormButtons">
+          <button class="btn" id="liveAddBtn" onclick="addLive()" data-i18n="add">Add</button>
+        </div>
       </div>
     </div>
 
@@ -684,8 +688,8 @@ const translations = {
     groupOrderTitle:'Site Group Order', groupOrderEnabled:'Enable group ordering', groupOrderAdd:'+ Add Rule',
     bgSettingsTitle:'Background Settings',
     addSource:'Add Source', editSource:'Edit Source', edit:'Edit', cancel:'Cancel', updating:'Updating...', sourceUpdated:'Source updated', aggregation:'Aggregation', sourcesList:'Sources',
-    addMacCMS:'Add MacCMS Source', macCMSSources:'MacCMS Sources',
-    addLiveSource:'Add Live Source', liveSources:'Live Sources',
+    addMacCMS:'Add MacCMS Source', editMacCMS:'Edit MacCMS Source', macCMSSourceUpdated:'MacCMS source updated', macCMSSources:'MacCMS Sources',
+    addLiveSource:'Add Live Source', editLiveSource:'Edit Live Source', liveSourceUpdated:'Live source updated', liveSources:'Live Sources',
     nameOptional:'Name (optional)', configJsonUrl:'TVBox config JSON URL',
     mcKeyPh:'Key (e.g. hongniuzy)', mcNamePh:'Name', mcApiPh:'MacCMS API URL',
     liveNamePh:'Name (e.g. iptv365)', liveUrlPh:'m3u/txt URL',
@@ -760,8 +764,8 @@ const translations = {
     groupOrderTitle:'站点分组排序', groupOrderEnabled:'启用分组排序', groupOrderAdd:'+ 添加规则',
     bgSettingsTitle:'背景设置',
     addSource:'添加源', editSource:'修改源', edit:'修改', cancel:'取消', updating:'修改中...', sourceUpdated:'源已修改', aggregation:'聚合', sourcesList:'源列表',
-    addMacCMS:'添加 MacCMS 源', macCMSSources:'MacCMS 源列表',
-    addLiveSource:'添加直播源', liveSources:'直播源列表',
+    addMacCMS:'添加 MacCMS 源', editMacCMS:'修改 MacCMS 源', macCMSSourceUpdated:'MacCMS 源已修改', macCMSSources:'MacCMS 源列表',
+    addLiveSource:'添加直播源', editLiveSource:'修改直播源', liveSourceUpdated:'直播源已修改', liveSources:'直播源列表',
     nameOptional:'名称（可选）', configJsonUrl:'TVBox 配置 JSON 地址',
     mcKeyPh:'Key（如 hongniuzy）', mcNamePh:'名称', mcApiPh:'MacCMS API 地址',
     liveNamePh:'名称（如 iptv365）', liveUrlPh:'m3u/txt 地址',
@@ -1092,6 +1096,7 @@ async function loadMacCMS() {
         </div>
         <div class="source-actions" style="display:flex;gap:6px">
           <button class="btn btn-sm" onclick="toggleMC('\${esc(s.key)}', \${!s.disabled})">\${s.disabled ? t('enable') : t('disable')}</button>
+          <button class="btn btn-sm" onclick="startEditMC('\${esc(s.key)}', '\${esc(s.name)}', '\${esc(s.api)}')">\${t('edit')}</button>
           <button class="btn btn-sm" onclick="validateMC('\${esc(s.api)}')">\${t('test')}</button>
           <button class="btn btn-sm btn-danger" onclick="removeMC('\${esc(s.key)}')">\${t('remove')}</button>
         </div>
@@ -1121,6 +1126,47 @@ async function toggleMC(key, disabled) {
   }
 }
 
+let editingMCOldKey = null;
+
+function startEditMC(key, name, api) {
+  editingMCOldKey = key;
+  $('mcKey').value = key;
+  $('mcName').value = name;
+  $('mcApi').value = api;
+
+  const titleEl = $('mcFormTitle');
+  if (titleEl) {
+    titleEl.dataset.i18n = 'editMacCMS';
+    titleEl.textContent = t('editMacCMS');
+  }
+
+  const buttonsEl = $('mcFormButtons');
+  if (buttonsEl) {
+    buttonsEl.innerHTML = '<button class="btn" id="mcAddBtn" onclick="addMacCMS()" data-i18n="save">' + t('save') + '</button> ' +
+      '<button class="btn secondary" onclick="cancelEditMC()" data-i18n="cancel">' + t('cancel') + '</button>';
+  }
+  $('mcKey').focus();
+}
+
+function cancelEditMC() {
+  editingMCOldKey = null;
+  $('mcKey').value = '';
+  $('mcName').value = '';
+  $('mcApi').value = '';
+
+  const titleEl = $('mcFormTitle');
+  if (titleEl) {
+    titleEl.dataset.i18n = 'addMacCMS';
+    titleEl.textContent = t('addMacCMS');
+  }
+
+  const buttonsEl = $('mcFormButtons');
+  if (buttonsEl) {
+    buttonsEl.innerHTML = '<button class="btn" id="mcAddBtn" onclick="addMacCMS()" data-i18n="add">' + t('add') + '</button>';
+  }
+}
+
+// --- Add MacCMS ---
 async function addMacCMS() {
   const key = $('mcKey').value.trim();
   const name = $('mcName').value.trim();
@@ -1128,29 +1174,38 @@ async function addMacCMS() {
   if (!key || !name || !api) { toast(t('allFieldsRequired'), 'error'); return; }
 
   const btn = $('mcAddBtn');
-  btn.textContent = t('adding');
+  const isEdit = editingMCOldKey !== null;
+  btn.textContent = isEdit ? t('updating') : t('adding');
   btn.className = 'btn loading';
 
   try {
+    const payload = isEdit ? { oldKey: editingMCOldKey, key, name, api } : { key, name, api };
     const res = await auth.authFetch('/admin/maccms', {
-      method: 'POST',
+      method: isEdit ? 'PUT' : 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key, name, api })
+      body: JSON.stringify(payload)
     });
     const d = await res.json();
     if (res.ok) {
-      toast('Added ' + (d.added || 1) + ' MacCMS source(s)');
-      $('mcKey').value = '';
-      $('mcName').value = '';
-      $('mcApi').value = '';
+      toast(isEdit ? t('macCMSSourceUpdated') : 'Added ' + (d.added || 1) + ' MacCMS source(s)');
+      if (isEdit) {
+        cancelEditMC();
+      } else {
+        $('mcKey').value = '';
+        $('mcName').value = '';
+        $('mcApi').value = '';
+      }
       loadMacCMS();
     } else {
-      toast(d.error || 'Failed', 'error');
+      toast(d.error || (isEdit ? t('saveFailed') : 'Failed'), 'error');
     }
   } catch { toast(t('networkError'), 'error'); }
 
-  btn.textContent = t('add');
-  btn.className = 'btn';
+  const finalBtn = $('mcAddBtn');
+  if (finalBtn) {
+    finalBtn.textContent = editingMCOldKey !== null ? t('save') : t('add');
+    finalBtn.className = 'btn';
+  }
 }
 
 async function removeMC(key) {
@@ -1223,8 +1278,9 @@ async function loadLives() {
           <div class="source-name">\${esc(s.name || 'Unnamed')}</div>
           <div class="source-url">\${esc(s.url)}</div>
         </div>
-        <div class="source-actions">
+        <div class="source-actions" style="display:flex;gap:6px">
           <button class="btn btn-sm" onclick="toggleLive('\${esc(s.url)}', \${!s.disabled})">\${s.disabled ? t('enable') : t('disable')}</button>
+          <button class="btn btn-sm" onclick="startEditLive('\${esc(s.name || \'\')}', '\${esc(s.url)}')">\${t('edit')}</button>
           <button class="btn btn-sm btn-danger" onclick="removeLive('\${esc(s.url)}')">\${t('remove')}</button>
         </div>
       </div>
@@ -1253,36 +1309,84 @@ async function toggleLive(url, disabled) {
   }
 }
 
+let editingLiveOldUrl = null;
+
+function startEditLive(name, url) {
+  editingLiveOldUrl = url;
+  $('liveName').value = name;
+  $('liveUrl').value = url;
+
+  const titleEl = $('liveFormTitle');
+  if (titleEl) {
+    titleEl.dataset.i18n = 'editLiveSource';
+    titleEl.textContent = t('editLiveSource');
+  }
+
+  const buttonsEl = $('liveFormButtons');
+  if (buttonsEl) {
+    buttonsEl.innerHTML = '<button class="btn" id="liveAddBtn" onclick="addLive()" data-i18n="save">' + t('save') + '</button> ' +
+      '<button class="btn secondary" onclick="cancelEditLive()" data-i18n="cancel">' + t('cancel') + '</button>';
+  }
+  $('liveName').focus();
+}
+
+function cancelEditLive() {
+  editingLiveOldUrl = null;
+  $('liveName').value = '';
+  $('liveUrl').value = '';
+
+  const titleEl = $('liveFormTitle');
+  if (titleEl) {
+    titleEl.dataset.i18n = 'addLiveSource';
+    titleEl.textContent = t('addLiveSource');
+  }
+
+  const buttonsEl = $('liveFormButtons');
+  if (buttonsEl) {
+    buttonsEl.innerHTML = '<button class="btn" id="liveAddBtn" onclick="addLive()" data-i18n="add">' + t('add') + '</button>';
+  }
+}
+
+// --- Add live source ---
 async function addLive() {
   const url = $('liveUrl').value.trim();
   if (!url) { $('liveUrl').focus(); return; }
   const name = $('liveName').value.trim() || '';
 
   const btn = $('liveAddBtn');
-  btn.textContent = t('adding');
+  const isEdit = editingLiveOldUrl !== null;
+  btn.textContent = isEdit ? t('updating') : t('adding');
   btn.className = 'btn loading';
 
   try {
+    const payload = isEdit ? { oldUrl: editingLiveOldUrl, name, url } : { name, url };
     const res = await auth.authFetch('/admin/lives', {
-      method: 'POST',
+      method: isEdit ? 'PUT' : 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, url })
+      body: JSON.stringify(payload)
     });
     const d = await res.json();
     if (res.ok) {
-      toast(t('liveSourceAdded'));
-      $('liveUrl').value = '';
-      $('liveName').value = '';
+      toast(isEdit ? t('liveSourceUpdated') : t('liveSourceAdded'));
+      if (isEdit) {
+        cancelEditLive();
+      } else {
+        $('liveUrl').value = '';
+        $('liveName').value = '';
+      }
       loadLives();
     } else {
-      toast(d.error || 'Failed to add', 'error');
+      toast(d.error || (isEdit ? t('saveFailed') : 'Failed to add'), 'error');
     }
   } catch {
     toast(t('networkError'), 'error');
   }
 
-  btn.textContent = t('add');
-  btn.className = 'btn';
+  const finalBtn = $('liveAddBtn');
+  if (finalBtn) {
+    finalBtn.textContent = editingLiveOldUrl !== null ? t('save') : t('add');
+    finalBtn.className = 'btn';
+  }
 }
 
 async function removeLive(url) {
