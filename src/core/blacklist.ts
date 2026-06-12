@@ -160,13 +160,30 @@ export async function applyBlacklist(
 
   // 过滤 lives
   let lives = config.lives || [];
-  if (liveSet.size > 0) {
+  if (liveSet.size > 0 || activeRules.length > 0) {
     lives = lives.filter((l) => {
       const url = l.url || l.api || '';
       if (url && liveSet.has(url)) {
         removedLives++;
         return false;
       }
+
+      // 对直播源应用正则过滤规则
+      for (const rule of activeRules) {
+        try {
+          const re = new RegExp(rule.pattern, 'i');
+          const val = rule.field === 'api'
+            ? (l.api || l.url || '')
+            : (rule.field === 'name' ? (l.name || '') : '');
+          if (val && re.test(val)) {
+            removedByRegex++;
+            return false;
+          }
+        } catch {
+          // 忽略失效正则
+        }
+      }
+
       return true;
     });
   }
