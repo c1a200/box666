@@ -27,6 +27,34 @@ interface PlatformLoginHandler {
   passwordLogin?: (username: string, password: string) => Promise<PasswordLoginResult>;
 }
 
+// ─── 网络请求安全辅助函数 ────────────────────────────────────
+
+async function safeFetchJson(url: string, init?: RequestInit, platformName: string = '网盘'): Promise<any> {
+  try {
+    const resp = await fetch(url, init);
+    if (resp.status === 403) {
+      throw new Error(`服务器返回 403 错误 (IP可能被 ${platformName} 屏蔽，请在下方直接使用【手动粘贴凭证】配置 Cookie 登录)`);
+    }
+    if (!resp.ok) {
+      throw new Error(`HTTP 错误 ${resp.status}`);
+    }
+    const contentType = resp.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      const text = await resp.text();
+      if (text.includes('cloudflare') || text.includes('challenge') || text.includes('captcha') || text.includes('Verify')) {
+        throw new Error(`触发了人机验证或 Cloudflare 防御，请在下方直接使用【手动粘贴凭证】配置 Cookie 登录 ${platformName}`);
+      }
+      throw new Error(`服务器未返回 JSON 格式数据，可能是 IP 被限制，请使用下方【手动粘贴凭证】登录 ${platformName}`);
+    }
+    return await resp.json();
+  } catch (err: any) {
+    if (err instanceof Error && err.message.includes('手动粘贴凭证')) {
+      throw err;
+    }
+    throw new Error(`获取二维码失败: ${err instanceof Error ? err.message : String(err)}。由于部署在 Cloudflare Worker 上的外网 IP 极易被国内接口防火墙拦截，建议直接在下方使用【手动粘贴凭证】。`);
+  }
+}
+
 // ─── Bilibili TV 端二维码 ────────────────────────────────
 
 const BILI_APPKEY = '4409e2ce8ffd12b8';
@@ -99,12 +127,11 @@ const bilibiliHandler: PlatformLoginHandler = {
     const params: Record<string, string> = { appkey: BILI_APPKEY, local_id: '0', ts };
     const body = await biliSign(params);
 
-    const resp = await fetch('https://passport.bilibili.com/x/passport-tv-login/qrcode/auth_code', {
+    const data = await safeFetchJson('https://passport.bilibili.com/x/passport-tv-login/qrcode/auth_code', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body,
-    });
-    const data = await resp.json() as any;
+    }, 'Bilibili');
 
     if (data.code !== 0) throw new Error(data.message || 'Bilibili QR generate failed');
 
@@ -119,12 +146,11 @@ const bilibiliHandler: PlatformLoginHandler = {
     const params: Record<string, string> = { appkey: BILI_APPKEY, auth_code: token, local_id: '0', ts };
     const body = await biliSign(params);
 
-    const resp = await fetch('https://passport.bilibili.com/x/passport-tv-login/qrcode/poll', {
+    const data = await safeFetchJson('https://passport.bilibili.com/x/passport-tv-login/qrcode/poll', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body,
-    });
-    const data = await resp.json() as any;
+    }, 'Bilibili');
 
     if (data.code === 0) {
       // 登录成功，提取 cookie
@@ -149,11 +175,10 @@ const bilibiliHandler: PlatformLoginHandler = {
 
 const aliyunHandler: PlatformLoginHandler = {
   async generateQR() {
-    const resp = await fetch('https://passport.aliyundrive.com/newlogin/qrcode/generate.do?appName=aliyun_drive&fromSite=52&appEntrance=web&_bx-v=2.5.6', {
+    const data = await safeFetchJson('https://passport.aliyundrive.com/newlogin/qrcode/generate.do?appName=aliyun_drive&fromSite=52&appEntrance=web&_bx-v=2.5.6', {
       method: 'GET',
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
-    });
-    const data = await resp.json() as any;
+    }, '阿里云盘');
     const content = data?.content?.data;
 
     if (!content?.codeContent) throw new Error('Aliyun QR generate failed');
@@ -175,12 +200,11 @@ const aliyunHandler: PlatformLoginHandler = {
       '_bx-v': '2.5.6',
     });
 
-    const resp = await fetch('https://passport.aliyundrive.com/newlogin/qrcode/query.do', {
+    const data = await safeFetchJson('https://passport.aliyundrive.com/newlogin/qrcode/query.do', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: body.toString(),
-    });
-    const data = await resp.json() as any;
+    }, '阿里云盘');
     const content = data?.content?.data;
 
     if (!content) return { status: 'error' as QRStatus, message: 'Invalid response' };
@@ -214,10 +238,9 @@ const aliyunHandler: PlatformLoginHandler = {
 const quarkHandler: PlatformLoginHandler = {
   async generateQR() {
     const requestId = crypto.randomUUID();
-    const resp = await fetch(`https://uop.quark.cn/cas/ajax/getTokenForQrcodeLogin?client_id=532&v=1.2&request_id=${requestId}`, {
+    const data = await safeFetchJson(`https://uop.quark.cn/cas/ajax/getTokenForQrcodeLogin?client_id=532&v=1.2&request_id=${requestId}`, {
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
-    });
-    const data = await resp.json() as any;
+    }, '夸克网盘');
 
     if (data.status !== 200 || !data.data?.members?.token) {
       throw new Error(data.message || 'Quark QR generate failed');
@@ -231,10 +254,9 @@ const quarkHandler: PlatformLoginHandler = {
   },
 
   async pollStatus(token: string) {
-    const resp = await fetch(`https://uop.quark.cn/cas/ajax/getServiceTicketByQrcodeToken?client_id=532&token=${token}`, {
+    const data = await safeFetchJson(`https://uop.quark.cn/cas/ajax/getServiceTicketByQrcodeToken?client_id=532&token=${token}`, {
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
-    });
-    const data = await resp.json() as any;
+    }, '夸克网盘');
 
     const status = data.data?.members?.status;
     if (status === 'CONFIRMED') {
@@ -274,10 +296,9 @@ const quarkHandler: PlatformLoginHandler = {
 const ucHandler: PlatformLoginHandler = {
   async generateQR() {
     const requestId = crypto.randomUUID();
-    const resp = await fetch(`https://api.open.uc.cn/cas/ajax/getTokenForQrcodeLogin?client_id=381&v=1.2&request_id=${requestId}`, {
+    const data = await safeFetchJson(`https://api.open.uc.cn/cas/ajax/getTokenForQrcodeLogin?client_id=381&v=1.2&request_id=${requestId}`, {
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
-    });
-    const data = await resp.json() as any;
+    }, 'UC 网盘');
 
     if (data.status !== 200 || !data.data?.members?.token) {
       throw new Error(data.message || 'UC QR generate failed');
@@ -291,10 +312,9 @@ const ucHandler: PlatformLoginHandler = {
   },
 
   async pollStatus(token: string) {
-    const resp = await fetch(`https://api.open.uc.cn/cas/ajax/getServiceTicketByQrcodeToken?client_id=381&token=${token}`, {
+    const data = await safeFetchJson(`https://api.open.uc.cn/cas/ajax/getServiceTicketByQrcodeToken?client_id=381&token=${token}`, {
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
-    });
-    const data = await resp.json() as any;
+    }, 'UC 网盘');
 
     const status = data.data?.members?.status;
     if (status === 'CONFIRMED') {
@@ -331,10 +351,9 @@ const ucHandler: PlatformLoginHandler = {
 
 const pan115Handler: PlatformLoginHandler = {
   async generateQR() {
-    const resp = await fetch('https://qrcodeapi.115.com/api/1.0/web/1.0/token/', {
+    const data = await safeFetchJson('https://qrcodeapi.115.com/api/1.0/web/1.0/token/', {
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
-    });
-    const data = await resp.json() as any;
+    }, '115 网盘');
 
     if (!data?.data?.uid) throw new Error('115 QR generate failed');
 
@@ -346,10 +365,9 @@ const pan115Handler: PlatformLoginHandler = {
 
   async pollStatus(token: string) {
     const { uid, time, sign } = JSON.parse(token);
-    const resp = await fetch(`https://qrcodeapi.115.com/get/status/?uid=${uid}&time=${time}&sign=${sign}`, {
+    const data = await safeFetchJson(`https://qrcodeapi.115.com/get/status/?uid=${uid}&time=${time}&sign=${sign}`, {
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
-    });
-    const data = await resp.json() as any;
+    }, '115 网盘');
 
     if (data?.data?.status === 2) {
       // 已确认，用 uid 换取 cookie
@@ -387,7 +405,7 @@ const pan115Handler: PlatformLoginHandler = {
 
 const tianyiHandler: PlatformLoginHandler = {
   async generateQR() {
-    const resp = await fetch('https://open.e.189.cn/api/logbox/oauth2/getQrcImg.do', {
+    const data = await safeFetchJson('https://open.e.189.cn/api/logbox/oauth2/getQrcImg.do', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
@@ -395,8 +413,7 @@ const tianyiHandler: PlatformLoginHandler = {
         'Referer': 'https://open.e.189.cn/',
       },
       body: 'appId=8025431004',
-    });
-    const data = await resp.json() as any;
+    }, '天翼云盘');
 
     if (data?.result !== 0 || !data?.uuid) throw new Error(data?.msg || 'Tianyi QR generate failed');
 
@@ -407,7 +424,7 @@ const tianyiHandler: PlatformLoginHandler = {
   },
 
   async pollStatus(token: string) {
-    const resp = await fetch('https://open.e.189.cn/api/logbox/oauth2/qrcodeLoginState.do', {
+    const data = await safeFetchJson('https://open.e.189.cn/api/logbox/oauth2/qrcodeLoginState.do', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
@@ -415,8 +432,7 @@ const tianyiHandler: PlatformLoginHandler = {
         'Referer': 'https://open.e.189.cn/',
       },
       body: `uuid=${token}&appId=8025431004`,
-    });
-    const data = await resp.json() as any;
+    }, '天翼云盘');
 
     if (data?.result === 0 && data?.redirectUrl) {
       // 登录成功，从重定向 URL 获取 cookie
@@ -450,10 +466,9 @@ const tianyiHandler: PlatformLoginHandler = {
 
 const baiduHandler: PlatformLoginHandler = {
   async generateQR() {
-    const resp = await fetch('https://passport.baidu.com/v2/api/getqrcode?lp=pc&qrloginfrom=pc&gid=' + generateGid(), {
+    const data = await safeFetchJson('https://passport.baidu.com/v2/api/getqrcode?lp=pc&qrloginfrom=pc&gid=' + generateGid(), {
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
-    });
-    const data = await resp.json() as any;
+    }, '百度网盘');
 
     if (!data?.imgurl || !data?.sign) throw new Error('Baidu QR generate failed');
 
@@ -464,10 +479,9 @@ const baiduHandler: PlatformLoginHandler = {
   },
 
   async pollStatus(token: string) {
-    const resp = await fetch(`https://passport.baidu.com/channel/unicast?channel_id=${token}&tpl=netdisk&gid=${generateGid()}&apiver=v3`, {
+    const data = await safeFetchJson(`https://passport.baidu.com/channel/unicast?channel_id=${token}&tpl=netdisk&gid=${generateGid()}&apiver=v3`, {
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
-    });
-    const data = await resp.json() as any;
+    }, '百度网盘');
 
     if (data?.errno === 0 && data?.channel_v) {
       try {
@@ -515,7 +529,7 @@ function generateGid(): string {
 
 const pan123Handler: PlatformLoginHandler = {
   async generateQR() {
-    const resp = await fetch('https://www.123pan.com/api/user/sign_in/qr', {
+    const data = await safeFetchJson('https://www.123pan.com/api/user/sign_in/qr', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -523,8 +537,7 @@ const pan123Handler: PlatformLoginHandler = {
         'Platform': 'web',
       },
       body: JSON.stringify({}),
-    });
-    const data = await resp.json() as any;
+    }, '123 网盘');
 
     if (data?.code !== 0 || !data?.data?.qrCode) throw new Error(data?.message || '123 QR generate failed');
 
@@ -535,13 +548,12 @@ const pan123Handler: PlatformLoginHandler = {
   },
 
   async pollStatus(token: string) {
-    const resp = await fetch(`https://www.123pan.com/api/user/sign_in/qr/result?requestId=${token}`, {
+    const data = await safeFetchJson(`https://www.123pan.com/api/user/sign_in/qr/result?requestId=${token}`, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Platform': 'web',
       },
-    });
-    const data = await resp.json() as any;
+    }, '123 网盘');
 
     if (data?.code === 0 && data?.data?.token) {
       return {

@@ -104,8 +104,23 @@ function replaceTokenJsonUrl(ext: any, baseUrl: string = '__BASE_URL__'): { ext:
 
     if (TOKEN_JSON_URL_RE.test(ext)) {
       TOKEN_JSON_URL_RE.lastIndex = 0;
-      const next = ext.replace(TOKEN_JSON_URL_RE, `${baseUrl.replace(/\/$/, '')}/credential/token.json`);
-      return { ext: next, changed: next !== ext };
+      const match = ext.match(TOKEN_JSON_URL_RE);
+      if (match && match[0]) {
+        const matchedUrl = match[0];
+        const lowerUrl = matchedUrl.toLowerCase();
+        if (lowerUrl.includes('clan://localhost') || 
+            lowerUrl.includes('127.0.0.1:5678') || 
+            lowerUrl.includes('localhost:5678')) {
+          // 已经是本地 token.json 路径，不进行替换，以便让客户端通过内置的本地代理服务加载（配合 root-level 的 "token" 字段）
+          TOKEN_JSON_URL_RE.lastIndex = 0;
+          return { ext, changed: false };
+        } else {
+          // 如果是第三方的远程 token.json 链接，将其替换为本地路径，确保客户端拉取我们自托管的 token.json
+          const next = ext.replace(TOKEN_JSON_URL_RE, 'clan://localhost/token.json');
+          TOKEN_JSON_URL_RE.lastIndex = 0;
+          return { ext: next, changed: next !== ext };
+        }
+      }
     }
     TOKEN_JSON_URL_RE.lastIndex = 0;
     return { ext, changed: false };
@@ -324,17 +339,32 @@ export function generateTokenJson(
 
     switch (platform) {
       case 'aliyun':
-        if (cred.credential.refresh_token) token.refresh_token = cred.credential.refresh_token;
+        if (cred.credential.refresh_token) {
+          token.refresh_token = cred.credential.refresh_token;
+          token.token = cred.credential.refresh_token;
+          token.ali_token = cred.credential.refresh_token;
+        }
         if (cred.credential.open_token) token.open_token = cred.credential.open_token;
         break;
       case 'quark':
-        if (cred.credential.cookie) token.quark_cookie = cred.credential.cookie;
+        if (cred.credential.cookie) {
+          token.quark_cookie = cred.credential.cookie;
+          token.quarkCookie = cred.credential.cookie;
+          token.cookie = cred.credential.cookie;
+        }
         break;
       case 'uc':
-        if (cred.credential.cookie) token.uc_cookie = cred.credential.cookie;
+        if (cred.credential.cookie) {
+          token.uc_cookie = cred.credential.cookie;
+          token.ucCookie = cred.credential.cookie;
+          token.uccookie = cred.credential.cookie;
+        }
         break;
       case 'pan115':
-        if (cred.credential.cookie) token['115_cookie'] = cred.credential.cookie;
+        if (cred.credential.cookie) {
+          token['115_cookie'] = cred.credential.cookie;
+          token['115Cookie'] = cred.credential.cookie;
+        }
         break;
       case 'thunder':
         if (cred.credential.username) {
@@ -349,16 +379,31 @@ export function generateTokenJson(
         }
         break;
       case 'bilibili':
-        if (cred.credential.cookie) token.bili_cookie = cred.credential.cookie;
+        if (cred.credential.cookie) {
+          token.bili_cookie = cred.credential.cookie;
+          token.bilibili_cookie = cred.credential.cookie;
+        }
         break;
       case 'tianyi':
-        if (cred.credential.cookie) token.tianyi_cookie = cred.credential.cookie;
+        if (cred.credential.cookie) {
+          token.tianyi_cookie = cred.credential.cookie;
+          token.tianyiCookie = cred.credential.cookie;
+          token.tyitoken = cred.credential.cookie;
+        }
         break;
       case 'baidu':
-        if (cred.credential.cookie) token.baidu_cookie = cred.credential.cookie;
+        if (cred.credential.cookie) {
+          token.baidu_cookie = cred.credential.cookie;
+          token.baiduCookie = cred.credential.cookie;
+          token.dutoken = cred.credential.cookie;
+        }
         break;
       case 'pan123':
-        if (cred.credential.token) token['123_token'] = cred.credential.token;
+        if (cred.credential.token) {
+          token['123_token'] = cred.credential.token;
+          token['123token'] = cred.credential.token;
+          token.p123token = cred.credential.token;
+        }
         break;
     }
   }
