@@ -534,11 +534,23 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
   await storage.put(KV_LIVE_MERGED_DATA, JSON.stringify(merged.lives || []));
 
   // Step 7.8: 统一直播入口名称，避免多个上游直播源直接暴露给 TVBox
-  // 注：在 Cloudflare Workers 上因为跳过了频道合并，我们应当直接输出去重后的原始直播源列表。
-  // 如果将其重写为单个指向 /live.json 的入口，会导致客户端因格式不支持而显示频道为空。
+  // 注：在 Cloudflare Workers 上，因为跳过了频道合并，有两种方案：
+  // 1. 合并模式 (merged): 将所有直播源统写为一个指向 /live-config 的统一入口，进行实时后台下载合并。
+  // 2. 分离模式 (separated): 输出去重后的原始直播源列表，让客户端端分别呈现和选择。
   if (config.workerBaseUrl && merged.lives && merged.lives.length > 0) {
-    // Keep raw live sources directly on Workers
-    console.log('[aggregation] Step 7.8: Kept raw live sources directly on Workers to prevent empty channel list');
+    const liveMergeMode = (await storage.get(KV_LIVE_MERGE_MODE)) || 'separated';
+    if (liveMergeMode === 'merged') {
+      merged.lives = [
+        {
+          name: '176111直播(聚合)',
+          type: 0,
+          url: `${config.workerBaseUrl.replace(/\/$/, '')}/live-config`,
+        },
+      ];
+      console.log('[aggregation] Step 7.8: Unified live entry pointing to /live-config (Merged Mode)');
+    } else {
+      console.log('[aggregation] Step 7.8: Kept raw live sources directly on Workers (Separated Mode)');
+    }
   }
 
   // Step 8: 存入存储

@@ -137,20 +137,33 @@ export function createApp(deps: AppDeps): Hono {
 
   // ─── 纯直播配置 ────────────────────────────────────────
   app.get('/live-config', async (c) => {
-    let cached = await storage.get(KV_MERGED_CONFIG_FULL) || await storage.get(KV_MERGED_CONFIG);
+    let livesRaw = await storage.get(KV_LIVE_MERGED_DATA);
+    let lives: any[] = [];
+    if (livesRaw) {
+      try {
+        lives = JSON.parse(livesRaw);
+      } catch { /* ignore */ }
+    }
 
-    if (!cached) {
-      return c.json({ error: 'No config available yet.' }, 503);
+    if (!lives || lives.length === 0) {
+      const cached = await storage.get(KV_MERGED_CONFIG_FULL) || await storage.get(KV_MERGED_CONFIG);
+      if (cached) {
+        try {
+          const full = JSON.parse(cached);
+          lives = full.lives || [];
+        } catch { /* ignore */ }
+      }
+    }
+
+    // 过滤掉指向自身或 live.json 的单条目，防止死循环
+    if (Array.isArray(lives)) {
+      lives = lives.filter(l => !(l.url && (l.url.endsWith('/live-config') || l.url.endsWith('/live.json'))));
     }
 
     const baseUrl = await resolveBaseUrl(c);
     if (baseUrl instanceof Response) return baseUrl;
-    cached = applyBaseUrlPlaceholder(cached, baseUrl);
 
     try {
-      const full = JSON.parse(cached);
-      const lives = full.lives || [];
-
       // FongMi 格式（type/url/api 指针）：实时下载并解析为 txt 格式
       if (!isNativeLiveGroups(lives)) {
         const liveUrls: Array<{ name: string; url: string; header?: Record<string, string> }> = [];
@@ -162,7 +175,12 @@ export function createApp(deps: AppDeps): Hono {
         }
         if (liveUrls.length > 0) {
           try {
-            const groups = await fetchAndParseLiveUrls(liveUrls, 8000);
+            // 解析 URL 中的 baseUrl 占位符
+            const resolvedUrls = liveUrls.map(u => ({
+              ...u,
+              url: applyBaseUrlPlaceholder(u.url, baseUrl)
+            }));
+            const groups = await fetchAndParseLiveUrls(resolvedUrls, 8000);
             if (groups.length > 0) {
               return c.body(formatLiveGroupsAsTxt(groups), 200, {
                 'Content-Type': 'text/plain; charset=utf-8',
@@ -180,7 +198,10 @@ export function createApp(deps: AppDeps): Hono {
         });
       }
 
-      return c.body(formatLiveGroupsAsTxt(lives), 200, {
+      // 如果已经是 Native 格式（Docker/Node 环境预先合并好的 groups），应用 baseUrl 占位符并返回
+      const nativeTxt = formatLiveGroupsAsTxt(lives);
+      const resolvedTxt = applyBaseUrlPlaceholder(nativeTxt, baseUrl);
+      return c.body(resolvedTxt, 200, {
         'Content-Type': 'text/plain; charset=utf-8',
         'Cache-Control': 'public, max-age=1800',
         'Access-Control-Allow-Origin': '*',
