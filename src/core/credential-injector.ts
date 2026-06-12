@@ -107,16 +107,12 @@ function replaceTokenJsonUrl(ext: any, baseUrl: string = '__BASE_URL__'): { ext:
       const match = ext.match(TOKEN_JSON_URL_RE);
       if (match && match[0]) {
         const matchedUrl = match[0];
-        const lowerUrl = matchedUrl.toLowerCase();
-        if (lowerUrl.includes('clan://localhost') || 
-            lowerUrl.includes('127.0.0.1:5678') || 
-            lowerUrl.includes('localhost:5678')) {
-          // 已经是本地 token.json 路径，不进行替换，以便让客户端通过内置的本地代理服务加载（配合 root-level 的 "token" 字段）
+        const targetUrl = `${baseUrl.replace(/\/$/, '')}/token.json`;
+        if (matchedUrl === targetUrl) {
           TOKEN_JSON_URL_RE.lastIndex = 0;
           return { ext, changed: false };
         } else {
-          // 如果是第三方的远程 token.json 链接，将其替换为本地路径，确保客户端拉取我们自托管的 token.json
-          const next = ext.replace(TOKEN_JSON_URL_RE, 'clan://localhost/token.json');
+          const next = ext.replace(TOKEN_JSON_URL_RE, targetUrl);
           TOKEN_JSON_URL_RE.lastIndex = 0;
           return { ext: next, changed: next !== ext };
         }

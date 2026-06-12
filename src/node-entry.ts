@@ -1,6 +1,15 @@
 // Node.js 入口
 
 import { serve } from '@hono/node-server';
+import { webcrypto } from 'crypto';
+
+if (typeof globalThis.crypto === 'undefined') {
+  Object.defineProperty(globalThis, 'crypto', {
+    value: webcrypto,
+    writable: false,
+    configurable: true
+  });
+}
 import * as cron from 'node-cron';
 import * as dotenv from 'dotenv';
 import * as path from 'path';
