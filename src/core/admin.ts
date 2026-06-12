@@ -465,31 +465,7 @@ ${sharedStyles}
       </div>
       <div id="manualPasteStatus" class="status-text" style="margin-top:6px"></div>
     </div>
-    <!-- 风险管理 -->
-    <div class="section">
-      <div class="section-title" data-i18n="cloudRiskManagement">Risk Management</div>
-      <div style="display:flex;gap:8px;margin-bottom:10px;align-items:center;flex-wrap:wrap">
-        <button class="btn btn-sm" onclick="loadRiskReport()" data-i18n="cloudLoadReport">Load Risk Report</button>
-        <span id="riskSummary" style="font-family:var(--mono);font-size:0.75rem;color:var(--text-dim)"></span>
-      </div>
-      <div id="riskReportContainer" style="display:none">
-        <div style="overflow-x:auto">
-          <table class="list-table" style="width:100%;font-size:0.8rem">
-            <thead>
-              <tr>
-                <th data-i18n="cloudRiskName">Name</th>
-                <th>Spider</th>
-                <th data-i18n="cloudRiskLevel">Risk</th>
-                <th data-i18n="cloudRiskPlatforms">Platforms</th>
-                <th data-i18n="cloudRiskDomains">3rd Party</th>
-                <th data-i18n="cloudRiskAction">Action</th>
-              </tr>
-            </thead>
-            <tbody id="riskReportBody"></tbody>
-          </table>
-        </div>
-      </div>
-    </div>
+
   </div>
 
   <!-- Settings Tab -->
@@ -1928,89 +1904,7 @@ async function manualPasteCredential() {
   }
 }
 
-// --- Risk Report ---
-async function loadRiskReport() {
-  const container = $('riskReportContainer');
-  const summary = $('riskSummary');
 
-  try {
-    const res = await auth.authFetch('/admin/credential-risk-report');
-    if (!res.ok) { const e = await res.json(); toast(e.error || 'Failed', 'error'); return; }
-    const data = await res.json();
-
-    summary.textContent = 'Safe: ' + data.summary.safe + ' | Low: ' + data.summary.low +
-      ' | High: ' + data.summary.high + ' | Unaudited: ' + data.summary.unaudited;
-
-    const tbody = $('riskReportBody');
-    tbody.innerHTML = '';
-
-    // 只显示需要凭证的源（非 safe-A 类）
-    const relevant = data.assessments.filter(a => a.neededPlatforms.length > 0 || a.riskLevel !== 'safe');
-    const allowedSet = new Set(data.policy.allowedHighRiskKeys || []);
-    const deniedSet = new Set(data.policy.deniedKeys || []);
-
-    for (const a of relevant) {
-      const tr = document.createElement('tr');
-      const isAllowed = allowedSet.has(a.siteKey);
-      const isDenied = deniedSet.has(a.siteKey);
-      const needsAction = a.riskLevel === 'high' || a.riskLevel === 'unaudited';
-
-      tr.innerHTML =
-        '<td style="font-size:0.75rem">' + a.siteKey + '</td>' +
-        '<td style="font-family:var(--mono);font-size:0.7rem">' + a.api + '</td>' +
-        '<td><span class="risk-badge ' + a.riskLevel + '">' + a.riskLevel.toUpperCase() + '</span></td>' +
-        '<td style="font-size:0.7rem">' + (a.neededPlatforms||[]).join(', ') + '</td>' +
-        '<td style="font-size:0.7rem;color:' + (a.thirdPartyDomains.length ? 'var(--red)' : 'var(--text-dim)') + '">' +
-          (a.thirdPartyDomains.join(', ') || '-') + '</td>' +
-        '<td>' +
-          (needsAction && !isAllowed ? '<button class="btn btn-sm" onclick="allowHighRisk(\\''+a.siteKey+'\\')">Allow</button>' : '') +
-          (isAllowed ? '<button class="btn btn-sm btn-danger" onclick="revokeHighRisk(\\''+a.siteKey+'\\')">Revoke</button>' : '') +
-          (isDenied ? '<span style="color:var(--red);font-size:0.7rem">DENIED</span>' : '') +
-        '</td>';
-      tbody.appendChild(tr);
-    }
-
-    container.style.display = 'block';
-  } catch (e) {
-    toast('Load failed: ' + e.message, 'error');
-  }
-}
-
-async function allowHighRisk(siteKey) {
-  if (!confirm('Allow credential injection for "' + siteKey + '"? Your cookies may be sent to third-party servers.')) return;
-  try {
-    const res = await auth.authFetch('/admin/credential-policy');
-    const policy = await res.json();
-    if (!policy.allowedHighRiskKeys) policy.allowedHighRiskKeys = [];
-    if (!policy.allowedHighRiskKeys.includes(siteKey)) policy.allowedHighRiskKeys.push(siteKey);
-    await auth.authFetch('/admin/credential-policy', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(policy),
-    });
-    loadRiskReport();
-    toast('Allowed: ' + siteKey, 'success');
-  } catch (e) {
-    toast('Error: ' + e.message, 'error');
-  }
-}
-
-async function revokeHighRisk(siteKey) {
-  try {
-    const res = await auth.authFetch('/admin/credential-policy');
-    const policy = await res.json();
-    policy.allowedHighRiskKeys = (policy.allowedHighRiskKeys||[]).filter(k => k !== siteKey);
-    await auth.authFetch('/admin/credential-policy', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(policy),
-    });
-    loadRiskReport();
-    toast('Revoked: ' + siteKey, 'success');
-  } catch (e) {
-    toast('Error: ' + e.message, 'error');
-  }
-}
 
 // ─── 去重配置 ──────────────────────────────────────────────
 async function loadDedupConfig() {

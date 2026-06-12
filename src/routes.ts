@@ -919,6 +919,19 @@ export function createApp(deps: AppDeps): Hono {
     });
   });
 
+  // 兼容直接请求根路径 /token.json 的 TVBox 客户端本地代理
+  app.get('/token.json', async (c) => {
+    const creds = await loadCredentials(storage);
+    if (creds.size === 0) {
+      return c.json({}, 200, { 'Access-Control-Allow-Origin': '*' });
+    }
+    const tokenJson = generateTokenJson(creds);
+    return c.json(tokenJson, 200, {
+      'Access-Control-Allow-Origin': '*',
+      'Cache-Control': 'no-cache',
+    });
+  });
+
   // ─── MacCMS API 代理（CF 版 + 本地版）──────────────────────
   if (config.workerBaseUrl || config.localBaseUrl) {
     app.all('/api/:key', async (c) => {

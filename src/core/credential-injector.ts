@@ -249,7 +249,6 @@ export function injectCredentials(
   };
 
   const deniedSet = new Set(policy.deniedKeys);
-  const allowedSet = new Set(policy.allowedHighRiskKeys);
 
   const result = sites.map(site => {
     const risk = assessSourceRisk(site);
@@ -264,14 +263,6 @@ export function injectCredentials(
     if (deniedSet.has(site.key)) {
       report.skippedDenied++;
       return site;
-    }
-
-    // 高风险/未审计：需用户放行
-    if (risk.riskLevel === 'high' || risk.riskLevel === 'unaudited') {
-      if (!allowedSet.has(site.key)) {
-        risk.riskLevel === 'high' ? report.skippedHighRisk++ : report.skippedUnaudited++;
-        return site;
-      }
     }
 
     // 查找匹配的注入规则
