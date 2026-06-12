@@ -5,6 +5,7 @@ dist/
 data/
 .env
 .DS_Store
+.npm-cache/
 
 # Android (APK 形态)
 android/.gradle/

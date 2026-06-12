@@ -218,6 +218,11 @@ ${sharedStyles}
   background:var(--text-dim);
 }
 
+.source-health-dot.disabled{
+  background:#666;
+  box-shadow:none;
+}
+
 .source-health-dot::after{
   content:attr(data-tooltip);
   position:absolute;
@@ -721,7 +726,7 @@ const translations = {
     sourceAdded:'Source added', sourceRemoved:'Source removed',
     networkError:'Network error', testing:'Testing...',
     valid:'Valid', invalidUnreachable:'Invalid / Unreachable',
-    liveSourceAdded:'Live source added', removed:'Removed',
+    liveSourceAdded:'Live source added', removed:'Removed', disabledStatus:'Disabled', enable:'Enable', disable:'Disable', sourceDisabled:'Source disabled', sourceEnabled:'Source enabled',
     invalidJson:'Invalid JSON', mustBeArray:'Must be a JSON array',
     allFieldsRequired:'All fields required', importFailed:'Import failed',
     aggregationStarted:'Aggregation started', refreshFailed:'Refresh failed',
@@ -797,7 +802,7 @@ const translations = {
     sourceAdded:'源已添加', sourceRemoved:'源已删除',
     networkError:'网络错误', testing:'测试中...',
     valid:'有效', invalidUnreachable:'无效/不可达',
-    liveSourceAdded:'直播源已添加', removed:'已删除',
+    liveSourceAdded:'直播源已添加', removed:'已删除', disabledStatus:'已关闭', enable:'启用', disable:'关闭', sourceDisabled:'源已关闭', sourceEnabled:'源已启用',
     invalidJson:'无效的 JSON', mustBeArray:'必须是 JSON 数组',
     allFieldsRequired:'所有字段必填', importFailed:'导入失败',
     aggregationStarted:'聚合已开始', refreshFailed:'刷新失败',
@@ -937,26 +942,46 @@ async function loadSources() {
 
     list.innerHTML = sources.map(s => {
       const h = healthMap[s.url];
-      const level = !h ? 'unknown'
+      const level = s.disabled ? 'disabled' : (!h ? 'unknown'
         : h.consecutiveFailures >= 5 ? 'error'
-        : h.consecutiveFailures >= 3 ? 'warn' : 'ok';
-      const tip = !h ? t('noHealthData')
+        : h.consecutiveFailures >= 3 ? 'warn' : 'ok');
+      const tip = s.disabled ? t('disabledStatus') : (!h ? t('noHealthData')
         : h.latestStatus + ' | ' + t('healthFails') + ': ' + h.consecutiveFailures +
-          (h.lastSuccessTime ? ' | ' + t('healthLastOk') + ': ' + new Date(h.lastSuccessTime).toLocaleString() : '');
+          (h.lastSuccessTime ? ' | ' + t('healthLastOk') + ': ' + new Date(h.lastSuccessTime).toLocaleString() : ''));
 
-      return \`<div class="source-item">
+      return \`<div class="source-item" \${s.disabled ? 'style="opacity:0.6"' : ''}>
         <span class="source-health-dot \${level}" data-tooltip="\${esc(tip)}"></span>
         <div class="source-info">
           <div class="source-name">\${esc(s.name || 'Unnamed')}\${s.configKey ? ' 🔑' : ''}</div>
           <div class="source-url">\${esc(s.url)}</div>
         </div>
         <div class="source-actions">
+          <button class="btn btn-sm" onclick="toggleSource('\${esc(s.url)}', \${!s.disabled})">\${s.disabled ? t('enable') : t('disable')}</button>
           <button class="btn btn-sm btn-danger" onclick="removeSource('\${esc(s.url)}')">\${t('remove')}</button>
         </div>
       </div>\`;
     }).join('');
   } catch {
     list.innerHTML = '<div class="empty">' + t('failedLoad') + '</div>';
+  }
+}
+
+async function toggleSource(url, disabled) {
+  try {
+    const res = await auth.authFetch('/admin/sources/toggle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, disabled })
+    });
+    if (res.ok) {
+      toast(disabled ? t('sourceDisabled') : t('sourceEnabled'));
+      loadSources();
+    } else {
+      const d = await res.json();
+      toast(d.error || 'Failed', 'error');
+    }
+  } catch {
+    toast(t('networkError'), 'error');
   }
 }
 
@@ -1032,13 +1057,14 @@ async function loadMacCMS() {
     }
 
     list.innerHTML = sources.map(s => \`
-      <div class="source-item">
+      <div class="source-item" \${s.disabled ? 'style="opacity:0.6"' : ''}>
         <span class="source-tag manual">\${esc(s.key)}</span>
         <div class="source-info">
           <div class="source-name">\${esc(s.name)}</div>
           <div class="source-url">\${esc(s.api)}</div>
         </div>
         <div class="source-actions" style="display:flex;gap:6px">
+          <button class="btn btn-sm" onclick="toggleMC('\${esc(s.key)}', \${!s.disabled})">\${s.disabled ? t('enable') : t('disable')}</button>
           <button class="btn btn-sm" onclick="validateMC('\${esc(s.api)}')">\${t('test')}</button>
           <button class="btn btn-sm btn-danger" onclick="removeMC('\${esc(s.key)}')">\${t('remove')}</button>
         </div>
@@ -1046,6 +1072,25 @@ async function loadMacCMS() {
     \`).join('');
   } catch {
     list.innerHTML = '<div class="empty">' + t('failedLoadMacCMS') + '</div>';
+  }
+}
+
+async function toggleMC(key, disabled) {
+  try {
+    const res = await auth.authFetch('/admin/maccms/toggle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key, disabled })
+    });
+    if (res.ok) {
+      toast(disabled ? t('sourceDisabled') : t('sourceEnabled'));
+      loadMacCMS();
+    } else {
+      const d = await res.json();
+      toast(d.error || 'Failed', 'error');
+    }
+  } catch {
+    toast(t('networkError'), 'error');
   }
 }
 
@@ -1145,19 +1190,39 @@ async function loadLives() {
     }
 
     list.innerHTML = entries.map(s => \`
-      <div class="source-item">
+      <div class="source-item" \${s.disabled ? 'style="opacity:0.6"' : ''}>
         <span class="source-tag manual">LIVE</span>
         <div class="source-info">
           <div class="source-name">\${esc(s.name || 'Unnamed')}</div>
           <div class="source-url">\${esc(s.url)}</div>
         </div>
         <div class="source-actions">
+          <button class="btn btn-sm" onclick="toggleLive('\${esc(s.url)}', \${!s.disabled})">\${s.disabled ? t('enable') : t('disable')}</button>
           <button class="btn btn-sm btn-danger" onclick="removeLive('\${esc(s.url)}')">\${t('remove')}</button>
         </div>
       </div>
     \`).join('');
   } catch {
     list.innerHTML = '<div class="empty">' + t('failedLoadLives') + '</div>';
+  }
+}
+
+async function toggleLive(url, disabled) {
+  try {
+    const res = await auth.authFetch('/admin/lives/toggle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, disabled })
+    });
+    if (res.ok) {
+      toast(disabled ? t('sourceDisabled') : t('sourceEnabled'));
+      loadLives();
+    } else {
+      const d = await res.json();
+      toast(d.error || 'Failed', 'error');
+    }
+  } catch {
+    toast(t('networkError'), 'error');
   }
 }
 

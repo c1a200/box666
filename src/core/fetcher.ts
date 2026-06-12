@@ -25,12 +25,13 @@ export async function fetchConfigs(
   sources: SourceEntry[],
   timeoutMs: number = DEFAULT_FETCH_TIMEOUT_MS,
   proxyConfig?: FetchProxyConfig,
+  sourceUrlBlacklist: Set<string> = new Set(),
 ): Promise<FetchConfigsResult> {
   const configs: SourcedConfig[] = [];
   const fetchResults: SourceFetchResult[] = [];
   const seen = new Set<string>(); // URL 去重，防循环引用
 
-  await expandSources(sources, configs, fetchResults, seen, timeoutMs, 0, proxyConfig);
+  await expandSources(sources, configs, fetchResults, seen, timeoutMs, 0, proxyConfig, sourceUrlBlacklist);
 
   console.log(`[fetcher] Fetched ${configs.length} configs from ${sources.length} top-level sources`);
   return { configs, fetchResults };
@@ -47,9 +48,14 @@ async function expandSources(
   timeoutMs: number,
   depth: number,
   proxyConfig?: FetchProxyConfig,
+  sourceUrlBlacklist: Set<string> = new Set(),
 ): Promise<void> {
   // 去重
   const uniqueSources = sources.filter(s => {
+    if (sourceUrlBlacklist.has(s.url)) {
+      console.log(`[fetcher] Skipping blacklisted source: ${s.url}`);
+      return false;
+    }
     if (seen.has(s.url)) return false;
     seen.add(s.url);
     return true;
@@ -107,7 +113,7 @@ async function expandSources(
 
   // 递归展开子多仓
   if (multiRepoChildren.length > 0) {
-    await expandSources(multiRepoChildren, configs, fetchResults, seen, timeoutMs, depth + 1, proxyConfig);
+    await expandSources(multiRepoChildren, configs, fetchResults, seen, timeoutMs, depth + 1, proxyConfig, sourceUrlBlacklist);
   }
 }
 

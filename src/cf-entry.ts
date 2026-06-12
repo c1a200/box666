@@ -7,7 +7,7 @@ import { DEFAULT_SPEED_TIMEOUT_MS, DEFAULT_SITE_TIMEOUT_MS, DEFAULT_FETCH_TIMEOU
 import type { AppConfig } from './core/types';
 
 interface CfEnv {
-  KV: KVNamespace;
+  TVBOX_KV: KVNamespace;
   REFRESH_TOKEN?: string;
   ADMIN_TOKEN?: string;
   SPEED_TIMEOUT_MS?: string;
@@ -29,7 +29,7 @@ function buildConfig(env: CfEnv): AppConfig {
 
 export default {
   async fetch(request: Request, env: CfEnv, ctx: ExecutionContext): Promise<Response> {
-    const storage = new KVStorage(env.KV);
+    const storage = new KVStorage(env.TVBOX_KV);
     const config = buildConfig(env);
 
     const app = createApp({
@@ -42,7 +42,7 @@ export default {
   },
 
   async scheduled(_event: ScheduledEvent, env: CfEnv, ctx: ExecutionContext): Promise<void> {
-    const storage = new KVStorage(env.KV);
+    const storage = new KVStorage(env.TVBOX_KV);
     const config = buildConfig(env);
 
     // 间隔检查：wrangler.toml 每小时触发，但按用户配置的间隔决定是否执行

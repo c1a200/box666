@@ -137,7 +137,7 @@ export function createApp(deps: AppDeps): Hono {
 
   // ─── 纯直播配置 ────────────────────────────────────────
   app.get('/live-config', async (c) => {
-    let cached = await storage.get(KV_MERGED_CONFIG);
+    let cached = await storage.get(KV_MERGED_CONFIG_FULL) || await storage.get(KV_MERGED_CONFIG);
 
     if (!cached) {
       return c.json({ error: 'No config available yet.' }, 503);
@@ -208,7 +208,7 @@ export function createApp(deps: AppDeps): Hono {
   });
 
   app.get('/live.json', async (c) => {
-    let cached = await storage.get(KV_MERGED_CONFIG);
+    let cached = await storage.get(KV_MERGED_CONFIG_FULL) || await storage.get(KV_MERGED_CONFIG);
     if (!cached) {
       return c.json({ error: 'No config available yet.' }, 503);
     }
@@ -360,6 +360,34 @@ export function createApp(deps: AppDeps): Hono {
     await storage.put(KV_MANUAL_SOURCES, JSON.stringify(filtered));
 
     return c.json({ success: true });
+  });
+
+  app.post('/admin/sources/toggle', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+
+    let body: { url?: string; disabled?: boolean };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'Invalid JSON' }, 400);
+    }
+
+    const url = body.url?.trim();
+    if (!url) return c.json({ error: 'URL is required' }, 400);
+
+    const raw = await storage.get(KV_MANUAL_SOURCES);
+    const sources: SourceEntry[] = raw ? JSON.parse(raw) : [];
+    const entry = sources.find((s) => s.url === url);
+    if (!entry) {
+      return c.json({ error: 'Source not found' }, 404);
+    }
+
+    entry.disabled = !!body.disabled;
+    await storage.put(KV_MANUAL_SOURCES, JSON.stringify(sources));
+
+    return c.json({ success: true, disabled: entry.disabled });
   });
 
   // ─── JSON 导入 ─────────────────────────────────────────
@@ -1244,6 +1272,32 @@ export function createApp(deps: AppDeps): Hono {
     return c.json({ success: true });
   });
 
+  app.post('/admin/lives/toggle', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+
+    let body: { url?: string; disabled?: boolean };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'Invalid JSON' }, 400);
+    }
+
+    const url = body.url?.trim();
+    if (!url) return c.json({ error: 'URL is required' }, 400);
+
+    const raw = await storage.get(KV_LIVE_SOURCES);
+    const entries: LiveSourceEntry[] = raw ? JSON.parse(raw) : [];
+    const entry = entries.find((e) => e.url === url);
+    if (!entry) return c.json({ error: 'Source not found' }, 404);
+
+    entry.disabled = !!body.disabled;
+    await storage.put(KV_LIVE_SOURCES, JSON.stringify(entries));
+
+    return c.json({ success: true, disabled: entry.disabled });
+  });
+
   // ─── MacCMS Admin API ─────────────────────────────────
   app.get('/admin/maccms', async (c) => {
     if (!verifyAdmin(c.req.raw, config)) {
@@ -1318,6 +1372,32 @@ export function createApp(deps: AppDeps): Hono {
     await storage.put(KV_MACCMS_SOURCES, JSON.stringify(filtered));
 
     return c.json({ success: true });
+  });
+
+  app.post('/admin/maccms/toggle', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+
+    let body: { key?: string; disabled?: boolean };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'Invalid JSON' }, 400);
+    }
+
+    const key = body.key?.trim();
+    if (!key) return c.json({ error: 'key is required' }, 400);
+
+    const raw = await storage.get(KV_MACCMS_SOURCES);
+    const sources: MacCMSSourceEntry[] = raw ? JSON.parse(raw) : [];
+    const entry = sources.find((s) => s.key === key);
+    if (!entry) return c.json({ error: 'Source not found' }, 404);
+
+    entry.disabled = !!body.disabled;
+    await storage.put(KV_MACCMS_SOURCES, JSON.stringify(sources));
+
+    return c.json({ success: true, disabled: entry.disabled });
   });
 
   app.post('/admin/maccms/validate', async (c) => {

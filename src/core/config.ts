@@ -32,6 +32,7 @@ export const KV_NAME_TRANSFORM = 'name_transform';
 
 // 源健康状态
 export const KV_SOURCE_HEALTH = 'source_health';
+export const KV_SOURCE_URL_BLACKLIST = 'source_url_blacklist';
 
 // 站点测速开关（默认启用）
 export const KV_SPEED_TEST_ENABLED = 'speed_test_enabled';

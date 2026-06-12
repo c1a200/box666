@@ -7,6 +7,21 @@ import type { TVBoxSite, TVBoxParse, TVBoxLive, TVBoxDoh, TVBoxRule } from './ty
  * 去重键: key + api（所有类型统一，JAR 差异不作为区分维度）
  * 冲突: key 相同但 api 不同 → key 加来源后缀
  */
+function getStableSuffix(api: string): string {
+  let hash = 0;
+  for (let i = 0; i < api.length; i++) {
+    const char = api.charCodeAt(i);
+    hash = (hash << 5) - hash + char;
+    hash |= 0;
+  }
+  return Math.abs(hash).toString(36).substring(0, 4);
+}
+
+/**
+ * 站点去重
+ * 去重键: key + api（所有类型统一，JAR 差异不作为区分维度）
+ * 冲突: key 相同但 api 不同 → key 加稳定的 API 散列值后缀，防止测速临时剔除导致 key 动态变化损坏播放历史
+ */
 export function deduplicateSites(sites: TVBoxSite[]): TVBoxSite[] {
   const keyMap = new Map<string, TVBoxSite>(); // key → first site
   const dedupKey = (site: TVBoxSite): string => {
@@ -15,7 +30,6 @@ export function deduplicateSites(sites: TVBoxSite[]): TVBoxSite[] {
 
   const result: TVBoxSite[] = [];
   const seen = new Set<string>();
-  const usedKeys = new Map<string, number>(); // key → count, for suffix
 
   for (const site of sites) {
     const dk = dedupKey(site);
@@ -26,17 +40,15 @@ export function deduplicateSites(sites: TVBoxSite[]): TVBoxSite[] {
     if (keyMap.has(site.key)) {
       const existing = keyMap.get(site.key)!;
       if (dedupKey(existing) !== dk) {
-        // key 冲突，加后缀
-        const count = (usedKeys.get(site.key) || 1) + 1;
-        usedKeys.set(site.key, count);
-        site.key = `${site.key}_${count}`;
+        // key 冲突，加稳定后缀
+        const suffix = getStableSuffix(site.api);
+        site.key = `${site.key}_${suffix}`;
         if (site.name) {
-          site.name = `${site.name}(${count})`;
+          site.name = `${site.name}(${suffix})`;
         }
       }
     } else {
       keyMap.set(site.key, site);
-      usedKeys.set(site.key, 1);
     }
 
     result.push(site);

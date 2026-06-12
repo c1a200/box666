@@ -45,6 +45,117 @@ function getCredValue(creds: Map<CloudPlatform, CloudCredential>, platform: Clou
   return creds.get(platform)?.credential[field] || '';
 }
 
+const TOKEN_JSON_URL_RE = /(?:(?:https?|clan|sub):\/\/[^$\s"']*)?[^$\s"']*token[_.]?json[^$\s"']*/gi;
+
+const PLATFORM_FIELD_MAP: Array<{ field: string; platform: CloudPlatform; credField: string }> = [
+  { field: 'cookie', platform: 'quark', credField: 'cookie' },
+  { field: 'quark_cookie', platform: 'quark', credField: 'cookie' },
+  { field: 'quarkCookie', platform: 'quark', credField: 'cookie' },
+  { field: 'uccookie', platform: 'uc', credField: 'cookie' },
+  { field: 'uc_cookie', platform: 'uc', credField: 'cookie' },
+  { field: 'tyitoken', platform: 'tianyi', credField: 'cookie' },
+  { field: 'tianyi_cookie', platform: 'tianyi', credField: 'cookie' },
+  { field: 'dutoken', platform: 'baidu', credField: 'cookie' },
+  { field: 'baidu_cookie', platform: 'baidu', credField: 'cookie' },
+  { field: 'p123token', platform: 'pan123', credField: 'token' },
+  { field: '123_token', platform: 'pan123', credField: 'token' },
+  { field: 'tuctoken', platform: 'thunder', credField: 'token' },
+  { field: 'bili_cookie', platform: 'bilibili', credField: 'cookie' },
+  { field: 'token', platform: 'aliyun', credField: 'refresh_token' },
+  { field: 'refresh_token', platform: 'aliyun', credField: 'refresh_token' },
+  { field: 'open_token', platform: 'aliyun', credField: 'open_token' },
+  { field: 'ali_token', platform: 'aliyun', credField: 'refresh_token' },
+  { field: '115_cookie', platform: 'pan115', credField: 'cookie' },
+];
+
+const MOGG_DEFAULT_FIELDS = [
+  'cookie',
+  'token',
+  'uccookie',
+  'tyitoken',
+  'dutoken',
+  'p123token',
+  'tuctoken',
+];
+
+function hasCredentialForPlatforms(
+  creds: Map<CloudPlatform, CloudCredential>,
+  platforms: CloudPlatform[],
+): boolean {
+  return platforms.some((platform) => creds.has(platform));
+}
+
+function replaceTokenJsonUrl(ext: any, baseUrl: string = '__BASE_URL__'): { ext: any; changed: boolean } {
+  if (!ext) {
+    return { ext, changed: false };
+  }
+
+  if (typeof ext === 'string') {
+    // 尝试解析 JSON 字符串以支持某些把 ext 配置写成 JSON 字符串的情况
+    try {
+      const parsed = JSON.parse(ext);
+      if (typeof parsed === 'object' && parsed !== null) {
+        const res = replaceTokenJsonUrl(parsed, baseUrl);
+        return { ext: res.changed ? JSON.stringify(res.ext) : ext, changed: res.changed };
+      }
+    } catch {
+      // 忽略，按普通字符串处理
+    }
+
+    if (TOKEN_JSON_URL_RE.test(ext)) {
+      TOKEN_JSON_URL_RE.lastIndex = 0;
+      const next = ext.replace(TOKEN_JSON_URL_RE, `${baseUrl.replace(/\/$/, '')}/credential/token.json`);
+      return { ext: next, changed: next !== ext };
+    }
+    TOKEN_JSON_URL_RE.lastIndex = 0;
+    return { ext, changed: false };
+  }
+
+  if (typeof ext === 'object') {
+    let changed = false;
+    const copy = Array.isArray(ext) ? [...ext] : { ...ext };
+    for (const key of Object.keys(copy)) {
+      const val = copy[key];
+      if (typeof val === 'string' || (typeof val === 'object' && val !== null)) {
+        const res = replaceTokenJsonUrl(val, baseUrl);
+        if (res.changed) {
+          copy[key] = res.ext;
+          changed = true;
+        }
+      }
+    }
+    return { ext: copy, changed };
+  }
+
+  return { ext, changed: false };
+}
+
+function injectPlatformFields(
+  ext: any,
+  creds: Map<CloudPlatform, CloudCredential>,
+  platforms: CloudPlatform[],
+  addFields: string[] = [],
+): { ext: any; changed: boolean } {
+  const { obj, wasString, wasJson } = parseExt(ext);
+  const allowed = new Set(platforms);
+  let changed = false;
+
+  for (const item of PLATFORM_FIELD_MAP) {
+    if (!allowed.has(item.platform)) continue;
+    const value = getCredValue(creds, item.platform, item.credField);
+    if (!value) continue;
+
+    if (Object.prototype.hasOwnProperty.call(obj, item.field) || addFields.includes(item.field)) {
+      if (obj[item.field] !== value) {
+        obj[item.field] = value;
+        changed = true;
+      }
+    }
+  }
+
+  return { ext: changed ? restoreExt(obj, wasString, wasJson) : ext, changed };
+}
+
 // ─── 内置注入规则表 ─────────────────────────────────────
 
 const BUILTIN_RULES: InjectionRule[] = [
@@ -64,11 +175,7 @@ const BUILTIN_RULES: InjectionRule[] = [
     apiPattern: /^csp_Wo[bg]g$/,
     platforms: ['aliyun', 'quark', 'uc', 'pan115', 'thunder', 'pikpak'],
     inject: (ext, creds, baseUrl?: string) => {
-      if (typeof ext !== 'string') return ext;
-      if (!baseUrl) return ext;
-      // $$$ 分隔格式：token.json_url$$$site_url$$$proxy$$$num$$$config
-      // 替换第一段的 token.json URL
-      return ext.replace(/https?:\/\/[^$\s]+token[_.]?json[^$\s]*/i, `${baseUrl}/credential/token.json`);
+      return replaceTokenJsonUrl(ext, baseUrl || undefined).ext;
     },
   },
 
@@ -77,15 +184,7 @@ const BUILTIN_RULES: InjectionRule[] = [
     apiPattern: 'csp_Mogg',
     platforms: ['quark', 'aliyun', 'uc', 'tianyi', 'baidu', 'pan123', 'thunder'],
     inject: (ext, creds) => {
-      const { obj, wasString, wasJson } = parseExt(ext);
-      if ('cookie' in obj) obj.cookie = getCredValue(creds, 'quark', 'cookie');
-      if ('token' in obj) obj.token = getCredValue(creds, 'aliyun', 'refresh_token');
-      if ('uccookie' in obj) obj.uccookie = getCredValue(creds, 'uc', 'cookie');
-      if ('tyitoken' in obj) obj.tyitoken = getCredValue(creds, 'tianyi', 'cookie');
-      if ('dutoken' in obj) obj.dutoken = getCredValue(creds, 'baidu', 'cookie');
-      if ('p123token' in obj) obj.p123token = getCredValue(creds, 'pan123', 'token');
-      if ('tuctoken' in obj) obj.tuctoken = getCredValue(creds, 'thunder', 'token');
-      return restoreExt(obj, wasString, wasJson);
+      return injectPlatformFields(ext, creds, ['quark', 'aliyun', 'uc', 'tianyi', 'baidu', 'pan123', 'thunder'], MOGG_DEFAULT_FIELDS).ext;
     },
   },
 
@@ -177,22 +276,40 @@ export function injectCredentials(
 
     // 查找匹配的注入规则
     const rule = findMatchingRule(site);
-    if (!rule) {
-      report.skippedNoRule++;
-      return site;
-    }
+    const platforms = rule?.platforms || risk.neededPlatforms;
 
     // 检查是否有该源需要的凭证
-    const hasAnyCredential = rule.platforms.some(p => credentials.has(p));
+    const hasAnyCredential = hasCredentialForPlatforms(credentials, platforms);
     if (!hasAnyCredential) {
       report.skippedNoCredential++;
       return site;
     }
 
-    // 执行注入
-    const newExt = rule.inject(site.ext, credentials, baseUrl);
+    // 先处理通用 token.json 派，再执行已知规则，最后兜底注入常见字段。
+    let nextExt = site.ext;
+    let changed = false;
+
+    const tokenResult = replaceTokenJsonUrl(nextExt, baseUrl || undefined);
+    nextExt = tokenResult.ext;
+    changed = changed || tokenResult.changed;
+
+    if (rule) {
+      const ruleExt = rule.inject(nextExt, credentials, baseUrl);
+      changed = changed || ruleExt !== nextExt;
+      nextExt = ruleExt;
+    }
+
+    const fieldResult = injectPlatformFields(nextExt, credentials, platforms);
+    nextExt = fieldResult.ext;
+    changed = changed || fieldResult.changed;
+
+    if (!changed) {
+      report.skippedNoRule++;
+      return site;
+    }
+
     report.injected++;
-    return { ...site, ext: newExt };
+    return { ...site, ext: nextExt };
   });
 
   return { sites: result, report };

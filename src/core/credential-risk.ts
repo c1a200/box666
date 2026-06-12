@@ -58,6 +58,19 @@ const API_TO_PLATFORMS: Record<string, CloudPlatform[]> = {
   'csp_Pan115': ['pan115'],
 };
 
+const TOKEN_JSON_PLATFORMS: CloudPlatform[] = [
+  'aliyun',
+  'quark',
+  'uc',
+  'pan115',
+  'thunder',
+  'pikpak',
+  'bilibili',
+  'tianyi',
+  'baidu',
+  'pan123',
+];
+
 /**
  * 分析单个源的风险等级（零网络请求）
  */
@@ -104,6 +117,10 @@ export function assessSourceRisk(site: TVBoxSite): SourceRiskAssessment {
 
   // token.json 派 → 检查 proxy 字段
   if (isTokenJsonExt) {
+    if (result.neededPlatforms.length === 0) {
+      result.neededPlatforms = [...TOKEN_JSON_PLATFORMS];
+    }
+
     if (proxyMode === 'noproxy' || proxyMode === 'db') {
       result.riskLevel = 'low';
       result.reason = `D类: token.json + ${proxyMode}（不走代理）`;

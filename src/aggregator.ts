@@ -9,7 +9,7 @@ import { macCMSToTVBoxSites, processMacCMSForLocal } from './core/maccms';
 import { rewriteJarUrls } from './core/jar-proxy';
 import { mergeLivesToNative, separatedMergeLives, type LiveSourceInput } from './core/live-merger';
 import { loadSpeedMap as loadChannelSpeedMap } from './core/channel-probe';
-import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_SOURCE_URLS, KV_LAST_UPDATE, KV_MANUAL_SOURCES, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_BLACKLIST, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_CHANNEL_MERGED_TREE, KV_AGG_LOGS, AGG_LOGS_MAX, KV_SITE_SNAPSHOT, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, BASE_URL_PLACEHOLDER, KV_SITE_HEALTH_MAP, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SOURCE_MAP } from './core/config';
+import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_SOURCE_URLS, KV_LAST_UPDATE, KV_MANUAL_SOURCES, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_BLACKLIST, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_CHANNEL_MERGED_TREE, KV_AGG_LOGS, AGG_LOGS_MAX, KV_SITE_SNAPSHOT, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, BASE_URL_PLACEHOLDER, KV_SITE_HEALTH_MAP, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SOURCE_MAP, KV_SOURCE_URL_BLACKLIST } from './core/config';
 import { loadBlacklist, applyBlacklist, pruneBlacklist, saveBlacklist, siteFingerprint } from './core/blacklist';
 import { transformSiteNames } from './core/cleaner';
 import { parseConfigJson, type FetchProxyConfig } from './core/fetcher';
@@ -134,7 +134,8 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     return;
   }
 
-  logger.infoFields('aggregation', 'sources-loaded', { count: sources.length });
+  const activeSources = sources.filter(s => !s.disabled);
+  logger.infoFields('aggregation', 'sources-loaded', { total: sources.length, active: activeSources.length });
   await storage.put(KV_SOURCE_URLS, JSON.stringify(sources));
 
   // Step 1.5: 处理 MacCMS 源
@@ -144,8 +145,8 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
   // Step 1.6: 直播源频道级合并移至 Step 6.5（方案 D+）
 
   // Step 1.8: 分离 inline:// 源，从 KV 直接加载
-  const remoteSources = sources.filter(s => !s.url.startsWith('inline://'));
-  const inlineSources = sources.filter(s => s.url.startsWith('inline://'));
+  const remoteSources = activeSources.filter(s => !s.url.startsWith('inline://'));
+  const inlineSources = activeSources.filter(s => s.url.startsWith('inline://'));
   const inlineConfigs: SourcedConfig[] = [];
 
   for (const src of inlineSources) {
@@ -166,6 +167,13 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
 
   // Step 2: 批量 fetch 配置 JSON（本地模式可通过边缘代理回退）
   logger.info('aggregation', 'Step 2: Fetching configs...');
+  const sourceUrlBlacklistRaw = await storage.get(KV_SOURCE_URL_BLACKLIST);
+  const sourceUrlBlacklist = new Set<string>(
+    sourceUrlBlacklistRaw ? JSON.parse(sourceUrlBlacklistRaw) : [],
+  );
+  if (sourceUrlBlacklist.size > 0) {
+    logger.info('aggregation', `Source URL blacklist: ${sourceUrlBlacklist.size} entries`);
+  }
   let proxyConfig: FetchProxyConfig | undefined;
   if (!config.workerBaseUrl) {
     // 本地模式：读取边缘代理配置
@@ -181,7 +189,7 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
       }
     }
   }
-  const { configs: sourcedConfigs, fetchResults } = await fetchConfigs(remoteSources, config.fetchTimeoutMs, proxyConfig);
+  const { configs: sourcedConfigs, fetchResults } = await fetchConfigs(remoteSources, config.fetchTimeoutMs, proxyConfig, sourceUrlBlacklist);
   logFetchResults = fetchResults;
 
   // 更新源健康状态
@@ -400,8 +408,9 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     const liveRaw = await storage.get(KV_LIVE_SOURCES);
     if (liveRaw) {
       try {
-        const manual: Array<{ name: string; url: string }> = JSON.parse(liveRaw);
+        const manual: Array<{ name: string; url: string; disabled?: boolean }> = JSON.parse(liveRaw);
         for (const m of manual) {
+          if (m.disabled) continue;
           if (!m.url || !/^https?:\/\//i.test(m.url)) continue;
           if (m.url.includes('127.0.0.1') || m.url.includes('localhost')) continue;
           liveInputs.push({ name: m.name || 'manual', url: m.url });
@@ -455,6 +464,16 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     logger.info('aggregation', 'Step 6.8: Group order disabled or no rules, skipping');
   }
 
+  // Step 6.9: 统一配置中心入口，避免各上游源各带一个配置中心
+  if (merged.sites && merged.sites.length > 0) {
+    const before = merged.sites.length;
+    merged.sites = normalizeConfigCenterSites(merged.sites);
+    const removed = before - merged.sites.length;
+    if (removed > 0) {
+      logger.info('aggregation', `Step 6.9: Unified config center, removed ${removed} duplicate entries`);
+    }
+  }
+
   // Step 7: JAR URL 改写（统一用占位符，请求时替换为实际 base URL）
   logger.infoFields('aggregation', 'Step 7: rewriting JAR URLs', { placeholder: BASE_URL_PLACEHOLDER });
   merged = await rewriteJarUrls(merged, BASE_URL_PLACEHOLDER, storage);
@@ -473,6 +492,18 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
   } else {
     merged.pic = `${BASE_URL_PLACEHOLDER}/img/`;
     logger.infoFields('aggregation', 'pic-proxy-placeholder', { pic: merged.pic });
+  }
+
+  // Step 7.8: 统一直播入口名称，避免多个上游直播源直接暴露给 TVBox
+  if (config.workerBaseUrl && merged.lives && merged.lives.length > 0) {
+    merged.lives = [
+      {
+        name: '176111直播',
+        type: 0,
+        url: `${config.workerBaseUrl.replace(/\/$/, '')}/live.json`,
+      },
+    ];
+    console.log('[aggregation] Step 7.8: Unified live entry as 176111直播');
   }
 
   // Step 8: 存入存储
@@ -545,13 +576,14 @@ async function processMacCMSSources(
 ): Promise<SourcedConfig[]> {
   const raw = await storage.get(KV_MACCMS_SOURCES);
   const entries: MacCMSSourceEntry[] = raw ? JSON.parse(raw) : [];
+  const activeEntries = entries.filter((e) => !e.disabled);
 
-  if (entries.length === 0) {
-    logger.info('aggregation', 'No MacCMS sources configured');
+  if (activeEntries.length === 0) {
+    logger.info('aggregation', 'No active MacCMS sources configured');
     return [];
   }
 
-  logger.infoFields('aggregation', 'maccms-sources-found', { count: entries.length });
+  logger.infoFields('aggregation', 'maccms-sources-found', { total: entries.length, active: activeEntries.length });
 
   let validEntries: MacCMSSourceEntry[];
   let speedMap: Map<string, number> | undefined;
@@ -561,11 +593,11 @@ async function processMacCMSSources(
   if (config.workerBaseUrl || edgeProxiesRaw) {
     // CF 版或本地有 edge proxy：跳过验证，运行时代理兜底
     logger.info('aggregation', `Skipping MacCMS validation (${config.workerBaseUrl ? 'CF proxy' : 'edge proxy configured'})`);
-    validEntries = entries;
+    validEntries = activeEntries;
   } else {
     // 本地版无 edge proxy：并发验证，过滤不可达站点
     logger.info('aggregation', 'Local mode (no edge proxy): validating MacCMS sources...');
-    const result = await processMacCMSForLocal(entries, config.siteTimeoutMs);
+    const result = await processMacCMSForLocal(activeEntries, config.siteTimeoutMs);
     validEntries = result.passed;
     speedMap = result.speedMap;
   }
@@ -725,4 +757,48 @@ async function appendAggLog(storage: Storage, log: AggregationLog): Promise<void
     const msg = err instanceof Error ? err.message : String(err);
     logger.warn('aggregation', `Failed to write agg log: ${msg}`);
   }
+}
+
+function normalizeConfigCenterSites(sites: TVBoxSite[]): TVBoxSite[] {
+  const configCenters = sites.filter(isConfigCenterSite);
+  if (configCenters.length === 0) return sites;
+
+  const keep = chooseConfigCenter(configCenters);
+  const normalizedKeep: TVBoxSite = {
+    ...keep,
+    name: '配置┃中心 「176111」',
+    searchable: 0,
+    quickSearch: 0,
+    filterable: keep.filterable ?? 1,
+  };
+
+  // 移除所有原有的配置中心，以便统一插入指定序列
+  const cleanSites = sites.filter((site) => !isConfigCenterSite(site));
+
+  // 统一插到第二序列（索引 1），如果列表为空则放第一位
+  const result = [...cleanSites];
+  if (result.length > 0) {
+    result.splice(1, 0, normalizedKeep);
+  } else {
+    result.push(normalizedKeep);
+  }
+
+  return result;
+}
+
+function chooseConfigCenter(sites: TVBoxSite[]): TVBoxSite {
+  return (
+    sites.find((site) => site.key === '配置中心' || site.api === 'csp_AweSomeGuard') ||
+    sites.find((site) => site.key === 'config' || site.api === 'csp_Config') ||
+    sites[0]
+  );
+}
+
+function isConfigCenterSite(site: TVBoxSite): boolean {
+  const key = site.key || '';
+  const name = site.name || '';
+  const api = site.api || '';
+  const text = `${key} ${name} ${api}`;
+
+  return /配置|设置\s*[┃|｜-]?\s*中心|我配置|config/i.test(text);
 }

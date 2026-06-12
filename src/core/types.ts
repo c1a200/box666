@@ -87,12 +87,14 @@ export interface MacCMSSourceEntry {
   key: string;    // TVBox site key，如 "hongniuzy"
   name: string;   // 显示名，如 "红牛资源站"
   api: string;    // 原始 API，如 "https://www.hongniuzy2.com/api.php/provide/vod/from/hnm3u8/at/json/"
+  disabled?: boolean;
 }
 
 // 直播源条目
 export interface LiveSourceEntry {
   name: string;
   url: string;
+  disabled?: boolean;
 }
 
 // 源条目
@@ -100,6 +102,7 @@ export interface SourceEntry {
   name: string;
   url: string;
   configKey?: string; // AES ECB 解密密钥（来自 URL 的 ;pk; 后缀）
+  disabled?: boolean;
 }
 
 // 内部处理用：带来源标记的配置
