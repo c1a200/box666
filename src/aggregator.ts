@@ -405,7 +405,21 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
         /* ignore */
       }
     }
-    merged.lives = [...(merged.lives || []), ...manualLives];
+    
+    // Deduplicate live sources by URL
+    const seenUrls = new Set<string>();
+    const uniqueLives: TVBoxLive[] = [];
+    for (const item of [...(merged.lives || []), ...manualLives]) {
+      const url = item.url || item.api;
+      if (url && typeof url === 'string') {
+        const cleanUrl = url.trim();
+        if (!seenUrls.has(cleanUrl)) {
+          seenUrls.add(cleanUrl);
+          uniqueLives.push(item);
+        }
+      }
+    }
+    merged.lives = uniqueLives;
   } else {
   logger.info('aggregation', 'Step 6.5: Channel-level live merging...');
   {
@@ -520,15 +534,11 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
   await storage.put(KV_LIVE_MERGED_DATA, JSON.stringify(merged.lives || []));
 
   // Step 7.8: 统一直播入口名称，避免多个上游直播源直接暴露给 TVBox
+  // 注：在 Cloudflare Workers 上因为跳过了频道合并，我们应当直接输出去重后的原始直播源列表。
+  // 如果将其重写为单个指向 /live.json 的入口，会导致客户端因格式不支持而显示频道为空。
   if (config.workerBaseUrl && merged.lives && merged.lives.length > 0) {
-    merged.lives = [
-      {
-        name: '176111直播',
-        type: 0,
-        url: `${config.workerBaseUrl.replace(/\/$/, '')}/live.json`,
-      },
-    ];
-    console.log('[aggregation] Step 7.8: Unified live entry as 176111直播');
+    // Keep raw live sources directly on Workers
+    console.log('[aggregation] Step 7.8: Kept raw live sources directly on Workers to prevent empty channel list');
   }
 
   // Step 8: 存入存储
