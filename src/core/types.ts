@@ -80,6 +80,7 @@ export interface TVBoxConfig {
   doh?: TVBoxDoh[];
   ads?: string[];
   flags?: string[];
+  token?: string; // 全局网盘凭证接口地址
 }
 
 // MacCMS 源条目

@@ -230,6 +230,9 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
   let merged = mergeResult.config;
   const { siteSourceMap, parseSourceMap, liveSourceMap } = mergeResult;
 
+  // 注入全局 token 接口地址（使用 Base URL 占位符）
+  merged.token = `${BASE_URL_PLACEHOLDER}/token.json`;
+
   // Step 4.5: 黑名单过滤
   logger.info('aggregation', 'Step 4.5: Applying blacklist...');
   const blacklist = await loadBlacklist(storage);
