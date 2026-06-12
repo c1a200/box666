@@ -400,6 +400,66 @@ export function createApp(deps: AppDeps): Hono {
     return c.json({ success: true });
   });
 
+  app.put('/admin/sources', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+
+    let body: { oldUrl?: string; name?: string; url?: string; configKey?: string };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'Invalid JSON' }, 400);
+    }
+
+    const oldUrl = body.oldUrl?.trim();
+    if (!oldUrl) return c.json({ error: 'Old URL is required' }, 400);
+
+    let url = body.url?.trim() || '';
+    if (!url) return c.json({ error: 'URL is required' }, 400);
+
+    // 自动提取 ;pk; 密钥
+    let configKey = body.configKey?.trim() || '';
+    const pkMatch = url.match(/;pk;(.+)$/);
+    if (pkMatch) {
+      configKey = configKey || pkMatch[1];
+      url = url.replace(/;pk;.+$/, '');
+    }
+
+    try {
+      new URL(url);
+    } catch {
+      return c.json({ error: 'Invalid URL format' }, 400);
+    }
+
+    const name = body.name?.trim() || '';
+    const raw = await storage.get(KV_MANUAL_SOURCES);
+    const sources: SourceEntry[] = raw ? JSON.parse(raw) : [];
+
+    const index = sources.findIndex((s) => s.url === oldUrl);
+    if (index === -1) {
+      return c.json({ error: 'Source not found' }, 404);
+    }
+
+    // 确保修改后的新 URL 不与其它已有源的 URL 冲突
+    if (sources.some((s, idx) => idx !== index && s.url === url)) {
+      return c.json({ error: 'Source already exists' }, 409);
+    }
+
+    const entry = sources[index];
+    entry.name = name;
+    entry.url = url;
+    if (configKey) {
+      entry.configKey = configKey;
+    } else {
+      delete entry.configKey;
+    }
+
+    await storage.put(KV_MANUAL_SOURCES, JSON.stringify(sources));
+
+    return c.json({ success: true });
+  });
+
   app.post('/admin/sources/toggle', async (c) => {
     if (!verifyAdmin(c.req.raw, config)) {
       return c.json({ error: 'Unauthorized' }, 401);

@@ -306,12 +306,14 @@ ${sharedStyles}
   <div class="tab-panel active" id="panelSources">
     <!-- Add source -->
     <div class="section">
-      <div class="section-title" data-i18n="addSource">Add Source</div>
+      <div class="section-title" id="sourceFormTitle" data-i18n="addSource">Add Source</div>
       <div class="add-form">
         <input class="name-input" type="text" id="addName" placeholder="Name (optional)" data-i18n-placeholder="nameOptional">
         <input type="url" id="addUrl" placeholder="TVBox config JSON URL" data-i18n-placeholder="configJsonUrl">
         <input class="name-input" type="text" id="addConfigKey" placeholder="Config Key (optional, for AES ECB)">
-        <button class="btn" id="addBtn" onclick="addSource()" data-i18n="add">Add</button>
+        <div style="display:flex;gap:8px" id="sourceFormButtons">
+          <button class="btn" id="addBtn" onclick="addSource()" data-i18n="add">Add</button>
+        </div>
       </div>
       <!-- Import (collapsible) -->
       <div class="collapsible-toggle" onclick="toggleCollapsible(this)" data-i18n="importConfig">Import Config</div>
@@ -681,7 +683,7 @@ const translations = {
     dedupConfigTitle:'Similar Name Dedup', similarDedupLabel:'Enable similar-name dedup (keep fastest)', dedupThreshold:'Threshold',
     groupOrderTitle:'Site Group Order', groupOrderEnabled:'Enable group ordering', groupOrderAdd:'+ Add Rule',
     bgSettingsTitle:'Background Settings',
-    addSource:'Add Source', aggregation:'Aggregation', sourcesList:'Sources',
+    addSource:'Add Source', editSource:'Edit Source', edit:'Edit', cancel:'Cancel', updating:'Updating...', sourceUpdated:'Source updated', aggregation:'Aggregation', sourcesList:'Sources',
     addMacCMS:'Add MacCMS Source', macCMSSources:'MacCMS Sources',
     addLiveSource:'Add Live Source', liveSources:'Live Sources',
     nameOptional:'Name (optional)', configJsonUrl:'TVBox config JSON URL',
@@ -757,7 +759,7 @@ const translations = {
     dedupConfigTitle:'相似名称去重', similarDedupLabel:'启用相似名称去重（保留最快）', dedupThreshold:'阈值',
     groupOrderTitle:'站点分组排序', groupOrderEnabled:'启用分组排序', groupOrderAdd:'+ 添加规则',
     bgSettingsTitle:'背景设置',
-    addSource:'添加源', aggregation:'聚合', sourcesList:'源列表',
+    addSource:'添加源', editSource:'修改源', edit:'修改', cancel:'取消', updating:'修改中...', sourceUpdated:'源已修改', aggregation:'聚合', sourcesList:'源列表',
     addMacCMS:'添加 MacCMS 源', macCMSSources:'MacCMS 源列表',
     addLiveSource:'添加直播源', liveSources:'直播源列表',
     nameOptional:'名称（可选）', configJsonUrl:'TVBox 配置 JSON 地址',
@@ -931,8 +933,9 @@ async function loadSources() {
           <div class="source-name">\${esc(s.name || 'Unnamed')}\${s.configKey ? ' 🔑' : ''}</div>
           <div class="source-url">\${esc(s.url)}</div>
         </div>
-        <div class="source-actions">
+        <div class="source-actions" style="display:flex;gap:6px">
           <button class="btn btn-sm" onclick="toggleSource('\${esc(s.url)}', \${!s.disabled})">\${s.disabled ? t('enable') : t('disable')}</button>
+          <button class="btn btn-sm" onclick="startEditSource('\${esc(s.name || \'\')}', '\${esc(s.url)}', '\${esc(s.configKey || \'\')}')">\${t('edit')}</button>
           <button class="btn btn-sm btn-danger" onclick="removeSource('\${esc(s.url)}')">\${t('remove')}</button>
         </div>
       </div>\`;
@@ -961,6 +964,46 @@ async function toggleSource(url, disabled) {
   }
 }
 
+let editingOldUrl = null;
+
+function startEditSource(name, url, configKey) {
+  editingOldUrl = url;
+  $('addName').value = name;
+  $('addUrl').value = url;
+  $('addConfigKey').value = configKey;
+
+  const titleEl = $('sourceFormTitle');
+  if (titleEl) {
+    titleEl.dataset.i18n = 'editSource';
+    titleEl.textContent = t('editSource');
+  }
+
+  const buttonsEl = $('sourceFormButtons');
+  if (buttonsEl) {
+    buttonsEl.innerHTML = '<button class="btn" id="addBtn" onclick="addSource()" data-i18n="save">' + t('save') + '</button> ' +
+      '<button class="btn secondary" onclick="cancelEditSource()" data-i18n="cancel">' + t('cancel') + '</button>';
+  }
+  $('addName').focus();
+}
+
+function cancelEditSource() {
+  editingOldUrl = null;
+  $('addName').value = '';
+  $('addUrl').value = '';
+  $('addConfigKey').value = '';
+
+  const titleEl = $('sourceFormTitle');
+  if (titleEl) {
+    titleEl.dataset.i18n = 'addSource';
+    titleEl.textContent = t('addSource');
+  }
+
+  const buttonsEl = $('sourceFormButtons');
+  if (buttonsEl) {
+    buttonsEl.innerHTML = '<button class="btn" id="addBtn" onclick="addSource()" data-i18n="add">' + t('add') + '</button>';
+  }
+}
+
 // --- Add source ---
 async function addSource() {
   const url = $('addUrl').value.trim();
@@ -969,33 +1012,41 @@ async function addSource() {
   const configKey = $('addConfigKey').value.trim() || '';
 
   const btn = $('addBtn');
-  btn.textContent = t('adding');
+  const isEdit = editingOldUrl !== null;
+  btn.textContent = isEdit ? t('updating') : t('adding');
   btn.className = 'btn loading';
 
   try {
-    const payload = { name, url };
+    const payload = isEdit ? { oldUrl: editingOldUrl, name, url } : { name, url };
     if (configKey) payload.configKey = configKey;
     const res = await auth.authFetch('/admin/sources', {
-      method: 'POST',
+      method: isEdit ? 'PUT' : 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
     const d = await res.json();
     if (res.ok) {
-      toast(t('sourceAdded'));
-      $('addUrl').value = '';
-      $('addName').value = '';
-      $('addConfigKey').value = '';
+      toast(isEdit ? t('sourceUpdated') : t('sourceAdded'));
+      if (isEdit) {
+        cancelEditSource();
+      } else {
+        $('addUrl').value = '';
+        $('addName').value = '';
+        $('addConfigKey').value = '';
+      }
       loadSources();
     } else {
-      toast(d.error || t('failedLoad'), 'error');
+      toast(d.error || (isEdit ? t('saveFailed') : t('failedLoad')), 'error');
     }
   } catch {
     toast(t('networkError'), 'error');
   }
 
-  btn.textContent = t('add');
-  btn.className = 'btn';
+  const finalBtn = $('addBtn');
+  if (finalBtn) {
+    finalBtn.textContent = editingOldUrl !== null ? t('save') : t('add');
+    finalBtn.className = 'btn';
+  }
 }
 
 // --- Remove source ---
