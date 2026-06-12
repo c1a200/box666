@@ -1,7 +1,7 @@
 // 聚合流程编排
 
 import type { Storage } from './storage/interface';
-import type { AppConfig, SourceEntry, SourcedConfig, MacCMSSourceEntry, SourceFetchResult, SourceHealthRecord, AggregationLog, AggLogFailedSource, AggLogSiteChange, TVBoxSite } from './core/types';
+import type { AppConfig, SourceEntry, SourcedConfig, MacCMSSourceEntry, SourceFetchResult, SourceHealthRecord, AggregationLog, AggLogFailedSource, AggLogSiteChange, TVBoxSite, TVBoxLive } from './core/types';
 import { fetchConfigs } from './core/fetcher';
 import { mergeConfigs, cleanLocalRefs, cleanEmptyEntries } from './core/merger';
 import { batchSiteSpeedTest, appendSpeedToName, filterUnreachableSites, type SiteProbeResult } from './core/speedtest';
@@ -9,7 +9,7 @@ import { macCMSToTVBoxSites, processMacCMSForLocal } from './core/maccms';
 import { rewriteJarUrls } from './core/jar-proxy';
 import { mergeLivesToNative, separatedMergeLives, type LiveSourceInput } from './core/live-merger';
 import { loadSpeedMap as loadChannelSpeedMap } from './core/channel-probe';
-import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_SOURCE_URLS, KV_LAST_UPDATE, KV_MANUAL_SOURCES, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_BLACKLIST, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_CHANNEL_MERGED_TREE, KV_AGG_LOGS, AGG_LOGS_MAX, KV_SITE_SNAPSHOT, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, BASE_URL_PLACEHOLDER, KV_SITE_HEALTH_MAP, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SOURCE_MAP, KV_SOURCE_URL_BLACKLIST } from './core/config';
+import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_SOURCE_URLS, KV_LAST_UPDATE, KV_MANUAL_SOURCES, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_BLACKLIST, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_CHANNEL_MERGED_TREE, KV_AGG_LOGS, AGG_LOGS_MAX, KV_SITE_SNAPSHOT, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, BASE_URL_PLACEHOLDER, KV_SITE_HEALTH_MAP, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SOURCE_MAP, KV_SOURCE_URL_BLACKLIST } from './core/config';
 import { loadBlacklist, applyBlacklist, pruneBlacklist, saveBlacklist, siteFingerprint } from './core/blacklist';
 import { transformSiteNames } from './core/cleaner';
 import { parseConfigJson, type FetchProxyConfig } from './core/fetcher';
@@ -383,7 +383,26 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     logger.info('aggregation', 'Step 6.5: Live disabled, skipping');
     merged.lives = [];
   } else if (config.workerBaseUrl) {
-    logger.info('aggregation', 'Step 6.5: Skipped on CF (subrequest limit, use Docker for channel merging)');
+    logger.info('aggregation', 'Step 6.5: Skipped channel merging on CF (subrequest limit), appending raw live sources instead');
+    const liveRaw = await storage.get(KV_LIVE_SOURCES);
+    const manualLives: TVBoxLive[] = [];
+    if (liveRaw) {
+      try {
+        const manual: Array<{ name: string; url: string; disabled?: boolean }> = JSON.parse(liveRaw);
+        for (const m of manual) {
+          if (m.disabled) continue;
+          if (!m.url || !/^https?:\/\//i.test(m.url)) continue;
+          manualLives.push({
+            name: m.name || 'manual',
+            type: 0,
+            url: m.url,
+          });
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    merged.lives = [...(merged.lives || []), ...manualLives];
   } else {
   logger.info('aggregation', 'Step 6.5: Channel-level live merging...');
   {
@@ -493,6 +512,9 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     merged.pic = `${BASE_URL_PLACEHOLDER}/img/`;
     logger.infoFields('aggregation', 'pic-proxy-placeholder', { pic: merged.pic });
   }
+
+  // Save the final processed lives to KV_LIVE_MERGED_DATA (so /live.json can serve them)
+  await storage.put(KV_LIVE_MERGED_DATA, JSON.stringify(merged.lives || []));
 
   // Step 7.8: 统一直播入口名称，避免多个上游直播源直接暴露给 TVBox
   if (config.workerBaseUrl && merged.lives && merged.lives.length > 0) {

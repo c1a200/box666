@@ -3,7 +3,7 @@
 import { Hono } from 'hono';
 import type { Storage } from './storage/interface';
 import type { AppConfig, SourceEntry, MacCMSSourceEntry, LiveSourceEntry, NameTransformConfig, EdgeProxyConfig } from './core/types';
-import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_MANUAL_SOURCES, KV_LAST_UPDATE, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_BLACKLIST, LIVE_PROXY_TTL, IMG_PROXY_TTL, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_CRON_INTERVAL, DEFAULT_CRON_INTERVAL, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_AGG_LOGS, KV_BG_SETTINGS, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_SMART_BASE_URL_ENABLED, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SITE_HEALTH_MAP } from './core/config';
+import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_MANUAL_SOURCES, KV_LAST_UPDATE, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_BLACKLIST, LIVE_PROXY_TTL, IMG_PROXY_TTL, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_CRON_INTERVAL, DEFAULT_CRON_INTERVAL, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_AGG_LOGS, KV_BG_SETTINGS, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_SMART_BASE_URL_ENABLED, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SITE_HEALTH_MAP } from './core/config';
 import { getRequestBaseUrl, applyBaseUrlPlaceholder, assertHostAllowed } from './core/base-url';
 import { logger } from './core/logger';
 import { loadGroupOrder, saveGroupOrder } from './core/group-order';
@@ -208,17 +208,34 @@ export function createApp(deps: AppDeps): Hono {
   });
 
   app.get('/live.json', async (c) => {
-    let cached = await storage.get(KV_MERGED_CONFIG_FULL) || await storage.get(KV_MERGED_CONFIG);
-    if (!cached) {
-      return c.json({ error: 'No config available yet.' }, 503);
+    let livesRaw = await storage.get(KV_LIVE_MERGED_DATA);
+    if (!livesRaw) {
+      // 兜底读取 KV_MERGED_CONFIG_FULL 或 KV_MERGED_CONFIG (防旧版本升级/空状态)
+      const cached = await storage.get(KV_MERGED_CONFIG_FULL) || await storage.get(KV_MERGED_CONFIG);
+      if (cached) {
+        try {
+          const full = JSON.parse(cached);
+          const lives = full.lives || [];
+          // 过滤掉 worker 上生成的指向自身 /live.json 的单条目
+          const isUnified = lives.length === 1 && lives[0].url && lives[0].url.endsWith('/live.json');
+          if (!isUnified) {
+            livesRaw = JSON.stringify(lives);
+          }
+        } catch { /* ignore */ }
+      }
     }
+
+    if (!livesRaw) {
+      return c.json({ lives: [] });
+    }
+
     const baseUrl = await resolveBaseUrl(c);
     if (baseUrl instanceof Response) return baseUrl;
-    cached = applyBaseUrlPlaceholder(cached, baseUrl);
+    livesRaw = applyBaseUrlPlaceholder(livesRaw, baseUrl);
+
     try {
-      const full = JSON.parse(cached);
-      const liveConfig = { lives: full.lives || [] };
-      return c.body(JSON.stringify(liveConfig), 200, {
+      const lives = JSON.parse(livesRaw);
+      return c.body(JSON.stringify({ lives }), 200, {
         'Content-Type': 'application/json; charset=utf-8',
         'Cache-Control': 'public, max-age=1800',
         'Access-Control-Allow-Origin': '*',
