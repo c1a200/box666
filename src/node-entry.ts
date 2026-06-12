@@ -40,6 +40,22 @@ try {
 // ─── 存储初始化（SQLite → JSON 降级）───────────────────
 
 function createStorage(): Storage {
+  // 优先尝试 Cloudflare KV（实现 Render 等免费无状态容器的数据云端持久化）
+  if (process.env.CF_ACCOUNT_ID && process.env.CF_KV_NAMESPACE_ID && process.env.CF_API_TOKEN) {
+    try {
+      const { CloudflareKVStorage } = require('./storage/cloudflare-kv');
+      const storage = new CloudflareKVStorage(
+        process.env.CF_ACCOUNT_ID,
+        process.env.CF_KV_NAMESPACE_ID,
+        process.env.CF_API_TOKEN
+      );
+      console.log(`[storage] Cloudflare KV initialized: namespace ${process.env.CF_KV_NAMESPACE_ID}`);
+      return storage;
+    } catch (err: any) {
+      console.error('[storage] Failed to initialize Cloudflare KV backend:', err.message);
+    }
+  }
+
   const dataDir = path.resolve(process.env.DATA_DIR || path.join(process.cwd(), 'data'));
 
   // 尝试 SQLite
