@@ -16,6 +16,7 @@ export interface LiveSourceInput {
   ua?: string;
   header?: Record<string, string>;
   speedMs?: number; // 源级速度（用于粗粒度排序）
+  isAggregated?: boolean; // 是否为来自第三方配置源合并来的直播源
 }
 
 // ─── 解析后的频道条目 ──────────────────────────────────
@@ -263,12 +264,23 @@ export async function mergeLivesToNative(
   let sourcesDownloaded = 0;
   let sourcesFailed = 0;
   const allEntries: ChannelEntry[] = [];
+  const AD_KEYWORDS = /广告|购物|福利|加微|微\s*信|群|客\s*服|优惠|测试/i;
 
   for (const r of downloadResults) {
     if (r.status === 'fulfilled' && r.value.content) {
       sourcesDownloaded++;
       try {
-        const entries = parseLiveContent(r.value.content, r.value.input.name, r.value.input.speedMs);
+        let entries = parseLiveContent(r.value.content, r.value.input.name, r.value.input.speedMs);
+        
+        // 过滤包含广告、微信等关键字的频道
+        entries = entries.filter(e => !AD_KEYWORDS.test(e.name) && !AD_KEYWORDS.test(e.group));
+        
+        // 若为聚合而来的源，频道数量极少（少于 5 个）则直接丢弃该源，过滤广告/垃圾源
+        if (r.value.input.isAggregated && entries.length < 5) {
+          console.log(`[live-merger] Discarded aggregated live source ${r.value.input.name} due to too few channels: ${entries.length}`);
+          continue;
+        }
+
         allEntries.push(...entries);
       } catch (err) {
         console.warn(`[live-merger] Parse failed for ${r.value.input.name}: ${err}`);
@@ -445,6 +457,8 @@ export async function separatedMergeLives(
   let totalChannels = 0;
   let totalUrls = 0;
 
+  const AD_KEYWORDS = /广告|购物|福利|加微|微\s*信|群|客\s*服|优惠|测试/i;
+
   for (const r of downloadResults) {
     if (r.status !== 'fulfilled' || !r.value.content) {
       sourcesFailed++;
@@ -455,7 +469,17 @@ export async function separatedMergeLives(
     const sourceName = input.name || 'source';
 
     try {
-      const entries = parseLiveContent(content, sourceName, input.speedMs);
+      let entries = parseLiveContent(content, sourceName, input.speedMs);
+      
+      // 过滤包含广告、微信等关键字的频道
+      entries = entries.filter(e => !AD_KEYWORDS.test(e.name) && !AD_KEYWORDS.test(e.group));
+      
+      // 若为聚合而来的源，频道数量极少（少于 5 个）则直接丢弃该源
+      if (input.isAggregated && entries.length < 5) {
+        console.log(`[live-merger] Discarded aggregated live source ${sourceName} due to too few channels: ${entries.length}`);
+        continue;
+      }
+
       if (entries.length === 0) continue;
 
       // 按 group 分组（源内去重）
@@ -540,9 +564,12 @@ export async function fetchAndParseLiveUrls(
   );
 
   const allEntries: Array<{ group: string; name: string; url: string }> = [];
+  const AD_KEYWORDS = /广告|购物|福利|加微|微\s*信|群|客\s*服|优惠|测试/i;
   for (const r of results) {
     if (r.status !== 'fulfilled' || !r.value) continue;
-    const entries = parseLiveContent(r.value.content, r.value.name);
+    let entries = parseLiveContent(r.value.content, r.value.name);
+    // 过滤广告频道
+    entries = entries.filter(e => !AD_KEYWORDS.test(e.name) && !AD_KEYWORDS.test(e.group));
     allEntries.push(...entries);
   }
 

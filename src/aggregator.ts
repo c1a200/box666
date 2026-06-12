@@ -437,6 +437,7 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
         url: u,
         ua: l.ua,
         header: l.header,
+        isAggregated: true,
       });
     }
 
@@ -449,7 +450,11 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
           if (m.disabled) continue;
           if (!m.url || !/^https?:\/\//i.test(m.url)) continue;
           if (m.url.includes('127.0.0.1') || m.url.includes('localhost')) continue;
-          liveInputs.push({ name: m.name || 'manual', url: m.url });
+          liveInputs.push({
+            name: m.name || 'manual',
+            url: m.url,
+            isAggregated: false,
+          });
         }
       } catch {
         /* ignore */
