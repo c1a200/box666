@@ -89,12 +89,17 @@ export async function batchSiteSpeedTest(
 
   logger.infoFields('speedtest', 'batch-start', { sites: tasks.length, deep });
 
-  const results = await Promise.allSettled(
-    tasks.map(async ({ key, url, type }) => {
+  const results: PromiseSettledResult<{ key: string; speedMs: number | null; result: ProbeResult }>[] = [];
+  const concurrencyLimit = 10;
+  for (let i = 0; i < tasks.length; i += concurrencyLimit) {
+    const chunk = tasks.slice(i, i + concurrencyLimit);
+    const chunkPromises = chunk.map(async ({ key, url, type }) => {
       const probe = await siteProbe(url, type, timeoutMs, deep);
       return { key, ...probe };
-    }),
-  );
+    });
+    const chunkResults = await Promise.allSettled(chunkPromises);
+    results.push(...chunkResults);
+  }
 
   const probeMap = new Map<string, SiteProbeResult>();
   for (const result of results) {
