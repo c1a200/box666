@@ -214,6 +214,23 @@ async function downloadLive(input: LiveSourceInput, timeoutMs: number): Promise<
   return null;
 }
 
+async function downloadLiveBatched(
+  sources: LiveSourceInput[],
+  fetchTimeoutMs: number,
+  concurrencyLimit = 3,
+): Promise<PromiseSettledResult<{ input: LiveSourceInput; content: string | null }>[]> {
+  const results: PromiseSettledResult<{ input: LiveSourceInput; content: string | null }>[] = [];
+  for (let i = 0; i < sources.length; i += concurrencyLimit) {
+    const chunk = sources.slice(i, i + concurrencyLimit);
+    const chunkPromises = chunk.map((s) =>
+      downloadLive(s, fetchTimeoutMs).then((content) => ({ input: s, content })),
+    );
+    const chunkResults = await Promise.allSettled(chunkPromises);
+    results.push(...chunkResults);
+  }
+  return results;
+}
+
 // ─── 严格过滤：移除含 "type" 字段/字样的危险值 ────────
 
 /**
@@ -259,10 +276,8 @@ export async function mergeLivesToNative(
 
   console.log(`[live-merger] Downloading ${sources.length} live source files...`);
 
-  // 并发下载
-  const downloadResults = await Promise.allSettled(
-    sources.map((s) => downloadLive(s, fetchTimeoutMs).then((content) => ({ input: s, content }))),
-  );
+  // 分批并发下载，限制内存占用（防止免费容器 OOM 崩溃）
+  const downloadResults = await downloadLiveBatched(sources, fetchTimeoutMs, 3);
 
   let sourcesDownloaded = 0;
   let sourcesFailed = 0;
@@ -455,9 +470,8 @@ export async function separatedMergeLives(
 
   console.log(`[live-merger] Separated mode: downloading ${sources.length} live source files...`);
 
-  const downloadResults = await Promise.allSettled(
-    sources.map((s) => downloadLive(s, fetchTimeoutMs).then((content) => ({ input: s, content }))),
-  );
+  // 分批并发下载，限制内存占用（防止免费容器 OOM 崩溃）
+  const downloadResults = await downloadLiveBatched(sources, fetchTimeoutMs, 3);
 
   let sourcesDownloaded = 0;
   let sourcesFailed = 0;
