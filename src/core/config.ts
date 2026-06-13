@@ -91,8 +91,6 @@ export const BASE_URL_PLACEHOLDER = '{{BASE_URL}}';
 export const KV_SMART_BASE_URL_ENABLED = 'smart_base_url_enabled';
 export const KV_LOCAL_TOKEN_ENABLED = 'local_token_enabled';
 export const KV_SHOW_CLOUD_CONFIG_IN_LOCAL_MODE = 'show_cloud_config_in_local_mode';
-export const KV_CUSTOM_CONFIG_JAR_URL = 'custom_config_jar_url';
-export const KV_CUSTOM_CONFIG_JAR_MD5 = 'custom_config_jar_md5';
 
 // 站点验活
 export const KV_SITE_HEALTH_MAP = 'site_health_map';

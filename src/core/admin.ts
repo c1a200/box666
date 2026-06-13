@@ -483,28 +483,6 @@ ${sharedStyles}
       </div>
     </div>
 
-    <!-- 自定义配置中心 JAR -->
-    <div class="section">
-      <div class="section-title" data-i18n="customConfigJarTitle">Custom Config Center JAR</div>
-      <div style="margin-bottom:8px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="customConfigJarDesc">
-        If specified, replaces the default configuration center spider JAR (e.g. from third-party sources) with a clean, ad-free one (e.g. raw custom_spider.jar link from FongMi). Keep empty to fallback to aggregated source config JAR.
-      </div>
-      <div class="nt-grid">
-        <div>
-          <label class="form-label" data-i18n="customConfigJarUrlLabel">JAR URL</label>
-          <input type="text" id="customConfigJarUrlInput" class="nt-input" placeholder="https://raw.githubusercontent.com/.../custom_spider.jar">
-        </div>
-        <div>
-          <label class="form-label" data-i18n="customConfigJarMd5Label">JAR MD5 (Optional)</label>
-          <input type="text" id="customConfigJarMd5Input" class="nt-input" placeholder="a1b2c3d4e5f6g7h8...">
-        </div>
-      </div>
-      <div style="margin-top:8px;display:flex;gap:10px;align-items:center">
-        <button class="btn btn-sm" onclick="saveCustomConfigJar()" data-i18n="save">Save</button>
-        <span class="status-text" id="customConfigJarStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
-      </div>
-    </div>
-
     <!-- 网盘登录 -->
     <div class="section">
       <div class="section-title" data-i18n="cloudLogin">Cloud Login</div>
@@ -812,10 +790,6 @@ const translations = {
     localTokenLabel:'Use local client-side cloud drive configuration (allows TV App scan/login)',
     localTokenDesc:'When enabled, the config token points to TVBox local file, enabling TV-side QR login. When disabled, it uses cloud credentials configured here.',
     showCloudConfigLabel:'Expose Cloud Config Center under Local Mode (permits clients to browse admin-shared drives)',
-    customConfigJarTitle:'Custom Config Center JAR',
-    customConfigJarDesc:'If specified, replaces the default configuration center spider JAR (e.g. from third-party sources) with a clean, ad-free one (e.g. raw custom_spider.jar link from FongMi). Keep empty to fallback to aggregated source config JAR.',
-    customConfigJarUrlLabel:'JAR URL',
-    customConfigJarMd5Label:'JAR MD5 (Optional)',
     footer:'TVBox Source Aggregator &middot; Admin Console',
   },
   zh: {
@@ -897,10 +871,6 @@ const translations = {
     localTokenLabel:'使用客户端本地网盘配置（允许电视端扫码/登录）',
     localTokenDesc:'启用后，配置中的 token 指向 TVBox 本地文件，支持在电视端本地进行扫码登录。禁用后，统一使用此管理后台配置的网盘凭证。',
     showCloudConfigLabel:'在本地模式下展示云端配置中心（允许客户端端浏览和播放管理员配置的共享云网盘）',
-    customConfigJarTitle:'自定义配置中心 JAR',
-    customConfigJarDesc:'若设置，将用此处的干净/无广告 JAR 替换从上游聚合源继承的配置中心（例如使用 FongMi 官方的 custom_spider.jar 链接）。留空则使用上游源自带的默认 JAR。',
-    customConfigJarUrlLabel:'JAR 地址',
-    customConfigJarMd5Label:'JAR MD5（可选）',
     footer:'TVBox 源聚合器 &middot; 管理控制台',
   }
 };
@@ -2409,30 +2379,6 @@ async function saveShowCloudConfig() {
   }
 }
 
-async function loadCustomConfigJar() {
-  try {
-    const r = await auth.authFetch('/admin/custom-config-jar');
-    const d = await r.json();
-    $('customConfigJarUrlInput').value = d.jarUrl || '';
-    $('customConfigJarMd5Input').value = d.jarMd5 || '';
-  } catch {}
-}
-async function saveCustomConfigJar() {
-  const jarUrl = $('customConfigJarUrlInput').value.trim();
-  const jarMd5 = $('customConfigJarMd5Input').value.trim();
-  try {
-    await auth.authFetch('/admin/custom-config-jar', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jarUrl, jarMd5 })
-    });
-    $('customConfigJarStatus').textContent = '✓';
-    setTimeout(() => $('customConfigJarStatus').textContent = '', 2000);
-  } catch {
-    $('customConfigJarStatus').textContent = '✗';
-  }
-}
-
 // ─── 验活深度 ────────────────
 async function loadProbeDepth() {
   try {
@@ -2471,7 +2417,6 @@ loadProbeDepth();
 loadAutoClean();
 loadIgnoreAggregatedLives();
 loadLocalToken();
-loadCustomConfigJar();
 
 applyTheme(getTheme());
 initThemeDropdown();
