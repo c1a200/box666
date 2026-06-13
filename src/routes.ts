@@ -36,6 +36,28 @@ export interface AppDeps {
   isSyncing?: () => boolean;
 }
 
+function autoNameFromUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname.includes('githubusercontent.com') || parsed.hostname.includes('github.com')) {
+      const parts = parsed.pathname.split('/').filter(Boolean);
+      if (parts.length >= 2) {
+        return parts[0];
+      }
+    }
+    const pathname = parsed.pathname;
+    const filename = pathname.substring(pathname.lastIndexOf('/') + 1);
+    const dotIdx = filename.lastIndexOf('.');
+    const nameWithoutExt = dotIdx > 0 ? filename.substring(0, dotIdx) : filename;
+    if (nameWithoutExt && !/^\d+$/.test(nameWithoutExt)) {
+      return nameWithoutExt;
+    }
+    return parsed.hostname;
+  } catch {
+    return 'Imported';
+  }
+}
+
 function isNativeLiveGroups(lives: unknown): lives is TVBoxLiveGroup[] {
   if (!Array.isArray(lives)) return false;
 
@@ -361,7 +383,7 @@ export function createApp(deps: AppDeps): Hono {
       return c.json({ error: 'Invalid URL format' }, 400);
     }
 
-    const name = body.name?.trim() || '';
+    const name = body.name?.trim() || autoNameFromUrl(url);
     const raw = await storage.get(KV_MANUAL_SOURCES);
     const sources: SourceEntry[] = raw ? JSON.parse(raw) : [];
 
@@ -432,7 +454,7 @@ export function createApp(deps: AppDeps): Hono {
       return c.json({ error: 'Invalid URL format' }, 400);
     }
 
-    const name = body.name?.trim() || '';
+    const name = body.name?.trim() || autoNameFromUrl(url);
     const raw = await storage.get(KV_MANUAL_SOURCES);
     const sources: SourceEntry[] = raw ? JSON.parse(raw) : [];
 
@@ -551,6 +573,9 @@ export function createApp(deps: AppDeps): Hono {
       // 多仓：提取子 URL 批量添加
       const entries = extractMultiRepoEntries(parsed, 'Imported');
       for (const entry of entries) {
+        if (entry.name === 'Imported') {
+          entry.name = autoNameFromUrl(entry.url);
+        }
         if (existingUrls.has(entry.url)) {
           duplicates++;
         } else {
@@ -569,7 +594,7 @@ export function createApp(deps: AppDeps): Hono {
         if (existingUrls.has(sourceUrl)) {
           return c.json({ type: 'single', added: 0, duplicates: 1, sources: [] });
         }
-        const entry: SourceEntry = { name: 'Imported', url: sourceUrl };
+        const entry: SourceEntry = { name: autoNameFromUrl(sourceUrl), url: sourceUrl };
         if (configKey) entry.configKey = configKey;
         sources.push(entry);
         await storage.put(KV_MANUAL_SOURCES, JSON.stringify(sources));
@@ -1346,7 +1371,7 @@ export function createApp(deps: AppDeps): Hono {
       return c.json({ error: 'Invalid URL format' }, 400);
     }
 
-    const name = body.name?.trim() || '';
+    const name = body.name?.trim() || autoNameFromUrl(url);
     const raw = await storage.get(KV_LIVE_SOURCES);
     const entries: LiveSourceEntry[] = raw ? JSON.parse(raw) : [];
 
@@ -1407,7 +1432,7 @@ export function createApp(deps: AppDeps): Hono {
       return c.json({ error: 'Invalid URL format' }, 400);
     }
 
-    const name = body.name?.trim() || '';
+    const name = body.name?.trim() || autoNameFromUrl(url);
     const raw = await storage.get(KV_LIVE_SOURCES);
     const entries: LiveSourceEntry[] = raw ? JSON.parse(raw) : [];
 
