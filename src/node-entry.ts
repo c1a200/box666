@@ -2,6 +2,7 @@
 
 import { serve } from '@hono/node-server';
 import { webcrypto } from 'crypto';
+import { ProxyAgent, setGlobalDispatcher } from 'undici';
 
 if (typeof globalThis.crypto === 'undefined') {
   Object.defineProperty(globalThis, 'crypto', {
@@ -35,6 +36,18 @@ try {
   dotenv.config();
 } catch {
   // 忽略：无 .env 或文件系统受限时，回退到已注入的 process.env
+}
+
+// 配置全局 HTTP/HTTPS 代理，用于国内网盘（如 Quark/UC/115 等）扫码登录时绕过海外云服务器的 IP 屏蔽
+const proxyUrl = process.env.HTTP_PROXY || process.env.HTTPS_PROXY;
+if (proxyUrl) {
+  try {
+    const proxyAgent = new ProxyAgent(proxyUrl);
+    setGlobalDispatcher(proxyAgent);
+    console.log(`[proxy] Global undici dispatcher configured with proxy: ${proxyUrl}`);
+  } catch (err: any) {
+    console.error(`[proxy] Failed to configure global ProxyAgent: ${err.message}`);
+  }
 }
 
 // ─── 存储初始化（SQLite → JSON 降级）───────────────────
