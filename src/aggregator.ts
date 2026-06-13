@@ -9,7 +9,7 @@ import { macCMSToTVBoxSites, processMacCMSForLocal } from './core/maccms';
 import { rewriteJarUrls } from './core/jar-proxy';
 import { mergeLivesToNative, separatedMergeLives, type LiveSourceInput } from './core/live-merger';
 import { loadSpeedMap as loadChannelSpeedMap } from './core/channel-probe';
-import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_SOURCE_URLS, KV_LAST_UPDATE, KV_MANUAL_SOURCES, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_BLACKLIST, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_CHANNEL_MERGED_TREE, KV_AGG_LOGS, AGG_LOGS_MAX, KV_SITE_SNAPSHOT, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, BASE_URL_PLACEHOLDER, KV_SITE_HEALTH_MAP, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SOURCE_MAP, KV_SOURCE_URL_BLACKLIST } from './core/config';
+import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_SOURCE_URLS, KV_LAST_UPDATE, KV_MANUAL_SOURCES, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_BLACKLIST, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_CHANNEL_MERGED_TREE, KV_AGG_LOGS, AGG_LOGS_MAX, KV_SITE_SNAPSHOT, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, BASE_URL_PLACEHOLDER, KV_SITE_HEALTH_MAP, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SOURCE_MAP, KV_SOURCE_URL_BLACKLIST, KV_LOCAL_TOKEN_ENABLED } from './core/config';
 import { loadBlacklist, applyBlacklist, pruneBlacklist, saveBlacklist, siteFingerprint } from './core/blacklist';
 import { transformSiteNames } from './core/cleaner';
 import { parseConfigJson, type FetchProxyConfig } from './core/fetcher';
@@ -230,8 +230,13 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
   let merged = mergeResult.config;
   const { siteSourceMap, parseSourceMap, liveSourceMap } = mergeResult;
 
-  // 注入全局 token 接口地址（使用 Base URL 占位符）
-  merged.token = `${BASE_URL_PLACEHOLDER}/token.json`;
+  // 注入全局 token 接口地址（若启用本地 Token 则指向本地，否则使用 Base URL 占位符）
+  const localTokenEnabled = (await storage.get(KV_LOCAL_TOKEN_ENABLED)) === 'true';
+  if (localTokenEnabled) {
+    merged.token = 'http://127.0.0.1:9978/file/tvbox/token.json';
+  } else {
+    merged.token = `${BASE_URL_PLACEHOLDER}/token.json`;
+  }
 
   // Step 4.5: 黑名单过滤
   logger.info('aggregation', 'Step 4.5: Applying blacklist...');
@@ -518,7 +523,7 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
   // Step 6.9: 统一配置中心入口，避免各上游源各带一个配置中心
   if (merged.sites && merged.sites.length > 0) {
     const before = merged.sites.length;
-    merged.sites = normalizeConfigCenterSites(merged.sites);
+    merged.sites = normalizeConfigCenterSites(merged.sites, localTokenEnabled);
     const removed = before - merged.sites.length;
     if (removed > 0) {
       logger.info('aggregation', `Step 6.9: Unified config center, removed ${removed} duplicate entries`);
@@ -837,28 +842,61 @@ async function appendAggLog(storage: Storage, log: AggregationLog): Promise<void
   }
 }
 
-function normalizeConfigCenterSites(sites: TVBoxSite[]): TVBoxSite[] {
+function normalizeConfigCenterSites(sites: TVBoxSite[], localTokenEnabled: boolean): TVBoxSite[] {
   // 移除所有原有的配置中心，以便统一插入重新构建的配置中心
   const cleanSites = sites.filter((site) => !isConfigCenterSite(site));
 
-  const unifiedConfigCenter: TVBoxSite = {
-    key: 'csp_Config',
-    name: '配置┃中心 「176111」',
-    type: 3,
-    api: 'csp_Config',
-    searchable: 0,
-    quickSearch: 0,
-    filterable: 0,
-    changeable: 0,
-    ext: `${BASE_URL_PLACEHOLDER}/token.json`,
-  };
-
-  // 统一插到第二序列（索引 1），如果列表为空则放第一位
   const result = [...cleanSites];
-  if (result.length > 0) {
-    result.splice(1, 0, unifiedConfigCenter);
+
+  if (localTokenEnabled) {
+    const localConfigCenter: TVBoxSite = {
+      key: 'csp_Config_Local',
+      name: '配置┃本地中心 「176111」',
+      type: 3,
+      api: 'csp_Config',
+      searchable: 0,
+      quickSearch: 0,
+      filterable: 0,
+      changeable: 0,
+      ext: 'http://127.0.0.1:9978/file/tvbox/token.json',
+    };
+
+    const cloudConfigCenter: TVBoxSite = {
+      key: 'csp_Config_Cloud',
+      name: '配置┃云端中心 「176111」',
+      type: 3,
+      api: 'csp_Config',
+      searchable: 0,
+      quickSearch: 0,
+      filterable: 0,
+      changeable: 0,
+      ext: `${BASE_URL_PLACEHOLDER}/token.json`,
+    };
+
+    // 统一插到第二和第三序列
+    if (result.length > 0) {
+      result.splice(1, 0, localConfigCenter, cloudConfigCenter);
+    } else {
+      result.push(localConfigCenter, cloudConfigCenter);
+    }
   } else {
-    result.push(unifiedConfigCenter);
+    const unifiedConfigCenter: TVBoxSite = {
+      key: 'csp_Config',
+      name: '配置┃中心 「176111」',
+      type: 3,
+      api: 'csp_Config',
+      searchable: 0,
+      quickSearch: 0,
+      filterable: 0,
+      changeable: 0,
+      ext: `${BASE_URL_PLACEHOLDER}/token.json`,
+    };
+
+    if (result.length > 0) {
+      result.splice(1, 0, unifiedConfigCenter);
+    } else {
+      result.push(unifiedConfigCenter);
+    }
   }
 
   return result;
