@@ -2028,6 +2028,19 @@ export function createApp(deps: AppDeps): Hono {
     }
   });
 
+  app.get('/admin/bg-settings', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+    const raw = await storage.get(KV_BG_SETTINGS);
+    if (!raw) return c.json({ type: 'default' });
+    try {
+      return c.json(JSON.parse(raw));
+    } catch {
+      return c.json({ type: 'default' });
+    }
+  });
+
   app.put('/admin/bg-settings', async (c) => {
     if (!verifyAdmin(c.req.raw, config)) {
       return c.json({ error: 'Unauthorized' }, 401);
