@@ -919,7 +919,7 @@ export function createApp(deps: AppDeps): Hono {
       return c.json(result);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      return c.json({ error: msg }, 502);
+      return c.json({ error: msg }, 500);
     }
   });
 
@@ -947,7 +947,7 @@ export function createApp(deps: AppDeps): Hono {
       return c.json(result);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      return c.json({ error: msg, status: 'error' }, 502);
+      return c.json({ error: msg, status: 'error' }, 500);
     }
   });
 
@@ -976,7 +976,7 @@ export function createApp(deps: AppDeps): Hono {
       return c.json(result);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      return c.json({ success: false, message: msg }, 502);
+      return c.json({ success: false, message: msg }, 500);
     }
   });
 
