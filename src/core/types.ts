@@ -15,6 +15,7 @@ export interface TVBoxSite {
   categories?: string[];
   click?: string;
   style?: string;
+  changeable?: number; // 0|1
 }
 
 export interface TVBoxParse {

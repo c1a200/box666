@@ -852,6 +852,9 @@ function normalizeConfigCenterSites(
   localTokenEnabled: boolean,
   showCloudConfigInLocalMode: boolean,
 ): TVBoxSite[] {
+  // Use the clean, official open-source custom_spider.jar from FongMi for configuration center sites
+  const cleanJar = 'https://raw.githubusercontent.com/FongMi/CatVodSpider/main/jar/custom_spider.jar';
+
   // 移除所有原有的配置中心，以便统一插入重新构建的配置中心
   const cleanSites = sites.filter((site) => !isConfigCenterSite(site));
 
@@ -868,6 +871,7 @@ function normalizeConfigCenterSites(
       filterable: 0,
       changeable: 0,
       ext: 'http://127.0.0.1:9978/file/TVBox/token.json',
+      jar: cleanJar,
     };
 
     const cloudConfigCenter: TVBoxSite = {
@@ -880,6 +884,7 @@ function normalizeConfigCenterSites(
       filterable: 0,
       changeable: 0,
       ext: `${BASE_URL_PLACEHOLDER}/token.json`,
+      jar: cleanJar,
     };
 
     // 统一插到第二和第三序列
@@ -906,6 +911,7 @@ function normalizeConfigCenterSites(
       filterable: 0,
       changeable: 0,
       ext: `${BASE_URL_PLACEHOLDER}/token.json`,
+      jar: cleanJar,
     };
 
     if (result.length > 0) {
