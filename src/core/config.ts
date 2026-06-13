@@ -90,6 +90,7 @@ export const KV_IGNORE_AGGREGATED_LIVES = 'ignore_aggregated_lives';
 export const BASE_URL_PLACEHOLDER = '{{BASE_URL}}';
 export const KV_SMART_BASE_URL_ENABLED = 'smart_base_url_enabled';
 export const KV_LOCAL_TOKEN_ENABLED = 'local_token_enabled';
+export const KV_SHOW_CLOUD_CONFIG_IN_LOCAL_MODE = 'show_cloud_config_in_local_mode';
 
 // 站点验活
 export const KV_SITE_HEALTH_MAP = 'site_health_map';
