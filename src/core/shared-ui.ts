@@ -109,17 +109,16 @@ function toggleCollapsible(toggleEl) {
 }
 
 function getTheme() {
-  return localStorage.getItem('theme') || 'auto';
+  return localStorage.getItem('theme') || 'dark';
 }
 
 var THEMES = [
-  { id: 'auto',    icon: '💻',  label: 'System',  dot: 'linear-gradient(135deg, #0a0e14 50%, #f4f6f9 50%)' },
-  { id: 'dark',    icon: '☀️',  label: 'Dark',    dot: '#0a0e14' },
-  { id: 'light',   icon: '🌙',  label: 'Light',   dot: '#f4f6f9' },
-  { id: 'sunset',  icon: '🌅',  label: 'Sunset',  dot: '#1a1208' },
-  { id: 'cyber',   icon: '⚡',  label: 'Cyber',   dot: '#08000f' },
-  { id: 'eyecare', icon: '🌿',  label: 'EyeCare', dot: '#0d1a0d' },
-  { id: 'violet',  icon: '💎',  label: 'Violet',  dot: '#140a20' }
+  { id: 'dark',    icon: '\\u2600\\uFE0F',  label: 'Dark',    dot: '#0a0e14' },
+  { id: 'light',   icon: '\\uD83C\\uDF19',  label: 'Light',   dot: '#f4f6f9' },
+  { id: 'sunset',  icon: '\\uD83C\\uDF05',  label: 'Sunset',  dot: '#1a1208' },
+  { id: 'cyber',   icon: '\\u26A1',         label: 'Cyber',   dot: '#08000f' },
+  { id: 'eyecare', icon: '\\uD83C\\uDF3F',  label: 'EyeCare', dot: '#0d1a0d' },
+  { id: 'violet',  icon: '\\uD83D\\uDC8E',  label: 'Violet',  dot: '#140a20' }
 ];
 
 function findTheme(id) {
@@ -128,11 +127,7 @@ function findTheme(id) {
 }
 
 function applyTheme(theme) {
-  var resolvedTheme = theme;
-  if (theme === 'auto') {
-    resolvedTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-  }
-  document.documentElement.setAttribute('data-theme', resolvedTheme);
+  document.documentElement.setAttribute('data-theme', theme);
   var btn = document.getElementById('themeToggle');
   if (btn) btn.textContent = findTheme(theme).icon;
   document.querySelectorAll('.theme-dropdown-item').forEach(function(el) {
@@ -171,26 +166,13 @@ function initThemeDropdown() {
   for (var i = 0; i < THEMES.length; i++) {
     var t = THEMES[i];
     var active = t.id === cur.id ? ' active' : '';
-    html += '<div class="theme-dropdown-item' + active + '" data-theme="' + t.id + '" onclick="selectTheme(\'' + t.id + '\')">';
+    html += '<div class="theme-dropdown-item' + active + '" data-theme="' + t.id + '" onclick="selectTheme(\\'' + t.id + '\\')">';
     html += '<span class="theme-dot" style="background:' + t.dot + '"></span>';
     html += '<span>' + t.icon + ' ' + t.label + '</span>';
     html += '</div>';
   }
   html += '</div></div>';
   wrap.innerHTML = html;
-}
-
-// 监听系统主题变化并实时响应
-var mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-function handleSystemThemeChange(e) {
-  if (getTheme() === 'auto') {
-    applyTheme('auto');
-  }
-}
-if (mediaQuery.addEventListener) {
-  mediaQuery.addEventListener('change', handleSystemThemeChange);
-} else if (mediaQuery.addListener) {
-  mediaQuery.addListener(handleSystemThemeChange);
 }
 
 document.addEventListener('click', function(e) {

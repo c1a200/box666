@@ -253,7 +253,7 @@ ${sharedStyles}
   .tab{padding:12px 14px;font-size:0.65rem}
 }
 </style>
-<script>(function(){var t=localStorage.getItem('theme')||'auto';if(t==='auto'){t=window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'}document.documentElement.setAttribute('data-theme',t)})()</script>
+<script>(function(){var t=localStorage.getItem('theme')||'dark';document.documentElement.setAttribute('data-theme',t)})()</script>
 </head>
 <body style="opacity:0">
 
