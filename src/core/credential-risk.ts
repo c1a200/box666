@@ -71,6 +71,19 @@ const TOKEN_JSON_PLATFORMS: CloudPlatform[] = [
   'pan123',
 ];
 
+export function getDirectPlatformFromApi(api: string): CloudPlatform | null {
+  const name = api.toLowerCase();
+  if (name.includes('ali')) return 'aliyun';
+  if (name.includes('quark')) return 'quark';
+  if (name === 'csp_uc' || name.startsWith('csp_uc')) return 'uc';
+  if (name.includes('pikpak')) return 'pikpak';
+  if (name.includes('115')) return 'pan115';
+  if (name.includes('baidu')) return 'baidu';
+  if (name.includes('tianyi')) return 'tianyi';
+  if (name.includes('123')) return 'pan123';
+  return null;
+}
+
 /**
  * 分析单个源的风险等级（零网络请求）
  */
@@ -100,13 +113,18 @@ export function assessSourceRisk(site: TVBoxSite): SourceRiskAssessment {
   if (apiPlatforms) {
     result.neededPlatforms = [...apiPlatforms];
   } else {
-    // 从 ext 字段名推断
-    const platforms = new Set<CloudPlatform>();
-    for (const field of cookieFieldNames) {
-      const p = FIELD_TO_PLATFORM[field];
-      if (p) platforms.add(p);
+    const directPlatform = getDirectPlatformFromApi(site.api);
+    if (directPlatform) {
+      result.neededPlatforms = [directPlatform];
+    } else {
+      // 从 ext 字段名推断
+      const platforms = new Set<CloudPlatform>();
+      for (const field of cookieFieldNames) {
+        const p = FIELD_TO_PLATFORM[field];
+        if (p) platforms.add(p);
+      }
+      result.neededPlatforms = [...platforms];
     }
-    result.neededPlatforms = [...platforms];
   }
 
   // A类: ext 无 cookie 相关字段 → safe

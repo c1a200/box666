@@ -1,7 +1,7 @@
 // Cookie 注入引擎
 
 import type { TVBoxSite, CloudPlatform, CloudCredential, CredentialPolicyConfig } from './types';
-import { assessSourceRisk, type RiskLevel } from './credential-risk';
+import { assessSourceRisk, getDirectPlatformFromApi, type RiskLevel } from './credential-risk';
 
 // ─── 注入规则 ────────────────────────────────────────────
 
@@ -291,19 +291,39 @@ export function injectCredentials(
     let nextExt = site.ext;
     let changed = false;
 
-    const tokenResult = replaceTokenJsonUrl(nextExt, baseUrl || undefined);
-    nextExt = tokenResult.ext;
-    changed = changed || tokenResult.changed;
+    const directPlatform = getDirectPlatformFromApi(site.api);
+    if (directPlatform && credentials.has(directPlatform)) {
+      // 对于直连的单网盘平台，直接把它的凭据字段以 JSON 对象形式合并注入到 ext 中，避免客户端加载不到外部 token.json 的问题
+      const credObj = generateTokenJson(credentials, [directPlatform]);
+      if (credObj && Object.keys(credObj).length > 0) {
+        const { obj, wasString, wasJson } = parseExt(nextExt);
+        const mergedObj = { ...obj, ...credObj };
+        
+        // 还原格式并检查改变
+        const nextExtObj = restoreExt(mergedObj, wasString, wasJson);
+        const prevStr = (typeof nextExt === 'object') ? JSON.stringify(nextExt) : String(nextExt);
+        const nextStr = (typeof nextExtObj === 'object') ? JSON.stringify(nextExtObj) : String(nextExtObj);
+        
+        if (prevStr !== nextStr) {
+          nextExt = nextExtObj;
+          changed = true;
+        }
+      }
+    } else {
+      const tokenResult = replaceTokenJsonUrl(nextExt, baseUrl || undefined);
+      nextExt = tokenResult.ext;
+      changed = changed || tokenResult.changed;
 
-    if (rule) {
-      const ruleExt = rule.inject(nextExt, credentials, baseUrl);
-      changed = changed || ruleExt !== nextExt;
-      nextExt = ruleExt;
+      if (rule) {
+        const ruleExt = rule.inject(nextExt, credentials, baseUrl);
+        changed = changed || ruleExt !== nextExt;
+        nextExt = ruleExt;
+      }
+
+      const fieldResult = injectPlatformFields(nextExt, credentials, platforms);
+      nextExt = fieldResult.ext;
+      changed = changed || fieldResult.changed;
     }
-
-    const fieldResult = injectPlatformFields(nextExt, credentials, platforms);
-    nextExt = fieldResult.ext;
-    changed = changed || fieldResult.changed;
 
     if (!changed) {
       report.skippedNoRule++;
