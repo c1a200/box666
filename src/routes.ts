@@ -1043,6 +1043,17 @@ export function createApp(deps: AppDeps): Hono {
     });
   });
 
+  // ─── 背景设置公共接口（必须放在 /api/:key 之前以避免路由拦截） ────────
+  app.get('/api/bg-settings', async (c) => {
+    const raw = await storage.get(KV_BG_SETTINGS);
+    if (!raw) return c.json({ type: 'default' });
+    try {
+      return c.json(JSON.parse(raw));
+    } catch {
+      return c.json({ type: 'default' });
+    }
+  });
+
   // ─── MacCMS API 代理（CF 版 + 本地版）──────────────────────
   if (config.workerBaseUrl || config.localBaseUrl) {
     app.all('/api/:key', async (c) => {
@@ -2018,15 +2029,6 @@ export function createApp(deps: AppDeps): Hono {
   });
 
   // ─── 背景设置 ──────────────────────────────────────────
-  app.get('/api/bg-settings', async (c) => {
-    const raw = await storage.get(KV_BG_SETTINGS);
-    if (!raw) return c.json({ type: 'default' });
-    try {
-      return c.json(JSON.parse(raw));
-    } catch {
-      return c.json({ type: 'default' });
-    }
-  });
 
   app.get('/admin/bg-settings', async (c) => {
     if (!verifyAdmin(c.req.raw, config)) {
