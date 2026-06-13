@@ -545,7 +545,7 @@ export function extractAllUrls(groups: TVBoxLiveGroup[]): string[] {
 
 /**
  * 轻量级实时解析：给定一组 m3u/txt URL，下载并解析为 TVBoxLiveGroup[]
- * 用于 /live-config 端点在 FongMi 格式下实时转换
+ * 用于 /live 端点在 FongMi 格式下实时转换
  */
 export async function fetchAndParseLiveUrls(
   urls: Array<{ name: string; url: string; header?: Record<string, string> }>,

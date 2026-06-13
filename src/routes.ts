@@ -159,7 +159,7 @@ export function createApp(deps: AppDeps): Hono {
   });
 
   // ─── 纯直播配置 ────────────────────────────────────────
-  app.get('/live', async (c) => {
+  const handleLive = async (c: any) => {
     let livesRaw = await storage.get(KV_LIVE_MERGED_DATA);
     let lives: any[] = [];
     if (livesRaw) {
@@ -233,7 +233,10 @@ export function createApp(deps: AppDeps): Hono {
     } catch {
       return c.json({ error: 'Config parse error' }, 500);
     }
-  });
+  };
+
+  app.get('/live', handleLive);
+  app.get('/live-config', handleLive);
 
   // ─── .json 下载别名 ────────────────────────────────────
   app.get('/index.json', async (c) => {

@@ -512,7 +512,7 @@ function doToggleLang() {
 
 const configUrl = location.origin + '/';
 $('configUrl').textContent = configUrl;
-$('liveConfigUrl').textContent = location.origin + '/live-config';
+$('liveConfigUrl').textContent = location.origin + '/live';
 
 async function loadStatus() {
   try {
