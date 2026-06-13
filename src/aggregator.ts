@@ -233,7 +233,7 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
   // 注入全局 token 接口地址（若启用本地 Token 则指向本地，否则使用 Base URL 占位符）
   const localTokenEnabled = (await storage.get(KV_LOCAL_TOKEN_ENABLED)) === 'true';
   if (localTokenEnabled) {
-    merged.token = 'http://127.0.0.1:9978/file/tvbox/token.json';
+    merged.token = 'http://127.0.0.1:9978/file/TVBox/token.json';
   } else {
     merged.token = `${BASE_URL_PLACEHOLDER}/token.json`;
   }
@@ -843,6 +843,10 @@ async function appendAggLog(storage: Storage, log: AggregationLog): Promise<void
 }
 
 function normalizeConfigCenterSites(sites: TVBoxSite[], localTokenEnabled: boolean): TVBoxSite[] {
+  // 找到原有的配置中心，提取其 jar 属性
+  const originalConfigSite = sites.find(isConfigCenterSite);
+  const jar = originalConfigSite?.jar;
+
   // 移除所有原有的配置中心，以便统一插入重新构建的配置中心
   const cleanSites = sites.filter((site) => !isConfigCenterSite(site));
 
@@ -858,7 +862,8 @@ function normalizeConfigCenterSites(sites: TVBoxSite[], localTokenEnabled: boole
       quickSearch: 0,
       filterable: 0,
       changeable: 0,
-      ext: 'http://127.0.0.1:9978/file/tvbox/token.json',
+      ext: 'http://127.0.0.1:9978/file/TVBox/token.json',
+      ...(jar ? { jar } : {}),
     };
 
     const cloudConfigCenter: TVBoxSite = {
@@ -871,6 +876,7 @@ function normalizeConfigCenterSites(sites: TVBoxSite[], localTokenEnabled: boole
       filterable: 0,
       changeable: 0,
       ext: `${BASE_URL_PLACEHOLDER}/token.json`,
+      ...(jar ? { jar } : {}),
     };
 
     // 统一插到第二和第三序列
