@@ -422,6 +422,18 @@ ${sharedStyles}
       </div>
     </div>
 
+    <!-- Ignore Aggregated Lives Toggle -->
+    <div class="section">
+      <div class="section-title" data-i18n="ignoreAggregatedLivesTitle">Ignore Aggregated Live Sources</div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="ignoreAggregatedLivesCheck" onchange="saveIgnoreAggregatedLives()">
+          <span data-i18n="ignoreAggregatedLivesLabel">Ignore live sources inside subscription configs (only use manually added live sources)</span>
+        </label>
+        <span class="status-text" id="ignoreAggregatedLivesStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
+      </div>
+    </div>
+
     <!-- Live Merge Mode -->
     <div class="section">
       <div class="section-title">直播合并模式</div>
@@ -746,6 +758,7 @@ const translations = {
     channelProbeStarted:'Probe started', channelProbeDisabledFirst:'Enable probe first', channelProbeAlreadyRunning:'Already running',
     channelProbeCfOnly:'Only Node/Docker supports channel probing',
     liveToggleTitle:'Live Feature Toggle', liveToggleLabel:'Disable live aggregation (skip live merge, output empty lives)',
+    ignoreAggregatedLivesTitle:'Ignore Aggregated Lives', ignoreAggregatedLivesLabel:'Ignore live sources inside subscription configs (only use manually added live sources)',
     smartBaseUrlTitle:'Smart Base URL', smartBaseUrlLabel:'Auto-detect client host for JAR/image URLs (LAN only, set DMZ=0 to allow public)',
     siteProbeTitle:'Site Probe & Auto Clean', probeDepthLabel:'Probe depth:',
     probeDeep:'Deep (validate content)', probeShallow:'Shallow (HTTP only)',
@@ -822,6 +835,7 @@ const translations = {
     channelProbeStarted:'测速已启动', channelProbeDisabledFirst:'请先启用测速', channelProbeAlreadyRunning:'已在运行',
     channelProbeCfOnly:'仅 Node/Docker 支持频道级测速',
     liveToggleTitle:'直播功能', liveToggleLabel:'禁用直播聚合（跳过直播合并，输出空 lives）',
+    ignoreAggregatedLivesTitle:'忽略配置中的直播源', ignoreAggregatedLivesLabel:'忽略第三方订阅配置自带的直播源（仅保留手动添加的直播源）',
     smartBaseUrlTitle:'智能地址响应', smartBaseUrlLabel:'根据客户端访问地址自动生成资源链接（仅局域网，设置 DMZ=0 允许公网）',
     siteProbeTitle:'站点验活与自动清理', probeDepthLabel:'验活深度：',
     probeDeep:'深度（验证内容有效性）', probeShallow:'浅层（仅 HTTP 可达）',
@@ -2243,6 +2257,21 @@ async function saveLiveDisabled() {
   setTimeout(() => $('liveDisabledStatus').textContent = '', 2000);
 }
 
+// ─── 忽略第三方直播源 ───────
+async function loadIgnoreAggregatedLives() {
+  try {
+    const r = await auth.authFetch('/admin/ignore-aggregated-lives');
+    const d = await r.json();
+    $('ignoreAggregatedLivesCheck').checked = d.ignore;
+  } catch {}
+}
+async function saveIgnoreAggregatedLives() {
+  const ignore = $('ignoreAggregatedLivesCheck').checked;
+  await auth.authFetch('/admin/ignore-aggregated-lives', { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ignore}) });
+  $('ignoreAggregatedLivesStatus').textContent = '✓';
+  setTimeout(() => $('ignoreAggregatedLivesStatus').textContent = '', 2000);
+}
+
 // ─── 直播合并模式 ──────────
 async function loadLiveMergeMode() {
   try {
@@ -2317,6 +2346,7 @@ loadLiveMergeMode();
 loadSmartBaseUrl();
 loadProbeDepth();
 loadAutoClean();
+loadIgnoreAggregatedLives();
 
 applyTheme(getTheme());
 initThemeDropdown();

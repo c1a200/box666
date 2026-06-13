@@ -83,6 +83,8 @@ export const KV_DEDUP_CONFIG = 'dedup_config';
 export const KV_LIVE_DISABLED = 'live_disabled';
 // 直播合并模式：'separated'（按源分类）| 'merged'（全部合并）
 export const KV_LIVE_MERGE_MODE = 'live_merge_mode';
+// 是否忽略第三方配置源自带的直播源
+export const KV_IGNORE_AGGREGATED_LIVES = 'ignore_aggregated_lives';
 
 // 智能 Base URL
 export const BASE_URL_PLACEHOLDER = '{{BASE_URL}}';

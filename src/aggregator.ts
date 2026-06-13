@@ -9,7 +9,7 @@ import { macCMSToTVBoxSites, processMacCMSForLocal } from './core/maccms';
 import { rewriteJarUrls } from './core/jar-proxy';
 import { mergeLivesToNative, separatedMergeLives, type LiveSourceInput } from './core/live-merger';
 import { loadSpeedMap as loadChannelSpeedMap } from './core/channel-probe';
-import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_SOURCE_URLS, KV_LAST_UPDATE, KV_MANUAL_SOURCES, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_BLACKLIST, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_CHANNEL_MERGED_TREE, KV_AGG_LOGS, AGG_LOGS_MAX, KV_SITE_SNAPSHOT, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, BASE_URL_PLACEHOLDER, KV_SITE_HEALTH_MAP, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SOURCE_MAP, KV_SOURCE_URL_BLACKLIST } from './core/config';
+import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_SOURCE_URLS, KV_LAST_UPDATE, KV_MANUAL_SOURCES, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_BLACKLIST, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_CHANNEL_MERGED_TREE, KV_AGG_LOGS, AGG_LOGS_MAX, KV_SITE_SNAPSHOT, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, BASE_URL_PLACEHOLDER, KV_SITE_HEALTH_MAP, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SOURCE_MAP, KV_SOURCE_URL_BLACKLIST } from './core/config';
 import { loadBlacklist, applyBlacklist, pruneBlacklist, saveBlacklist, siteFingerprint } from './core/blacklist';
 import { transformSiteNames } from './core/cleaner';
 import { parseConfigJson, type FetchProxyConfig } from './core/fetcher';
@@ -409,7 +409,10 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     // Deduplicate live sources by URL
     const seenUrls = new Set<string>();
     const uniqueLives: TVBoxLive[] = [];
-    for (const item of [...(merged.lives || []), ...manualLives]) {
+    const ignoreAggregatedLivesRaw = await storage.get(KV_IGNORE_AGGREGATED_LIVES);
+    const ignoreAggregatedLives = ignoreAggregatedLivesRaw === 'true';
+    const livesToProcess = ignoreAggregatedLives ? manualLives : [...(merged.lives || []), ...manualLives];
+    for (const item of livesToProcess) {
       const url = item.url || item.api;
       if (url && typeof url === 'string') {
         const cleanUrl = url.trim();
@@ -421,25 +424,30 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     }
     merged.lives = uniqueLives;
   } else {
-  logger.info('aggregation', 'Step 6.5: Channel-level live merging...');
-  {
-    const liveInputs: LiveSourceInput[] = [];
+    logger.info('aggregation', 'Step 6.5: Channel-level live merging...');
+    {
+      const liveInputs: LiveSourceInput[] = [];
 
-    // 配置源合并来的 lives（FongMi 格式）
-    for (const l of (merged.lives || []) as Array<{ name?: string; url?: string; api?: string; ua?: string; header?: Record<string, string>; group?: string }>) {
-      // 跳过已经是 Native 格式的（含 group 字段无 url）
-      if (l.group && !l.url && !l.api) continue;
-      const u = l.url || l.api;
-      if (!u || !/^https?:\/\//i.test(u)) continue;
-      if (u.includes('127.0.0.1') || u.includes('localhost')) continue;
-      liveInputs.push({
-        name: l.name || 'source',
-        url: u,
-        ua: l.ua,
-        header: l.header,
-        isAggregated: true,
-      });
-    }
+      const ignoreAggregatedLivesRaw = await storage.get(KV_IGNORE_AGGREGATED_LIVES);
+      const ignoreAggregatedLives = ignoreAggregatedLivesRaw === 'true';
+
+      // 配置源合并来的 lives（FongMi 格式）
+      if (!ignoreAggregatedLives) {
+        for (const l of (merged.lives || []) as Array<{ name?: string; url?: string; api?: string; ua?: string; header?: Record<string, string>; group?: string }>) {
+          // 跳过已经是 Native 格式的（含 group 字段无 url）
+          if (l.group && !l.url && !l.api) continue;
+          const u = l.url || l.api;
+          if (!u || !/^https?:\/\//i.test(u)) continue;
+          if (u.includes('127.0.0.1') || u.includes('localhost')) continue;
+          liveInputs.push({
+            name: l.name || 'source',
+            url: u,
+            ua: l.ua,
+            header: l.header,
+            isAggregated: true,
+          });
+        }
+      }
 
     // admin 手动源
     const liveRaw = await storage.get(KV_LIVE_SOURCES);
