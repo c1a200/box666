@@ -416,8 +416,9 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
       const url = item.url || item.api;
       if (url && typeof url === 'string') {
         const cleanUrl = url.trim();
-        if (!seenUrls.has(cleanUrl)) {
-          seenUrls.add(cleanUrl);
+        const core = getCoreLiveUrl(cleanUrl);
+        if (!seenUrls.has(core)) {
+          seenUrls.add(core);
           uniqueLives.push(item);
         }
       }
@@ -472,8 +473,9 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     // URL 去重
     const seen = new Set<string>();
     const uniqueInputs = liveInputs.filter((i) => {
-      if (seen.has(i.url)) return false;
-      seen.add(i.url);
+      const core = getCoreLiveUrl(i.url);
+      if (seen.has(core)) return false;
+      seen.add(core);
       return true;
     });
 
@@ -484,11 +486,11 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
       const liveMergeMode = (await storage.get(KV_LIVE_MERGE_MODE)) || 'separated';
       logger.infoFields('aggregation', 'Step 6.5: live-sources', { unique: uniqueInputs.length, mode: liveMergeMode });
 
+      const channelSpeedMap = await loadChannelSpeedMap(storage);
       let mergeResult;
       if (liveMergeMode === 'separated') {
-        mergeResult = await separatedMergeLives(uniqueInputs, config.fetchTimeoutMs);
+        mergeResult = await separatedMergeLives(uniqueInputs, config.fetchTimeoutMs, channelSpeedMap);
       } else {
-        const channelSpeedMap = await loadChannelSpeedMap(storage);
         mergeResult = await mergeLivesToNative(uniqueInputs, config.fetchTimeoutMs, channelSpeedMap);
       }
       merged.lives = mergeResult.groups;
@@ -853,4 +855,39 @@ function isConfigCenterSite(site: TVBoxSite): boolean {
   const text = `${key} ${name} ${api}`;
 
   return /配置|设置\s*[┃|｜-]?\s*中心|我配置|config/i.test(text) || api === 'csp_Config' || key === 'csp_Config';
+}
+
+function getCoreLiveUrl(url: string): string {
+  let u = url.trim();
+  // Strip known GitHub proxy prefixes
+  const proxyRegexes = [
+    /^https?:\/\/gh(proxy)?\.(com|net|org|co|xyz|cc|top|vip|live|icu|cf|ga|gq|ml|link|work|fun|pub)\//i,
+    /^https?:\/\/gh-proxy\.[^/]+\//i,
+    /^https?:\/\/git(hub)?\.[^/]+\//i,
+    /^https?:\/\/mirror\.ghproxy\.com\//i,
+    /^https?:\/\/gh\.11kk\.cc\//i,
+    /^https?:\/\/ghfast\.top\//i,
+    /^https?:\/\/fastly\.jsdelivr\.net\/gh\//i,
+    /^https?:\/\/cdn\.jsdelivr\.net\/gh\//i,
+  ];
+
+  for (const regex of proxyRegexes) {
+    if (regex.test(u)) {
+      u = u.replace(regex, '');
+      if (!/^https?:\/\//i.test(u)) {
+        if (u.startsWith('http')) {
+          u = u.replace(/^(https?)\/?/, '$1://');
+        } else if (u.includes('github')) {
+          u = 'https://' + u;
+        } else {
+          u = 'https://github.com/' + u;
+        }
+      }
+    }
+  }
+
+  // Handle raw.gitmirror.com
+  u = u.replace(/raw\.gitmirror\.com/i, 'raw.githubusercontent.com');
+
+  return u.toLowerCase();
 }

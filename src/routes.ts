@@ -25,6 +25,7 @@ import { generateTokenJson } from './core/credential-injector';
 import { formatLiveGroupsAsTxt, fetchAndParseLiveUrls } from './core/live-merger';
 import type { TVBoxConfig, SearchQuotaConfig, CloudPlatform, CloudCredential, TVBoxLiveGroup } from './core/types';
 import { mountChannelProbeRoutes } from './routes/channel-probe-admin';
+import { loadSpeedMap as loadChannelSpeedMap } from './core/channel-probe';
 
 export interface AppDeps {
   storage: Storage;
@@ -202,7 +203,8 @@ export function createApp(deps: AppDeps): Hono {
               ...u,
               url: applyBaseUrlPlaceholder(u.url, baseUrl)
             }));
-            const groups = await fetchAndParseLiveUrls(resolvedUrls, 8000);
+            const channelSpeedMap = await loadChannelSpeedMap(storage);
+            const groups = await fetchAndParseLiveUrls(resolvedUrls, 8000, channelSpeedMap);
             if (groups.length > 0) {
               return c.body(formatLiveGroupsAsTxt(groups), 200, {
                 'Content-Type': 'text/plain; charset=utf-8',

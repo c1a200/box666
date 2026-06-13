@@ -30,6 +30,9 @@ interface ChannelEntry {
   sourceSpeedMs?: number;
 }
 
+// ─── 广告过滤关键字 ────────────────────────────────────
+const AD_KEYWORDS = /广告|购物|福利|加微|微\s*信|群|客\s*服|优惠|测试|测\s*试|防走失|专属|添加|关注|订阅|赞助/i;
+
 // ─── 频道名规范化 ──────────────────────────────────────
 
 const TRAD_SIMP_MAP: Record<string, string> = {
@@ -264,7 +267,6 @@ export async function mergeLivesToNative(
   let sourcesDownloaded = 0;
   let sourcesFailed = 0;
   const allEntries: ChannelEntry[] = [];
-  const AD_KEYWORDS = /广告|购物|福利|加微|微\s*信|群|客\s*服|优惠|测试/i;
 
   for (const r of downloadResults) {
     if (r.status === 'fulfilled' && r.value.content) {
@@ -330,8 +332,13 @@ export async function mergeLivesToNative(
   let totalUrls = 0;
 
   for (const [, agg] of channelMap) {
-    // 对 urls 排序
-    const urlList = Array.from(agg.urls.values());
+    // 对 urls 排序且过滤失效链接
+    const urlList = Array.from(agg.urls.values()).filter((e) => {
+      const s = channelSpeedMap?.[e.url];
+      return s?.kind !== 'fail';
+    });
+    if (urlList.length === 0) continue;
+
     urlList.sort((a, b) => {
       // 优先用 URL 级测速缓存
       const sa = channelSpeedMap?.[a.url];
@@ -440,6 +447,7 @@ export async function mergeLivesToNative(
 export async function separatedMergeLives(
   sources: LiveSourceInput[],
   fetchTimeoutMs: number,
+  channelSpeedMap?: ChannelSpeedMap,
 ): Promise<MergeLivesResult> {
   if (sources.length === 0) {
     return { groups: [], totalChannels: 0, totalUrls: 0, sourcesDownloaded: 0, sourcesFailed: 0 };
@@ -456,8 +464,6 @@ export async function separatedMergeLives(
   const allGroups: TVBoxLiveGroup[] = [];
   let totalChannels = 0;
   let totalUrls = 0;
-
-  const AD_KEYWORDS = /广告|购物|福利|加微|微\s*信|群|客\s*服|优惠|测试/i;
 
   for (const r of downloadResults) {
     if (r.status !== 'fulfilled' || !r.value.content) {
@@ -482,9 +488,12 @@ export async function separatedMergeLives(
 
       if (entries.length === 0) continue;
 
-      // 按 group 分组（源内去重）
+      // 按 group 分组（源内去重 + 过滤不可用链接）
       const groupMap = new Map<string, Map<string, string[]>>();
       for (const e of entries) {
+        const speed = channelSpeedMap?.[e.url];
+        if (speed?.kind === 'fail') continue;
+
         const grp = e.group || '其他';
         if (!groupMap.has(grp)) groupMap.set(grp, new Map());
         const channels = groupMap.get(grp)!;
@@ -498,9 +507,11 @@ export async function separatedMergeLives(
         const prefixedGroup = `「${sourceName}」${grp}`;
         const chs: TVBoxLiveChannel[] = [];
         for (const [name, urls] of channels) {
+          if (urls.length === 0) continue;
           chs.push({ name, urls });
           totalUrls += urls.length;
         }
+        if (chs.length === 0) continue;
         totalChannels += chs.length;
         allGroups.push({ group: prefixedGroup, channels: chs });
       }
@@ -539,6 +550,7 @@ export function extractAllUrls(groups: TVBoxLiveGroup[]): string[] {
 export async function fetchAndParseLiveUrls(
   urls: Array<{ name: string; url: string; header?: Record<string, string> }>,
   timeoutMs = 8000,
+  channelSpeedMap?: ChannelSpeedMap,
 ): Promise<TVBoxLiveGroup[]> {
   if (urls.length === 0) return [];
 
@@ -564,7 +576,6 @@ export async function fetchAndParseLiveUrls(
   );
 
   const allEntries: Array<{ group: string; name: string; url: string }> = [];
-  const AD_KEYWORDS = /广告|购物|福利|加微|微\s*信|群|客\s*服|优惠|测试/i;
   for (const r of results) {
     if (r.status !== 'fulfilled' || !r.value) continue;
     let entries = parseLiveContent(r.value.content, r.value.name);
@@ -573,9 +584,14 @@ export async function fetchAndParseLiveUrls(
     allEntries.push(...entries);
   }
 
-  // 按 group + name 合并 urls
+  // 按 group + name 合并 urls（过滤不可用链接）
   const groupMap = new Map<string, Map<string, string[]>>();
   for (const e of allEntries) {
+    if (channelSpeedMap) {
+      const speed = channelSpeedMap[e.url];
+      if (speed?.kind === 'fail') continue;
+    }
+
     const grp = e.group || '其他';
     if (!groupMap.has(grp)) groupMap.set(grp, new Map());
     const channels = groupMap.get(grp)!;
@@ -588,8 +604,10 @@ export async function fetchAndParseLiveUrls(
   for (const [group, channels] of groupMap) {
     const chs: TVBoxLiveChannel[] = [];
     for (const [name, urls] of channels) {
+      if (urls.length === 0) continue;
       chs.push({ name, urls });
     }
+    if (chs.length === 0) continue;
     groups.push({ group, channels: chs });
   }
   return groups;
