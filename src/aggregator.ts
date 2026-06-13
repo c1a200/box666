@@ -9,7 +9,7 @@ import { macCMSToTVBoxSites, processMacCMSForLocal } from './core/maccms';
 import { rewriteJarUrls } from './core/jar-proxy';
 import { mergeLivesToNative, separatedMergeLives, type LiveSourceInput } from './core/live-merger';
 import { loadSpeedMap as loadChannelSpeedMap } from './core/channel-probe';
-import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_SOURCE_URLS, KV_LAST_UPDATE, KV_MANUAL_SOURCES, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_BLACKLIST, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_CHANNEL_MERGED_TREE, KV_AGG_LOGS, AGG_LOGS_MAX, KV_SITE_SNAPSHOT, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, BASE_URL_PLACEHOLDER, KV_SITE_HEALTH_MAP, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SOURCE_MAP, KV_SOURCE_URL_BLACKLIST, KV_LOCAL_TOKEN_ENABLED, KV_SHOW_CLOUD_CONFIG_IN_LOCAL_MODE } from './core/config';
+import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_SOURCE_URLS, KV_LAST_UPDATE, KV_MANUAL_SOURCES, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_BLACKLIST, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_CHANNEL_MERGED_TREE, KV_AGG_LOGS, AGG_LOGS_MAX, KV_SITE_SNAPSHOT, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, BASE_URL_PLACEHOLDER, KV_SITE_HEALTH_MAP, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SOURCE_MAP, KV_SOURCE_URL_BLACKLIST, KV_LOCAL_TOKEN_ENABLED, KV_SHOW_CLOUD_CONFIG_IN_LOCAL_MODE, KV_CUSTOM_CONFIG_JAR_URL, KV_CUSTOM_CONFIG_JAR_MD5 } from './core/config';
 import { loadBlacklist, applyBlacklist, pruneBlacklist, saveBlacklist, siteFingerprint } from './core/blacklist';
 import { transformSiteNames } from './core/cleaner';
 import { parseConfigJson, type FetchProxyConfig } from './core/fetcher';
@@ -524,7 +524,15 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
   if (merged.sites && merged.sites.length > 0) {
     const before = merged.sites.length;
     const showCloudConfigInLocalMode = (await storage.get(KV_SHOW_CLOUD_CONFIG_IN_LOCAL_MODE)) !== 'false';
-    merged.sites = normalizeConfigCenterSites(merged.sites, localTokenEnabled, showCloudConfigInLocalMode);
+    const customConfigJarUrl = await storage.get(KV_CUSTOM_CONFIG_JAR_URL);
+    const customConfigJarMd5 = await storage.get(KV_CUSTOM_CONFIG_JAR_MD5);
+    merged.sites = normalizeConfigCenterSites(
+      merged.sites,
+      localTokenEnabled,
+      showCloudConfigInLocalMode,
+      customConfigJarUrl || undefined,
+      customConfigJarMd5 || undefined
+    );
     const removed = before - merged.sites.length;
     if (removed > 0) {
       logger.info('aggregation', `Step 6.9: Unified config center, removed ${removed} duplicate entries`);
@@ -847,10 +855,18 @@ function normalizeConfigCenterSites(
   sites: TVBoxSite[],
   localTokenEnabled: boolean,
   showCloudConfigInLocalMode: boolean,
+  customJarUrl?: string,
+  customJarMd5?: string,
 ): TVBoxSite[] {
   // 找到原有的配置中心，提取其 jar 属性
   const originalConfigSite = sites.find(isConfigCenterSite);
-  const jar = originalConfigSite?.jar;
+  
+  let jar: string | undefined;
+  if (customJarUrl) {
+    jar = customJarMd5 ? `${customJarUrl};md5;${customJarMd5}` : customJarUrl;
+  } else {
+    jar = originalConfigSite?.jar;
+  }
 
   // 移除所有原有的配置中心，以便统一插入重新构建的配置中心
   const cleanSites = sites.filter((site) => !isConfigCenterSite(site));
@@ -908,6 +924,7 @@ function normalizeConfigCenterSites(
       filterable: 0,
       changeable: 0,
       ext: `${BASE_URL_PLACEHOLDER}/token.json`,
+      ...(jar ? { jar } : {}),
     };
 
     if (result.length > 0) {

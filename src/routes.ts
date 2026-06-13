@@ -3,7 +3,7 @@
 import { Hono } from 'hono';
 import type { Storage } from './storage/interface';
 import type { AppConfig, SourceEntry, MacCMSSourceEntry, LiveSourceEntry, NameTransformConfig, EdgeProxyConfig } from './core/types';
-import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_MANUAL_SOURCES, KV_LAST_UPDATE, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_BLACKLIST, LIVE_PROXY_TTL, IMG_PROXY_TTL, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_CRON_INTERVAL, DEFAULT_CRON_INTERVAL, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_AGG_LOGS, KV_BG_SETTINGS, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, KV_SMART_BASE_URL_ENABLED, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SITE_HEALTH_MAP, KV_LOCAL_TOKEN_ENABLED, KV_SHOW_CLOUD_CONFIG_IN_LOCAL_MODE } from './core/config';
+import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_MANUAL_SOURCES, KV_LAST_UPDATE, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_BLACKLIST, LIVE_PROXY_TTL, IMG_PROXY_TTL, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_CRON_INTERVAL, DEFAULT_CRON_INTERVAL, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_AGG_LOGS, KV_BG_SETTINGS, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, KV_SMART_BASE_URL_ENABLED, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SITE_HEALTH_MAP, KV_LOCAL_TOKEN_ENABLED, KV_SHOW_CLOUD_CONFIG_IN_LOCAL_MODE, KV_CUSTOM_CONFIG_JAR_URL, KV_CUSTOM_CONFIG_JAR_MD5 } from './core/config';
 import { getRequestBaseUrl, applyBaseUrlPlaceholder, assertHostAllowed } from './core/base-url';
 import { logger } from './core/logger';
 import { loadGroupOrder, saveGroupOrder } from './core/group-order';
@@ -2197,6 +2197,28 @@ export function createApp(deps: AppDeps): Hono {
     await storage.put(KV_SHOW_CLOUD_CONFIG_IN_LOCAL_MODE, body.showCloudConfig ? 'true' : 'false');
     try { await deps.triggerRefresh(); } catch { /* best effort */ }
     return c.json({ success: true, showCloudConfig: body.showCloudConfig });
+  });
+
+  // ─── 自定义配置中心 JAR ────────────────────────────────────────
+  app.get('/admin/custom-config-jar', async (c) => {
+    const jarUrl = (await storage.get(KV_CUSTOM_CONFIG_JAR_URL)) || '';
+    const jarMd5 = (await storage.get(KV_CUSTOM_CONFIG_JAR_MD5)) || '';
+    return c.json({ jarUrl, jarMd5 });
+  });
+
+  app.put('/admin/custom-config-jar', async (c) => {
+    if (config.adminToken) {
+      const auth = c.req.raw.headers.get('Authorization');
+      if (auth !== `Bearer ${config.adminToken}`) return c.json({ error: 'Unauthorized' }, 401);
+    }
+    if (deps.isSyncing?.()) {
+      return c.json({ error: 'Aggregation in progress, try later' }, 409);
+    }
+    const body = await c.req.json<{ jarUrl: string; jarMd5: string }>();
+    await storage.put(KV_CUSTOM_CONFIG_JAR_URL, (body.jarUrl || '').trim());
+    await storage.put(KV_CUSTOM_CONFIG_JAR_MD5, (body.jarMd5 || '').trim());
+    try { await deps.triggerRefresh(); } catch { /* best effort */ }
+    return c.json({ success: true, jarUrl: (body.jarUrl || '').trim(), jarMd5: (body.jarMd5 || '').trim() });
   });
 
   // ─── 站点验活设置 ───────────────────────────────────────
