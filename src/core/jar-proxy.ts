@@ -93,7 +93,9 @@ export async function rewriteJarUrls(
   if (config.spider) {
     const parsed = parseSpiderString(config.spider);
     if (parsed.url.startsWith('http://') || parsed.url.startsWith('https://')) {
-      uniqueJars.set(parsed.url, { md5: parsed.md5 });
+      if (!parsed.url.includes('jsdelivr.net') && !parsed.url.includes('gitmirror.com')) {
+        uniqueJars.set(parsed.url, { md5: parsed.md5 });
+      }
     }
   }
 
@@ -101,6 +103,9 @@ export async function rewriteJarUrls(
     if (site.jar) {
       const parsed = parseSpiderString(site.jar);
       if (parsed.url.startsWith('http://') || parsed.url.startsWith('https://')) {
+        if (parsed.url.includes('jsdelivr.net') || parsed.url.includes('gitmirror.com')) {
+          continue;
+        }
         if (!uniqueJars.has(parsed.url)) {
           uniqueJars.set(parsed.url, { md5: parsed.md5 });
         }

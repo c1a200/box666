@@ -852,8 +852,8 @@ function normalizeConfigCenterSites(
   localTokenEnabled: boolean,
   showCloudConfigInLocalMode: boolean,
 ): TVBoxSite[] {
-  // Use the clean, official open-source custom_spider.jar from FongMi for configuration center sites
-  const cleanJar = 'https://raw.githubusercontent.com/FongMi/CatVodSpider/main/jar/custom_spider.jar';
+  // Use the clean, official open-source custom_spider.jar from FongMi for configuration center sites (via GitMirror CDN)
+  const cleanJar = 'https://raw.gitmirror.com/FongMi/CatVodSpider/main/jar/custom_spider.jar';
 
   // 移除所有原有的配置中心，以便统一插入重新构建的配置中心
   const cleanSites = sites.filter((site) => !isConfigCenterSite(site));
