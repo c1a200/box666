@@ -159,7 +159,7 @@ export function createApp(deps: AppDeps): Hono {
   });
 
   // ─── 纯直播配置 ────────────────────────────────────────
-  app.get('/live-config', async (c) => {
+  app.get('/live', async (c) => {
     let livesRaw = await storage.get(KV_LIVE_MERGED_DATA);
     let lives: any[] = [];
     if (livesRaw) {
@@ -180,7 +180,7 @@ export function createApp(deps: AppDeps): Hono {
 
     // 过滤掉指向自身或 live.json 的单条目，防止死循环
     if (Array.isArray(lives)) {
-      lives = lives.filter(l => !(l.url && (l.url.endsWith('/live-config') || l.url.endsWith('/live.json'))));
+      lives = lives.filter(l => !(l.url && (l.url.endsWith('/live') || l.url.endsWith('/live-config') || l.url.endsWith('/live.json'))));
     }
 
     const baseUrl = await resolveBaseUrl(c);

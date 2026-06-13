@@ -550,7 +550,7 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
 
   // Step 7.8: 统一直播入口 —— TVBox 的 lives 字段只认 FongMi 格式 {name,type,url}，
   // 如果存入 Native 格式 {group,channels} 会导致 TVBox 无法加载直播源。
-  // 因此：当合并后产生了频道数据（Native groups），必须替换为一个指向 /live-config 的指针。
+  // 因此：当合并后产生了频道数据（Native groups），必须替换为一个指向 /live 的指针。
   if (merged.lives && merged.lives.length > 0) {
     // 检测是否为 Native 格式（channel-level 合并后的产物）
     const isNative = merged.lives.some((l: any) => l.group && Array.isArray(l.channels));
@@ -563,24 +563,24 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
           {
             name: '直播(聚合)',
             type: 0,
-            url: `${config.workerBaseUrl.replace(/\/$/, '')}/live-config`,
+            url: `${config.workerBaseUrl.replace(/\/$/, '')}/live`,
           },
         ];
-        console.log('[aggregation] Step 7.8: Unified live entry pointing to /live-config (CF Workers)');
+        console.log('[aggregation] Step 7.8: Unified live entry pointing to /live (CF Workers)');
       } else {
         console.log('[aggregation] Step 7.8: Kept raw live sources directly on Workers (Separated Mode)');
       }
     } else if (isNative) {
       // Node/Docker (Render) 模式：Native groups 不能直接放在 config JSON 的 lives 里，
-      // 必须替换为 FongMi 指针，让 TVBox 通过 /live-config 拉取 txt 格式频道列表。
+      // 必须替换为 FongMi 指针，让 TVBox 通过 /live 拉取 txt 格式频道列表。
       merged.lives = [
         {
           name: '直播(聚合)',
           type: 0,
-          url: `${BASE_URL_PLACEHOLDER}/live-config`,
+          url: `${BASE_URL_PLACEHOLDER}/live`,
         },
       ];
-      console.log('[aggregation] Step 7.8: Unified live entry pointing to /live-config (Node/Docker)');
+      console.log('[aggregation] Step 7.8: Unified live entry pointing to /live (Node/Docker)');
     }
   }
 
