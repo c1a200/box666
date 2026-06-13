@@ -461,28 +461,6 @@ ${sharedStyles}
 
   <!-- Cloud Tab -->
   <div class="tab-panel" id="panelCloud">
-    <!-- 网盘模式设置 -->
-    <div class="section">
-      <div class="section-title" data-i18n="cloudTokenModeTitle">Cloud Token Mode</div>
-      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-          <input type="checkbox" id="localTokenCheck" onchange="saveLocalToken()">
-          <span data-i18n="localTokenLabel">Use local client-side cloud drive configuration (allows TV App scan/login)</span>
-        </label>
-        <span class="status-text" id="localTokenStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
-      </div>
-      <div style="margin-top:6px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="localTokenDesc">When enabled, the config token points to TVBox local file, enabling TV-side QR login. When disabled, it uses cloud credentials configured here.</div>
-      
-      <!-- 本地模式下展示云端配置中心开关 -->
-      <div style="margin-top:10px;display:none;gap:10px;align-items:center;flex-wrap:wrap" id="showCloudConfigContainer">
-        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-          <input type="checkbox" id="showCloudConfigCheck" onchange="saveShowCloudConfig()">
-          <span data-i18n="showCloudConfigLabel">Expose Cloud Config Center in Local Mode (permits clients to browse admin-shared drives)</span>
-        </label>
-        <span class="status-text" id="showCloudConfigStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
-      </div>
-    </div>
-
     <!-- 网盘登录 -->
     <div class="section">
       <div class="section-title" data-i18n="cloudLogin">Cloud Login</div>
@@ -786,10 +764,6 @@ const translations = {
     probeDeep:'Deep (validate content)', probeShallow:'Shallow (HTTP only)',
     autoCleanLabel:'Auto-blacklist after 5 consecutive failures (max 5/run)',
     siteProbeDesc:'Deep mode checks type0/type1 content validity. Failed sites get [⚠] marker after 3 failures.',
-    cloudTokenModeTitle:'Cloud Token Mode',
-    localTokenLabel:'Use local client-side cloud drive configuration (allows TV App scan/login)',
-    localTokenDesc:'When enabled, the config token points to TVBox local file, enabling TV-side QR login. When disabled, it uses cloud credentials configured here.',
-    showCloudConfigLabel:'Expose Cloud Config Center under Local Mode (permits clients to browse admin-shared drives)',
     footer:'TVBox Source Aggregator &middot; Admin Console',
   },
   zh: {
@@ -867,10 +841,6 @@ const translations = {
     probeDeep:'深度（验证内容有效性）', probeShallow:'浅层（仅 HTTP 可达）',
     autoCleanLabel:'连续失败 5 次自动屏蔽（每次最多 5 个）',
     siteProbeDesc:'深度模式会检查 type0/type1 站点是否返回有效内容。连续失败 3 次的站点会被标记 [⚠]。',
-    cloudTokenModeTitle:'网盘 Token 模式',
-    localTokenLabel:'使用客户端本地网盘配置（允许电视端扫码/登录）',
-    localTokenDesc:'启用后，配置中的 token 指向 TVBox 本地文件，支持在电视端本地进行扫码登录。禁用后，统一使用此管理后台配置的网盘凭证。',
-    showCloudConfigLabel:'在本地模式下展示云端配置中心（允许客户端端浏览和播放管理员配置的共享云网盘）',
     footer:'TVBox 源聚合器 &middot; 管理控制台',
   }
 };
@@ -2340,45 +2310,6 @@ async function saveSmartBaseUrl() {
   setTimeout(() => $('smartBaseUrlStatus').textContent = '', 2000);
 }
 
-// ─── 本地网盘配置 ──────────
-function toggleShowCloudConfigVisibility(enabled) {
-  $('showCloudConfigContainer').style.display = enabled ? 'flex' : 'none';
-}
-async function loadLocalToken() {
-  try {
-    const r = await auth.authFetch('/admin/local-token');
-    const d = await r.json();
-    $('localTokenCheck').checked = d.enabled;
-    toggleShowCloudConfigVisibility(d.enabled);
-  } catch {}
-  try {
-    const r = await auth.authFetch('/admin/show-cloud-config');
-    const d = await r.json();
-    $('showCloudConfigCheck').checked = d.showCloudConfig;
-  } catch {}
-}
-async function saveLocalToken() {
-  const enabled = $('localTokenCheck').checked;
-  toggleShowCloudConfigVisibility(enabled);
-  try {
-    await auth.authFetch('/admin/local-token', { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({enabled}) });
-    $('localTokenStatus').textContent = '✓';
-    setTimeout(() => $('localTokenStatus').textContent = '', 2000);
-  } catch {
-    $('localTokenStatus').textContent = '✗';
-  }
-}
-async function saveShowCloudConfig() {
-  const showCloudConfig = $('showCloudConfigCheck').checked;
-  try {
-    await auth.authFetch('/admin/show-cloud-config', { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({showCloudConfig}) });
-    $('showCloudConfigStatus').textContent = '✓';
-    setTimeout(() => $('showCloudConfigStatus').textContent = '', 2000);
-  } catch {
-    $('showCloudConfigStatus').textContent = '✗';
-  }
-}
-
 // ─── 验活深度 ────────────────
 async function loadProbeDepth() {
   try {
@@ -2416,7 +2347,6 @@ loadSmartBaseUrl();
 loadProbeDepth();
 loadAutoClean();
 loadIgnoreAggregatedLives();
-loadLocalToken();
 
 applyTheme(getTheme());
 initThemeDropdown();

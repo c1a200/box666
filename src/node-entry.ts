@@ -4,7 +4,7 @@ import { serve } from '@hono/node-server';
 import { webcrypto } from 'crypto';
 import { ProxyAgent, setGlobalDispatcher } from 'undici';
 
-if (typeof globalThis.crypto === 'undefined') {
+if (typeof (globalThis as any).crypto === 'undefined') {
   Object.defineProperty(globalThis, 'crypto', {
     value: webcrypto,
     writable: false,
