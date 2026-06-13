@@ -2,6 +2,7 @@
 
 import type { TVBoxConfig, TVBoxSite, SourcedConfig } from './types';
 import { normalizeConfig, extractSpiderJarUrl } from './parser';
+import { getDirectPlatformFromApi } from './credential-risk';
 import {
   deduplicateSites,
   deduplicateParses,
@@ -238,8 +239,13 @@ export function cleanLocalRefs(config: TVBoxConfig): TVBoxConfig {
       console.log(`[cleaner] Removed site ${site.key}: local api ${site.api}`);
       return false;
     }
-    // 过滤 ext 字符串包含本地地址的站点
+    // 过滤 ext 字符串包含本地地址的站点，但保留可以直接注入凭据的网盘源或使用 token.json 的源
     if (typeof site.ext === 'string' && isLocal(site.ext)) {
+      const isNetdisk = getDirectPlatformFromApi(site.api) !== null;
+      const isTokenJson = site.ext.includes('token.json') || site.ext.includes('token_json');
+      if (isNetdisk || isTokenJson) {
+        return true; // 保留，因为聚合器会注入凭据或重写为云端 token.json
+      }
       console.log(`[cleaner] Removed site ${site.key}: local ext`);
       return false;
     }
