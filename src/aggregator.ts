@@ -548,23 +548,39 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
   // Save the final processed lives to KV_LIVE_MERGED_DATA (so /live.json can serve them)
   await storage.put(KV_LIVE_MERGED_DATA, JSON.stringify(merged.lives || []));
 
-  // Step 7.8: 统一直播入口名称，避免多个上游直播源直接暴露给 TVBox
-  // 注：在 Cloudflare Workers 上，因为跳过了频道合并，有两种方案：
-  // 1. 合并模式 (merged): 将所有直播源统写为一个指向 /live-config 的统一入口，进行实时后台下载合并。
-  // 2. 分离模式 (separated): 输出去重后的原始直播源列表，让客户端端分别呈现和选择。
-  if (config.workerBaseUrl && merged.lives && merged.lives.length > 0) {
-    const liveMergeMode = (await storage.get(KV_LIVE_MERGE_MODE)) || 'separated';
-    if (liveMergeMode === 'merged') {
+  // Step 7.8: 统一直播入口 —— TVBox 的 lives 字段只认 FongMi 格式 {name,type,url}，
+  // 如果存入 Native 格式 {group,channels} 会导致 TVBox 无法加载直播源。
+  // 因此：当合并后产生了频道数据（Native groups），必须替换为一个指向 /live-config 的指针。
+  if (merged.lives && merged.lives.length > 0) {
+    // 检测是否为 Native 格式（channel-level 合并后的产物）
+    const isNative = merged.lives.some((l: any) => l.group && Array.isArray(l.channels));
+
+    if (config.workerBaseUrl) {
+      // CF Workers 模式
+      const liveMergeMode = (await storage.get(KV_LIVE_MERGE_MODE)) || 'separated';
+      if (liveMergeMode === 'merged' || isNative) {
+        merged.lives = [
+          {
+            name: '直播(聚合)',
+            type: 0,
+            url: `${config.workerBaseUrl.replace(/\/$/, '')}/live-config`,
+          },
+        ];
+        console.log('[aggregation] Step 7.8: Unified live entry pointing to /live-config (CF Workers)');
+      } else {
+        console.log('[aggregation] Step 7.8: Kept raw live sources directly on Workers (Separated Mode)');
+      }
+    } else if (isNative) {
+      // Node/Docker (Render) 模式：Native groups 不能直接放在 config JSON 的 lives 里，
+      // 必须替换为 FongMi 指针，让 TVBox 通过 /live-config 拉取 txt 格式频道列表。
       merged.lives = [
         {
-          name: '176111直播(聚合)',
+          name: '直播(聚合)',
           type: 0,
-          url: `${config.workerBaseUrl.replace(/\/$/, '')}/live-config`,
+          url: `${BASE_URL_PLACEHOLDER}/live-config`,
         },
       ];
-      console.log('[aggregation] Step 7.8: Unified live entry pointing to /live-config (Merged Mode)');
-    } else {
-      console.log('[aggregation] Step 7.8: Kept raw live sources directly on Workers (Separated Mode)');
+      console.log('[aggregation] Step 7.8: Unified live entry pointing to /live-config (Node/Docker)');
     }
   }
 
