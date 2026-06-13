@@ -245,6 +245,12 @@ async function main() {
     console.log('');
     console.log(`  TVBox 填入地址: http://${displayHost}:${info.port}/`);
     console.log('');
+
+    // 后台启动一次聚合，确保最新配置在部署或重启后能自动更新到数据库中，避免因未触发刷新导致配置不同步
+    setTimeout(() => {
+      console.log('[aggregation] Triggering automatic startup aggregation...');
+      runWithGuard();
+    }, 5000);
   });
 }
 
