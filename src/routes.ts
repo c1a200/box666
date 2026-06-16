@@ -2086,8 +2086,13 @@ export function createApp(deps: AppDeps): Hono {
     }
 
     try {
-      await deps.triggerRefresh();
-      return c.json({ success: true, message: 'Refresh completed' });
+      if (c.executionCtx) {
+        c.executionCtx.waitUntil(deps.triggerRefresh());
+        return c.json({ success: true, message: 'Refresh started in background' });
+      } else {
+        await deps.triggerRefresh();
+        return c.json({ success: true, message: 'Refresh completed' });
+      }
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
       return c.json({ success: false, error: msg }, 500);
