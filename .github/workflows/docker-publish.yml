@@ -81,6 +81,8 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Trigger Render Deploy Webhook
-        if: ${{ secrets.RENDER_DEPLOY_WEBHOOK }}
+        env:
+          RENDER_DEPLOY_WEBHOOK: ${{ secrets.RENDER_DEPLOY_WEBHOOK }}
+        if: env.RENDER_DEPLOY_WEBHOOK != ''
         run: |
-          curl -s "${{ secrets.RENDER_DEPLOY_WEBHOOK }}"
+          curl -s "$RENDER_DEPLOY_WEBHOOK"
