@@ -75,12 +75,13 @@ export function getDirectPlatformFromApi(api: string): CloudPlatform | null {
   const name = api.toLowerCase();
   if (name.includes('ali')) return 'aliyun';
   if (name.includes('quark')) return 'quark';
-  if (name === 'csp_uc' || name.startsWith('csp_uc')) return 'uc';
+  if (name.includes('uc') || name.startsWith('csp_uc')) return 'uc';
   if (name.includes('pikpak')) return 'pikpak';
   if (name.includes('115')) return 'pan115';
   if (name.includes('baidu')) return 'baidu';
-  if (name.includes('tianyi')) return 'tianyi';
+  if (name.includes('tianyi') || name.includes('189')) return 'tianyi';
   if (name.includes('123')) return 'pan123';
+  if (name.includes('xunlei') || name.includes('thunder')) return 'thunder';
   return null;
 }
 
