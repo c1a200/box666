@@ -1,23 +1,20 @@
-FROM node:20-alpine AS builder
-
-RUN apk add --no-cache python3 make g++
+FROM node:20-slim AS builder
 
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci --ignore-scripts --registry https://registry.npmmirror.com && \
-    npm rebuild esbuild better-sqlite3
+RUN npm ci --registry https://registry.npmmirror.com
 COPY . .
 RUN npm run build:node
 
-FROM node:20-alpine
+FROM node:20-slim
 
-RUN apk add --no-cache python3 make g++ tzdata
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends tzdata && \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci --omit=dev --ignore-scripts --registry https://registry.npmmirror.com && \
-    npm rebuild better-sqlite3 && \
-    apk del python3 make g++
+RUN npm ci --omit=dev --registry https://registry.npmmirror.com
 COPY --from=builder /app/dist ./dist
 
 RUN mkdir -p /app/data
