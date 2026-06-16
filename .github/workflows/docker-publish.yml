@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 env:
-  IMAGE_NAME: rio22/tvbox-aggregator
+  IMAGE_NAME: ${{ github.repository_owner }}/tvbox-aggregator
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
