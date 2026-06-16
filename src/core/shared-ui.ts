@@ -109,7 +109,7 @@ function toggleCollapsible(toggleEl) {
 }
 
 function getTheme() {
-  return localStorage.getItem('theme') || 'dark';
+  return localStorage.getItem('theme') || 'light';
 }
 
 var THEMES = [

@@ -316,7 +316,7 @@ ${sharedStyles}
 .add-bar.visible{display:flex}
 .add-bar .count{color:var(--green);font-weight:600}
 </style>
-<script>(function(){var t=localStorage.getItem('theme')||'dark';document.documentElement.setAttribute('data-theme',t)})()</script>
+<script>(function(){var t=localStorage.getItem('theme')||'light';document.documentElement.setAttribute('data-theme',t)})()</script>
 </head>
 <body style="opacity:0">
 
