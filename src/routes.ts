@@ -1,7 +1,6 @@
 // Hono 统一路由层
 
 import { Hono } from 'hono';
-import { compress } from 'hono/compress';
 import { MemoryCachedStorage } from './storage/cached';
 import type { Storage } from './storage/interface';
 import type { AppConfig, SourceEntry, MacCMSSourceEntry, LiveSourceEntry, NameTransformConfig, EdgeProxyConfig } from './core/types';
@@ -84,7 +83,6 @@ function isNativeLiveGroups(lives: unknown): lives is TVBoxLiveGroup[] {
 
 export function createApp(deps: AppDeps): Hono {
   const app = new Hono();
-  app.use(compress());
 
   const rawStorage = deps.storage;
   const storage = new MemoryCachedStorage(rawStorage);
