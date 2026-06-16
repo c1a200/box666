@@ -482,6 +482,7 @@ ${sharedStyles}
         <button class="btn btn-sm" onclick="manualPasteCredential()" data-i18n="save">Save</button>
       </div>
       <div id="manualPasteStatus" class="status-text" style="margin-top:6px"></div>
+      <div class="cloud-helper-info" style="margin-top:12px;font-size:0.8rem;color:var(--text-secondary);background:rgba(255,255,255,0.03);padding:10px;border-radius:4px;border-left:3px solid var(--accent);line-height:1.5" data-i18n="cloudManualPasteHelp"></div>
     </div>
 
   </div>
@@ -764,6 +765,9 @@ const translations = {
     probeDeep:'Deep (validate content)', probeShallow:'Shallow (HTTP only)',
     autoCleanLabel:'Auto-blacklist after 5 consecutive failures (max 5/run)',
     siteProbeDesc:'Deep mode checks type0/type1 content validity. Failed sites get [⚠] marker after 3 failures.',
+    cloudManualPasteHelp: '<strong>💡 Manual Login Guide (Tianyi / 123Pan / UC):</strong><br>' +
+      '• <strong>Tianyi</strong>: Web QR is unstable. Use your phone browser to log in to <a href="https://h5.cloud.189.cn" target="_blank" style="color:var(--accent)">h5.cloud.189.cn</a>, copy the Cookie header value, select "Tianyi" above, and paste.<br>' +
+      '• <strong>123Pan</strong>: Third-party login is restricted. Log in to 123Pan Web -> Tool Center -> Third-Party Mount -> Generate WebDAV password. Select "123网盘" above and paste the password.',
     footer:'TVBox Source Aggregator &middot; Admin Console',
   },
   zh: {
@@ -841,6 +845,9 @@ const translations = {
     probeDeep:'深度（验证内容有效性）', probeShallow:'浅层（仅 HTTP 可达）',
     autoCleanLabel:'连续失败 5 次自动屏蔽（每次最多 5 个）',
     siteProbeDesc:'深度模式会检查 type0/type1 站点是否返回有效内容。连续失败 3 次的站点会被标记 [⚠]。',
+    cloudManualPasteHelp: '<strong>💡 手动配置指引 (天翼云盘 / 123网盘)：</strong><br>' +
+      '• <strong>天翼云盘</strong>：扫码极易失效，推荐手动抓取 Cookie 粘贴至上方。用手机浏览器登录 <a href="https://h5.cloud.189.cn" target="_blank" style="color:var(--accent)">h5.cloud.189.cn</a>，复制带 Cookie 的请求头填入。<br>' +
+      '• <strong>123网盘</strong>：第三方扫码受限，建议在 123网盘官网「工具中心」→「第三方挂载」生成 WebDAV 授权密码，在上方选择「123网盘」并填入密码。',
     footer:'TVBox 源聚合器 &middot; 管理控制台',
   }
 };

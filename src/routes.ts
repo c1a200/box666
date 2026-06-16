@@ -1,6 +1,8 @@
 // Hono 统一路由层
 
 import { Hono } from 'hono';
+import { compress } from 'hono/compress';
+import { MemoryCachedStorage } from './storage/cached';
 import type { Storage } from './storage/interface';
 import type { AppConfig, SourceEntry, MacCMSSourceEntry, LiveSourceEntry, NameTransformConfig, EdgeProxyConfig } from './core/types';
 import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_MANUAL_SOURCES, KV_LAST_UPDATE, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_BLACKLIST, LIVE_PROXY_TTL, IMG_PROXY_TTL, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_CRON_INTERVAL, DEFAULT_CRON_INTERVAL, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_AGG_LOGS, KV_BG_SETTINGS, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, KV_SMART_BASE_URL_ENABLED, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SITE_HEALTH_MAP } from './core/config';
@@ -82,7 +84,18 @@ function isNativeLiveGroups(lives: unknown): lives is TVBoxLiveGroup[] {
 
 export function createApp(deps: AppDeps): Hono {
   const app = new Hono();
-  const { storage, config } = deps;
+  app.use(compress());
+
+  const rawStorage = deps.storage;
+  const storage = new MemoryCachedStorage(rawStorage);
+
+  const origTriggerRefresh = deps.triggerRefresh;
+  deps.triggerRefresh = async () => {
+    await origTriggerRefresh();
+    storage.clear();
+  };
+
+  const { config } = deps;
 
   // ─── 本地字体（仅 Node 侧）──────────────────────────────
   if (!config.workerBaseUrl) {

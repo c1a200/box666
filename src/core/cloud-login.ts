@@ -44,7 +44,12 @@ async function safeFetchJson(url: string, init?: RequestInit, platformName: stri
       if (text.includes('cloudflare') || text.includes('challenge') || text.includes('captcha') || text.includes('Verify')) {
         throw new Error(`触发了人机验证或 Cloudflare 防御，请在下方直接使用【手动粘贴凭证】配置 Cookie 登录 ${platformName}`);
       }
-      throw new Error(`服务器未返回 JSON 格式数据，可能是 IP 被限制，请使用下方【手动粘贴凭证】登录 ${platformName}`);
+      // 容错：有些网盘（如 115）虽然返回的是 text/html 或 text/plain，但内容实际上是合法的 JSON 字符串
+      try {
+        return JSON.parse(text);
+      } catch {
+        throw new Error(`服务器未返回 JSON 格式数据，可能是 IP 被限制，请使用下方【手动粘贴凭证】登录 ${platformName}`);
+      }
     }
     return await resp.json();
   } catch (err: any) {
@@ -242,7 +247,8 @@ const quarkHandler: PlatformLoginHandler = {
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
     }, '夸克网盘');
 
-    if (data.status !== 200 || !data.data?.members?.token) {
+    // 夸克新型接口成功状态码返回 2000000，这里需要进行兼容
+    if (data.status !== 200 && data.status !== 2000000 || !data.data?.members?.token) {
       throw new Error(data.message || 'Quark QR generate failed');
     }
 
@@ -300,7 +306,8 @@ const ucHandler: PlatformLoginHandler = {
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
     }, 'UC 网盘');
 
-    if (data.status !== 200 || !data.data?.members?.token) {
+    // UC新型接口成功状态码返回 2000000，这里需要进行兼容
+    if (data.status !== 200 && data.status !== 2000000 || !data.data?.members?.token) {
       throw new Error(data.message || 'UC QR generate failed');
     }
 
@@ -405,22 +412,8 @@ const pan115Handler: PlatformLoginHandler = {
 
 const tianyiHandler: PlatformLoginHandler = {
   async generateQR() {
-    const data = await safeFetchJson('https://open.e.189.cn/api/logbox/oauth2/getQrcImg.do', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Referer': 'https://open.e.189.cn/',
-      },
-      body: 'appId=8025431004',
-    }, '天翼云盘');
-
-    if (data?.result !== 0 || !data?.uuid) throw new Error(data?.msg || 'Tianyi QR generate failed');
-
-    return {
-      qrUrl: `https://open.e.189.cn/api/logbox/oauth2/qrImg.do?uuid=${data.uuid}`,
-      token: data.uuid,
-    };
+    // 天翼网盘官方已下线该网页版扫码登录 API，抛出明确的不支持提示引导用户手动录入
+    throw new Error('天翼网盘官方已关闭扫码登录接口，请直接在下方使用【手动粘贴凭证】配置 Cookie 登录');
   },
 
   async pollStatus(token: string) {
@@ -529,22 +522,8 @@ function generateGid(): string {
 
 const pan123Handler: PlatformLoginHandler = {
   async generateQR() {
-    const data = await safeFetchJson('https://www.123pan.com/api/user/sign_in/qr', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Platform': 'web',
-      },
-      body: JSON.stringify({}),
-    }, '123 网盘');
-
-    if (data?.code !== 0 || !data?.data?.qrCode) throw new Error(data?.message || '123 QR generate failed');
-
-    return {
-      qrUrl: data.data.qrCode,
-      token: data.data.requestId || data.data.request_id || '',
-    };
+    // 123网盘官方已下线第三方网页扫码接口，抛出明确的不支持提示引导用户手动录入
+    throw new Error('123网盘官方已关闭第三方扫码登录接口，请直接在下方使用【手动粘贴凭证】配置 Token 登录');
   },
 
   async pollStatus(token: string) {
