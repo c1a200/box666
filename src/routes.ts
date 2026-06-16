@@ -2086,7 +2086,16 @@ export function createApp(deps: AppDeps): Hono {
     }
 
     try {
-      if (c.executionCtx) {
+      let hasCtx = false;
+      try {
+        if (c.executionCtx) {
+          hasCtx = true;
+        }
+      } catch (e) {
+        // Ignored: Hono throws if executionCtx getter is accessed in non-worker environments
+      }
+
+      if (hasCtx) {
         c.executionCtx.waitUntil(deps.triggerRefresh());
         return c.json({ success: true, message: 'Refresh started in background' });
       } else {
