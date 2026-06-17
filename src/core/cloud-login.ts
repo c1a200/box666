@@ -254,7 +254,7 @@ const quarkHandler: PlatformLoginHandler = {
 
     const token = data.data.members.token;
     return {
-      qrUrl: `https://su.quark.cn/4_eMHBJ?token=${token}&client_id=532&ssb=weblogin`,
+      qrUrl: `https://b.quark.cn/apps/DuJrlezmS/routes/EATJRLSvv?token=${token}&client_id=532&ssb=weblogin`,
       token: JSON.stringify({ token, requestId }),
     };
   },
@@ -324,7 +324,7 @@ const ucHandler: PlatformLoginHandler = {
 
     const token = data.data.members.token;
     return {
-      qrUrl: `https://su.quark.cn/4_eMHBJ?token=${token}&client_id=381&ssb=weblogin`,
+      qrUrl: `https://b.quark.cn/apps/DuJrlezmS/routes/EATJRLSvv?token=${token}&client_id=381&ssb=weblogin`,
       token: JSON.stringify({ token, requestId }),
     };
   },
