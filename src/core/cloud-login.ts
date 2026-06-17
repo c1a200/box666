@@ -255,12 +255,23 @@ const quarkHandler: PlatformLoginHandler = {
     const token = data.data.members.token;
     return {
       qrUrl: `https://su.quark.cn/4_eMHBJ?token=${token}&client_id=532&ssb=weblogin`,
-      token,
+      token: JSON.stringify({ token, requestId }),
     };
   },
 
-  async pollStatus(token: string) {
-    const data = await safeFetchJson(`https://uop.quark.cn/cas/ajax/getServiceTicketByQrcodeToken?client_id=532&token=${token}`, {
+  async pollStatus(tokenStr: string) {
+    let token = tokenStr;
+    let requestId = '';
+    try {
+      const parsed = JSON.parse(tokenStr);
+      if (parsed && typeof parsed === 'object') {
+        token = parsed.token || tokenStr;
+        requestId = parsed.requestId || '';
+      }
+    } catch {}
+
+    const url = `https://uop.quark.cn/cas/ajax/getServiceTicketByQrcodeToken?client_id=532&v=1.2&token=${token}` + (requestId ? `&request_id=${requestId}` : '');
+    const data = await safeFetchJson(url, {
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
     }, '夸克网盘');
 
@@ -314,12 +325,23 @@ const ucHandler: PlatformLoginHandler = {
     const token = data.data.members.token;
     return {
       qrUrl: `https://su.quark.cn/4_eMHBJ?token=${token}&client_id=381&ssb=weblogin`,
-      token,
+      token: JSON.stringify({ token, requestId }),
     };
   },
 
-  async pollStatus(token: string) {
-    const data = await safeFetchJson(`https://api.open.uc.cn/cas/ajax/getServiceTicketByQrcodeToken?client_id=381&token=${token}`, {
+  async pollStatus(tokenStr: string) {
+    let token = tokenStr;
+    let requestId = '';
+    try {
+      const parsed = JSON.parse(tokenStr);
+      if (parsed && typeof parsed === 'object') {
+        token = parsed.token || tokenStr;
+        requestId = parsed.requestId || '';
+      }
+    } catch {}
+
+    const url = `https://api.open.uc.cn/cas/ajax/getServiceTicketByQrcodeToken?client_id=381&v=1.2&token=${token}` + (requestId ? `&request_id=${requestId}` : '');
+    const data = await safeFetchJson(url, {
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
     }, 'UC 网盘');
 
