@@ -1974,7 +1974,7 @@ function showQRModal(platform, qrUrl, token) {
   overlay.id = 'qrModalOverlay';
   overlay.onclick = function(e) { if(e.target===overlay) closeQRModal(); };
 
-  const qrImgUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=' + encodeURIComponent(qrUrl);
+  const qrImgUrl = '/qr.svg?data=' + encodeURIComponent(qrUrl);
 
   overlay.innerHTML =
     '<div class="qr-modal">' +

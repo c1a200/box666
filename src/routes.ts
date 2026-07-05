@@ -140,6 +140,26 @@ export function createApp(deps: AppDeps): Hono {
     return c.json({ version: APP_VERSION, commit: APP_COMMIT });
   });
 
+  app.get('/qr.svg', async (c) => {
+    const data = c.req.query('data') || '';
+    if (!data) return c.text('Missing data', 400);
+    if (data.length > 2048) return c.text('Data too long', 400);
+
+    const QRCode = require('qrcode');
+    const svg = await QRCode.toString(data, {
+      type: 'svg',
+      errorCorrectionLevel: 'M',
+      margin: 2,
+      width: 250,
+    });
+
+    return c.body(svg, 200, {
+      'Content-Type': 'image/svg+xml; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+    });
+  });
+
   // ─── 占位符替换辅助 ────────────────────────────────────
   async function resolveBaseUrl(c: import('hono').Context): Promise<string | Response> {
     const smartEnabled = (await storage.get(KV_SMART_BASE_URL_ENABLED)) === 'true';
