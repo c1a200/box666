@@ -1961,20 +1961,20 @@ async function startQRLogin(platform) {
     const res = await auth.authFetch('/admin/cloud-login/' + platform + '/qr', { method: 'POST' });
     if (!res.ok) { const e = await res.json(); toast(e.error || 'QR failed', 'error'); return; }
     const data = await res.json();
-    showQRModal(platform, data.qrUrl, data.token);
+    showQRModal(platform, data.qrUrl, data.token, data.qrKind);
   } catch (e) {
     toast('QR generate failed: ' + e.message, 'error');
   }
 }
 
-function showQRModal(platform, qrUrl, token) {
+function showQRModal(platform, qrUrl, token, qrKind) {
   closeQRModal();
   const overlay = document.createElement('div');
   overlay.className = 'qr-modal-overlay';
   overlay.id = 'qrModalOverlay';
   overlay.onclick = function(e) { if(e.target===overlay) closeQRModal(); };
 
-  const qrImgUrl = '/qr.svg?data=' + encodeURIComponent(qrUrl);
+  const qrImgUrl = qrKind === 'image' ? qrUrl : '/qr.svg?data=' + encodeURIComponent(qrUrl);
 
   overlay.innerHTML =
     '<div class="qr-modal">' +

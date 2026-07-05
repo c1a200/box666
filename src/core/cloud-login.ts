@@ -5,6 +5,7 @@ import type { CloudPlatform } from './types';
 export type QRStatus = 'waiting' | 'scanned' | 'confirmed' | 'expired' | 'error';
 
 export interface QRResult {
+  qrKind?: 'content' | 'image';
   qrUrl: string;    // 需要编码为二维码的内容（URL 或 token）
   token: string;    // 轮询用的会话 token
 }
@@ -447,6 +448,7 @@ const pan115Handler: PlatformLoginHandler = {
     return {
       qrUrl: `https://qrcodeapi.115.com/api/1.0/web/1.0/qrcode?uid=${data.data.uid}`,
       token: JSON.stringify({ uid: data.data.uid, time: data.data.time, sign: data.data.sign }),
+      qrKind: 'image',
     };
   },
 
@@ -549,6 +551,7 @@ const baiduHandler: PlatformLoginHandler = {
     return {
       qrUrl: `https://${data.imgurl}`,
       token: JSON.stringify({ sign: data.sign, gid }),
+      qrKind: 'image',
     };
   },
 
