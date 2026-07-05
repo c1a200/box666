@@ -1900,6 +1900,7 @@ const PLATFORM_NAMES = {
   thunder:'迅雷', pikpak:'PikPak'
 };
 const QR_PLATFORMS = ['bilibili','aliyun','quark','uc','pan115','baidu'];
+const MANUAL_ONLY_PLATFORMS = ['pan123','tianyi'];
 const PW_PLATFORMS = ['thunder','pikpak'];
 let cloudCredentials = {};
 
@@ -1917,7 +1918,7 @@ async function loadCloudCredentials() {
 function renderCloudCards() {
   const grid = $('cloudLoginGrid');
   grid.innerHTML = '';
-  const allPlatforms = [...QR_PLATFORMS, ...PW_PLATFORMS];
+  const allPlatforms = [...QR_PLATFORMS, ...MANUAL_ONLY_PLATFORMS, ...PW_PLATFORMS];
 
   for (const p of allPlatforms) {
     const cred = cloudCredentials[p];
@@ -1925,6 +1926,7 @@ function renderCloudCards() {
     const statusClass = isLoggedIn ? (cred.status === 'expired' ? 'expired' : 'valid') : 'none';
     const statusText = isLoggedIn ? (cred.status === 'expired' ? 'EXPIRED' : 'ACTIVE') : 'NOT SET';
     const isQR = QR_PLATFORMS.includes(p);
+    const isManualOnly = MANUAL_ONLY_PLATFORMS.includes(p);
     const timeStr = cred?.obtainedAt ? new Date(cred.obtainedAt).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}) : '';
 
     const card = document.createElement('div');
@@ -1937,6 +1939,7 @@ function renderCloudCards() {
       (timeStr ? '<div class="cloud-card-time">' + timeStr + '</div>' : '') +
       '<div class="cloud-card-actions">' +
         (isQR ? '<button class="btn btn-sm" onclick="startQRLogin(\\''+p+'\\')">Scan QR</button>' :
+         isManualOnly ? '<button class="btn btn-sm" onclick="focusManualCredential(\\''+p+'\\')">Manual</button>' :
                 '<button class="btn btn-sm" onclick="showPasswordLogin(\\''+p+'\\')">Login</button>') +
         (isLoggedIn ? '<button class="btn btn-sm btn-danger" onclick="logoutPlatform(\\''+p+'\\')">Logout</button>' : '') +
       '</div>';
@@ -1969,17 +1972,18 @@ async function startQRLogin(platform) {
 
 function showQRModal(platform, qrUrl, token, qrKind) {
   closeQRModal();
+  if (!qrUrl) { toast('QR generate failed: empty QR URL', 'error'); return; }
   const overlay = document.createElement('div');
   overlay.className = 'qr-modal-overlay';
   overlay.id = 'qrModalOverlay';
   overlay.onclick = function(e) { if(e.target===overlay) closeQRModal(); };
 
-  const qrImgUrl = qrKind === 'image' ? qrUrl : '/qr.svg?data=' + encodeURIComponent(qrUrl);
+  const qrImgUrl = qrKind === 'image' ? qrUrl : '/qr.svg?data=' + encodeURIComponent(qrUrl) + '&_=' + Date.now();
 
   overlay.innerHTML =
     '<div class="qr-modal">' +
     '<h3>' + (PLATFORM_NAMES[platform]||platform) + ' - Scan QR</h3>' +
-    '<img src="' + qrImgUrl + '" alt="QR Code" onerror="this.alt=\\'QR: '+qrUrl.substring(0,60)+'...\\'">' +
+    '<img src="' + escHtml(qrImgUrl) + '" alt="QR Code" width="250" height="250" loading="eager" decoding="sync" onerror="this.style.display=\\'none\\';document.getElementById(\\'qrPollStatus\\').textContent=\\'QR image failed to load. Close and try again.\\';document.getElementById(\\'qrPollStatus\\').className=\\'qr-status expired\\';">' +
     '<div class="qr-status" id="qrPollStatus">Waiting for scan...</div>' +
     '<div style="margin-top:14px;display:flex;gap:8px;justify-content:center">' +
     '<button class="btn btn-sm" onclick="closeQRModal()">Cancel</button>' +
@@ -2272,6 +2276,14 @@ async function clearAggLogs() {
   if (!confirm('Clear all aggregation logs?')) return;
   await auth.authFetch('/admin/agg-logs', { method: 'DELETE' });
   loadAggLogs();
+}
+
+function focusManualCredential(platform) {
+  const sel = $('manualPlatform');
+  const input = $('manualCredValue');
+  if (sel) sel.value = platform;
+  if (input) input.focus();
+  toast((PLATFORM_NAMES[platform] || platform) + ' uses manual credential paste');
 }
 
 let liveLogsAbort = null;

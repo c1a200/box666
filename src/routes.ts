@@ -29,6 +29,7 @@ import { createLogViewerRouter } from './routes/log-viewer';
 import { createStaticAssetsRouter } from './routes/static-assets';
 import { clearDirtyMarker, getDirtyMarker, setDirtyMarker } from './core/dirty-marker';
 import { createSourceManagementRouter } from './routes/source-management';
+import * as QRCode from 'qrcode';
 
 export interface AppDeps {
   storage: Storage;
@@ -145,7 +146,6 @@ export function createApp(deps: AppDeps): Hono {
     if (!data) return c.text('Missing data', 400);
     if (data.length > 2048) return c.text('Data too long', 400);
 
-    const QRCode = require('qrcode');
     const svg = await QRCode.toString(data, {
       type: 'svg',
       errorCorrectionLevel: 'M',

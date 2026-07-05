@@ -144,6 +144,7 @@ const bilibiliHandler: PlatformLoginHandler = {
     return {
       qrUrl: data.data.url,
       token: data.data.auth_code,
+      qrKind: 'content',
     };
   },
 
@@ -192,6 +193,7 @@ const aliyunHandler: PlatformLoginHandler = {
     return {
       qrUrl: content.codeContent,
       token: JSON.stringify({ t: content.t, ck: content.ck || '' }),
+      qrKind: 'content',
     };
   },
 
@@ -275,6 +277,7 @@ const quarkHandler: PlatformLoginHandler = {
     return {
       qrUrl: `${QUARK_CONFIRM_PAGE_URL}&${qrParams.toString()}`,
       token: JSON.stringify({ token, clientId: QUARK_CLIENT_ID }),
+      qrKind: 'content',
     };
   },
 
@@ -374,6 +377,7 @@ const ucHandler: PlatformLoginHandler = {
     return {
       qrUrl: `${UC_CONFIRM_PAGE_URL}&${qrParams.toString()}`,
       token: JSON.stringify({ token, clientId: UC_CLIENT_ID }),
+      qrKind: 'content',
     };
   },
 
