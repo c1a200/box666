@@ -65,6 +65,7 @@ async function safeFetchJson(url: string, init?: RequestInit, platformName: stri
 
 const BILI_APPKEY = '4409e2ce8ffd12b8';
 const BILI_APPSEC = '59b43e04ad6965f34319062b478f83dd';
+const BILI_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36';
 
 async function biliSign(params: Record<string, string>): Promise<string> {
   const sorted = Object.keys(params).sort().map(k => `${k}=${params[k]}`).join('&');
@@ -129,26 +130,71 @@ function md5Pure(str: string): string {
 
 const bilibiliHandler: PlatformLoginHandler = {
   async generateQR() {
-    const ts = Math.floor(Date.now() / 1000).toString();
-    const params: Record<string, string> = { appkey: BILI_APPKEY, local_id: '0', ts };
-    const body = await biliSign(params);
-
-    const data = await safeFetchJson('https://passport.bilibili.com/x/passport-tv-login/qrcode/auth_code', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body,
+    const data = await safeFetchJson('https://passport.bilibili.com/x/passport-login/web/qrcode/generate', {
+      method: 'GET',
+      headers: {
+        'User-Agent': BILI_UA,
+        'Referer': 'https://www.bilibili.com/',
+        'Accept': 'application/json, text/plain, */*',
+      },
     }, 'Bilibili');
 
-    if (data.code !== 0) throw new Error(data.message || 'Bilibili QR generate failed');
+    if (data.code !== 0 || !data.data?.url || !data.data?.qrcode_key) {
+      throw new Error(data.message || 'Bilibili QR generate failed');
+    }
 
     return {
       qrUrl: data.data.url,
-      token: data.data.auth_code,
+      token: JSON.stringify({ mode: 'web', qrcodeKey: data.data.qrcode_key }),
       qrKind: 'content',
     };
   },
 
   async pollStatus(token: string) {
+    let parsedToken: any = null;
+    try {
+      parsedToken = JSON.parse(token);
+    } catch {}
+
+    if (parsedToken?.mode === 'web' && parsedToken.qrcodeKey) {
+      const resp = await fetch('https://passport.bilibili.com/x/passport-login/web/qrcode/poll?qrcode_key=' + encodeURIComponent(parsedToken.qrcodeKey), {
+        headers: {
+          'User-Agent': BILI_UA,
+          'Referer': 'https://www.bilibili.com/',
+          'Accept': 'application/json, text/plain, */*',
+        },
+      });
+      if (!resp.ok) {
+        return { status: 'error' as QRStatus, message: `Bilibili poll failed: HTTP ${resp.status}` };
+      }
+
+      const data: any = await resp.json();
+      const code = data?.data?.code;
+      if (data?.code !== 0) {
+        return { status: 'error' as QRStatus, message: data?.message || 'Bilibili poll failed' };
+      }
+
+      if (code === 0) {
+        const setCookies = (resp.headers as any).getSetCookie?.() || splitSetCookieHeader(resp.headers.get('set-cookie') || '');
+        const cookieParts: string[] = [];
+        for (const sc of setCookies) {
+          const part = sc.split(';')[0];
+          if (part) cookieParts.push(part);
+        }
+        if (cookieParts.length === 0) {
+          return { status: 'error' as QRStatus, message: 'Bilibili login confirmed, but no cookie was returned' };
+        }
+        return {
+          status: 'confirmed' as QRStatus,
+          credential: { cookie: cookieParts.join('; ') },
+        };
+      }
+
+      if (code === 86090) return { status: 'scanned' as QRStatus };
+      if (code === 86038) return { status: 'expired' as QRStatus };
+      return { status: 'waiting' as QRStatus };
+    }
+
     const ts = Math.floor(Date.now() / 1000).toString();
     const params: Record<string, string> = { appkey: BILI_APPKEY, auth_code: token, local_id: '0', ts };
     const body = await biliSign(params);
@@ -177,6 +223,11 @@ const bilibiliHandler: PlatformLoginHandler = {
     return { status: 'waiting' as QRStatus };
   },
 };
+
+function splitSetCookieHeader(header: string): string[] {
+  if (!header) return [];
+  return header.split(/,(?=\s*[^;,]+=)/g).map(s => s.trim()).filter(Boolean);
+}
 
 // ─── 阿里云盘（Web QR 登录）─────────────────────────────
 
