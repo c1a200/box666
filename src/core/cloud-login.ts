@@ -539,7 +539,8 @@ const tianyiHandler: PlatformLoginHandler = {
 
 const baiduHandler: PlatformLoginHandler = {
   async generateQR() {
-    const data = await safeFetchJson('https://passport.baidu.com/v2/api/getqrcode?lp=pc&qrloginfrom=pc&gid=' + generateGid(), {
+    const gid = generateGid();
+    const data = await safeFetchJson('https://passport.baidu.com/v2/api/getqrcode?lp=pc&qrloginfrom=pc&gid=' + gid, {
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
     }, '百度网盘');
 
@@ -547,12 +548,23 @@ const baiduHandler: PlatformLoginHandler = {
 
     return {
       qrUrl: `https://${data.imgurl}`,
-      token: data.sign,
+      token: JSON.stringify({ sign: data.sign, gid }),
     };
   },
 
-  async pollStatus(token: string) {
-    const data = await safeFetchJson(`https://passport.baidu.com/channel/unicast?channel_id=${token}&tpl=netdisk&gid=${generateGid()}&apiver=v3`, {
+  async pollStatus(tokenStr: string) {
+    let sign = tokenStr;
+    let gid = '';
+    try {
+      const parsed = JSON.parse(tokenStr);
+      if (parsed && typeof parsed === 'object') {
+        sign = parsed.sign || tokenStr;
+        gid = parsed.gid || '';
+      }
+    } catch {}
+    if (!gid) gid = generateGid();
+
+    const data = await safeFetchJson(`https://passport.baidu.com/channel/unicast?channel_id=${sign}&tpl=netdisk&gid=${gid}&apiver=v3`, {
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
     }, '百度网盘');
 
@@ -695,7 +707,7 @@ const HANDLERS: Record<CloudPlatform, PlatformLoginHandler> = {
 };
 
 export const PASSWORD_PLATFORMS: CloudPlatform[] = ['thunder', 'pikpak'];
-export const QR_PLATFORMS: CloudPlatform[] = ['bilibili', 'aliyun', 'quark', 'uc', 'pan115', 'tianyi', 'baidu', 'pan123'];
+export const QR_PLATFORMS: CloudPlatform[] = ['bilibili', 'aliyun', 'quark', 'uc', 'pan115', 'baidu'];
 
 export const PLATFORM_NAMES: Record<CloudPlatform, string> = {
   aliyun: '阿里云盘',

@@ -1899,7 +1899,7 @@ const PLATFORM_NAMES = {
   pan115:'115 网盘', tianyi:'天翼云盘', baidu:'百度网盘', pan123:'123 网盘',
   thunder:'迅雷', pikpak:'PikPak'
 };
-const QR_PLATFORMS = ['bilibili','aliyun','quark','uc','pan115','tianyi','baidu','pan123'];
+const QR_PLATFORMS = ['bilibili','aliyun','quark','uc','pan115','baidu'];
 const PW_PLATFORMS = ['thunder','pikpak'];
 let cloudCredentials = {};
 
