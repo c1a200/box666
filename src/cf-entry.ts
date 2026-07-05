@@ -14,6 +14,7 @@ interface CfEnv {
   SITE_TIMEOUT_MS?: string;
   FETCH_TIMEOUT_MS?: string;
   WORKER_BASE_URL?: string;
+  BILIBILI_QR_PROXY_BASE_URL?: string;
 }
 
 function buildConfig(env: CfEnv): AppConfig {
@@ -24,6 +25,7 @@ function buildConfig(env: CfEnv): AppConfig {
     siteTimeoutMs: parseInt(env.SITE_TIMEOUT_MS || '') || DEFAULT_SITE_TIMEOUT_MS,
     fetchTimeoutMs: parseInt(env.FETCH_TIMEOUT_MS || '') || DEFAULT_FETCH_TIMEOUT_MS,
     workerBaseUrl: env.WORKER_BASE_URL || undefined,
+    bilibiliQrProxyBaseUrl: env.BILIBILI_QR_PROXY_BASE_URL || undefined,
   };
 }
 

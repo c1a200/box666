@@ -98,6 +98,29 @@ export function createApp(deps: AppDeps): Hono {
 
   const { config } = deps;
 
+  async function proxyBilibiliQR(pathAndQuery: string, init: RequestInit = {}): Promise<{ data?: any; error?: string; status?: number }> {
+    const base = config.bilibiliQrProxyBaseUrl?.replace(/\/+$/, '');
+    if (!base) return {};
+    const headers = new Headers(init.headers);
+    headers.set('X-Bilibili-QR-Proxy', '1');
+    if (config.adminToken) headers.set('Authorization', `Bearer ${config.adminToken}`);
+    try {
+      const resp = await fetch(base + pathAndQuery, {
+        ...init,
+        headers,
+      });
+      const text = await resp.text();
+      let data: any = {};
+      try { data = text ? JSON.parse(text) : {}; } catch { data = { error: text || `HTTP ${resp.status}` }; }
+      if (!resp.ok) {
+        return { error: data.error || data.message || `Bilibili QR proxy failed: HTTP ${resp.status}`, status: resp.status };
+      }
+      return { data };
+    } catch (err) {
+      return { error: `Bilibili QR proxy failed: ${err instanceof Error ? err.message : String(err)}`, status: 502 };
+    }
+  }
+
   async function markOutputDirty(): Promise<void> {
     await setDirtyMarker(storage);
     storage.clear();
@@ -704,6 +727,12 @@ export function createApp(deps: AppDeps): Hono {
     }
 
     try {
+      if (platform === 'bilibili' && config.bilibiliQrProxyBaseUrl && c.req.header('X-Bilibili-QR-Proxy') !== '1') {
+        const proxied = await proxyBilibiliQR('/admin/cloud-login/bilibili/qr', { method: 'POST' });
+        if (proxied.error) return c.json({ error: proxied.error }, (proxied.status || 502) as any);
+        if (proxied.data) return c.json(proxied.data);
+      }
+
       const result = await generateQR(platform);
       return c.json(result);
     } catch (err: unknown) {
@@ -720,6 +749,25 @@ export function createApp(deps: AppDeps): Hono {
     if (!token) return c.json({ error: 'token is required' }, 400);
 
     try {
+      if (platform === 'bilibili' && config.bilibiliQrProxyBaseUrl && c.req.header('X-Bilibili-QR-Proxy') !== '1') {
+        const proxied = await proxyBilibiliQR('/admin/cloud-login/bilibili/poll?token=' + encodeURIComponent(token), { method: 'GET' });
+        if (proxied.error) return c.json({ error: proxied.error, status: 'error' }, (proxied.status || 502) as any);
+        const result = proxied.data;
+
+        if (result?.status === 'confirmed' && result.credential) {
+          const cred: CloudCredential = {
+            platform,
+            credential: result.credential,
+            obtainedAt: new Date().toISOString(),
+            status: 'valid',
+          };
+          await saveCredential(storage, cred);
+          await refreshAfterCredentialChange(c);
+        }
+
+        return c.json(result);
+      }
+
       const result = await pollQRStatus(platform, token);
 
       // 登录成功：自动保存凭证

@@ -116,6 +116,7 @@ async function buildConfig(port: number): Promise<AppConfig> {
     fetchTimeoutMs: parseInt(process.env.FETCH_TIMEOUT_MS || '') || DEFAULT_FETCH_TIMEOUT_MS,
     cronSchedule: process.env.CRON_SCHEDULE || '0 5 * * *',
     localBaseUrl: baseUrl.replace(/\/$/, ''),
+    bilibiliQrProxyBaseUrl: process.env.BILIBILI_QR_PROXY_BASE_URL,
     dockerMissingBaseUrl,
     // 自动抓取（环境变量驱动）
     scrapeSourceUrl: process.env.SCRAPE_SOURCE_URL,
