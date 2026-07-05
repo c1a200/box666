@@ -117,6 +117,7 @@ async function buildConfig(port: number): Promise<AppConfig> {
     cronSchedule: process.env.CRON_SCHEDULE || '0 5 * * *',
     localBaseUrl: baseUrl.replace(/\/$/, ''),
     bilibiliQrProxyBaseUrl: process.env.BILIBILI_QR_PROXY_BASE_URL,
+    bilibiliQrProxyToken: process.env.BILIBILI_QR_PROXY_TOKEN,
     dockerMissingBaseUrl,
     // 自动抓取（环境变量驱动）
     scrapeSourceUrl: process.env.SCRAPE_SOURCE_URL,

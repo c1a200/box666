@@ -103,7 +103,8 @@ export function createApp(deps: AppDeps): Hono {
     if (!base) return {};
     const headers = new Headers(init.headers);
     headers.set('X-Bilibili-QR-Proxy', '1');
-    if (config.adminToken) headers.set('Authorization', `Bearer ${config.adminToken}`);
+    const token = config.bilibiliQrProxyToken || config.adminToken;
+    if (token) headers.set('Authorization', `Bearer ${token}`);
     try {
       const resp = await fetch(base + pathAndQuery, {
         ...init,

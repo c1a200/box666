@@ -167,6 +167,7 @@ export interface AppConfig {
   dockerMissingBaseUrl?: boolean;  // Docker 环境未配置 BASE_URL 时为 true
   // 自动抓取配置（环境变量驱动，未配置则不启用）
   bilibiliQrProxyBaseUrl?: string;
+  bilibiliQrProxyToken?: string;
   scrapeSourceUrl?: string;
   scrapeSourceReferer?: string;
   maccmsApiUrl?: string;
