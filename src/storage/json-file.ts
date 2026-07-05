@@ -1,7 +1,7 @@
 // JSON 文件存储（SQLite 降级方案）
 
 import type { Storage } from './interface';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from 'fs';
 import { dirname } from 'path';
 
 export class JsonFileStorage implements Storage {
@@ -31,6 +31,8 @@ export class JsonFileStorage implements Storage {
 
   async put(key: string, value: string): Promise<void> {
     this.data[key] = value;
-    writeFileSync(this.filePath, JSON.stringify(this.data, null, 2));
+    const tmpPath = `${this.filePath}.${process.pid}.tmp`;
+    writeFileSync(tmpPath, JSON.stringify(this.data, null, 2));
+    renameSync(tmpPath, this.filePath);
   }
 }

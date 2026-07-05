@@ -69,6 +69,7 @@ export const KV_CHANNEL_MERGED_TREE = 'channel_merged_tree'; // 最近一次合�
 export const KV_AGG_LOGS = 'agg_logs';
 export const AGG_LOGS_MAX = 50;
 export const KV_SITE_SNAPSHOT = 'site_snapshot';
+export const KV_DIRTY_MARKER = 'dirty_marker';
 
 // 背景设置
 export const KV_BG_SETTINGS = 'bg_settings';

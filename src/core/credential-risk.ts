@@ -71,6 +71,24 @@ const TOKEN_JSON_PLATFORMS: CloudPlatform[] = [
   'pan123',
 ];
 
+const API_PLATFORM_PATTERNS: Array<{ pattern: RegExp; platforms: CloudPlatform[]; tokenJson?: boolean }> = [
+  { pattern: /^csp_Bili/i, platforms: ['bilibili'] },
+  { pattern: /^csp_Wo[bg]g/i, platforms: ['aliyun', 'quark', 'uc', 'pan115', 'thunder', 'pikpak'], tokenJson: true },
+  { pattern: /^csp_Mogg/i, platforms: ['quark', 'aliyun', 'uc', 'tianyi', 'baidu', 'pan123', 'thunder'] },
+  { pattern: /^csp_Pan115/i, platforms: ['pan115'] },
+];
+
+function getPlatformsFromApi(api: string): CloudPlatform[] | null {
+  const exact = API_TO_PLATFORMS[api];
+  if (exact) return exact;
+
+  return API_PLATFORM_PATTERNS.find((item) => item.pattern.test(api))?.platforms || null;
+}
+
+function isTokenJsonApi(api: string): boolean {
+  return API_PLATFORM_PATTERNS.some((item) => item.tokenJson && item.pattern.test(api));
+}
+
 export function getDirectPlatformFromApi(api: string): CloudPlatform | null {
   const name = api.toLowerCase();
   if (name.includes('ali')) return 'aliyun';
@@ -98,8 +116,18 @@ export function assessSourceRisk(site: TVBoxSite): SourceRiskAssessment {
     thirdPartyDomains: [],
   };
 
+  const apiPlatforms = getPlatformsFromApi(site.api);
+  if (apiPlatforms) {
+    result.neededPlatforms = [...apiPlatforms];
+  }
+
   const ext = site.ext;
   if (!ext) {
+    if (apiPlatforms) {
+      result.riskLevel = isTokenJsonApi(site.api) ? 'low' : 'safe';
+      result.reason = 'A class: known netdisk API with empty ext still needs credential injection';
+      return result;
+    }
     result.reason = 'A类: 无 ext 字段';
     return result;
   }
@@ -110,7 +138,6 @@ export function assessSourceRisk(site: TVBoxSite): SourceRiskAssessment {
   result.thirdPartyDomains = thirdPartyDomains;
 
   // 从 api class 推断需要的平台
-  const apiPlatforms = API_TO_PLATFORMS[site.api];
   if (apiPlatforms) {
     result.neededPlatforms = [...apiPlatforms];
   } else {
@@ -129,7 +156,7 @@ export function assessSourceRisk(site: TVBoxSite): SourceRiskAssessment {
   }
 
   // A类: ext 无 cookie 相关字段 → safe
-  if (!hasCookieFields && !isTokenJsonExt) {
+  if (!hasCookieFields && !isTokenJsonExt && result.neededPlatforms.length === 0) {
     result.reason = 'A类: ext 无 cookie 相关字段';
     return result;
   }

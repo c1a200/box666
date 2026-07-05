@@ -22,6 +22,7 @@ import { getDirectPlatformFromApi } from './core/credential-risk';
 import { loadGroupOrder, applyGroupOrder } from './core/group-order';
 import { deduplicateSimilarNames } from './core/dedup';
 import { logger } from './core/logger';
+import { clearDirtyMarker } from './core/dirty-marker';
 import type { NameTransformConfig, EdgeProxyConfig } from './core/types';
 
 export async function runAggregation(storage: Storage, config: AppConfig): Promise<void> {
@@ -654,6 +655,7 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
 
   await appendAggLog(storage, aggLog);
   await storage.put(KV_SITE_SNAPSHOT, JSON.stringify([...nowSiteKeys]));
+  await clearDirtyMarker(storage);
 
   if (addedSites.length > 0 || removedSites.length > 0) {
     logger.infoFields('aggregation', 'site-diff', { added: addedSites.length, removed: removedSites.length });

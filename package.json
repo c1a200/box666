@@ -8,6 +8,7 @@
     "build:node": "node scripts/build.js",
     "build:apk": "node scripts/build-apk.js",
     "start": "node scripts/start.js",
+    "typecheck": "tsc --noEmit",
     "types": "wrangler types",
     "release": "bash scripts/release.sh",
     "release:patch": "bash scripts/release.sh patch",

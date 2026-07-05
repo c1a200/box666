@@ -1,6 +1,32 @@
 const VERBOSE_TRUE = new Set(['1', 'true', 'yes', 'on']);
 
 export type LogFields = Record<string, unknown>;
+export type LogLevel = 'info' | 'warn' | 'error' | 'security' | 'debug';
+
+export interface LogEntry {
+  ts: string;
+  level: LogLevel;
+  scope: string;
+  message: string;
+}
+
+type LogSink = (entry: LogEntry) => void;
+const sinks = new Set<LogSink>();
+
+export function subscribeLogSink(fn: LogSink): () => void {
+  sinks.add(fn);
+  return () => { sinks.delete(fn); };
+}
+
+function emitSink(entry: LogEntry): void {
+  for (const fn of sinks) {
+    try {
+      fn(entry);
+    } catch {
+      // Never log from sink dispatch; that can recurse back into logger.
+    }
+  }
+}
 
 export function isVerbose(): boolean {
   try {
@@ -35,9 +61,28 @@ function formatFields(fields: LogFields): string {
     .join(' ');
 }
 
+function formatTimestamp(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const h = String(d.getHours()).padStart(2, '0');
+  const min = String(d.getMinutes()).padStart(2, '0');
+  const s = String(d.getSeconds()).padStart(2, '0');
+  return `${y}-${m}-${day} ${h}:${min}:${s}`;
+}
+
+function formatLine(ts: string, level: string, scope: string, message: string): string {
+  const label = level.padEnd(8);
+  if (isVerbose()) return `${ts} ${label} [${scope}] ${message}`;
+  return `${ts} ${label} ${message}`;
+}
+
 export const logger = {
   info(scope: string, message: string): void {
-    console.log(`[${scope}] ${message}`);
+    const ts = formatTimestamp();
+    emitSink({ ts, level: 'info', scope, message });
+    console.log(formatLine(ts, 'INFO', scope, message));
   },
 
   infoFields(scope: string, event: string, fields: LogFields): void {
@@ -45,7 +90,10 @@ export const logger = {
   },
 
   debug(scope: string, message: string): void {
-    if (isVerbose()) console.log(`[${scope}] ${message}`);
+    if (!isVerbose()) return;
+    const ts = formatTimestamp();
+    emitSink({ ts, level: 'debug', scope, message });
+    console.log(formatLine(ts, 'DEBUG', scope, message));
   },
 
   debugFields(scope: string, event: string, fields: LogFields): void {
@@ -53,7 +101,9 @@ export const logger = {
   },
 
   warn(scope: string, message: string): void {
-    console.warn(`[${scope}] ${message}`);
+    const ts = formatTimestamp();
+    emitSink({ ts, level: 'warn', scope, message });
+    console.warn(formatLine(ts, 'WARN', scope, message));
   },
 
   warnFields(scope: string, event: string, fields: LogFields): void {
@@ -61,7 +111,9 @@ export const logger = {
   },
 
   error(scope: string, message: string): void {
-    console.error(`[${scope}] ${message}`);
+    const ts = formatTimestamp();
+    emitSink({ ts, level: 'error', scope, message });
+    console.error(formatLine(ts, 'ERROR', scope, message));
   },
 
   errorFields(scope: string, event: string, fields: LogFields): void {
@@ -69,6 +121,9 @@ export const logger = {
   },
 
   security(event: string, fields: LogFields): void {
-    console.warn(`[security] ${event} ${formatFields(fields)}`.trim());
+    const ts = formatTimestamp();
+    const message = `${event} ${formatFields(fields)}`.trim();
+    emitSink({ ts, level: 'security', scope: 'security', message });
+    console.warn(formatLine(ts, 'SECURITY', 'security', message));
   },
 };

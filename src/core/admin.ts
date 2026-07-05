@@ -247,6 +247,20 @@ ${sharedStyles}
   opacity:1;
 }
 
+.live-log-box{
+  height:260px;
+  overflow:auto;
+  padding:10px;
+  background:var(--bg);
+  border:1px solid var(--border);
+  border-radius:4px;
+  font-family:var(--mono);
+  font-size:0.72rem;
+  line-height:1.5;
+  color:var(--text);
+  white-space:pre-wrap;
+}
+
 @media(max-width:560px){
   .nt-grid{grid-template-columns:1fr}
   .tabs{overflow-x:auto;flex-wrap:nowrap}
@@ -672,6 +686,17 @@ ${sharedStyles}
   <!-- Agg Logs Tab -->
   <div class="tab-panel" id="panelAggLogs">
     <div class="section">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:8px;flex-wrap:wrap">
+        <div class="section-title" style="margin:0" data-i18n="liveLogsTitle">Live Logs</div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span class="status-text" id="liveLogsStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
+          <button class="btn btn-sm" onclick="connectLiveLogs()" data-i18n="connectLogs">Connect</button>
+          <button class="btn btn-sm btn-danger" onclick="disconnectLiveLogs()" data-i18n="disconnectLogs">Disconnect</button>
+        </div>
+      </div>
+      <div id="liveLogsBox" class="live-log-box"></div>
+    </div>
+    <div class="section">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
         <div class="section-title" style="margin:0" data-i18n="aggLogsTitle">Aggregation Logs</div>
         <button class="btn btn-sm" onclick="clearAggLogs()" data-i18n="clearLogs">Clear All</button>
@@ -696,7 +721,7 @@ const translations = {
     connectionFailed:'Connection failed',
     headerLabel:'Admin Console', navConfigEditor:'Config Editor', navDashboard:'Dashboard',
     tabSources:'Sources', tabMacCMS:'MacCMS', tabLive:'Live', tabSettings:'Settings', tabAggLogs:'Logs',
-    aggLogsTitle:'Aggregation Logs', clearLogs:'Clear All',
+    aggLogsTitle:'Aggregation Logs', clearLogs:'Clear All', liveLogsTitle:'Live Logs', connectLogs:'Connect', disconnectLogs:'Disconnect',
     dedupConfigTitle:'Similar Name Dedup', similarDedupLabel:'Enable similar-name dedup (keep fastest)', dedupThreshold:'Threshold',
     groupOrderTitle:'Site Group Order', groupOrderEnabled:'Enable group ordering', groupOrderAdd:'+ Add Rule',
     bgSettingsTitle:'Background Settings',
@@ -776,7 +801,7 @@ const translations = {
     connectionFailed:'连接失败',
     headerLabel:'管理控制台', navConfigEditor:'配置编辑', navDashboard:'仪表盘',
     tabSources:'源', tabMacCMS:'MacCMS', tabLive:'直播', tabSettings:'设置', tabAggLogs:'日志',
-    aggLogsTitle:'聚合日志', clearLogs:'清空',
+    aggLogsTitle:'聚合日志', clearLogs:'清空', liveLogsTitle:'实时日志', connectLogs:'连接', disconnectLogs:'断开',
     dedupConfigTitle:'相似名称去重', similarDedupLabel:'启用相似名称去重（保留最快）', dedupThreshold:'阈值',
     groupOrderTitle:'站点分组排序', groupOrderEnabled:'启用分组排序', groupOrderAdd:'+ 添加规则',
     bgSettingsTitle:'背景设置',
@@ -918,7 +943,7 @@ async function loadStatus() {
         hour:'2-digit', minute:'2-digit', second:'2-digit',
         hour12: false
       });
-      $('aggStatus').textContent = t('lastUpdate') + fmt + ' | ' + d.sites + ' sites, ' + d.parses + ' parses, ' + d.lives + ' lives' + (d.liveSourceCount ? ', ' + d.liveSourceCount + ' live sources' : '');
+      $('aggStatus').textContent = t('lastUpdate') + fmt + ' | ' + d.sites + ' sites, ' + d.parses + ' parses, ' + d.lives + ' lives' + (d.liveSourceCount ? ', ' + d.liveSourceCount + ' live sources' : '') + (d.dirty ? ' | pending refresh' : '');
       $('aggStatus').className = 'status-text';
     } else {
       $('aggStatus').textContent = t('neverUpdated');
@@ -2247,6 +2272,63 @@ async function clearAggLogs() {
   if (!confirm('Clear all aggregation logs?')) return;
   await auth.authFetch('/admin/agg-logs', { method: 'DELETE' });
   loadAggLogs();
+}
+
+let liveLogsAbort = null;
+function appendLiveLog(entry) {
+  const box = $('liveLogsBox');
+  if (!box) return;
+  const line = entry.ts + ' ' + String(entry.level || '').toUpperCase().padEnd(8) + ' [' + entry.scope + '] ' + entry.message;
+  box.textContent += line + '\\n';
+  if (box.textContent.length > 80000) box.textContent = box.textContent.slice(-60000);
+  box.scrollTop = box.scrollHeight;
+}
+async function connectLiveLogs() {
+  disconnectLiveLogs();
+  const status = $('liveLogsStatus');
+  const box = $('liveLogsBox');
+  if (box) box.textContent = '';
+  liveLogsAbort = new AbortController();
+  if (status) status.textContent = 'connecting';
+  try {
+    const res = await fetch('/admin/logs', {
+      headers: { 'Authorization': 'Bearer ' + auth.getToken() },
+      signal: liveLogsAbort.signal
+    });
+    if (!res.ok || !res.body) {
+      if (status) status.textContent = 'failed';
+      return;
+    }
+    if (status) status.textContent = 'connected';
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let pending = '';
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      pending += decoder.decode(chunk.value, { stream: true });
+      const frames = pending.split('\\n\\n');
+      pending = frames.pop() || '';
+      for (const frame of frames) {
+        const dataLines = frame.split('\\n').filter(line => line.startsWith('data:'));
+        if (dataLines.length === 0) continue;
+        const data = dataLines.map(line => line.slice(5).trimStart()).join('\\n');
+        try { appendLiveLog(JSON.parse(data)); } catch {}
+      }
+    }
+  } catch {
+    if (status && liveLogsAbort) status.textContent = 'disconnected';
+  } finally {
+    liveLogsAbort = null;
+  }
+}
+function disconnectLiveLogs() {
+  if (liveLogsAbort) {
+    liveLogsAbort.abort();
+    liveLogsAbort = null;
+  }
+  const status = $('liveLogsStatus');
+  if (status) status.textContent = '';
 }
 
 // ─── 直播禁用 ──────────────

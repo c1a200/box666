@@ -85,6 +85,10 @@ function hasCredentialForPlatforms(
   return platforms.some((platform) => creds.has(platform));
 }
 
+function tokenJsonUrl(baseUrl: string = '__BASE_URL__'): string {
+  return `${baseUrl.replace(/\/$/, '')}/token.json`;
+}
+
 function replaceTokenJsonUrl(ext: any, baseUrl: string = '__BASE_URL__'): { ext: any; changed: boolean } {
   if (!ext) {
     return { ext, changed: false };
@@ -107,7 +111,7 @@ function replaceTokenJsonUrl(ext: any, baseUrl: string = '__BASE_URL__'): { ext:
       const match = ext.match(TOKEN_JSON_URL_RE);
       if (match && match[0]) {
         const matchedUrl = match[0];
-        const targetUrl = `${baseUrl.replace(/\/$/, '')}/token.json`;
+        const targetUrl = tokenJsonUrl(baseUrl);
         if (matchedUrl === targetUrl) {
           TOKEN_JSON_URL_RE.lastIndex = 0;
           return { ext, changed: false };
@@ -139,6 +143,14 @@ function replaceTokenJsonUrl(ext: any, baseUrl: string = '__BASE_URL__'): { ext:
   }
 
   return { ext, changed: false };
+}
+
+function injectTokenJsonExt(ext: any, baseUrl: string = '__BASE_URL__'): { ext: any; changed: boolean } {
+  if (ext === undefined || ext === null || ext === '') {
+    return { ext: tokenJsonUrl(baseUrl), changed: true };
+  }
+
+  return replaceTokenJsonUrl(ext, baseUrl);
 }
 
 function injectPlatformFields(
@@ -183,10 +195,10 @@ const BUILTIN_RULES: InjectionRule[] = [
 
   // csp_Wobg / csp_Wogg (token.json 派): 替换 token.json URL
   {
-    apiPattern: /^csp_Wo[bg]g$/,
+    apiPattern: /^csp_Wo[bg]g/i,
     platforms: ['aliyun', 'quark', 'uc', 'pan115', 'thunder', 'pikpak'],
     inject: (ext, creds, baseUrl?: string) => {
-      return replaceTokenJsonUrl(ext, baseUrl || undefined).ext;
+      return injectTokenJsonExt(ext, baseUrl || undefined).ext;
     },
   },
 

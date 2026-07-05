@@ -6,6 +6,7 @@ data/
 .env
 .DS_Store
 .npm-cache/
+compare-repo/
 
 # Android (APK 形态)
 android/.gradle/

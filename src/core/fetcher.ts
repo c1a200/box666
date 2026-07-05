@@ -5,6 +5,7 @@ import { decodeConfigResponse } from './decoder';
 import type { TVBoxConfig, SourcedConfig, SourceEntry, SourceFetchResult } from './types';
 
 const MAX_MULTI_REPO_DEPTH = 3; // 多仓最大展开深度
+const FETCH_CONCURRENCY = 12;
 
 export interface FetchConfigsResult {
   configs: SourcedConfig[];
@@ -66,8 +67,10 @@ async function expandSources(
   const tag = depth === 0 ? '' : ` (depth ${depth})`;
   console.log(`[fetcher] Fetching ${uniqueSources.length} sources${tag}...`);
 
-  const results = await Promise.allSettled(
-    uniqueSources.map((source) => fetchSingleConfig(source, timeoutMs, proxyConfig)),
+  const results = await allSettledConcurrent(
+    uniqueSources,
+    FETCH_CONCURRENCY,
+    (source) => fetchSingleConfig(source, timeoutMs, proxyConfig),
   );
 
   const multiRepoChildren: SourceEntry[] = [];
@@ -120,6 +123,29 @@ async function expandSources(
 interface SingleFetchResult {
   config: TVBoxConfig | null;
   fetchResult: SourceFetchResult;
+}
+
+async function allSettledConcurrent<T, R>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T) => Promise<R>,
+): Promise<PromiseSettledResult<R>[]> {
+  const results = new Array<PromiseSettledResult<R>>(items.length);
+  let cursor = 0;
+  const workerCount = Math.min(Math.max(1, concurrency), items.length);
+
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (cursor < items.length) {
+      const index = cursor++;
+      try {
+        results[index] = { status: 'fulfilled', value: await worker(items[index]) };
+      } catch (reason) {
+        results[index] = { status: 'rejected', reason };
+      }
+    }
+  }));
+
+  return results;
 }
 
 /**

@@ -3,13 +3,11 @@
 import { Hono } from 'hono';
 import { MemoryCachedStorage } from './storage/cached';
 import type { Storage } from './storage/interface';
-import type { AppConfig, SourceEntry, MacCMSSourceEntry, LiveSourceEntry, NameTransformConfig, EdgeProxyConfig } from './core/types';
-import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_MANUAL_SOURCES, KV_LAST_UPDATE, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_BLACKLIST, LIVE_PROXY_TTL, IMG_PROXY_TTL, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_CRON_INTERVAL, DEFAULT_CRON_INTERVAL, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_AGG_LOGS, KV_BG_SETTINGS, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, KV_SMART_BASE_URL_ENABLED, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SITE_HEALTH_MAP } from './core/config';
+import type { AppConfig, MacCMSSourceEntry, LiveSourceEntry, NameTransformConfig, EdgeProxyConfig } from './core/types';
+import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_MANUAL_SOURCES, KV_LAST_UPDATE, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_BLACKLIST, LIVE_PROXY_TTL, IMG_PROXY_TTL, KV_NAME_TRANSFORM, KV_CRON_INTERVAL, DEFAULT_CRON_INTERVAL, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_AGG_LOGS, KV_BG_SETTINGS, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, KV_SMART_BASE_URL_ENABLED, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SITE_HEALTH_MAP } from './core/config';
 import { getRequestBaseUrl, applyBaseUrlPlaceholder, assertHostAllowed } from './core/base-url';
 import { logger } from './core/logger';
 import { loadGroupOrder, saveGroupOrder } from './core/group-order';
-import { parseConfigJson, isMultiRepoConfig, extractMultiRepoEntries } from './core/fetcher';
-import { decodeConfigResponse } from './core/decoder';
 import { validateMacCMS } from './core/maccms';
 import { lookupJarUrl, isMd5Key, base64ToUint8Array, rewriteJarUrls } from './core/jar-proxy';
 import { BASE_URL_PLACEHOLDER } from './core/config';
@@ -27,6 +25,10 @@ import { formatLiveGroupsAsTxt, fetchAndParseLiveUrls } from './core/live-merger
 import type { TVBoxConfig, SearchQuotaConfig, CloudPlatform, CloudCredential, TVBoxLiveGroup } from './core/types';
 import { mountChannelProbeRoutes } from './routes/channel-probe-admin';
 import { loadSpeedMap as loadChannelSpeedMap } from './core/channel-probe';
+import { createLogViewerRouter } from './routes/log-viewer';
+import { createStaticAssetsRouter } from './routes/static-assets';
+import { clearDirtyMarker, getDirtyMarker, setDirtyMarker } from './core/dirty-marker';
+import { createSourceManagementRouter } from './routes/source-management';
 
 export interface AppDeps {
   storage: Storage;
@@ -95,32 +97,42 @@ export function createApp(deps: AppDeps): Hono {
 
   const { config } = deps;
 
+  async function markOutputDirty(): Promise<void> {
+    await setDirtyMarker(storage);
+    storage.clear();
+  }
+
+  async function refreshAfterCredentialChange(c: any): Promise<void> {
+    await markOutputDirty();
+    if (deps.isSyncing?.()) return;
+
+    try {
+      let hasCtx = false;
+      try {
+        if (c.executionCtx) {
+          hasCtx = true;
+        }
+      } catch {
+        // Hono throws if executionCtx getter is accessed outside Worker runtime.
+      }
+
+      if (hasCtx) {
+        c.executionCtx.waitUntil(deps.triggerRefresh());
+      } else {
+        await deps.triggerRefresh();
+      }
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      logger.warn('routes', `Credential change refresh failed: ${msg}`);
+    }
+  }
+
   // ─── 本地字体（仅 Node 侧）──────────────────────────────
   if (!config.workerBaseUrl) {
-    const FONTS: Record<string, string> = {
-      'jetbrains-mono-latin-ext.woff2': 'font/woff2',
-      'jetbrains-mono-latin.woff2': 'font/woff2',
-      'outfit-latin-ext.woff2': 'font/woff2',
-      'outfit-latin.woff2': 'font/woff2',
-    };
-
-    app.get('/fonts/:name', async (c) => {
-      const name = c.req.param('name');
-      const contentType = FONTS[name];
-      if (!contentType) return c.text('Not Found', 404);
-      try {
-        const fs = await import('fs');
-        const path = await import('path');
-        const data = await fs.promises.readFile(path.join(__dirname, 'static/fonts', name));
-        return c.body(data, 200, {
-          'Content-Type': contentType,
-          'Cache-Control': 'public, max-age=31536000, immutable',
-        });
-      } catch {
-        return c.text('Not Found', 404);
-      }
-    });
+    app.route('/', createStaticAssetsRouter());
   }
+
+  app.route('/', createLogViewerRouter(config));
 
   // ─── 版本信息 ──────────────────────────────────────────
   app.get('/version', (c) => {
@@ -345,6 +357,7 @@ export function createApp(deps: AppDeps): Hono {
       parses: parseCount,
       lives: liveCount,
       warnings,
+      dirty: await getDirtyMarker(storage),
     });
   });
 
@@ -361,271 +374,7 @@ export function createApp(deps: AppDeps): Hono {
   });
 
   // ─── Admin API（需鉴权）────────────────────────────────
-  app.get('/admin/sources', async (c) => {
-    if (!verifyAdmin(c.req.raw, config)) {
-      return c.json({ error: 'Unauthorized' }, 401);
-    }
-    const raw = await storage.get(KV_MANUAL_SOURCES);
-    const sources: SourceEntry[] = raw ? JSON.parse(raw) : [];
-    return c.json(sources);
-  });
-
-  app.post('/admin/sources', async (c) => {
-    if (!verifyAdmin(c.req.raw, config)) {
-      return c.json({ error: 'Unauthorized' }, 401);
-    }
-
-    let body: { name?: string; url?: string; configKey?: string };
-    try {
-      body = await c.req.json();
-    } catch {
-      return c.json({ error: 'Invalid JSON' }, 400);
-    }
-
-    let url = body.url?.trim() || '';
-    if (!url) return c.json({ error: 'URL is required' }, 400);
-
-    // 自动提取 ;pk; 密钥
-    let configKey = body.configKey?.trim() || '';
-    const pkMatch = url.match(/;pk;(.+)$/);
-    if (pkMatch) {
-      configKey = configKey || pkMatch[1];
-      url = url.replace(/;pk;.+$/, '');
-    }
-
-    try {
-      new URL(url);
-    } catch {
-      return c.json({ error: 'Invalid URL format' }, 400);
-    }
-
-    const name = body.name?.trim() || autoNameFromUrl(url);
-    const raw = await storage.get(KV_MANUAL_SOURCES);
-    const sources: SourceEntry[] = raw ? JSON.parse(raw) : [];
-
-    if (sources.some((s) => s.url === url)) {
-      return c.json({ error: 'Source already exists' }, 409);
-    }
-
-    const entry: SourceEntry = { name, url };
-    if (configKey) entry.configKey = configKey;
-    sources.push(entry);
-    await storage.put(KV_MANUAL_SOURCES, JSON.stringify(sources));
-
-    return c.json({ success: true });
-  });
-
-  app.delete('/admin/sources', async (c) => {
-    if (!verifyAdmin(c.req.raw, config)) {
-      return c.json({ error: 'Unauthorized' }, 401);
-    }
-
-    let body: { url?: string };
-    try {
-      body = await c.req.json();
-    } catch {
-      return c.json({ error: 'Invalid JSON' }, 400);
-    }
-
-    const url = body.url?.trim();
-    if (!url) return c.json({ error: 'URL is required' }, 400);
-
-    const raw = await storage.get(KV_MANUAL_SOURCES);
-    const sources: SourceEntry[] = raw ? JSON.parse(raw) : [];
-    const filtered = sources.filter((s) => s.url !== url);
-    await storage.put(KV_MANUAL_SOURCES, JSON.stringify(filtered));
-
-    return c.json({ success: true });
-  });
-
-  app.put('/admin/sources', async (c) => {
-    if (!verifyAdmin(c.req.raw, config)) {
-      return c.json({ error: 'Unauthorized' }, 401);
-    }
-
-    let body: { oldUrl?: string; name?: string; url?: string; configKey?: string };
-    try {
-      body = await c.req.json();
-    } catch {
-      return c.json({ error: 'Invalid JSON' }, 400);
-    }
-
-    const oldUrl = body.oldUrl?.trim();
-    if (!oldUrl) return c.json({ error: 'Old URL is required' }, 400);
-
-    let url = body.url?.trim() || '';
-    if (!url) return c.json({ error: 'URL is required' }, 400);
-
-    // 自动提取 ;pk; 密钥
-    let configKey = body.configKey?.trim() || '';
-    const pkMatch = url.match(/;pk;(.+)$/);
-    if (pkMatch) {
-      configKey = configKey || pkMatch[1];
-      url = url.replace(/;pk;.+$/, '');
-    }
-
-    try {
-      new URL(url);
-    } catch {
-      return c.json({ error: 'Invalid URL format' }, 400);
-    }
-
-    const name = body.name?.trim() || autoNameFromUrl(url);
-    const raw = await storage.get(KV_MANUAL_SOURCES);
-    const sources: SourceEntry[] = raw ? JSON.parse(raw) : [];
-
-    const index = sources.findIndex((s) => s.url === oldUrl);
-    if (index === -1) {
-      return c.json({ error: 'Source not found' }, 404);
-    }
-
-    // 确保修改后的新 URL 不与其它已有源的 URL 冲突
-    if (sources.some((s, idx) => idx !== index && s.url === url)) {
-      return c.json({ error: 'Source already exists' }, 409);
-    }
-
-    const entry = sources[index];
-    entry.name = name;
-    entry.url = url;
-    if (configKey) {
-      entry.configKey = configKey;
-    } else {
-      delete entry.configKey;
-    }
-
-    await storage.put(KV_MANUAL_SOURCES, JSON.stringify(sources));
-
-    return c.json({ success: true });
-  });
-
-  app.post('/admin/sources/toggle', async (c) => {
-    if (!verifyAdmin(c.req.raw, config)) {
-      return c.json({ error: 'Unauthorized' }, 401);
-    }
-
-    let body: { url?: string; disabled?: boolean };
-    try {
-      body = await c.req.json();
-    } catch {
-      return c.json({ error: 'Invalid JSON' }, 400);
-    }
-
-    const url = body.url?.trim();
-    if (!url) return c.json({ error: 'URL is required' }, 400);
-
-    const raw = await storage.get(KV_MANUAL_SOURCES);
-    const sources: SourceEntry[] = raw ? JSON.parse(raw) : [];
-    const entry = sources.find((s) => s.url === url);
-    if (!entry) {
-      return c.json({ error: 'Source not found' }, 404);
-    }
-
-    entry.disabled = !!body.disabled;
-    await storage.put(KV_MANUAL_SOURCES, JSON.stringify(sources));
-
-    return c.json({ success: true, disabled: entry.disabled });
-  });
-
-  // ─── JSON 导入 ─────────────────────────────────────────
-  app.post('/admin/sources/import', async (c) => {
-    if (!verifyAdmin(c.req.raw, config)) {
-      return c.json({ error: 'Unauthorized' }, 401);
-    }
-
-    let body: { input?: string };
-    try {
-      body = await c.req.json();
-    } catch {
-      return c.json({ error: 'Invalid JSON' }, 400);
-    }
-
-    const input = body.input?.trim();
-    if (!input) return c.json({ error: 'input is required' }, 400);
-
-    // 判断是 URL 还是 JSON 内容
-    const isUrl = /^https?:\/\//i.test(input);
-    let jsonText: string;
-    let sourceUrl: string | null = null;
-
-    // 自动提取 ;pk; 密钥
-    let configKey: string | undefined;
-    let fetchUrl = input;
-    if (isUrl) {
-      const pkMatch = input.match(/;pk;(.+)$/);
-      if (pkMatch) {
-        configKey = pkMatch[1];
-        fetchUrl = input.replace(/;pk;.+$/, '');
-      }
-      sourceUrl = fetchUrl;
-      try {
-        const resp = await fetch(fetchUrl, {
-          headers: { 'Accept': 'application/json, text/plain, */*', 'User-Agent': 'okhttp/3.12.0' },
-        });
-        if (!resp.ok) return c.json({ error: `Fetch failed: HTTP ${resp.status}` }, 502);
-        const buffer = await resp.arrayBuffer();
-        const decoded = await decodeConfigResponse(buffer, configKey);
-        jsonText = decoded || '';
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return c.json({ error: `Fetch failed: ${msg}` }, 502);
-      }
-    } else {
-      jsonText = input;
-    }
-
-    const parsed = parseConfigJson(jsonText);
-    if (!parsed) return c.json({ error: 'Failed to parse JSON' }, 400);
-
-    // 读取现有源
-    const raw = await storage.get(KV_MANUAL_SOURCES);
-    const sources: SourceEntry[] = raw ? JSON.parse(raw) : [];
-    const existingUrls = new Set(sources.map(s => s.url));
-
-    let added = 0;
-    let duplicates = 0;
-    const addedSources: string[] = [];
-
-    if (isMultiRepoConfig(parsed)) {
-      // 多仓：提取子 URL 批量添加
-      const entries = extractMultiRepoEntries(parsed, 'Imported');
-      for (const entry of entries) {
-        if (entry.name === 'Imported') {
-          entry.name = autoNameFromUrl(entry.url);
-        }
-        if (existingUrls.has(entry.url)) {
-          duplicates++;
-        } else {
-          sources.push(entry);
-          existingUrls.add(entry.url);
-          addedSources.push(entry.url);
-          added++;
-        }
-      }
-      await storage.put(KV_MANUAL_SOURCES, JSON.stringify(sources));
-      return c.json({ type: 'multi', added, duplicates, sources: addedSources });
-    } else {
-      // 单仓
-      if (sourceUrl) {
-        // 来自 URL：直接添加
-        if (existingUrls.has(sourceUrl)) {
-          return c.json({ type: 'single', added: 0, duplicates: 1, sources: [] });
-        }
-        const entry: SourceEntry = { name: autoNameFromUrl(sourceUrl), url: sourceUrl };
-        if (configKey) entry.configKey = configKey;
-        sources.push(entry);
-        await storage.put(KV_MANUAL_SOURCES, JSON.stringify(sources));
-        return c.json({ type: 'single', added: 1, duplicates: 0, sources: [sourceUrl] });
-      } else {
-        // 粘贴的内容：存 KV 用 inline:// 引用
-        const key = `${KV_INLINE_PREFIX}${Date.now()}`;
-        await storage.put(key, jsonText);
-        const inlineUrl = `inline://${key}`;
-        sources.push({ name: 'Inline Config', url: inlineUrl });
-        await storage.put(KV_MANUAL_SOURCES, JSON.stringify(sources));
-        return c.json({ type: 'single', added: 1, duplicates: 0, sources: [inlineUrl] });
-      }
-    }
-  });
+  app.route('/', createSourceManagementRouter({ storage, config, onDirty: markOutputDirty }));
 
   // ─── 名称定制 API ──────────────────────────────────────
   app.get('/admin/name-transform', async (c) => {
@@ -666,6 +415,7 @@ export function createApp(deps: AppDeps): Hono {
     };
 
     await storage.put(KV_NAME_TRANSFORM, JSON.stringify(transform));
+    await markOutputDirty();
     return c.json({ success: true });
   });
 
@@ -732,6 +482,7 @@ export function createApp(deps: AppDeps): Hono {
     }
 
     await storage.put(KV_SPEED_TEST_ENABLED, String(body.enabled));
+    await markOutputDirty();
     return c.json({ success: true, enabled: body.enabled });
   });
 
@@ -752,6 +503,7 @@ export function createApp(deps: AppDeps): Hono {
       vercel: body.vercel?.replace(/\/+$/, '') || undefined,
     };
     await storage.put(KV_EDGE_PROXIES, JSON.stringify(clean));
+    storage.clear();
     return c.json({ success: true, ...clean });
   });
 
@@ -809,6 +561,7 @@ export function createApp(deps: AppDeps): Hono {
     if (Array.isArray(body.pinnedKeys)) current.pinnedKeys = body.pinnedKeys;
 
     await saveSearchQuota(storage, current);
+    await markOutputDirty();
     return c.json({ success: true, ...current });
   });
 
@@ -823,6 +576,7 @@ export function createApp(deps: AppDeps): Hono {
     for (const key of body.keys) set.add(key);
     current.pinnedKeys = [...set];
     await saveSearchQuota(storage, current);
+    await markOutputDirty();
     return c.json({ success: true, pinnedKeys: current.pinnedKeys });
   });
 
@@ -836,6 +590,7 @@ export function createApp(deps: AppDeps): Hono {
     const current = await loadSearchQuota(storage);
     current.pinnedKeys = body.keys;
     await saveSearchQuota(storage, current);
+    await markOutputDirty();
     return c.json({ success: true, pinnedKeys: current.pinnedKeys });
   });
 
@@ -849,6 +604,7 @@ export function createApp(deps: AppDeps): Hono {
     const removeSet = new Set(body.keys);
     current.pinnedKeys = current.pinnedKeys.filter(k => !removeSet.has(k));
     await saveSearchQuota(storage, current);
+    await markOutputDirty();
     return c.json({ success: true, pinnedKeys: current.pinnedKeys });
   });
 
@@ -892,6 +648,7 @@ export function createApp(deps: AppDeps): Hono {
     const platform = c.req.param('platform') as CloudPlatform;
     if (!PLATFORM_NAMES[platform]) return c.json({ error: 'Unknown platform' }, 400);
     await deleteCredential(storage, platform);
+    await refreshAfterCredentialChange(c);
     return c.json({ success: true });
   });
 
@@ -914,6 +671,7 @@ export function createApp(deps: AppDeps): Hono {
       status: 'valid',
     };
     await saveCredential(storage, cred);
+    await refreshAfterCredentialChange(c);
     return c.json({ success: true });
   });
 
@@ -953,6 +711,7 @@ export function createApp(deps: AppDeps): Hono {
           status: 'valid',
         };
         await saveCredential(storage, cred);
+        await refreshAfterCredentialChange(c);
       }
 
       return c.json(result);
@@ -983,6 +742,7 @@ export function createApp(deps: AppDeps): Hono {
           status: 'valid',
         };
         await saveCredential(storage, cred);
+        await refreshAfterCredentialChange(c);
       }
       return c.json(result);
     } catch (err: unknown) {
@@ -1006,6 +766,7 @@ export function createApp(deps: AppDeps): Hono {
     if (Array.isArray(body.allowedHighRiskKeys)) policy.allowedHighRiskKeys = body.allowedHighRiskKeys;
     if (Array.isArray(body.deniedKeys)) policy.deniedKeys = body.deniedKeys;
     await saveCredentialPolicy(storage, policy);
+    await refreshAfterCredentialChange(c);
     return c.json({ success: true, ...policy });
   });
 
@@ -1408,6 +1169,7 @@ export function createApp(deps: AppDeps): Hono {
 
     entries.push({ name, url });
     await storage.put(KV_LIVE_SOURCES, JSON.stringify(entries));
+    await markOutputDirty();
 
     return c.json({ success: true });
   });
@@ -1431,6 +1193,7 @@ export function createApp(deps: AppDeps): Hono {
     const entries: LiveSourceEntry[] = raw ? JSON.parse(raw) : [];
     const filtered = entries.filter((e) => e.url !== url);
     await storage.put(KV_LIVE_SOURCES, JSON.stringify(filtered));
+    await markOutputDirty();
 
     return c.json({ success: true });
   });
@@ -1478,6 +1241,7 @@ export function createApp(deps: AppDeps): Hono {
     entry.url = url;
 
     await storage.put(KV_LIVE_SOURCES, JSON.stringify(entries));
+    await markOutputDirty();
 
     return c.json({ success: true });
   });
@@ -1504,6 +1268,7 @@ export function createApp(deps: AppDeps): Hono {
 
     entry.disabled = !!body.disabled;
     await storage.put(KV_LIVE_SOURCES, JSON.stringify(entries));
+    await markOutputDirty();
 
     return c.json({ success: true, disabled: entry.disabled });
   });
@@ -1558,6 +1323,7 @@ export function createApp(deps: AppDeps): Hono {
     }
 
     await storage.put(KV_MACCMS_SOURCES, JSON.stringify(sources));
+    await markOutputDirty();
     return c.json({ success: true, added, total: sources.length });
   });
 
@@ -1580,6 +1346,7 @@ export function createApp(deps: AppDeps): Hono {
     const sources: MacCMSSourceEntry[] = raw ? JSON.parse(raw) : [];
     const filtered = sources.filter((s) => s.key !== key);
     await storage.put(KV_MACCMS_SOURCES, JSON.stringify(filtered));
+    await markOutputDirty();
 
     return c.json({ success: true });
   });
@@ -1632,6 +1399,7 @@ export function createApp(deps: AppDeps): Hono {
     entry.api = api;
 
     await storage.put(KV_MACCMS_SOURCES, JSON.stringify(sources));
+    await markOutputDirty();
 
     return c.json({ success: true });
   });
@@ -1658,6 +1426,7 @@ export function createApp(deps: AppDeps): Hono {
 
     entry.disabled = !!body.disabled;
     await storage.put(KV_MACCMS_SOURCES, JSON.stringify(sources));
+    await markOutputDirty();
 
     return c.json({ success: true, disabled: entry.disabled });
   });
@@ -1779,6 +1548,7 @@ export function createApp(deps: AppDeps): Hono {
       list.push(id);
     }
     await saveBlacklist(storage, blacklist);
+    await markOutputDirty();
     await patchMergedConfig();
 
     return c.json({ success: true });
@@ -1817,6 +1587,7 @@ export function createApp(deps: AppDeps): Hono {
       }
     }
     await saveBlacklist(storage, blacklist);
+    await markOutputDirty();
     await patchMergedConfig();
 
     return c.json({ success: true, added });
@@ -1844,6 +1615,7 @@ export function createApp(deps: AppDeps): Hono {
     const key = type as keyof typeof blacklist;
     (blacklist[key] as string[]) = (blacklist[key] as string[]).filter((v: string) => v !== id);
     await saveBlacklist(storage, blacklist);
+    await markOutputDirty();
     await patchMergedConfig();
 
     return c.json({ success: true });
@@ -1879,6 +1651,7 @@ export function createApp(deps: AppDeps): Hono {
     // 重新应用 JAR proxy rewrite（与 aggregator Step 7 一致）
     result = await rewriteJarUrls(result, BASE_URL_PLACEHOLDER, storage);
     await storage.put(KV_MERGED_CONFIG, JSON.stringify(result));
+    await clearDirtyMarker(storage);
   }
 
   // ─── 正则黑名单 ─────────────────────────────────────────
@@ -1906,6 +1679,7 @@ export function createApp(deps: AppDeps): Hono {
     };
     const blacklist = await loadBlacklist(storage);
     await saveRegexRule(storage, blacklist, rule);
+    await markOutputDirty();
     await patchMergedConfig();
     return c.json({ success: true, rule });
   });
@@ -1925,6 +1699,7 @@ export function createApp(deps: AppDeps): Hono {
     const blacklist = await loadBlacklist(storage);
     if (!blacklist.regexRules.find(r => r.id === id)) return c.json({ error: 'Rule not found' }, 404);
     await updateRegexRule(storage, blacklist, id, body);
+    await markOutputDirty();
     await patchMergedConfig();
     return c.json({ success: true });
   });
@@ -1935,6 +1710,7 @@ export function createApp(deps: AppDeps): Hono {
     const blacklist = await loadBlacklist(storage);
     if (!blacklist.regexRules.find(r => r.id === id)) return c.json({ error: 'Rule not found' }, 404);
     await deleteRegexRule(storage, blacklist, id);
+    await markOutputDirty();
     await patchMergedConfig();
     return c.json({ success: true });
   });
@@ -1975,6 +1751,21 @@ export function createApp(deps: AppDeps): Hono {
     return c.json({ success: true });
   });
 
+  app.get('/admin/dirty-marker', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+    return c.json({ dirty: await getDirtyMarker(storage) });
+  });
+
+  app.delete('/admin/dirty-marker', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+    await clearDirtyMarker(storage);
+    return c.json({ success: true, dirty: false });
+  });
+
   // ─── 分组排序 ──────────────────────────────────────────
   app.get('/admin/group-order', async (c) => {
     if (!verifyAdmin(c.req.raw, config)) {
@@ -2000,6 +1791,7 @@ export function createApp(deps: AppDeps): Hono {
       enabled: body.enabled !== false,
     };
     await saveGroupOrder(storage, cfg);
+    await markOutputDirty();
     return c.json({ success: true, ...cfg });
   });
 
@@ -2036,6 +1828,7 @@ export function createApp(deps: AppDeps): Hono {
         : 0.85,
     };
     await storage.put(KV_DEDUP_CONFIG, JSON.stringify(cfg));
+    await markOutputDirty();
     return c.json({ success: true, ...cfg });
   });
 
@@ -2072,6 +1865,7 @@ export function createApp(deps: AppDeps): Hono {
       gradient: body.gradient || '',
     };
     await storage.put(KV_BG_SETTINGS, JSON.stringify(cfg));
+    storage.clear();
     return c.json({ success: true, ...cfg });
   });
 
@@ -2124,7 +1918,24 @@ export function createApp(deps: AppDeps): Hono {
     }
     const body = await c.req.json<{ disabled: boolean }>();
     await storage.put(KV_LIVE_DISABLED, body.disabled ? 'true' : 'false');
-    return c.json({ success: true, disabled: body.disabled });
+    if (body.disabled) {
+      const currentRaw = await storage.get(KV_MERGED_CONFIG);
+      if (currentRaw) {
+        try {
+          const current: TVBoxConfig = JSON.parse(currentRaw);
+          current.lives = [];
+          await storage.put(KV_MERGED_CONFIG, JSON.stringify(current));
+        } catch {
+          await markOutputDirty();
+        }
+      }
+      await storage.put(KV_LIVE_MERGED_DATA, '[]');
+      await clearDirtyMarker(storage);
+      return c.json({ success: true, disabled: body.disabled, patched: true });
+    }
+    await markOutputDirty();
+    try { await deps.triggerRefresh(); } catch { /* best effort */ }
+    return c.json({ success: true, disabled: body.disabled, patched: false });
   });
 
   // ─── 忽略第三方直播源开关 ──────────────────────────────────
@@ -2143,6 +1954,7 @@ export function createApp(deps: AppDeps): Hono {
     }
     const body = await c.req.json<{ ignore: boolean }>();
     await storage.put(KV_IGNORE_AGGREGATED_LIVES, body.ignore ? 'true' : 'false');
+    await markOutputDirty();
     try { await deps.triggerRefresh(); } catch { /* best effort */ }
     return c.json({ success: true, ignore: body.ignore });
   });
@@ -2164,6 +1976,7 @@ export function createApp(deps: AppDeps): Hono {
     const body = await c.req.json<{ mode: string }>();
     const mode = body.mode === 'merged' ? 'merged' : 'separated';
     await storage.put(KV_LIVE_MERGE_MODE, mode);
+    await markOutputDirty();
     try { await deps.triggerRefresh(); } catch { /* best effort */ }
     return c.json({ success: true, mode });
   });
@@ -2181,6 +1994,7 @@ export function createApp(deps: AppDeps): Hono {
     }
     const body = await c.req.json<{ enabled: boolean }>();
     await storage.put(KV_SMART_BASE_URL_ENABLED, body.enabled ? 'true' : 'false');
+    storage.clear();
     return c.json({ success: true, enabled: body.enabled });
   });
 
@@ -2198,6 +2012,7 @@ export function createApp(deps: AppDeps): Hono {
     const body = await c.req.json<{ depth: 'shallow' | 'deep' }>();
     if (!['shallow', 'deep'].includes(body.depth)) return c.json({ error: 'Invalid depth' }, 400);
     await storage.put(KV_SITE_PROBE_DEPTH, body.depth);
+    await markOutputDirty();
     return c.json({ success: true, depth: body.depth });
   });
 
@@ -2213,6 +2028,7 @@ export function createApp(deps: AppDeps): Hono {
     }
     const body = await c.req.json<{ enabled: boolean }>();
     await storage.put(KV_SITE_AUTO_CLEAN, body.enabled ? 'true' : 'false');
+    await markOutputDirty();
     return c.json({ success: true, enabled: body.enabled });
   });
 
