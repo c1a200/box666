@@ -240,11 +240,24 @@ const aliyunHandler: PlatformLoginHandler = {
 
 // ─── 夸克网盘 ────────────────────────────────────────────
 
+const QUARK_CLIENT_ID = '386';
+const QUARK_QR_BIZ_STR = 'S:custom|OPT:SAREA@0|OPT:IMMERSIVE@1|OPT:BACK_BTN_STYLE@0';
+const QUARK_CONFIRM_PAGE_URL = 'https://su.quark.cn/4_eMHBJ?uc_param_str=';
+
 const quarkHandler: PlatformLoginHandler = {
   async generateQR() {
-    const requestId = crypto.randomUUID();
-    const data = await safeFetchJson(`https://uop.quark.cn/cas/ajax/getTokenForQrcodeLogin?client_id=532&v=1.2&request_id=${requestId}`, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+    const body = new URLSearchParams({
+      client_id: QUARK_CLIENT_ID,
+      v: '1.2',
+      request_id: String(Date.now()),
+    });
+    const data = await safeFetchJson('https://uop.quark.cn/cas/ajax/getTokenForQrcodeLogin', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      },
+      body: body.toString(),
     }, '夸克网盘');
 
     // 夸克新型接口成功状态码返回 2000000，这里需要进行兼容
@@ -253,30 +266,46 @@ const quarkHandler: PlatformLoginHandler = {
     }
 
     const token = data.data.members.token;
+    const qrParams = new URLSearchParams({
+      token,
+      client_id: QUARK_CLIENT_ID,
+      uc_biz_str: QUARK_QR_BIZ_STR,
+    });
     return {
-      qrUrl: `https://b.quark.cn/apps/DuJrlezmS/routes/EATJRLSvv?token=${token}&client_id=532&ssb=weblogin`,
-      token: JSON.stringify({ token, requestId }),
+      qrUrl: `${QUARK_CONFIRM_PAGE_URL}&${qrParams.toString()}`,
+      token: JSON.stringify({ token, clientId: QUARK_CLIENT_ID }),
     };
   },
 
   async pollStatus(tokenStr: string) {
     let token = tokenStr;
-    let requestId = '';
+    let clientId = QUARK_CLIENT_ID;
     try {
       const parsed = JSON.parse(tokenStr);
       if (parsed && typeof parsed === 'object') {
         token = parsed.token || tokenStr;
-        requestId = parsed.requestId || '';
+        clientId = String(parsed.clientId || parsed.client_id || QUARK_CLIENT_ID);
       }
     } catch {}
 
-    const url = `https://uop.quark.cn/cas/ajax/getServiceTicketByQrcodeToken?client_id=532&v=1.2&token=${token}` + (requestId ? `&request_id=${requestId}` : '');
-    const data = await safeFetchJson(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+    const body = new URLSearchParams({
+      client_id: clientId,
+      v: '1.2',
+      request_id: String(Date.now()),
+      token,
+    });
+    const data = await safeFetchJson('https://uop.quark.cn/cas/ajax/getServiceTicketByQrcodeToken', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      },
+      body: body.toString(),
     }, '夸克网盘');
 
+    const bodyStatus = data.status;
     const status = data.data?.members?.status;
-    if (status === 'CONFIRMED') {
+    if (bodyStatus === 2000000 || status === 'CONFIRMED') {
       const serviceTicket = data.data?.members?.service_ticket;
       if (!serviceTicket) return { status: 'error' as QRStatus, message: 'No service ticket' };
 
@@ -302,8 +331,8 @@ const quarkHandler: PlatformLoginHandler = {
       }
     }
 
-    if (status === 'SCANED') return { status: 'scanned' as QRStatus };
-    if (status === 'EXPIRED') return { status: 'expired' as QRStatus };
+    if (status === 'SCANED' || status === 'SCANNED') return { status: 'scanned' as QRStatus };
+    if (status === 'EXPIRED' || bodyStatus === 50004002) return { status: 'expired' as QRStatus };
     return { status: 'waiting' as QRStatus };
   },
 };
