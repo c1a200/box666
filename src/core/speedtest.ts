@@ -1,4 +1,4 @@
-import { TVBOX_UA } from './config';
+﻿import { TVBOX_UA } from './config';
 import { logger } from './logger';
 import type { TVBoxSite } from './types';
 
@@ -42,6 +42,19 @@ async function siteProbe(url: string, siteType: number, timeoutMs: number, deep:
   }
 }
 
+async function siteProbeWithRetry(url: string, siteType: number, timeoutMs: number, deep: boolean, retries = 2): Promise<{ speedMs: number | null; result: ProbeResult }> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const result = await siteProbe(url, siteType, timeoutMs, deep);
+      return result;
+    } catch (e) {
+      if (attempt === retries) throw e;
+      await new Promise(r => setTimeout(r, 800));
+    }
+  }
+  return { speedMs: null, result: 'error' };
+}
+
 function validateResponseContent(siteType: number, body: string): boolean {
   if (!body || body.length < 10) return false;
 
@@ -71,8 +84,8 @@ function validateResponseContent(siteType: number, body: string): boolean {
   return body.length > 0;
 }
 
-const CONCURRENCY = 30;
-const BATCH_BUDGET_MS = 180_000; // 整体测速预算 3 分钟
+const CONCURRENCY = 18;
+const BATCH_BUDGET_MS = 140000;
 
 export async function batchSiteSpeedTest(
   sites: TVBoxSite[],
@@ -97,6 +110,7 @@ export async function batchSiteSpeedTest(
   let cursor = 0;
   let active = 0;
   let budgetExhausted = false;
+  let updateCounter = 0;
 
   await new Promise<void>((resolve) => {
     function scheduleNext() {
@@ -105,11 +119,19 @@ export async function batchSiteSpeedTest(
           budgetExhausted = true;
           break;
         }
+
         const task = tasks[cursor++];
         active++;
-        siteProbe(task.url, task.type, timeoutMs, deep).then((probe) => {
+        updateCounter++;
+
+        siteProbeWithRetry(task.url, task.type, timeoutMs, deep).then((probe) => {
           probeMap.set(task.key, { key: task.key, ...probe });
           active--;
+
+          if (updateCounter % 100 === 0) {
+            logger.infoFields('speedtest', 'progress', { completed: probeMap.size, total: tasks.length });
+          }
+
           scheduleNext();
         });
       }
@@ -118,7 +140,6 @@ export async function batchSiteSpeedTest(
     scheduleNext();
   });
 
-  // 超时未测的站点标记为 timeout
   if (budgetExhausted) {
     const skipped = tasks.length - cursor;
     for (let i = cursor; i < tasks.length; i++) {
@@ -178,12 +199,7 @@ export function filterUnreachableSites(
 function getTestableUrl(site: TVBoxSite): string | null {
   const api = site.api || '';
 
-  if (site.type === 1) {
-    if (!api.startsWith('http')) return null;
-    return api.includes('?') ? `${api}&ac=list` : `${api}?ac=list`;
-  }
-
-  if (site.type === 0) {
+  if (site.type === 1 || site.type === 0) {
     if (!api.startsWith('http')) return null;
     return api.includes('?') ? `${api}&ac=list` : `${api}?ac=list`;
   }
@@ -195,4 +211,3 @@ function getTestableUrl(site: TVBoxSite): string | null {
 
   return null;
 }
-
