@@ -3,7 +3,7 @@
 import { createApp } from './routes';
 import { KVStorage } from './storage/kv';
 import { runAggregation } from './aggregator';
-import { DEFAULT_SPEED_TIMEOUT_MS, DEFAULT_SITE_TIMEOUT_MS, DEFAULT_FETCH_TIMEOUT_MS, KV_CRON_INTERVAL, KV_LAST_UPDATE, DEFAULT_CRON_INTERVAL } from './core/config';
+import { DEFAULT_SPEED_TIMEOUT_MS, DEFAULT_SITE_TIMEOUT_MS, DEFAULT_FETCH_TIMEOUT_MS, DEFAULT_SPEED_TEST_CONCURRENCY, DEFAULT_SPEED_TEST_BUDGET_MS, KV_CRON_INTERVAL, KV_LAST_UPDATE, DEFAULT_CRON_INTERVAL } from './core/config';
 import type { AppConfig } from './core/types';
 
 interface CfEnv {
@@ -13,6 +13,8 @@ interface CfEnv {
   SPEED_TIMEOUT_MS?: string;
   SITE_TIMEOUT_MS?: string;
   FETCH_TIMEOUT_MS?: string;
+  SPEED_TEST_CONCURRENCY?: string;
+  SPEED_TEST_BUDGET_MS?: string;
   WORKER_BASE_URL?: string;
   BILIBILI_QR_PROXY_BASE_URL?: string;
   BILIBILI_QR_PROXY_TOKEN?: string;
@@ -25,6 +27,8 @@ function buildConfig(env: CfEnv): AppConfig {
     speedTimeoutMs: parseInt(env.SPEED_TIMEOUT_MS || '') || DEFAULT_SPEED_TIMEOUT_MS,
     siteTimeoutMs: parseInt(env.SITE_TIMEOUT_MS || '') || DEFAULT_SITE_TIMEOUT_MS,
     fetchTimeoutMs: parseInt(env.FETCH_TIMEOUT_MS || '') || DEFAULT_FETCH_TIMEOUT_MS,
+    speedTestConcurrency: parseInt(env.SPEED_TEST_CONCURRENCY || '') || DEFAULT_SPEED_TEST_CONCURRENCY,
+    speedTestBudgetMs: parseInt(env.SPEED_TEST_BUDGET_MS || '') || DEFAULT_SPEED_TEST_BUDGET_MS,
     workerBaseUrl: env.WORKER_BASE_URL || undefined,
     bilibiliQrProxyBaseUrl: env.BILIBILI_QR_PROXY_BASE_URL || undefined,
     bilibiliQrProxyToken: env.BILIBILI_QR_PROXY_TOKEN || undefined,

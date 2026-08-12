@@ -5,6 +5,10 @@ export const DEFAULT_SPEED_TIMEOUT_MS = 5000; // 配置 URL 超时（fetch 耗�
 export const DEFAULT_SITE_TIMEOUT_MS = 3000;  // 站点 API 超时
 export const DEFAULT_FETCH_TIMEOUT_MS = 5000; // fetch 配置 JSON 超时
 
+// 站点测速批处理调优（可通过环境变量覆盖）
+export const DEFAULT_SPEED_TEST_CONCURRENCY = 18;   // 同时探测的站点数
+export const DEFAULT_SPEED_TEST_BUDGET_MS = 140000; // 单批测速总预算（约 2.3 分钟）
+
 // KV keys
 export const KV_MERGED_CONFIG = 'merged_config';
 export const KV_MERGED_CONFIG_FULL = 'merged_config_full'; // 黑名单过滤前的完整配置（供配置编辑器使用）

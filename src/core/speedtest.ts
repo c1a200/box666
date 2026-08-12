@@ -1,4 +1,4 @@
-﻿import { TVBOX_UA } from './config';
+﻿import { TVBOX_UA, DEFAULT_SPEED_TEST_CONCURRENCY, DEFAULT_SPEED_TEST_BUDGET_MS } from './config';
 import { logger } from './logger';
 import type { TVBoxSite } from './types';
 
@@ -84,13 +84,12 @@ function validateResponseContent(siteType: number, body: string): boolean {
   return body.length > 0;
 }
 
-const CONCURRENCY = 18;
-const BATCH_BUDGET_MS = 140000;
-
 export async function batchSiteSpeedTest(
   sites: TVBoxSite[],
   timeoutMs: number,
   deep = false,
+  concurrency: number = DEFAULT_SPEED_TEST_CONCURRENCY,
+  budgetMs: number = DEFAULT_SPEED_TEST_BUDGET_MS,
 ): Promise<Map<string, SiteProbeResult>> {
   const tasks: Array<{ key: string; url: string; type: number }> = [];
 
@@ -103,10 +102,10 @@ export async function batchSiteSpeedTest(
 
   if (tasks.length === 0) return new Map();
 
-  logger.infoFields('speedtest', 'batch-start', { sites: tasks.length, deep, concurrency: CONCURRENCY });
+  logger.infoFields('speedtest', 'batch-start', { sites: tasks.length, deep, concurrency });
 
   const probeMap = new Map<string, SiteProbeResult>();
-  const deadline = Date.now() + BATCH_BUDGET_MS;
+  const deadline = Date.now() + budgetMs;
   let cursor = 0;
   let active = 0;
   let budgetExhausted = false;
@@ -114,7 +113,7 @@ export async function batchSiteSpeedTest(
 
   await new Promise<void>((resolve) => {
     function scheduleNext() {
-      while (active < CONCURRENCY && cursor < tasks.length) {
+      while (active < concurrency && cursor < tasks.length) {
         if (Date.now() >= deadline) {
           budgetExhausted = true;
           break;

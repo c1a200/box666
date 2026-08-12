@@ -22,4 +22,6 @@ preview_id = "5ddadf4b30204b67b618222d3df71fa4"
 SPEED_TIMEOUT_MS = "5000"   # 源地址延迟阈值（毫秒）
 SITE_TIMEOUT_MS = "3000"    # 站点 API 延迟阈值（毫秒）
 FETCH_TIMEOUT_MS = "5000"   # 抓取配置 JSON 超时（毫秒）
+SPEED_TEST_CONCURRENCY = "8"        # CF 保守并发（Render 可上调）
+SPEED_TEST_BUDGET_MS = "30000"      # CF 单批预算（毫秒，避免超过 Worker 时长上限）
 WORKER_BASE_URL = "https://tvbox.176111.xyz"  # CF 边缘代理依赖此配置（JAR/MacCMS/直播源代理）

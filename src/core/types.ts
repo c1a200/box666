@@ -161,6 +161,8 @@ export interface AppConfig {
   speedTimeoutMs: number;
   siteTimeoutMs: number;
   fetchTimeoutMs: number;
+  speedTestConcurrency?: number;
+  speedTestBudgetMs?: number;
   cronSchedule?: string;
   workerBaseUrl?: string;  // CF 版设置，如 "https://tvbox.example.com"；本地不设置
   localBaseUrl?: string;   // Node.js 版设置，如 "http://192.168.1.100:5678"；用于 JAR 代理

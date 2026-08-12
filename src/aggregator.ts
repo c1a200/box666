@@ -347,7 +347,7 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     logger.info('aggregation', 'Step 6: Speed test disabled, skipping');
   } else if (merged.sites && merged.sites.length > 0) {
     logger.infoFields('aggregation', 'Step 6: site probe', { depth: probeDeep ? 'deep' : 'shallow' });
-    siteProbeMap = await batchSiteSpeedTest(merged.sites, config.siteTimeoutMs, probeDeep);
+    siteProbeMap = await batchSiteSpeedTest(merged.sites, config.siteTimeoutMs, probeDeep, config.speedTestConcurrency, config.speedTestBudgetMs);
 
     // 提取纯 speedMs map 供后续 dedup 使用
     for (const [key, probe] of siteProbeMap) {
