@@ -183,6 +183,13 @@ export function createSourceManagementRouter(deps: SourceManagementDeps): Hono {
     return c.json({ success: true, disabled: entry.disabled });
   });
 
+  router.get('/admin/sources/export', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
+    const raw = await storage.get(KV_MANUAL_SOURCES);
+    const sources: SourceEntry[] = raw ? JSON.parse(raw) : [];
+    return c.json(sources);
+  });
+
   router.post('/admin/sources/import', async (c) => {
     if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
 

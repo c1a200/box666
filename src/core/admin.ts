@@ -335,6 +335,7 @@ ${sharedStyles}
         <textarea id="importInput" class="import-textarea" placeholder="Paste TVBox JSON or URL here..." data-i18n-placeholder="importPlaceholder"></textarea>
         <div style="display:flex;gap:8px;align-items:center">
           <button class="btn btn-sm" id="importBtn" onclick="importConfig()" data-i18n="import">Import</button>
+          <button class="btn btn-sm" id="exportBtn" onclick="exportConfig()" data-i18n="export">Export</button>
           <span class="status-text" id="importResult" style="font-family:var(--mono);font-size:0.75rem"></span>
         </div>
       </div>
@@ -395,6 +396,16 @@ ${sharedStyles}
         <input type="url" id="liveUrl" placeholder="m3u/txt URL" data-i18n-placeholder="liveUrlPh">
         <div style="display:flex;gap:8px" id="liveFormButtons">
           <button class="btn" id="liveAddBtn" onclick="addLive()" data-i18n="add">Add</button>
+        </div>
+      </div>
+      <!-- Live import/export (collapsible) -->
+      <div class="collapsible-toggle" onclick="toggleCollapsible(this)" data-i18n="liveImportExport">Live Import / Export</div>
+      <div class="collapsible-body">
+        <textarea id="liveImportInput" class="import-textarea" placeholder="Paste live sources JSON, TVBox config, or URL here..." data-i18n-placeholder="liveImportPlaceholder"></textarea>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <button class="btn btn-sm" id="liveImportBtn" onclick="importLives()" data-i18n="liveImport">Import Live Sources</button>
+          <button class="btn btn-sm" id="liveExportBtn" onclick="exportLives()" data-i18n="liveExport">Export Live Sources</button>
+          <span class="status-text" id="liveImportResult" style="font-family:var(--mono);font-size:0.75rem"></span>
         </div>
       </div>
     </div>
@@ -728,6 +739,7 @@ const translations = {
     addSource:'Add Source', editSource:'Edit Source', edit:'Edit', cancel:'Cancel', updating:'Updating...', sourceUpdated:'Source updated', aggregation:'Aggregation', sourcesList:'Sources',
     addMacCMS:'Add MacCMS Source', editMacCMS:'Edit MacCMS Source', macCMSSourceUpdated:'MacCMS source updated', macCMSSources:'MacCMS Sources',
     addLiveSource:'Add Live Source', editLiveSource:'Edit Live Source', liveSourceUpdated:'Live source updated', liveSources:'Live Sources',
+    liveImportExport:'Live Import / Export', liveImportPlaceholder:'Paste live sources JSON, TVBox config, or URL here...', liveImport:'Import Live Sources', liveExport:'Export Live Sources', liveImporting:'Importing...', liveImported:'Live sources imported', liveImportDuplicates:'duplicates skipped', liveImportParseFailed:'Failed to import live sources',
     nameOptional:'Name (optional)', configJsonUrl:'TVBox config JSON URL',
     mcKeyPh:'Key (e.g. hongniuzy)', mcNamePh:'Name', mcApiPh:'MacCMS API URL',
     liveNamePh:'Name (e.g. iptv365)', liveUrlPh:'m3u/txt URL',
@@ -754,6 +766,7 @@ const translations = {
     importPlaceholder:'Paste TVBox JSON or URL here...',
     importMulti:'Multi-repo detected', importSingle:'Single config detected',
     importAdded:'added', importDuplicates:'duplicates', importParseFailed:'Failed to parse',
+    exportConfig:'Export Config', export:'Export', exporting:'Exporting...', exported:'Exported', exportFailed:'Export failed',
     nameTransform:'Name Transform', ntPrefix:'Prefix', ntSuffix:'Suffix',
     ntPromoReplace:'Promo Replacement (empty = delete)', ntExtraPatterns:'Extra Clean Patterns (one regex per line)',
     ntPrefixPh:'e.g. 【RioTV】', ntSuffixPh:'e.g.  · Curated',
@@ -808,6 +821,7 @@ const translations = {
     addSource:'添加源', editSource:'修改源', edit:'修改', cancel:'取消', updating:'修改中...', sourceUpdated:'源已修改', aggregation:'聚合', sourcesList:'源列表',
     addMacCMS:'添加 MacCMS 源', editMacCMS:'修改 MacCMS 源', macCMSSourceUpdated:'MacCMS 源已修改', macCMSSources:'MacCMS 源列表',
     addLiveSource:'添加直播源', editLiveSource:'修改直播源', liveSourceUpdated:'直播源已修改', liveSources:'直播源列表',
+    liveImportExport:'直播导入 / 导出', liveImportPlaceholder:'粘贴直播源 JSON、TVBox 配置或 URL...', liveImport:'导入直播源', liveExport:'导出直播源', liveImporting:'导入中...', liveImported:'直播源已导入', liveImportDuplicates:'条重复已跳过', liveImportParseFailed:'导入直播源失败',
     nameOptional:'名称（可选）', configJsonUrl:'TVBox 配置 JSON 地址',
     mcKeyPh:'Key（如 hongniuzy）', mcNamePh:'名称', mcApiPh:'MacCMS API 地址',
     liveNamePh:'名称（如 iptv365）', liveUrlPh:'m3u/txt 地址',
@@ -834,6 +848,7 @@ const translations = {
     importPlaceholder:'粘贴 TVBox JSON 内容或 URL...',
     importMulti:'检测到多仓', importSingle:'检测到单仓',
     importAdded:'已添加', importDuplicates:'重复跳过', importParseFailed:'解析失败',
+    exportConfig:'导出配置', export:'导出', exporting:'导出中...', exported:'已导出', exportFailed:'导出失败',
     nameTransform:'名称定制', ntPrefix:'前缀', ntSuffix:'后缀',
     ntPromoReplace:'推广替换文字（留空则删除）', ntExtraPatterns:'额外清洗正则（每行一条）',
     ntPrefixPh:'如 【RioTV】', ntSuffixPh:'如  · 精选',
@@ -1483,6 +1498,121 @@ async function importConfig() {
   }
 
   btn.textContent = t('import');
+  btn.className = 'btn btn-sm';
+}
+
+// --- Import / Export helpers ---
+function downloadJson(filename, data) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function exportFilename(prefix) {
+  const now = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  const stamp = now.getFullYear() + pad(now.getMonth() + 1) + pad(now.getDate());
+  return prefix + '-' + stamp + '.json';
+}
+
+async function exportConfig() {
+  const btn = $('exportBtn');
+  const result = $('importResult');
+  if (btn) {
+    btn.textContent = t('exporting');
+    btn.className = 'btn btn-sm loading';
+  }
+  if (result) result.textContent = '';
+
+  try {
+    const res = await auth.authFetch('/admin/sources/export');
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || t('exportFailed'));
+    if (!Array.isArray(data)) throw new Error(t('exportFailed'));
+    downloadJson(exportFilename('tvbox-sources'), data);
+    if (result) {
+      result.textContent = t('exported') + ' (' + data.length + ')';
+      result.className = 'status-text success';
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : t('exportFailed');
+    if (result) {
+      result.textContent = message;
+      result.className = 'status-text error';
+    }
+  }
+
+  if (btn) {
+    btn.textContent = t('export');
+    btn.className = 'btn btn-sm';
+  }
+}
+
+async function importLives() {
+  const input = $('liveImportInput').value.trim();
+  if (!input) { $('liveImportInput').focus(); return; }
+
+  const btn = $('liveImportBtn');
+  const result = $('liveImportResult');
+  btn.textContent = t('liveImporting');
+  btn.className = 'btn btn-sm loading';
+  result.textContent = '';
+
+  try {
+    const res = await auth.authFetch('/admin/lives/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input })
+    });
+    const d = await res.json();
+    if (res.ok) {
+      result.textContent = d.added + ' ' + t('importAdded') + (d.duplicates > 0 ? ', ' + d.duplicates + ' ' + t('liveImportDuplicates') : '');
+      result.className = 'status-text success';
+      if (d.added > 0) {
+        $('liveImportInput').value = '';
+        loadLives();
+      }
+    } else {
+      result.textContent = d.error || t('liveImportParseFailed');
+      result.className = 'status-text error';
+    }
+  } catch {
+    result.textContent = t('networkError');
+    result.className = 'status-text error';
+  }
+
+  btn.textContent = t('liveImport');
+  btn.className = 'btn btn-sm';
+}
+
+async function exportLives() {
+  const btn = $('liveExportBtn');
+  const result = $('liveImportResult');
+  btn.textContent = t('exporting');
+  btn.className = 'btn btn-sm loading';
+  result.textContent = '';
+
+  try {
+    const res = await auth.authFetch('/admin/lives/export');
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || t('exportFailed'));
+    if (!Array.isArray(data)) throw new Error(t('exportFailed'));
+    downloadJson(exportFilename('tvbox-lives'), data);
+    result.textContent = t('exported') + ' (' + data.length + ')';
+    result.className = 'status-text success';
+  } catch (err) {
+    const message = err instanceof Error ? err.message : t('exportFailed');
+    result.textContent = message;
+    result.className = 'status-text error';
+  }
+
+  btn.textContent = t('liveExport');
   btn.className = 'btn btn-sm';
 }
 

@@ -4,7 +4,7 @@ import { Hono } from 'hono';
 import { MemoryCachedStorage } from './storage/cached';
 import type { Storage } from './storage/interface';
 import type { AppConfig, MacCMSSourceEntry, LiveSourceEntry, NameTransformConfig, EdgeProxyConfig } from './core/types';
-import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_MANUAL_SOURCES, KV_LAST_UPDATE, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_BLACKLIST, LIVE_PROXY_TTL, IMG_PROXY_TTL, KV_NAME_TRANSFORM, KV_CRON_INTERVAL, DEFAULT_CRON_INTERVAL, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_AGG_LOGS, KV_BG_SETTINGS, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, KV_SMART_BASE_URL_ENABLED, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SITE_HEALTH_MAP } from './core/config';
+import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_MANUAL_SOURCES, KV_LAST_UPDATE, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_RUNTIME_TXT, KV_BLACKLIST, LIVE_PROXY_TTL, IMG_PROXY_TTL, KV_NAME_TRANSFORM, KV_CRON_INTERVAL, DEFAULT_CRON_INTERVAL, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_AGG_LOGS, KV_BG_SETTINGS, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, KV_SMART_BASE_URL_ENABLED, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SITE_HEALTH_MAP } from './core/config';
 import { getRequestBaseUrl, applyBaseUrlPlaceholder, assertHostAllowed } from './core/base-url';
 import { logger } from './core/logger';
 import { loadGroupOrder, saveGroupOrder } from './core/group-order';
@@ -61,6 +61,45 @@ function autoNameFromUrl(url: string): string {
   } catch {
     return 'Imported';
   }
+}
+
+function normalizeImportedLives(parsed: unknown): LiveSourceEntry[] {
+  const root = parsed as { lives?: unknown } | null;
+  const rawLives = Array.isArray(parsed)
+    ? parsed
+    : root && typeof root === 'object' && Array.isArray(root.lives)
+      ? root.lives
+      : [];
+
+  const result: LiveSourceEntry[] = [];
+  for (const item of rawLives) {
+    if (!item || typeof item !== 'object') continue;
+    const record = item as Record<string, unknown>;
+    const rawUrl = typeof record.url === 'string'
+      ? record.url
+      : typeof record.api === 'string'
+        ? record.api
+        : '';
+    const url = rawUrl.trim();
+    if (!url) continue;
+
+    try {
+      const parsedUrl = new URL(url);
+      if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') continue;
+    } catch {
+      continue;
+    }
+
+    const entry: LiveSourceEntry = {
+      name: typeof record.name === 'string' && record.name.trim()
+        ? record.name.trim()
+        : autoNameFromUrl(url),
+      url,
+    };
+    if (typeof record.disabled === 'boolean') entry.disabled = record.disabled;
+    result.push(entry);
+  }
+  return result;
 }
 
 function isNativeLiveGroups(lives: unknown): lives is TVBoxLiveGroup[] {
@@ -124,6 +163,7 @@ export function createApp(deps: AppDeps): Hono {
 
   async function markOutputDirty(): Promise<void> {
     await setDirtyMarker(storage);
+    await storage.put(KV_LIVE_RUNTIME_TXT, '');
     storage.clear();
   }
 
@@ -242,6 +282,18 @@ export function createApp(deps: AppDeps): Hono {
       });
     }
 
+    // CF 非聚合模式：实时解析成功后写入持久化缓存，避免每次冷启动都重新下载直播源。
+    // 空字符串表示配置已变更，必须重新解析；null 表示尚未生成缓存。
+    const runtimeTxt = await storage.get(KV_LIVE_RUNTIME_TXT);
+    if (runtimeTxt && runtimeTxt.trim()) {
+      return c.body(applyBaseUrlPlaceholder(runtimeTxt, baseUrl), 200, {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Cache-Control': 'public, max-age=1800',
+        'Access-Control-Allow-Origin': '*',
+      });
+    }
+    const runtimeCacheInvalidated = runtimeTxt !== null;
+
     let livesRaw = await storage.get(KV_LIVE_MERGED_DATA);
     let lives: any[] = [];
     if (livesRaw) {
@@ -287,7 +339,7 @@ export function createApp(deps: AppDeps): Hono {
           const cacheKey = isCfRuntime
             ? new Request('https://live-cache.internal/' + encodeURIComponent(baseUrl) + '/' + encodeURIComponent(c.req.url))
             : null;
-          if (cache && cacheKey) {
+          if (cache && cacheKey && !runtimeCacheInvalidated) {
             const cached = await cache.match(cacheKey);
             if (cached) return cached;
           }
@@ -296,7 +348,9 @@ export function createApp(deps: AppDeps): Hono {
             const channelSpeedMap = await loadChannelSpeedMap(storage);
             const groups = await fetchAndParseLiveUrls(resolvedUrls, 8000, channelSpeedMap);
             if (groups.length > 0) {
-              const response = new Response(formatLiveGroupsAsTxt(groups), {
+              const txt = formatLiveGroupsAsTxt(groups);
+              await storage.put(KV_LIVE_RUNTIME_TXT, txt);
+              const response = new Response(txt, {
                 headers: {
                   'Content-Type': 'text/plain; charset=utf-8',
                   'Cache-Control': 'public, max-age=1800',
@@ -1234,6 +1288,85 @@ export function createApp(deps: AppDeps): Hono {
     const raw = await storage.get(KV_LIVE_SOURCES);
     const entries: LiveSourceEntry[] = raw ? JSON.parse(raw) : [];
     return c.json(entries);
+  });
+
+  app.get('/admin/lives/export', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+    const raw = await storage.get(KV_LIVE_SOURCES);
+    const entries: LiveSourceEntry[] = raw ? JSON.parse(raw) : [];
+    return c.json(entries);
+  });
+
+  app.post('/admin/lives/import', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+
+    let body: { input?: string };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'Invalid JSON' }, 400);
+    }
+
+    const input = body.input?.trim();
+    if (!input) return c.json({ error: 'input is required' }, 400);
+
+    let jsonText = input;
+    if (/^https?:\/\//i.test(input)) {
+      try {
+        const resp = await fetch(input, {
+          headers: {
+            'Accept': 'application/json, text/plain, */*',
+            'User-Agent': 'okhttp/3.12.0',
+          },
+        });
+        if (!resp.ok) return c.json({ error: `Fetch failed: HTTP ${resp.status}` }, 502);
+        jsonText = await resp.text();
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return c.json({ error: `Fetch failed: ${msg}` }, 502);
+      }
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(jsonText);
+    } catch {
+      return c.json({ error: 'Failed to parse JSON' }, 400);
+    }
+
+    const imported = normalizeImportedLives(parsed);
+    if (imported.length === 0) {
+      return c.json({ error: 'No valid live sources found' }, 400);
+    }
+
+    const raw = await storage.get(KV_LIVE_SOURCES);
+    const entries: LiveSourceEntry[] = raw ? JSON.parse(raw) : [];
+    const existingUrls = new Set(entries.map((entry) => entry.url));
+    const seenImportedUrls = new Set<string>();
+    const addedSources: string[] = [];
+    let duplicates = 0;
+
+    for (const entry of imported) {
+      if (existingUrls.has(entry.url) || seenImportedUrls.has(entry.url)) {
+        duplicates++;
+        continue;
+      }
+      seenImportedUrls.add(entry.url);
+      existingUrls.add(entry.url);
+      entries.push(entry);
+      addedSources.push(entry.url);
+    }
+
+    if (addedSources.length > 0) {
+      await storage.put(KV_LIVE_SOURCES, JSON.stringify(entries));
+      await markOutputDirty();
+    }
+
+    return c.json({ added: addedSources.length, duplicates, sources: addedSources });
   });
 
   app.post('/admin/lives', async (c) => {
