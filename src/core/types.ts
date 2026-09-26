@@ -215,6 +215,7 @@ export interface CredentialPolicyConfig {
 export interface SearchQuotaConfig {
   maxSearchable: number;        // 可搜索源上限，0 = 不限制
   pinnedKeys: string[];         // 置顶源 key 列表（排到 sites 最前面）
+  sortBySpeed: boolean;         // 是否复用站点测速结果，将较快的可搜索源排在前面
 }
 
 // 搜索配额报告
@@ -224,6 +225,7 @@ export interface SearchQuotaReport {
   searchable: number;           // 最终可搜索数
   pinnedCount: number;          // 置顶源命中数
   truncated: number;            // 被截断数（maxSearchable > 0 时）
+  speedSorted: boolean;         // 是否实际按测速结果排序
 }
 
 // ═══ 聚合日志 ══════════════════════════════════════════

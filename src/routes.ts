@@ -706,7 +706,10 @@ export function createApp(deps: AppDeps): Hono {
     try { body = await c.req.json(); } catch { return c.json({ error: 'Invalid JSON' }, 400); }
 
     const current = await loadSearchQuota(storage);
-    if (typeof body.maxSearchable === 'number') current.maxSearchable = body.maxSearchable;
+    if (typeof body.maxSearchable === 'number' && Number.isFinite(body.maxSearchable)) {
+      current.maxSearchable = Math.max(0, Math.floor(body.maxSearchable));
+    }
+    if (typeof body.sortBySpeed === 'boolean') current.sortBySpeed = body.sortBySpeed;
     if (Array.isArray(body.pinnedKeys)) current.pinnedKeys = body.pinnedKeys;
 
     await saveSearchQuota(storage, current);

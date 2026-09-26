@@ -14,7 +14,7 @@ import { loadBlacklist, applyBlacklist, pruneBlacklist, saveBlacklist, siteFinge
 import { transformSiteNames } from './core/cleaner';
 import { parseConfigJson, type FetchProxyConfig } from './core/fetcher';
 import { scrapeSourceList, scrapeMacCMSSources, type ScrapeSourceConfig, type ScrapeMacCMSConfig } from './core/source-scraper';
-import { loadSearchQuota, applySearchQuota } from './core/search-quota';
+import { loadSearchQuota, applySearchQuota, excludeJsUrlSites } from './core/search-quota';
 import { loadCredentials } from './core/credential-store';
 import { loadCredentialPolicy } from './core/credential-store';
 import { injectCredentials } from './core/credential-injector';
@@ -272,19 +272,17 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
   merged = cleanEmptyEntries(merged);
   merged = cleanLocalRefs(merged);
 
-  // Step 4.7: 搜索配额（JS 排除 + 置顶排序 + 可选截断）
-  const quotaConfig = await loadSearchQuota(storage);
+  // Step 4.7: 提前排除 type=3 + URL 的 JS 源，避免对不可搜索源做无意义的站点测速
+  let quotaTotalSites = 0;
+  let quotaJsExcluded = 0;
   if (merged.sites) {
-    const { sites: quotaSites, quotaReport } = applySearchQuota(merged.sites, quotaConfig, siteSourceMap);
-    merged.sites = quotaSites;
-    logger.infoFields('aggregation', 'search-quota', {
-      total: quotaReport.totalSites, jsExcluded: quotaReport.jsExcluded,
-      pinned: quotaReport.pinnedCount, truncated: quotaReport.truncated, searchable: quotaReport.searchable,
-    });
-    await storage.put(KV_SEARCH_QUOTA_REPORT, JSON.stringify({
-      updatedAt: new Date().toISOString(),
-      ...quotaReport,
-    }));
+    quotaTotalSites = merged.sites.length;
+    const jsExclusion = excludeJsUrlSites(merged.sites);
+    merged.sites = jsExclusion.sites;
+    quotaJsExcluded = jsExclusion.jsExcluded;
+    if (quotaJsExcluded > 0) {
+      logger.infoFields('aggregation', 'search-quota-js-excluded', { jsExcluded: quotaJsExcluded });
+    }
   }
 
   // Step 5.5: 名称定制（清洗推广文字 + 前缀后缀）
@@ -389,6 +387,26 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     logger.infoFields('aggregation', 'similar-dedup-done', { sites: merged.sites.length });
   } else {
     logger.info('aggregation', 'Step 6.2: Similar-name dedup disabled, skipping');
+  }
+
+  // Step 6.3: 搜索配额（复用 Step 6 的测速结果排序/截断，不新增网络请求）
+  if (merged.sites) {
+    const quotaConfig = await loadSearchQuota(storage);
+    const { sites: quotaSites, quotaReport } = applySearchQuota(merged.sites, quotaConfig, siteSourceMap, {
+      speedMap: siteSpeedMap,
+      jsExcluded: quotaJsExcluded,
+      totalSites: quotaTotalSites,
+    });
+    merged.sites = quotaSites;
+    logger.infoFields('aggregation', 'search-quota', {
+      total: quotaReport.totalSites, jsExcluded: quotaReport.jsExcluded,
+      pinned: quotaReport.pinnedCount, truncated: quotaReport.truncated,
+      searchable: quotaReport.searchable, speedSorted: quotaReport.speedSorted,
+    });
+    await storage.put(KV_SEARCH_QUOTA_REPORT, JSON.stringify({
+      updatedAt: new Date().toISOString(),
+      ...quotaReport,
+    }));
   }
 
   // Step 6.5: 直播源频道级合并（方案 D+）

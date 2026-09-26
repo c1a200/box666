@@ -566,10 +566,15 @@ ${sharedStyles}
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
         <label class="form-label" style="margin:0" data-i18n="maxSearchable">Max searchable</label>
         <input type="number" id="maxSearchableInput" class="nt-input" style="width:80px" min="0" max="1000" value="0">
+        <label style="display:flex;gap:6px;align-items:center;font-size:0.8rem;color:var(--text-secondary)">
+          <input type="checkbox" id="sortSearchBySpeedInput">
+          <span data-i18n="sortSearchBySpeed">Sort by speed</span>
+        </label>
         <button class="btn btn-sm" id="searchQuotaSaveBtn" onclick="saveSearchQuota()" data-i18n="save">Save</button>
         <span class="status-text" id="searchQuotaStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
       </div>
-      <div style="margin-top:6px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="searchQuotaDesc">Limit searchable sources to reduce TVBox crashes. 0 = unlimited. JS sources are always excluded. Manage pinned sources in the Search tab.</div>
+      <div style="margin-top:6px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="searchQuotaDesc">Limit searchable sources to reduce TVBox crashes. 0 = unlimited. JS URL sources are always excluded. Pinned sources are not truncated. Manage pinned sources in the Search tab.</div>
+      <div style="margin-top:4px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="sortSearchBySpeedDesc">Uses existing site speed-test results to put faster sources first; no extra network requests. Pinned sources stay first.</div>
     </div>
 
     <div class="section">
@@ -781,7 +786,7 @@ const translations = {
     noHealthData:'No data yet', healthFails:'Fails',
     healthLastOk:'Last OK',
     searchQuota:'Search Quota',
-    maxSearchable:'Max searchable', searchQuotaDesc:'Limit searchable sources to reduce TVBox crashes. 0 = unlimited. Manage pinned sources in the Search tab.',
+    maxSearchable:'Max searchable', searchQuotaDesc:'Limit searchable sources to reduce TVBox crashes. 0 = unlimited. JS URL sources are always excluded. Pinned sources are not truncated. Manage pinned sources in the Search tab.', sortSearchBySpeed:'Sort by speed', sortSearchBySpeedDesc:'Uses existing site speed-test results to put faster sources first; no extra network requests. Pinned sources stay first.',
     tabSearchQuota:'Search',
     sqSelected:'Active Search Sources', sqNoData:'Run aggregation to see results',
     sqKey:'Key', sqName:'Name', sqSource:'Source', sqReason:'Reason', sqAction:'Action',
@@ -863,7 +868,7 @@ const translations = {
     noHealthData:'暂无数据', healthFails:'失败',
     healthLastOk:'最后成功',
     searchQuota:'搜索配额',
-    maxSearchable:'可搜索源上限', searchQuotaDesc:'限制可搜索源数量，减少 TVBox 搜索崩溃。0 = 不限制。置顶源在搜索页签管理。',
+    maxSearchable:'可搜索源上限', searchQuotaDesc:'限制可搜索源数量，减少 TVBox 搜索崩溃。0 = 不限制。JS URL 源始终排除；置顶源不会被截断。置顶源在搜索页签管理。', sortSearchBySpeed:'按测速速度排序', sortSearchBySpeedDesc:'复用现有站点测速结果，将较快的源排在前面；不会额外发起测速请求。置顶源始终最前。',
     tabSearchQuota:'搜索',
     sqSelected:'活跃搜索源', sqNoData:'执行聚合后查看结果',
     sqKey:'Key', sqName:'名称', sqSource:'来源', sqReason:'原因', sqAction:'操作',
@@ -1862,6 +1867,7 @@ async function loadSearchQuota() {
     if (!res.ok) return;
     const d = await res.json();
     $('maxSearchableInput').value = d.maxSearchable;
+    $('sortSearchBySpeedInput').checked = d.sortBySpeed === true;
     sqPinnedKeys = new Set(d.pinnedKeys || []);
     loadSearchQuotaReport();
   } catch {}
@@ -1872,6 +1878,7 @@ async function saveSearchQuota() {
   status.textContent = '';
   const data = {
     maxSearchable: parseInt($('maxSearchableInput').value) || 0,
+    sortBySpeed: $('sortSearchBySpeedInput').checked,
     pinnedKeys: [...sqPinnedKeys],
   };
   try {
@@ -1903,7 +1910,7 @@ async function loadSearchQuotaReport() {
 
     // 显示 Search 页签
     $('tabSearchQuota').style.display = '';
-    $('sqSelectedInfo').textContent = d.totalSites + ' sites → ' + d.jsExcluded + ' JS excluded → ' + d.searchable + ' searchable' + (d.truncated > 0 ? ' (' + d.truncated + ' truncated)' : '') + (d.pinnedCount > 0 ? ', ' + d.pinnedCount + ' pinned' : '');
+    $('sqSelectedInfo').textContent = d.totalSites + ' sites → ' + d.jsExcluded + ' JS excluded → ' + d.searchable + ' searchable' + (d.truncated > 0 ? ' (' + d.truncated + ' truncated)' : '') + (d.pinnedCount > 0 ? ', ' + d.pinnedCount + ' pinned' : '') + (d.speedSorted ? ', speed-sorted' : '');
     $('badgeSearchQuota').textContent = d.searchable;
 
     // 加载站点列表
