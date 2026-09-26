@@ -577,14 +577,14 @@ export async function fetchAndParseLiveUrls(
           signal: controller.signal,
           headers: { 'User-Agent': TVBOX_UA, ...(input.header || {}) },
         });
-        clearTimeout(timer);
         if (!resp.ok) return null;
         const text = await resp.text();
         if (!text || text.length < 20) return null;
         return { content: text, name: input.name };
       } catch {
-        clearTimeout(timer);
         return null;
+      } finally {
+        clearTimeout(timer);
       }
     }),
   );

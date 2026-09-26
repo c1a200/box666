@@ -4,7 +4,7 @@ import { Hono } from 'hono';
 import { MemoryCachedStorage } from './storage/cached';
 import type { Storage } from './storage/interface';
 import type { AppConfig, MacCMSSourceEntry, LiveSourceEntry, NameTransformConfig, EdgeProxyConfig } from './core/types';
-import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_MANUAL_SOURCES, KV_LAST_UPDATE, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_RUNTIME_TXT, KV_BLACKLIST, LIVE_PROXY_TTL, IMG_PROXY_TTL, KV_NAME_TRANSFORM, KV_CRON_INTERVAL, DEFAULT_CRON_INTERVAL, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_AGG_LOGS, KV_BG_SETTINGS, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, KV_SMART_BASE_URL_ENABLED, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SITE_HEALTH_MAP } from './core/config';
+import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_MANUAL_SOURCES, KV_LAST_UPDATE, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_RUNTIME_TXT, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, LIVE_PROXY_TTL, IMG_PROXY_TTL, KV_NAME_TRANSFORM, KV_CRON_INTERVAL, DEFAULT_CRON_INTERVAL, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_AGG_LOGS, KV_BG_SETTINGS, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, KV_SMART_BASE_URL_ENABLED, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SITE_HEALTH_MAP } from './core/config';
 import { getRequestBaseUrl, applyBaseUrlPlaceholder, assertHostAllowed } from './core/base-url';
 import { logger } from './core/logger';
 import { loadGroupOrder, saveGroupOrder } from './core/group-order';
@@ -164,6 +164,7 @@ export function createApp(deps: AppDeps): Hono {
   async function markOutputDirty(): Promise<void> {
     await setDirtyMarker(storage);
     await storage.put(KV_LIVE_RUNTIME_TXT, '');
+    await storage.put(KV_LIVE_RUNTIME_EMPTY_AT, '');
     storage.clear();
   }
 
@@ -294,6 +295,19 @@ export function createApp(deps: AppDeps): Hono {
     }
     const runtimeCacheInvalidated = runtimeTxt !== null;
 
+    // CF 非聚合模式：解析为空通常是上游超时或内容格式不兼容。若不记录负缓存，
+    // 客户端会反复触发同一批慢请求。这里保留 10 分钟冷却，配置变更时会主动清空。
+    const runtimeEmptyAtRaw = await storage.get(KV_LIVE_RUNTIME_EMPTY_AT);
+    const runtimeEmptyAt = runtimeEmptyAtRaw ? Number(runtimeEmptyAtRaw) : 0;
+    const runtimeEmptyTtlMs = 10 * 60 * 1000;
+    if (runtimeEmptyAt > 0 && Date.now() - runtimeEmptyAt < runtimeEmptyTtlMs) {
+      return c.body('', 200, {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Cache-Control': 'public, max-age=300',
+        'Access-Control-Allow-Origin': '*',
+      });
+    }
+
     let livesRaw = await storage.get(KV_LIVE_MERGED_DATA);
     let lives: any[] = [];
     if (livesRaw) {
@@ -319,14 +333,18 @@ export function createApp(deps: AppDeps): Hono {
 
     try {
       // FongMi 格式（type/url/api 指针）：实时下载并解析为 txt 格式。
-      // 仅 CF Worker 使用边缘缓存，空结果和错误结果不缓存。
+      // 仅 CF Worker 使用边缘缓存；空结果通过 KV 负缓存短期抑制重复慢请求。
+      const isCfRuntime = !!config.workerBaseUrl && typeof caches !== 'undefined';
       if (!isNativeLiveGroups(lives)) {
         const liveUrls: Array<{ name: string; url: string; header?: Record<string, string> }> = [];
         for (const entry of lives) {
           const url = entry.url || entry.api;
-          if (url && typeof url === 'string') {
-            liveUrls.push({ name: entry.name || url, url, header: entry.header });
+          // 过滤非直播配置指针：type=3 是插件/聚合处理器，不能当 m3u/txt 下载。
+          // yqk 等相对值以及非 HTTP(S) 地址也一律跳过，避免每次请求白等超时。
+          if (entry.type === 3 || url === 'yqk' || typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
+            continue;
           }
+          liveUrls.push({ name: entry.name || url, url, header: entry.header });
         }
         if (liveUrls.length > 0) {
           const resolvedUrls = liveUrls.map(u => ({
@@ -334,7 +352,6 @@ export function createApp(deps: AppDeps): Hono {
             url: applyBaseUrlPlaceholder(u.url, baseUrl)
           }));
 
-          const isCfRuntime = !!config.workerBaseUrl && typeof caches !== 'undefined';
           const cache = isCfRuntime ? (caches as any).default as Cache : null;
           const cacheKey = isCfRuntime
             ? new Request('https://live-cache.internal/' + encodeURIComponent(baseUrl) + '/' + encodeURIComponent(c.req.url))
@@ -346,10 +363,12 @@ export function createApp(deps: AppDeps): Hono {
 
           try {
             const channelSpeedMap = await loadChannelSpeedMap(storage);
-            const groups = await fetchAndParseLiveUrls(resolvedUrls, 8000, channelSpeedMap);
+            const liveFetchTimeoutMs = isCfRuntime ? 4500 : 8000;
+            const groups = await fetchAndParseLiveUrls(resolvedUrls, liveFetchTimeoutMs, channelSpeedMap);
             if (groups.length > 0) {
               const txt = formatLiveGroupsAsTxt(groups);
               await storage.put(KV_LIVE_RUNTIME_TXT, txt);
+              await storage.put(KV_LIVE_RUNTIME_EMPTY_AT, '');
               const response = new Response(txt, {
                 headers: {
                   'Content-Type': 'text/plain; charset=utf-8',
@@ -364,7 +383,10 @@ export function createApp(deps: AppDeps): Hono {
             }
           } catch { /* fall through to empty txt */ }
         }
-        // 无法解析时返回空 txt
+        // 无法解析时记录负缓存并返回空 txt，避免连续请求重复等待超时。
+        if (isCfRuntime) {
+          await storage.put(KV_LIVE_RUNTIME_EMPTY_AT, String(Date.now()));
+        }
         return c.body('', 200, {
           'Content-Type': 'text/plain; charset=utf-8',
           'Cache-Control': 'public, max-age=300',
