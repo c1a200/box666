@@ -7,9 +7,9 @@ import { mergeConfigs, cleanLocalRefs, cleanEmptyEntries } from './core/merger';
 import { batchSiteSpeedTest, appendSpeedToName, filterUnreachableSites, type SiteProbeResult } from './core/speedtest';
 import { macCMSToTVBoxSites, processMacCMSForLocal } from './core/maccms';
 import { rewriteJarUrls } from './core/jar-proxy';
-import { mergeLivesToNative, separatedMergeLives, type LiveSourceInput } from './core/live-merger';
+import { mergeLivesToNative, separatedMergeLives, formatLiveGroupsAsTxt, type LiveSourceInput } from './core/live-merger';
 import { loadSpeedMap as loadChannelSpeedMap } from './core/channel-probe';
-import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_SOURCE_URLS, KV_LAST_UPDATE, KV_MANUAL_SOURCES, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_BLACKLIST, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_CHANNEL_MERGED_TREE, KV_AGG_LOGS, AGG_LOGS_MAX, KV_SITE_SNAPSHOT, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, BASE_URL_PLACEHOLDER, KV_SITE_HEALTH_MAP, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SOURCE_MAP, KV_SOURCE_URL_BLACKLIST } from './core/config';
+import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_SOURCE_URLS, KV_LAST_UPDATE, KV_MANUAL_SOURCES, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_BLACKLIST, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_CHANNEL_MERGED_TREE, KV_AGG_LOGS, AGG_LOGS_MAX, KV_SITE_SNAPSHOT, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, BASE_URL_PLACEHOLDER, KV_SITE_HEALTH_MAP, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SOURCE_MAP, KV_SOURCE_URL_BLACKLIST } from './core/config';
 import { loadBlacklist, applyBlacklist, pruneBlacklist, saveBlacklist, siteFingerprint } from './core/blacklist';
 import { transformSiteNames } from './core/cleaner';
 import { parseConfigJson, type FetchProxyConfig } from './core/fetcher';
@@ -565,6 +565,20 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
 
   // Save the final processed lives to KV_LIVE_MERGED_DATA (so /live.json can serve them)
   await storage.put(KV_LIVE_MERGED_DATA, JSON.stringify(merged.lives || []));
+
+  // 预生成 TVBox 直播 txt，供 /live 直接返回，避免请求时实时下载/合并直播源。
+  const nativeLiveGroups = (merged.lives || []).filter(
+    (live): live is TVBoxLive & { group: string; channels: NonNullable<TVBoxLive['channels']> } =>
+      typeof live.group === 'string' && Array.isArray(live.channels),
+  );
+  if (nativeLiveGroups.length > 0) {
+    await storage.put(KV_LIVE_MERGED_TXT, formatLiveGroupsAsTxt(nativeLiveGroups));
+  } else if (config.workerBaseUrl) {
+    // CF 是非聚合直播模式：没有预生成 TXT，保留请求时实时解析的旧行为。
+    await storage.put(KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK);
+  } else {
+    await storage.put(KV_LIVE_MERGED_TXT, '');
+  }
 
   // Step 7.8: 统一直播入口 —— TVBox 的 lives 字段只认 FongMi 格式 {name,type,url}，
   // 如果存入 Native 格式 {group,channels} 会导致 TVBox 无法加载直播源。

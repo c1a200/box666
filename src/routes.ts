@@ -4,7 +4,7 @@ import { Hono } from 'hono';
 import { MemoryCachedStorage } from './storage/cached';
 import type { Storage } from './storage/interface';
 import type { AppConfig, MacCMSSourceEntry, LiveSourceEntry, NameTransformConfig, EdgeProxyConfig } from './core/types';
-import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_MANUAL_SOURCES, KV_LAST_UPDATE, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_BLACKLIST, LIVE_PROXY_TTL, IMG_PROXY_TTL, KV_NAME_TRANSFORM, KV_CRON_INTERVAL, DEFAULT_CRON_INTERVAL, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_AGG_LOGS, KV_BG_SETTINGS, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, KV_SMART_BASE_URL_ENABLED, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SITE_HEALTH_MAP } from './core/config';
+import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_MANUAL_SOURCES, KV_LAST_UPDATE, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_BLACKLIST, LIVE_PROXY_TTL, IMG_PROXY_TTL, KV_NAME_TRANSFORM, KV_CRON_INTERVAL, DEFAULT_CRON_INTERVAL, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_AGG_LOGS, KV_BG_SETTINGS, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, KV_SMART_BASE_URL_ENABLED, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SITE_HEALTH_MAP } from './core/config';
 import { getRequestBaseUrl, applyBaseUrlPlaceholder, assertHostAllowed } from './core/base-url';
 import { logger } from './core/logger';
 import { loadGroupOrder, saveGroupOrder } from './core/group-order';
@@ -227,6 +227,21 @@ export function createApp(deps: AppDeps): Hono {
 
   // ─── 纯直播配置 ────────────────────────────────────────
   const handleLive = async (c: any) => {
+    const baseUrl = await resolveBaseUrl(c);
+    if (baseUrl instanceof Response) return baseUrl;
+
+    // 优先返回聚合阶段预生成的 txt，避免每次请求都实时下载/合并直播源。
+    const prebuiltTxt = await storage.get(KV_LIVE_MERGED_TXT);
+    // 空字符串也是有效结果（例如直播被禁用/没有可用频道），
+    // 必须直接返回，不能回退到慢速实时解析。
+    if (prebuiltTxt !== null && prebuiltTxt !== KV_LIVE_MERGED_TXT_FALLBACK) {
+      return c.body(applyBaseUrlPlaceholder(prebuiltTxt, baseUrl), 200, {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Cache-Control': 'public, max-age=1800',
+        'Access-Control-Allow-Origin': '*',
+      });
+    }
+
     let livesRaw = await storage.get(KV_LIVE_MERGED_DATA);
     let lives: any[] = [];
     if (livesRaw) {
@@ -250,11 +265,9 @@ export function createApp(deps: AppDeps): Hono {
       lives = lives.filter(l => !(l.url && (l.url.endsWith('/live') || l.url.endsWith('/live-config') || l.url.endsWith('/live.json'))));
     }
 
-    const baseUrl = await resolveBaseUrl(c);
-    if (baseUrl instanceof Response) return baseUrl;
-
     try {
-      // FongMi 格式（type/url/api 指针）：实时下载并解析为 txt 格式
+      // FongMi 格式（type/url/api 指针）：实时下载并解析为 txt 格式。
+      // 仅 CF Worker 使用边缘缓存，空结果和错误结果不缓存。
       if (!isNativeLiveGroups(lives)) {
         const liveUrls: Array<{ name: string; url: string; header?: Record<string, string> }> = [];
         for (const entry of lives) {
@@ -264,22 +277,38 @@ export function createApp(deps: AppDeps): Hono {
           }
         }
         if (liveUrls.length > 0) {
+          const resolvedUrls = liveUrls.map(u => ({
+            ...u,
+            url: applyBaseUrlPlaceholder(u.url, baseUrl)
+          }));
+
+          const isCfRuntime = !!config.workerBaseUrl && typeof caches !== 'undefined';
+          const cache = isCfRuntime ? (caches as any).default as Cache : null;
+          const cacheKey = isCfRuntime
+            ? new Request('https://live-cache.internal/' + encodeURIComponent(baseUrl) + '/' + encodeURIComponent(c.req.url))
+            : null;
+          if (cache && cacheKey) {
+            const cached = await cache.match(cacheKey);
+            if (cached) return cached;
+          }
+
           try {
-            // 解析 URL 中的 baseUrl 占位符
-            const resolvedUrls = liveUrls.map(u => ({
-              ...u,
-              url: applyBaseUrlPlaceholder(u.url, baseUrl)
-            }));
             const channelSpeedMap = await loadChannelSpeedMap(storage);
             const groups = await fetchAndParseLiveUrls(resolvedUrls, 8000, channelSpeedMap);
             if (groups.length > 0) {
-              return c.body(formatLiveGroupsAsTxt(groups), 200, {
-                'Content-Type': 'text/plain; charset=utf-8',
-                'Cache-Control': 'public, max-age=1800',
-                'Access-Control-Allow-Origin': '*',
+              const response = new Response(formatLiveGroupsAsTxt(groups), {
+                headers: {
+                  'Content-Type': 'text/plain; charset=utf-8',
+                  'Cache-Control': 'public, max-age=1800',
+                  'Access-Control-Allow-Origin': '*',
+                },
               });
+              if (cache && cacheKey) {
+                c.executionCtx.waitUntil(cache.put(cacheKey, response.clone()));
+              }
+              return response;
             }
-          } catch { /* fall through to JSON fallback */ }
+          } catch { /* fall through to empty txt */ }
         }
         // 无法解析时返回空 txt
         return c.body('', 200, {
@@ -1999,6 +2028,7 @@ export function createApp(deps: AppDeps): Hono {
         }
       }
       await storage.put(KV_LIVE_MERGED_DATA, '[]');
+      await storage.put(KV_LIVE_MERGED_TXT, '');
       await clearDirtyMarker(storage);
       return c.json({ success: true, disabled: body.disabled, patched: true });
     }

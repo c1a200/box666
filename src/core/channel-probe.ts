@@ -30,7 +30,20 @@ export async function loadStatus(storage: Storage): Promise<ChannelProbeStatus> 
   const raw = await storage.get(KV_CHANNEL_PROBE_STATUS);
   if (raw) {
     try {
-      return JSON.parse(raw);
+      const parsed = JSON.parse(raw) as ChannelProbeStatus;
+      // 进程重启后内存中的 running 会归零，但持久化状态可能仍为 running。
+      // 读取状态时直接纠正，避免管理页一直显示“运行中”并阻止手动重试。
+      if (parsed.state === 'running' && !running) {
+        const recovered: ChannelProbeStatus = {
+          ...parsed,
+          state: 'error',
+          finishedAt: parsed.finishedAt || new Date().toISOString(),
+          error: parsed.error || 'Previous run was interrupted by a service restart',
+        };
+        await saveStatus(storage, recovered);
+        return recovered;
+      }
+      return parsed;
     } catch {
       /* fallthrough */
     }
@@ -156,7 +169,7 @@ async function runWithConcurrency<T, R>(
   items: T[],
   limit: number,
   fn: (item: T, index: number) => Promise<R>,
-  onProgress?: (done: number, total: number) => void,
+  onProgress?: (done: number, total: number, result: R) => void,
 ): Promise<R[]> {
   const results: R[] = new Array(items.length);
   let index = 0;
@@ -172,13 +185,12 @@ async function runWithConcurrency<T, R>(
         results[i] = { url: String(items[i]), speedMs: 0, kind: 'fail' } as R;
       }
       done++;
-      if (onProgress && done % 50 === 0) onProgress(done, items.length);
+      if (onProgress) onProgress(done, items.length, results[i]);
     }
   }
 
   const workers = Array.from({ length: Math.min(limit, items.length) }, () => worker());
   await Promise.all(workers);
-  if (onProgress) onProgress(done, items.length);
   return results;
 }
 
@@ -191,6 +203,8 @@ export async function runChannelProbe(storage: Storage): Promise<ChannelProbeSta
     console.log('[channel-probe] Already running, skipping');
     return loadStatus(storage);
   }
+
+  // loadStatus 已会把重启遗留的 running 纠正为 error，这里无需再次处理。
 
   if (!(await isProbeEnabled(storage))) {
     console.log('[channel-probe] Disabled by user, skipping');
@@ -281,19 +295,38 @@ export async function runChannelProbe(storage: Storage): Promise<ChannelProbeSta
     const toProbe = urls.filter((u) => !fresh[u]);
     console.log(`[channel-probe] ${toProbe.length} new URLs to probe (${urls.length - toProbe.length} cached)`);
 
+    const cachedSuccess = urls.length - toProbe.length;
+    success = cachedSuccess;
+    status.success = success;
+    status.probed = cachedSuccess;
+    status.coverage = urls.length > 0 ? Math.round((success / urls.length) * 100) : 0;
+
+    let lastProgressSave = 0;
     const results = await runWithConcurrency(
       toProbe,
       CHANNEL_PROBE_CONCURRENCY,
       (url) => probeSingle(url),
-      (done, total) => {
-        status.probed = done + (urls.length - toProbe.length); // 含缓存命中
-        saveStatus(storage, status).catch(() => {});
-        if (done % 200 === 0) {
+      (done, total, result) => {
+        const probeResult = result as ProbeResult;
+        if (probeResult.kind === 'fail') failed++;
+        else success++;
+
+        status.probed = cachedSuccess + done;
+        status.success = success;
+        status.failed = failed;
+        status.coverage = urls.length > 0 ? Math.round((success / urls.length) * 100) : 0;
+
+        // 状态写入节流：运行中最多每 250ms 写一次，避免 SQLite/KV 写放大。
+        const now = Date.now();
+        if (now - lastProgressSave >= 250 || done === total) {
+          lastProgressSave = now;
+          saveStatus(storage, { ...status }).catch(() => {});
+        }
+        if (done % 200 === 0 || done === total) {
           console.log(`[channel-probe] Progress: ${done}/${total}`);
         }
       },
     );
-
     const now = new Date().toISOString();
     for (const r of results) {
       fresh[r.url] = {
@@ -301,13 +334,7 @@ export async function runChannelProbe(storage: Storage): Promise<ChannelProbeSta
         probedAt: now,
         kind: r.kind,
       };
-      if (r.kind === 'fail') failed++;
-      else success++;
     }
-
-    // 算上缓存命中的成功数（不重复测但视为 success）
-    const cachedSuccess = urls.length - toProbe.length;
-    success += cachedSuccess;
 
     await saveSpeedMap(storage, fresh);
 
@@ -346,7 +373,7 @@ export async function runChannelProbe(storage: Storage): Promise<ChannelProbeSta
       success,
       failed,
       totalChannels,
-      coverage: 0,
+      coverage: urls.length > 0 ? Math.round((success / urls.length) * 100) : 0,
       error: msg,
     };
     await saveStatus(storage, errStatus);

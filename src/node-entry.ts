@@ -55,41 +55,48 @@ if (proxyUrl) {
 // ─── 存储初始化（SQLite → JSON 降级）───────────────────
 
 function createStorage(): Storage {
-  // 优先尝试 Cloudflare KV（实现 Render 等免费无状态容器的数据云端持久化）
-  if (process.env.CF_ACCOUNT_ID && process.env.CF_KV_NAMESPACE_ID && process.env.CF_API_TOKEN) {
-    try {
-      const { CloudflareKVStorage } = require('./storage/cloudflare-kv');
-      const storage = new CloudflareKVStorage(
-        process.env.CF_ACCOUNT_ID,
-        process.env.CF_KV_NAMESPACE_ID,
-        process.env.CF_API_TOKEN
-      );
-      console.log(`[storage] Cloudflare KV initialized: namespace ${process.env.CF_KV_NAMESPACE_ID}`);
-      return storage;
-    } catch (err: any) {
-      console.error('[storage] Failed to initialize Cloudflare KV backend:', err.message);
-    }
-  }
-
   const dataDir = path.resolve(process.env.DATA_DIR || path.join(process.cwd(), 'data'));
+
+  // 本地存储优先：Render 等 Node 环境不因远程 KV 慢/不可用而卡住。
+  let localStorage: Storage;
 
   // 尝试 SQLite
   try {
     const { SQLiteStorage } = require('./storage/sqlite');
     const dbPath = path.join(dataDir, 'tvbox.db');
-    const storage = new SQLiteStorage(dbPath);
+    localStorage = new SQLiteStorage(dbPath);
     console.log(`[storage] SQLite initialized: ${dbPath}`);
-    return storage;
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`[storage] SQLite unavailable (${msg}), falling back to JSON file`);
+    const { JsonFileStorage } = require('./storage/json-file');
+    const jsonPath = path.join(dataDir, 'tvbox-data.json');
+    localStorage = new JsonFileStorage(jsonPath);
+    console.log(`[storage] JSON file storage: ${jsonPath}`);
   }
 
-  // 降级到 JSON
-  const { JsonFileStorage } = require('./storage/json-file');
-  const jsonPath = path.join(dataDir, 'tvbox-data.json');
-  console.log(`[storage] JSON file storage: ${jsonPath}`);
-  return new JsonFileStorage(jsonPath);
+  // Cloudflare KV 作为可选同步后端（保留 Render 上已配置的三个变量）。
+  if (process.env.CF_ACCOUNT_ID && process.env.CF_KV_NAMESPACE_ID && process.env.CF_API_TOKEN) {
+    try {
+      const { CloudflareKVStorage } = require('./storage/cloudflare-kv');
+      const { HybridStorage } = require('./storage/hybrid');
+      const remote = new CloudflareKVStorage(
+        process.env.CF_ACCOUNT_ID,
+        process.env.CF_KV_NAMESPACE_ID,
+        process.env.CF_API_TOKEN,
+        parseInt(process.env.CF_KV_TIMEOUT_MS || '') || 2500
+      );
+      console.log(
+        `[storage] Cloudflare KV sync enabled: namespace ${process.env.CF_KV_NAMESPACE_ID} ` +
+        `(Render namespace must differ from Worker namespace)`
+      );
+      return new HybridStorage(localStorage, remote);
+    } catch (err: any) {
+      console.error('[storage] Failed to initialize Cloudflare KV sync backend:', err.message);
+    }
+  }
+
+  return localStorage;
 }
 
 // ─── 配置 ────────────────────────────────────────────────
@@ -159,7 +166,10 @@ async function main() {
   const config = await buildConfig(port);
 
   let refreshRunning = false;
-  const AGGREGATION_TIMEOUT_MS = 300_000; // 聚合整体超时 5 分钟
+  const aggregationTimeoutMs = Math.max(
+    60_000,
+    parseInt(process.env.AGGREGATION_TIMEOUT_MS || '') || 420_000,
+  );
 
   const runWithGuard = async () => {
     if (refreshRunning) {
@@ -167,19 +177,37 @@ async function main() {
       return;
     }
     refreshRunning = true;
+
+    // 超时只解除本次等待，底层聚合仍继续执行；必须等它真正结束后才能释放互斥，
+    // 否则超时后的下一次 cron/手动刷新会再启动一轮，形成并发聚合。
+    const aggregation = runAggregation(storage, config);
+    let timedOut = false;
+    const timeout = new Promise<never>((_, reject) => {
+      const timer = setTimeout(() => {
+        timedOut = true;
+        reject(new Error(`Aggregation timed out after ${aggregationTimeoutMs}ms (still running in background)`));
+      }, aggregationTimeoutMs);
+      aggregation.finally(() => clearTimeout(timer)).catch(() => {});
+    });
+
     try {
-      await Promise.race([
-        runAggregation(storage, config),
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('Aggregation timed out')), AGGREGATION_TIMEOUT_MS),
-        ),
-      ]);
+      await Promise.race([aggregation, timeout]);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[aggregation] Error: ${msg}`);
-    } finally {
-      refreshRunning = false;
+      if (timedOut) {
+        aggregation.catch((backgroundErr: unknown) => {
+          const backgroundMsg = backgroundErr instanceof Error ? backgroundErr.message : String(backgroundErr);
+          console.error(`[aggregation] Background task failed: ${backgroundMsg}`);
+        }).finally(() => {
+          refreshRunning = false;
+          console.log('[aggregation] Background task finished; guard released');
+        });
+        return;
+      }
     }
+
+    refreshRunning = false;
   };
 
   // 动态 cron 管理

@@ -1,4 +1,4 @@
-﻿import { TVBOX_UA, DEFAULT_SPEED_TEST_CONCURRENCY, DEFAULT_SPEED_TEST_BUDGET_MS } from './config';
+import { TVBOX_UA, DEFAULT_SPEED_TEST_CONCURRENCY, DEFAULT_SPEED_TEST_BUDGET_MS } from './config';
 import { logger } from './logger';
 import type { TVBoxSite } from './types';
 
@@ -42,15 +42,25 @@ async function siteProbe(url: string, siteType: number, timeoutMs: number, deep:
   }
 }
 
-async function siteProbeWithRetry(url: string, siteType: number, timeoutMs: number, deep: boolean, retries = 2): Promise<{ speedMs: number | null; result: ProbeResult }> {
+async function siteProbeWithRetry(
+  url: string,
+  siteType: number,
+  timeoutMs: number,
+  deep: boolean,
+  deadline: number,
+  retries = 1,
+): Promise<{ speedMs: number | null; result: ProbeResult }> {
   for (let attempt = 0; attempt <= retries; attempt++) {
-    try {
-      const result = await siteProbe(url, siteType, timeoutMs, deep);
-      return result;
-    } catch (e) {
-      if (attempt === retries) throw e;
-      await new Promise(r => setTimeout(r, 800));
-    }
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) return { speedMs: null, result: 'timeout' };
+
+    const attemptTimeoutMs = Math.min(timeoutMs, remainingMs);
+    const result = await siteProbe(url, siteType, attemptTimeoutMs, deep);
+    if (result.result !== 'timeout' && result.result !== 'error') return result;
+    if (attempt === retries || Date.now() >= deadline) return result;
+
+    const waitMs = Math.min(500, Math.max(0, deadline - Date.now()));
+    if (waitMs > 0) await new Promise(r => setTimeout(r, waitMs));
   }
   return { speedMs: null, result: 'error' };
 }
@@ -112,7 +122,17 @@ export async function batchSiteSpeedTest(
   let updateCounter = 0;
 
   await new Promise<void>((resolve) => {
+    let settled = false;
+    let hardStopTimer: ReturnType<typeof setTimeout> | undefined;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (hardStopTimer) clearTimeout(hardStopTimer);
+      resolve();
+    };
+
     function scheduleNext() {
+      if (settled) return;
       while (active < concurrency && cursor < tasks.length) {
         if (Date.now() >= deadline) {
           budgetExhausted = true;
@@ -123,7 +143,8 @@ export async function batchSiteSpeedTest(
         active++;
         updateCounter++;
 
-        siteProbeWithRetry(task.url, task.type, timeoutMs, deep).then((probe) => {
+        siteProbeWithRetry(task.url, task.type, timeoutMs, deep, deadline).then((probe) => {
+          if (settled) return;
           probeMap.set(task.key, { key: task.key, ...probe });
           active--;
 
@@ -134,17 +155,31 @@ export async function batchSiteSpeedTest(
           scheduleNext();
         });
       }
-      if (active === 0) resolve();
+
+      if (active === 0) finish();
     }
+
+    // 硬预算：即使个别探测未及时返回，也不让整个聚合无限等待。
+    hardStopTimer = setTimeout(() => {
+      budgetExhausted = true;
+      finish();
+    }, Math.max(1000, deadline - Date.now() + 1000));
+
     scheduleNext();
   });
 
   if (budgetExhausted) {
-    const skipped = tasks.length - cursor;
-    for (let i = cursor; i < tasks.length; i++) {
-      probeMap.set(tasks[i].key, { key: tasks[i].key, speedMs: null, result: 'timeout' });
+    let completed = 0;
+    let marked = 0;
+    for (const task of tasks) {
+      if (probeMap.has(task.key)) {
+        completed++;
+      } else {
+        probeMap.set(task.key, { key: task.key, speedMs: null, result: 'timeout' });
+        marked++;
+      }
     }
-    logger.warnFields('speedtest', 'budget-exhausted', { completed: cursor, skipped });
+    logger.warnFields('speedtest', 'budget-exhausted', { completed, timeout: marked, total: tasks.length });
   }
 
   const ok = [...probeMap.values()].filter(v => v.result === 'ok').length;

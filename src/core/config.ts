@@ -19,6 +19,8 @@ export const KV_MACCMS_SOURCES = 'maccms_sources';
 export const KV_LIVE_SOURCES = 'live_sources';
 export const KV_LIVE_SCRAPED = 'live_scraped';
 export const KV_LIVE_MERGED_DATA = 'live_merged_data'; // 最终聚合且经过过滤的直播源数据（供 /live.json 使用）
+export const KV_LIVE_MERGED_TXT = 'live_merged_txt';  // 预生成的 TVBox 直播 txt（供 /live 直接返回）
+export const KV_LIVE_MERGED_TXT_FALLBACK = '__LIVE_TXT_FALLBACK__'; // 标记该部署需要请求时实时解析（CF 非聚合模式）
 
 // 直播源代理缓存 TTL（秒）
 export const LIVE_PROXY_TTL = 7200; // 2 小时

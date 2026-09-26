@@ -239,6 +239,24 @@ echo "your-api-key" | npx wrangler secret put ZBAPE_API_KEY
 
 ## 环境变量
 
+### Render / Node 持久化（可选）
+
+Render 免费实例的文件系统会重置。如果希望保留数据，可以配置独立的 Cloudflare KV：
+
+```env
+CF_ACCOUNT_ID=你的 Cloudflare Account ID
+CF_KV_NAMESPACE_ID=Render 专用 KV namespace ID
+CF_API_TOKEN=你的 API Token
+CF_KV_TIMEOUT_MS=2500
+```
+
+> **重要**：Render 的 `CF_KV_NAMESPACE_ID` 必须与 Cloudflare Worker
+> `wrangler.toml` 中的 namespace ID 不同。两边使用不同 namespace 即可完全独立，
+> 不需要在代码中增加 key 前缀。
+
+Render 运行时以本地 SQLite/JSON 为主存储，Cloudflare KV 仅做尽力同步；
+KV 超时或不可用不会阻塞 Render 服务。
+
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
 | `ADMIN_TOKEN` | 管理后台密码（必填） | - |
@@ -248,6 +266,10 @@ echo "your-api-key" | npx wrangler secret put ZBAPE_API_KEY
 | `REFRESH_TOKEN` | 刷新接口独立 Token | - |
 | `SPEED_TIMEOUT_MS` | 源延迟阈值 | `5000` |
 | `FETCH_TIMEOUT_MS` | fetch 配置超时 | `5000` |
+| `SPEED_TEST_CONCURRENCY` | 站点测速并发数 | `18` |
+| `SPEED_TEST_BUDGET_MS` | 单批站点测速预算 | `140000` |
+| `AGGREGATION_TIMEOUT_MS` | 聚合等待上限；超时后后台继续且不重复启动 | `420000` |
+| `CF_KV_TIMEOUT_MS` | Render 访问 Cloudflare KV 的超时 | `2500` |
 | `DATA_DIR` | 数据存储目录（Docker/本地） | `./data` |
 
 ## License
