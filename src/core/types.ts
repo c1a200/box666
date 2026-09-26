@@ -18,6 +18,32 @@ export interface TVBoxSite {
   changeable?: number; // 0|1
 }
 
+// 直播源文件缓存条目（按源 URL 保存最近一次成功下载内容）
+export interface LiveSourceCacheEntry {
+  content: string;
+  cachedAt: string;
+  etag?: string;
+  lastModified?: string;
+}
+
+export type LiveSourceCache = Record<string, LiveSourceCacheEntry>;
+
+// 单次直播聚合统计报告
+export interface LiveMergeReport {
+  updatedAt: string;
+  mode: 'separated' | 'merged';
+  sources: number;
+  sourcesDownloaded: number;
+  sourcesFailed: number;
+  cacheHits: number;
+  cacheMisses: number;
+  revalidated: number;
+  staleFallbacks: number;
+  groups: number;
+  channels: number;
+  urls: number;
+}
+
 export interface TVBoxParse {
   name: string;
   url: string;

@@ -5,8 +5,10 @@ import type {
   TVBoxLiveGroup,
   TVBoxLiveChannel,
   ChannelSpeedMap,
+  LiveSourceCacheEntry,
 } from './types';
-import { TVBOX_UA, BROWSER_UA } from './config';
+import type { Storage } from '../storage/interface';
+import { TVBOX_UA, BROWSER_UA, KV_LIVE_SOURCE_CACHE } from './config';
 
 // ─── 输入条目 ──────────────────────────────────────────
 
@@ -17,6 +19,102 @@ export interface LiveSourceInput {
   header?: Record<string, string>;
   speedMs?: number; // 源级速度（用于粗粒度排序）
   isAggregated?: boolean; // 是否为来自第三方配置源合并来的直播源
+}
+
+// ─── 下载缓存 ──────────────────────────────────────────
+
+const LIVE_SOURCE_CACHE_TTL_MS = 30 * 60 * 1000;
+const LIVE_SOURCE_CACHE_MAX_CONTENT = 512 * 1024;
+const LIVE_SOURCE_CACHE_MAX_TOTAL = 2 * 1024 * 1024;
+
+interface CachedLiveSource {
+  content: string;
+  cachedAt: number;
+  lastAccess: number;
+  etag?: string;
+  lastModified?: string;
+}
+
+interface DownloadOutcome {
+  content: string | null;
+  cacheHit: boolean;
+  revalidated: boolean;
+  staleFallback: boolean;
+}
+
+export interface LiveDownloadStats {
+  cacheHits: number;
+  cacheMisses: number;
+  revalidated: number;
+  staleFallbacks: number;
+}
+
+const liveSourceMemoryCache = new Map<string, CachedLiveSource>();
+
+function liveCacheKey(input: LiveSourceInput): string {
+  const header = input.header ? JSON.stringify(input.header) : '';
+  return input.url + '\n' + (input.ua || '') + '\n' + header;
+}
+
+function compactLiveSourceCache(): void {
+  const entries = Array.from(liveSourceMemoryCache.entries())
+    .filter(([, entry]) => entry.content.length <= LIVE_SOURCE_CACHE_MAX_CONTENT)
+    .sort((a, b) => b[1].lastAccess - a[1].lastAccess);
+  const pruned = new Map<string, CachedLiveSource>();
+  let total = 0;
+  for (const [key, entry] of entries) {
+    if (total + entry.content.length > LIVE_SOURCE_CACHE_MAX_TOTAL) continue;
+    pruned.set(key, entry);
+    total += entry.content.length;
+  }
+  liveSourceMemoryCache.clear();
+  for (const [key, entry] of pruned) liveSourceMemoryCache.set(key, entry);
+}
+
+async function loadPersistentLiveSourceCache(storage?: Storage): Promise<void> {
+  if (!storage) return;
+  try {
+    const raw = await storage.get(KV_LIVE_SOURCE_CACHE);
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as Record<string, LiveSourceCacheEntry>;
+    const now = Date.now();
+    for (const [key, entry] of Object.entries(parsed)) {
+      if (!entry || typeof entry.content !== 'string' || entry.content.length <= 20) continue;
+      const cachedAt = Date.parse(entry.cachedAt || '') || now;
+      const existing = liveSourceMemoryCache.get(key);
+      if (existing && existing.cachedAt >= cachedAt) continue;
+      liveSourceMemoryCache.set(key, {
+        content: entry.content,
+        cachedAt,
+        lastAccess: now,
+        etag: entry.etag,
+        lastModified: entry.lastModified,
+      });
+    }
+  } catch {
+    // 缓存损坏不影响正常聚合
+  }
+}
+
+async function savePersistentLiveSourceCache(storage?: Storage): Promise<void> {
+  if (!storage) return;
+  compactLiveSourceCache();
+  const payload: Record<string, LiveSourceCacheEntry> = {};
+  for (const [key, entry] of liveSourceMemoryCache) {
+    payload[key] = {
+      content: entry.content,
+      cachedAt: new Date(entry.cachedAt).toISOString(),
+      etag: entry.etag,
+      lastModified: entry.lastModified,
+    };
+  }
+  const serialized = JSON.stringify(payload);
+  try {
+    const existing = await storage.get(KV_LIVE_SOURCE_CACHE);
+    if (existing !== serialized) await storage.put(KV_LIVE_SOURCE_CACHE, serialized);
+  } catch {
+    // 缓存持久化失败不影响聚合
+  }
 }
 
 // ─── 解析后的频道条目 ──────────────────────────────────
@@ -192,45 +290,94 @@ export function parseLiveContent(content: string, source: string, sourceSpeedMs?
 
 // ─── 下载 m3u/txt ──────────────────────────────────────
 
-async function downloadLive(input: LiveSourceInput, timeoutMs: number): Promise<string | null> {
+async function downloadLive(
+  input: LiveSourceInput,
+  timeoutMs: number,
+  stats: LiveDownloadStats,
+): Promise<DownloadOutcome> {
+  const key = liveCacheKey(input);
+  const cached = liveSourceMemoryCache.get(key);
+  const now = Date.now();
+  const cacheFresh = !!cached && now - cached.cachedAt < LIVE_SOURCE_CACHE_TTL_MS;
+
+  if (cacheFresh && cached) {
+    cached.lastAccess = now;
+    stats.cacheHits++;
+    return { content: cached.content, cacheHit: true, revalidated: false, staleFallback: false };
+  }
+
+  stats.cacheMisses++;
   const uas = [input.ua || TVBOX_UA, BROWSER_UA];
   for (const ua of uas) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const resp = await fetch(input.url, {
-        signal: controller.signal,
-        headers: { 'User-Agent': ua, ...(input.header || {}) },
-      });
+      const headers: Record<string, string> = { 'User-Agent': ua, ...(input.header || {}) };
+      if (cached?.etag) headers['If-None-Match'] = cached.etag;
+      if (cached?.lastModified) headers['If-Modified-Since'] = cached.lastModified;
+
+      const resp = await fetch(input.url, { signal: controller.signal, headers });
       clearTimeout(timer);
+
+      if (resp.status === 304 && cached) {
+        cached.cachedAt = now;
+        cached.lastAccess = now;
+        stats.cacheHits++;
+        stats.revalidated++;
+        return { content: cached.content, cacheHit: true, revalidated: true, staleFallback: false };
+      }
+
       if (resp.ok) {
         const text = await resp.text();
-        if (text && text.length > 20) return text;
+        if (text && text.length > 20) {
+          const entry: CachedLiveSource = {
+            content: text,
+            cachedAt: now,
+            lastAccess: now,
+            etag: resp.headers.get('etag') || undefined,
+            lastModified: resp.headers.get('last-modified') || undefined,
+          };
+          liveSourceMemoryCache.set(key, entry);
+          return { content: text, cacheHit: false, revalidated: false, staleFallback: false };
+        }
       }
     } catch {
       clearTimeout(timer);
     }
   }
-  return null;
+
+  if (cached) {
+    cached.lastAccess = now;
+    stats.staleFallbacks++;
+    return { content: cached.content, cacheHit: true, revalidated: false, staleFallback: true };
+  }
+
+  return { content: null, cacheHit: false, revalidated: false, staleFallback: false };
 }
 
 async function downloadLiveBatched(
   sources: LiveSourceInput[],
   fetchTimeoutMs: number,
   concurrencyLimit = 3,
-): Promise<PromiseSettledResult<{ input: LiveSourceInput; content: string | null }>[]> {
-  const results: PromiseSettledResult<{ input: LiveSourceInput; content: string | null }>[] = [];
+  storage?: Storage,
+): Promise<{
+  results: PromiseSettledResult<{ input: LiveSourceInput; outcome: DownloadOutcome }>[];
+  stats: LiveDownloadStats;
+}> {
+  await loadPersistentLiveSourceCache(storage);
+  const stats: LiveDownloadStats = { cacheHits: 0, cacheMisses: 0, revalidated: 0, staleFallbacks: 0 };
+  const results: PromiseSettledResult<{ input: LiveSourceInput; outcome: DownloadOutcome }>[] = [];
   for (let i = 0; i < sources.length; i += concurrencyLimit) {
     const chunk = sources.slice(i, i + concurrencyLimit);
     const chunkPromises = chunk.map((s) =>
-      downloadLive(s, fetchTimeoutMs).then((content) => ({ input: s, content })),
+      downloadLive(s, fetchTimeoutMs, stats).then((outcome) => ({ input: s, outcome })),
     );
     const chunkResults = await Promise.allSettled(chunkPromises);
     results.push(...chunkResults);
   }
-  return results;
+  await savePersistentLiveSourceCache(storage);
+  return { results, stats };
 }
-
 // ─── 严格过滤：移除含 "type" 字段/字样的危险值 ────────
 
 /**
@@ -263,31 +410,46 @@ export interface MergeLivesResult {
   totalUrls: number;
   sourcesDownloaded: number;
   sourcesFailed: number;
+  cacheHits: number;
+  cacheMisses: number;
+  revalidated: number;
+  staleFallbacks: number;
 }
 
 export async function mergeLivesToNative(
   sources: LiveSourceInput[],
   fetchTimeoutMs: number,
   channelSpeedMap?: ChannelSpeedMap,
+  storage?: Storage,
 ): Promise<MergeLivesResult> {
   if (sources.length === 0) {
-    return { groups: [], totalChannels: 0, totalUrls: 0, sourcesDownloaded: 0, sourcesFailed: 0 };
+    return {
+      groups: [],
+      totalChannels: 0,
+      totalUrls: 0,
+      sourcesDownloaded: 0,
+      sourcesFailed: 0,
+      cacheHits: 0,
+      cacheMisses: 0,
+      revalidated: 0,
+      staleFallbacks: 0,
+    };
   }
 
   console.log(`[live-merger] Downloading ${sources.length} live source files...`);
 
   // 分批并发下载，限制内存占用（防止免费容器 OOM 崩溃）
-  const downloadResults = await downloadLiveBatched(sources, fetchTimeoutMs, 3);
+  const { results: downloadResults, stats: downloadStats } = await downloadLiveBatched(sources, fetchTimeoutMs, 3, storage);
 
   let sourcesDownloaded = 0;
   let sourcesFailed = 0;
   const allEntries: ChannelEntry[] = [];
 
   for (const r of downloadResults) {
-    if (r.status === 'fulfilled' && r.value.content) {
+    if (r.status === 'fulfilled' && r.value.outcome.content) {
       sourcesDownloaded++;
       try {
-        let entries = parseLiveContent(r.value.content, r.value.input.name, r.value.input.speedMs);
+        let entries = parseLiveContent(r.value.outcome.content, r.value.input.name, r.value.input.speedMs);
         
         // 过滤包含广告、微信等关键字的频道
         entries = entries.filter(e => !AD_KEYWORDS.test(e.name) && !AD_KEYWORDS.test(e.group));
@@ -430,6 +592,10 @@ export async function mergeLivesToNative(
       totalUrls,
       sourcesDownloaded,
       sourcesFailed,
+      cacheHits: downloadStats.cacheHits,
+      cacheMisses: downloadStats.cacheMisses,
+      revalidated: downloadStats.revalidated,
+      staleFallbacks: downloadStats.staleFallbacks,
     };
   }
 
@@ -440,6 +606,10 @@ export async function mergeLivesToNative(
       totalUrls,
       sourcesDownloaded,
       sourcesFailed,
+      cacheHits: downloadStats.cacheHits,
+      cacheMisses: downloadStats.cacheMisses,
+      revalidated: downloadStats.revalidated,
+      staleFallbacks: downloadStats.staleFallbacks,
     };
   }
 
@@ -453,6 +623,10 @@ export async function mergeLivesToNative(
     totalUrls,
     sourcesDownloaded,
     sourcesFailed,
+    cacheHits: downloadStats.cacheHits,
+    cacheMisses: downloadStats.cacheMisses,
+    revalidated: downloadStats.revalidated,
+    staleFallbacks: downloadStats.staleFallbacks,
   };
 }
 
@@ -463,15 +637,26 @@ export async function separatedMergeLives(
   sources: LiveSourceInput[],
   fetchTimeoutMs: number,
   channelSpeedMap?: ChannelSpeedMap,
+  storage?: Storage,
 ): Promise<MergeLivesResult> {
   if (sources.length === 0) {
-    return { groups: [], totalChannels: 0, totalUrls: 0, sourcesDownloaded: 0, sourcesFailed: 0 };
+    return {
+      groups: [],
+      totalChannels: 0,
+      totalUrls: 0,
+      sourcesDownloaded: 0,
+      sourcesFailed: 0,
+      cacheHits: 0,
+      cacheMisses: 0,
+      revalidated: 0,
+      staleFallbacks: 0,
+    };
   }
 
   console.log(`[live-merger] Separated mode: downloading ${sources.length} live source files...`);
 
   // 分批并发下载，限制内存占用（防止免费容器 OOM 崩溃）
-  const downloadResults = await downloadLiveBatched(sources, fetchTimeoutMs, 3);
+  const { results: downloadResults, stats: downloadStats } = await downloadLiveBatched(sources, fetchTimeoutMs, 3, storage);
 
   let sourcesDownloaded = 0;
   let sourcesFailed = 0;
@@ -480,12 +665,13 @@ export async function separatedMergeLives(
   let totalUrls = 0;
 
   for (const r of downloadResults) {
-    if (r.status !== 'fulfilled' || !r.value.content) {
+    if (r.status !== 'fulfilled' || !r.value.outcome.content) {
       sourcesFailed++;
       continue;
     }
     sourcesDownloaded++;
-    const { input, content } = r.value;
+    const { input } = r.value;
+    const content = r.value.outcome.content;
     const sourceName = input.name || 'source';
 
     try {
@@ -536,7 +722,17 @@ export async function separatedMergeLives(
 
   console.log(`[live-merger] Separated done: ${sourcesDownloaded}/${sources.length} sources, ${allGroups.length} groups, ${totalChannels} channels`);
 
-  return { groups: allGroups, totalChannels, totalUrls, sourcesDownloaded, sourcesFailed };
+  return {
+    groups: allGroups,
+    totalChannels,
+    totalUrls,
+    sourcesDownloaded,
+    sourcesFailed,
+    cacheHits: downloadStats.cacheHits,
+    cacheMisses: downloadStats.cacheMisses,
+    revalidated: downloadStats.revalidated,
+    staleFallbacks: downloadStats.staleFallbacks,
+  };
 }
 
 /**

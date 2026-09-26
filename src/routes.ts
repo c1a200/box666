@@ -4,7 +4,7 @@ import { Hono } from 'hono';
 import { MemoryCachedStorage } from './storage/cached';
 import type { Storage } from './storage/interface';
 import type { AppConfig, MacCMSSourceEntry, LiveSourceEntry, NameTransformConfig, EdgeProxyConfig } from './core/types';
-import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_MANUAL_SOURCES, KV_LAST_UPDATE, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_RUNTIME_TXT, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, LIVE_PROXY_TTL, IMG_PROXY_TTL, KV_NAME_TRANSFORM, KV_CRON_INTERVAL, DEFAULT_CRON_INTERVAL, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_AGG_LOGS, KV_BG_SETTINGS, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, KV_SMART_BASE_URL_ENABLED, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SITE_HEALTH_MAP } from './core/config';
+import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_MANUAL_SOURCES, KV_LAST_UPDATE, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_RUNTIME_TXT, KV_LIVE_RUNTIME_TXT_VERSION, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, LIVE_PROXY_TTL, IMG_PROXY_TTL, KV_NAME_TRANSFORM, KV_CRON_INTERVAL, DEFAULT_CRON_INTERVAL, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_AGG_LOGS, KV_BG_SETTINGS, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, KV_SMART_BASE_URL_ENABLED, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SITE_HEALTH_MAP } from './core/config';
 import { getRequestBaseUrl, applyBaseUrlPlaceholder, assertHostAllowed } from './core/base-url';
 import { logger } from './core/logger';
 import { loadGroupOrder, saveGroupOrder } from './core/group-order';
@@ -284,16 +284,19 @@ export function createApp(deps: AppDeps): Hono {
     }
 
     // CF 非聚合模式：实时解析成功后写入持久化缓存，避免每次冷启动都重新下载直播源。
-    // 空字符串表示配置已变更，必须重新解析；null 表示尚未生成缓存。
+    // 只有运行时缓存与最近一次聚合输出的版本一致时才可复用，否则配置更新后可能返回旧直播。
+    const mergedVersion = await storage.get(KV_LIVE_MERGED_TXT_VERSION);
+    const runtimeVersion = await storage.get(KV_LIVE_RUNTIME_TXT_VERSION);
     const runtimeTxt = await storage.get(KV_LIVE_RUNTIME_TXT);
-    if (runtimeTxt && runtimeTxt.trim()) {
+    const runtimeVersionMatches = runtimeVersion !== null && runtimeVersion === (mergedVersion || 'legacy');
+    if (runtimeTxt && runtimeTxt.trim() && runtimeVersionMatches) {
       return c.body(applyBaseUrlPlaceholder(runtimeTxt, baseUrl), 200, {
         'Content-Type': 'text/plain; charset=utf-8',
         'Cache-Control': 'public, max-age=1800',
         'Access-Control-Allow-Origin': '*',
       });
     }
-    const runtimeCacheInvalidated = runtimeTxt !== null;
+    const runtimeCacheInvalidated = runtimeTxt !== null && (!runtimeVersionMatches || !runtimeTxt.trim());
 
     // CF 非聚合模式：解析为空通常是上游超时或内容格式不兼容。若不记录负缓存，
     // 客户端会反复触发同一批慢请求。这里保留 10 分钟冷却，配置变更时会主动清空。
@@ -368,6 +371,7 @@ export function createApp(deps: AppDeps): Hono {
             if (groups.length > 0) {
               const txt = formatLiveGroupsAsTxt(groups);
               await storage.put(KV_LIVE_RUNTIME_TXT, txt);
+              await storage.put(KV_LIVE_RUNTIME_TXT_VERSION, mergedVersion || 'legacy');
               await storage.put(KV_LIVE_RUNTIME_EMPTY_AT, '');
               const response = new Response(txt, {
                 headers: {

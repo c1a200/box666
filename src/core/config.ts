@@ -72,6 +72,10 @@ export const KV_CHANNEL_SPEED_MAP = 'channel_speed_map';
 export const KV_CHANNEL_PROBE_ENABLED = 'channel_probe_enabled';
 export const KV_CHANNEL_PROBE_STATUS = 'channel_probe_status';
 export const KV_CHANNEL_MERGED_TREE = 'channel_merged_tree'; // 最近一次合并的频道树（供 probe 使用）
+export const KV_LIVE_MERGE_REPORT = 'live_merge_report'; // 最近一次直播聚合统计报告
+export const KV_LIVE_SOURCE_CACHE = 'live_source_cache'; // m3u/txt 下载缓存
+export const KV_LIVE_MERGED_TXT_VERSION = 'live_merged_txt_version'; // 预生成直播 TXT 内容版本
+export const KV_LIVE_RUNTIME_TXT_VERSION = 'live_runtime_txt_version'; // 实时解析直播 TXT 对应版本
 
 // 聚合日志
 export const KV_AGG_LOGS = 'agg_logs';
