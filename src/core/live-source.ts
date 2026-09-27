@@ -5,6 +5,8 @@ import type { Storage } from '../storage/interface';
 import { LIVE_PROXY_TTL } from './config';
 
 const KV_LIVE_PREFIX = 'live:';
+export const KV_LIVE_PROXY_MANIFEST = 'live_proxy_manifest';
+const LIVE_PROXY_MANIFEST_VERSION = 1;
 
 /**
  * 为 URL 生成短 key：SHA-256 取前 16 位 hex
@@ -30,6 +32,89 @@ export interface LiveProxySource {
   url: string;
   ua?: string;
   header?: Record<string, string>;
+}
+
+interface LiveProxyManifestEntry extends LiveProxySource {
+  key: string;
+}
+
+interface LiveProxyManifest {
+  version: number;
+  signature: string;
+  entries: LiveProxyManifestEntry[];
+}
+
+/** 计算直播源在代理路由中的稳定 key。 */
+export async function liveProxyKey(url: string): Promise<string> {
+  return urlToKey(url);
+}
+
+function parseLiveProxySource(raw: string): LiveProxySource | null {
+  try {
+    const parsed = JSON.parse(raw) as Partial<LiveProxySource>;
+    if (typeof parsed.url === 'string' && parsed.url) {
+      return {
+        url: parsed.url,
+        ...(typeof parsed.name === 'string' ? { name: parsed.name } : {}),
+        ...(typeof parsed.ua === 'string' ? { ua: parsed.ua } : {}),
+        ...(parsed.header && typeof parsed.header === 'object' ? { header: parsed.header } : {}),
+      };
+    }
+  } catch {
+    // 旧格式：值就是原始 URL
+  }
+
+  return { url: raw };
+}
+
+function parseLiveProxyManifest(raw: string | null): LiveProxyManifest | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<LiveProxyManifest>;
+    if (
+      parsed.version !== LIVE_PROXY_MANIFEST_VERSION
+      || typeof parsed.signature !== 'string'
+      || !Array.isArray(parsed.entries)
+    ) {
+      return null;
+    }
+    const entries: LiveProxyManifestEntry[] = [];
+    for (const entry of parsed.entries) {
+      if (!entry || typeof entry !== 'object') continue;
+      const record = entry as unknown as Record<string, unknown>;
+      if (typeof record.key !== 'string' || typeof record.url !== 'string' || !record.url) continue;
+      entries.push({
+        key: record.key,
+        url: record.url,
+        ...(typeof record.name === 'string' ? { name: record.name } : {}),
+        ...(typeof record.ua === 'string' ? { ua: record.ua } : {}),
+        ...(record.header && typeof record.header === 'object' ? { header: record.header as Record<string, string> } : {}),
+      });
+    }
+    return { version: parsed.version, signature: parsed.signature, entries };
+  } catch {
+    return null;
+  }
+}
+
+function manifestSignature(entries: LiveProxyManifestEntry[]): string {
+  return JSON.stringify(entries);
+}
+
+async function prepareManifestEntries(entries: LiveSourceEntry[]): Promise<LiveProxyManifestEntry[]> {
+  const prepared: LiveProxyManifestEntry[] = [];
+  for (const entry of entries) {
+    const url = entry.url.trim();
+    if (!url) continue;
+    prepared.push({
+      key: await urlToKey(url),
+      url,
+      ...(entry.name ? { name: entry.name } : {}),
+      ...(entry.ua ? { ua: entry.ua } : {}),
+      ...(entry.header ? { header: entry.header } : {}),
+    });
+  }
+  return prepared;
 }
 
 /**
@@ -122,7 +207,7 @@ export async function batchTestLiveSources(
 /**
  * 将直播源条目转为 TVBoxLive 数组
  *
- * CF 模式：URL 改写为 /live/:key 代理路由，写 KV 映射
+ * CF 模式：URL 改写为 /live/:key 代理路由，写入一个紧凑清单
  * 本地模式：保持原始 URL，name 追加延迟
  */
 export async function liveSourcesToTVBoxLives(
@@ -133,20 +218,35 @@ export async function liveSourcesToTVBoxLives(
 ): Promise<TVBoxLive[]> {
   const lives: TVBoxLive[] = [];
 
+  if (workerBaseUrl) {
+    const proxyEntries = await prepareManifestEntries(entries);
+    const manifest: LiveProxyManifest = {
+      version: LIVE_PROXY_MANIFEST_VERSION,
+      signature: manifestSignature(proxyEntries),
+      entries: proxyEntries,
+    };
+    const previousRaw = await storage.get(KV_LIVE_PROXY_MANIFEST);
+    const previous = parseLiveProxyManifest(previousRaw);
+    if (!previous || previous.signature !== manifest.signature) {
+      await storage.put(KV_LIVE_PROXY_MANIFEST, JSON.stringify(manifest));
+    }
+
+    for (const entry of proxyEntries) {
+      lives.push({
+        name: entry.name || '直播源',
+        type: 0,
+        url: `${workerBaseUrl.replace(/\/$/, '')}/live/${entry.key}`,
+      });
+    }
+    console.log(`[live-source] Prepared ${proxyEntries.length} filtered live proxy entries`);
+    return lives;
+  }
+
   for (const entry of entries) {
     let url = entry.url;
     let name = entry.name;
 
-    if (workerBaseUrl) {
-      // CF 模式：改写 URL + 写 KV 代理映射
-      const key = await urlToKey(entry.url);
-      const proxySource: LiveProxySource = { url: entry.url };
-      if (entry.name) proxySource.name = entry.name;
-      if (entry.ua) proxySource.ua = entry.ua;
-      if (entry.header) proxySource.header = entry.header;
-      await storage.put(`${KV_LIVE_PREFIX}${key}`, JSON.stringify(proxySource));
-      url = `${workerBaseUrl.replace(/\/$/, '')}/live/${key}`;
-    } else if (speedMap) {
+    if (speedMap) {
       // 本地模式：追加延迟到 name
       const ms = speedMap.get(entry.url);
       if (ms != null) {
@@ -161,10 +261,6 @@ export async function liveSourcesToTVBoxLives(
     });
   }
 
-  if (workerBaseUrl) {
-    console.log(`[live-source] Wrote ${entries.length} KV proxy mappings`);
-  }
-
   return lives;
 }
 
@@ -174,23 +270,19 @@ export async function liveSourcesToTVBoxLives(
  */
 export async function lookupLiveSource(key: string, storage: Storage): Promise<LiveProxySource | null> {
   const raw = await storage.get(`${KV_LIVE_PREFIX}${key}`);
-  if (!raw) return null;
-
-  try {
-    const parsed = JSON.parse(raw) as Partial<LiveProxySource>;
-    if (typeof parsed.url === 'string' && parsed.url) {
-      return {
-        url: parsed.url,
-        ...(typeof parsed.name === 'string' ? { name: parsed.name } : {}),
-        ...(typeof parsed.ua === 'string' ? { ua: parsed.ua } : {}),
-        ...(parsed.header && typeof parsed.header === 'object' ? { header: parsed.header } : {}),
-      };
-    }
-  } catch {
-    // 旧格式：值就是原始 URL
+  if (raw) {
+    return parseLiveProxySource(raw);
   }
 
-  return { url: raw };
+  const manifest = parseLiveProxyManifest(await storage.get(KV_LIVE_PROXY_MANIFEST));
+  const entry = manifest?.entries.find((item) => item.key === key);
+  if (!entry) return null;
+  return {
+    url: entry.url,
+    ...(entry.name ? { name: entry.name } : {}),
+    ...(entry.ua ? { ua: entry.ua } : {}),
+    ...(entry.header ? { header: entry.header } : {}),
+  };
 }
 
 /**

@@ -11,7 +11,7 @@ import { loadGroupOrder, saveGroupOrder } from './core/group-order';
 import { validateMacCMS } from './core/maccms';
 import { lookupJarUrl, isMd5Key, base64ToUint8Array, rewriteJarUrls } from './core/jar-proxy';
 import { BASE_URL_PLACEHOLDER } from './core/config';
-import { lookupLiveSource } from './core/live-source';
+import { lookupLiveSource, liveSourcesToTVBoxLives } from './core/live-source';
 import { adminHtml } from './core/admin';
 import { dashboardHtml } from './core/dashboard';
 import { configEditorHtml } from './core/config-editor';
@@ -22,7 +22,7 @@ import { generateQR, pollQRStatus, passwordLogin, PLATFORM_NAMES, QR_PLATFORMS, 
 import { assessAllSources } from './core/credential-risk';
 import { generateTokenJson } from './core/credential-injector';
 import { formatLiveGroupsAsTxt, filterLivesBySource } from './core/live-merger';
-import type { TVBoxConfig, SearchQuotaConfig, CloudPlatform, CloudCredential, TVBoxLiveGroup } from './core/types';
+import type { TVBoxConfig, SearchQuotaConfig, CloudPlatform, CloudCredential, TVBoxLive, TVBoxLiveGroup } from './core/types';
 import { mountChannelProbeRoutes } from './routes/channel-probe-admin';
 import { loadSpeedMap as loadChannelSpeedMap } from './core/channel-probe';
 import { createLogViewerRouter } from './routes/log-viewer';
@@ -246,6 +246,95 @@ export function createApp(deps: AppDeps): Hono {
     return fallback;
   }
 
+  function isSelfLiveProxyUrl(rawUrl: string | undefined): boolean {
+    if (!rawUrl || !config.workerBaseUrl) return false;
+    try {
+      const parsedUrl = new URL(rawUrl);
+      const baseUrl = new URL(config.workerBaseUrl);
+      if (parsedUrl.origin !== baseUrl.origin) return false;
+      return parsedUrl.pathname === '/live'
+        || parsedUrl.pathname === '/live-config'
+        || parsedUrl.pathname === '/live.json'
+        || parsedUrl.pathname.startsWith('/live/');
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * CF 分离模式兼容修复：
+   * 旧版本可能把根配置里的 lives 写成单个 /live（聚合）指针。
+   * 这里使用已保存的上游直播源清单即时生成多个 /live/<key>，并只写一个紧凑代理清单。
+   * Render 不进入此分支，保持原有行为。
+   */
+  async function repairCfSeparatedLives(cached: string): Promise<string> {
+    if (!config.workerBaseUrl) return cached;
+
+    const liveMergeMode = (await storage.get(KV_LIVE_MERGE_MODE)) || 'separated';
+    if (liveMergeMode !== 'separated') return cached;
+
+    let parsedConfig: TVBoxConfig;
+    try {
+      parsedConfig = JSON.parse(cached) as TVBoxConfig;
+    } catch {
+      return cached;
+    }
+
+    const currentLives = Array.isArray(parsedConfig.lives) ? parsedConfig.lives : [];
+    const liveRaw = await storage.get(KV_LIVE_MERGED_DATA);
+    if (!liveRaw) return cached;
+
+    let upstreamLives: unknown;
+    try {
+      upstreamLives = JSON.parse(liveRaw);
+    } catch {
+      return cached;
+    }
+    if (!Array.isArray(upstreamLives) || upstreamLives.length === 0) return cached;
+
+    const entries: LiveSourceEntry[] = [];
+    const seen = new Set<string>();
+    for (const item of upstreamLives) {
+      if (!item || typeof item !== 'object') continue;
+      const live = item as TVBoxLive;
+      const url = (live.url || live.api || '').trim();
+      if (!url || live.type === 3 || isSelfLiveProxyUrl(url)) continue;
+      try {
+        const parsedUrl = new URL(url);
+        if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') continue;
+        if (parsedUrl.hostname === 'localhost' || parsedUrl.hostname === '127.0.0.1') continue;
+      } catch {
+        continue;
+      }
+      const coreUrl = url.replace(/\/+$/, '');
+      if (seen.has(coreUrl)) continue;
+      seen.add(coreUrl);
+      entries.push({
+        name: live.name || '直播源',
+        url,
+        ...(live.ua ? { ua: live.ua } : {}),
+        ...(live.header ? { header: live.header } : {}),
+      });
+    }
+
+    if (entries.length === 0) return cached;
+
+    const proxyLives = await liveSourcesToTVBoxLives(entries, config.workerBaseUrl, storage);
+    if (proxyLives.length === 0) return cached;
+
+    const currentUrls = currentLives.map((live) => (live.url || live.api || '').trim());
+    const expectedUrls = proxyLives.map((live) => (live.url || live.api || '').trim());
+    const alreadyUpToDate = currentUrls.length === expectedUrls.length
+      && expectedUrls.every((url, index) => currentUrls[index] === url);
+    if (alreadyUpToDate) return cached;
+
+    parsedConfig.lives = proxyLives;
+    const repaired = JSON.stringify(parsedConfig);
+    await storage.put(KV_MERGED_CONFIG, repaired);
+    console.log(`[routes] CF separated lives repaired: ${proxyLives.length} independent /live/<key> entries`);
+    return repaired;
+  }
+
   function configBody(body: string, headers: Record<string, string>): Response {
     // 不手工压缩：Cloudflare 边缘可能在客户端未请求 gzip 时剥离
     // Content-Encoding，却保留压缩字节，导致 TVBox/影视仓 JSON 解析失败。
@@ -267,6 +356,7 @@ export function createApp(deps: AppDeps): Hono {
       );
     }
 
+    cached = await repairCfSeparatedLives(cached);
     const baseUrl = await resolveBaseUrl(c);
     if (baseUrl instanceof Response) return baseUrl;
     cached = applyBaseUrlPlaceholder(cached, baseUrl);
@@ -500,6 +590,7 @@ export function createApp(deps: AppDeps): Hono {
     if (!cached) {
       return c.json({ error: 'No config available yet.' }, 503);
     }
+    cached = await repairCfSeparatedLives(cached);
     const baseUrl = await resolveBaseUrl(c);
     if (baseUrl instanceof Response) return baseUrl;
     cached = applyBaseUrlPlaceholder(cached, baseUrl);
