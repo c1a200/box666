@@ -8,13 +8,15 @@ import {
   KV_CHANNEL_PROBE_STATUS,
   KV_CHANNEL_PROBE_ENABLED,
   KV_CHANNEL_MERGED_TREE,
+  KV_LIVE_MERGED_TXT,
+  KV_LIVE_MERGED_TXT_VERSION,
   KV_LIVE_RUNTIME_TXT_VERSION,
   CHANNEL_PROBE_CONCURRENCY,
   CHANNEL_PROBE_TIMEOUT_MS,
   CHANNEL_SPEED_TTL_MS,
   TVBOX_UA,
 } from './config';
-import { extractAllUrls } from './live-merger';
+import { applyChannelSpeedToGroups, extractAllUrls, formatLiveGroupsAsTxt } from './live-merger';
 
 // ─── 开关/状态 ─────────────────────────────────────────
 
@@ -430,6 +432,19 @@ export async function runChannelProbe(storage: Storage): Promise<ChannelProbeSta
     }
 
     await saveSpeedMap(storage, fresh);
+
+    // 测速完成后立即刷新 /live 的预生成内容。若过滤结果为空，保留上一版，
+    // 避免一次异常测速把直播频道全部清空。
+    const filteredGroups = applyChannelSpeedToGroups(groups, fresh);
+    if (filteredGroups.length > 0) {
+      const liveVersion = `probe-${Date.now()}`;
+      await Promise.all([
+        storage.put(KV_CHANNEL_MERGED_TREE, JSON.stringify(filteredGroups)),
+        storage.put(KV_LIVE_MERGED_TXT, formatLiveGroupsAsTxt(filteredGroups)),
+        storage.put(KV_LIVE_MERGED_TXT_VERSION, liveVersion),
+        storage.put(KV_LIVE_RUNTIME_TXT_VERSION, liveVersion),
+      ]);
+    }
 
     const durationMs = Date.now() - startMs;
     const coverage = urls.length > 0 ? Math.round((success / urls.length) * 100) : 0;

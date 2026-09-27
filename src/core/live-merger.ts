@@ -734,18 +734,71 @@ export async function separatedMergeLives(
  * 从合并后的 groups 提取所有 (url, sourceSpeedMs) 对供 channel-probe 测速
  * URL 是 `$源名` 剥离后的裸 URL
  */
+function bareLiveUrl(url: string): string {
+  const trimmed = url.trim();
+  const idx = trimmed.lastIndexOf('$');
+  return idx > 0 ? trimmed.slice(0, idx) : trimmed;
+}
+
 export function extractAllUrls(groups: TVBoxLiveGroup[]): string[] {
   const set = new Set<string>();
   for (const g of groups) {
     for (const ch of g.channels) {
       for (const u of ch.urls) {
-        const idx = u.lastIndexOf('$');
-        const bare = idx > 0 ? u.slice(0, idx) : u;
+        const bare = bareLiveUrl(u);
         if (bare) set.add(bare);
       }
     }
   }
   return Array.from(set);
+}
+
+/**
+ * 将频道级测速结果应用到已合并的频道树。
+ * 已知失败或超过延迟上限的线路会移除；未知线路保留，已知线路按速度排序。
+ */
+export function applyChannelSpeedToGroups(
+  groups: TVBoxLiveGroup[],
+  speedMap: ChannelSpeedMap,
+  maxSpeedMs = LIVE_KNOWN_MAX_SPEED_MS,
+): TVBoxLiveGroup[] {
+  const speedLimit = Math.max(0, maxSpeedMs);
+  const output: TVBoxLiveGroup[] = [];
+
+  for (const group of groups) {
+    const channels: TVBoxLiveChannel[] = [];
+    for (const channel of group.channels || []) {
+      const seen = new Set<string>();
+      const ranked: Array<{ url: string; speed?: number; index: number }> = [];
+
+      for (const [index, rawUrl] of (channel.urls || []).entries()) {
+        const url = rawUrl.trim();
+        if (!url) continue;
+        const bare = bareLiveUrl(url);
+        if (!bare || seen.has(bare)) continue;
+        seen.add(bare);
+
+        const speed = speedMap[url] ?? speedMap[bare];
+        if (speed?.kind === 'fail') continue;
+        const knownSpeed = speed && Number.isFinite(speed.speedMs) ? speed.speedMs : undefined;
+        if (speedLimit > 0 && knownSpeed != null && knownSpeed > speedLimit) continue;
+        ranked.push({ url, speed: knownSpeed, index });
+      }
+
+      ranked.sort((a, b) => {
+        if (a.speed != null && b.speed != null && a.speed !== b.speed) return a.speed - b.speed;
+        if (a.speed != null && b.speed == null) return -1;
+        if (a.speed == null && b.speed != null) return 1;
+        return a.index - b.index;
+      });
+
+      const urls = ranked.slice(0, SEPARATED_MAX_URLS_PER_CHANNEL).map((item) => item.url);
+      if (urls.length > 0) channels.push({ ...channel, urls });
+    }
+    if (channels.length > 0) output.push({ ...group, channels });
+  }
+
+  return output;
 }
 
 /**
@@ -828,6 +881,12 @@ export interface FilteredLiveOptions {
   preserveSourceGroups?: boolean;
   /** 已知线路的延迟上限；超过该值直接丢弃，0 表示不限制 */
   maxSpeedMs?: number;
+  /** 启用下载缓存/批处理时使用的存储 */
+  storage?: Storage;
+  /** 下载并发上限（仅在启用缓存/批处理时生效） */
+  concurrency?: number;
+  /** 是否启用带缓存、限并发的下载路径 */
+  useCache?: boolean;
 }
 
 const BAD_LIVE_URL = /^(?:about:blank|data:|javascript:|file:)/i;
@@ -984,26 +1043,52 @@ export async function filterLivesBySource(
   const preserveSourceGroups = options.preserveSourceGroups !== false;
   const maxSpeedMs = Math.max(0, options.maxSpeedMs ?? LIVE_KNOWN_MAX_SPEED_MS);
 
-  const results = await Promise.allSettled(
-    urls.map(async (input) => {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
-      try {
-        const resp = await fetch(input.url, {
-          signal: controller.signal,
-          headers: { 'User-Agent': TVBOX_UA, ...(input.header || {}) },
-        });
-        if (!resp.ok) return null;
-        const text = await resp.text();
-        if (!text || text.length < 20) return null;
-        return { content: text, name: input.name || 'source' };
-      } catch {
-        return null;
-      } finally {
-        clearTimeout(timer);
+  let results: PromiseSettledResult<{ content: string; name: string } | null>[];
+  const useBatchedDownloads = options.useCache !== false
+    && (options.useCache === true || options.storage !== undefined || options.concurrency !== undefined);
+  if (useBatchedDownloads) {
+    const batched = await downloadLiveBatched(
+      urls.map((input) => ({
+        name: input.name || 'source',
+        url: input.url,
+        header: input.header,
+      })),
+      timeoutMs,
+      Math.max(1, options.concurrency ?? 3),
+      options.storage,
+    );
+    results = batched.results.map((result): PromiseSettledResult<{ content: string; name: string } | null> => {
+      if (result.status !== 'fulfilled') {
+        return { status: 'rejected', reason: result.reason };
       }
-    }),
-  );
+      const { outcome, input } = result.value;
+      return {
+        status: 'fulfilled',
+        value: outcome.content ? { content: outcome.content, name: input.name || 'source' } : null,
+      };
+    });
+  } else {
+    results = await Promise.allSettled(
+      urls.map(async (input) => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+          const resp = await fetch(input.url, {
+            signal: controller.signal,
+            headers: { 'User-Agent': TVBOX_UA, ...(input.header || {}) },
+          });
+          if (!resp.ok) return null;
+          const text = await resp.text();
+          if (!text || text.length < 20) return null;
+          return { content: text, name: input.name || 'source' };
+        } catch {
+          return null;
+        } finally {
+          clearTimeout(timer);
+        }
+      }),
+    );
+  }
 
   const groups: TVBoxLiveGroup[] = [];
   let emittedChannels = 0;

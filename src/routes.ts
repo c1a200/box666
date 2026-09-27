@@ -272,6 +272,7 @@ export function createApp(deps: AppDeps): Hono {
   const handleLive = async (c: any) => {
     const baseUrl = await resolveBaseUrl(c);
     if (baseUrl instanceof Response) return baseUrl;
+    const isCfRuntime = !!config.workerBaseUrl && typeof caches !== 'undefined';
 
     // 优先返回聚合阶段预生成的 txt，避免每次请求都实时下载/合并直播源。
     const prebuiltTxt = await storage.get(KV_LIVE_MERGED_TXT);
@@ -307,7 +308,7 @@ export function createApp(deps: AppDeps): Hono {
     const runtimeEmptyAtRaw = await storage.get(KV_LIVE_RUNTIME_EMPTY_AT);
     const runtimeEmptyAt = runtimeEmptyAtRaw ? Number(runtimeEmptyAtRaw) : 0;
     const runtimeEmptyTtlMs = 10 * 60 * 1000;
-    if (runtimeEmptyAt > 0 && Date.now() - runtimeEmptyAt < runtimeEmptyTtlMs) {
+    if (isCfRuntime && runtimeEmptyAt > 0 && Date.now() - runtimeEmptyAt < runtimeEmptyTtlMs) {
       return c.body('', 200, {
         'Content-Type': 'text/plain; charset=utf-8',
         'Cache-Control': 'public, max-age=300',
@@ -340,8 +341,8 @@ export function createApp(deps: AppDeps): Hono {
 
     try {
       // FongMi 格式（type/url/api 指针）：实时下载并解析为 txt 格式。
-      // 仅 CF Worker 使用边缘缓存；空结果通过 KV 负缓存短期抑制重复慢请求。
-      const isCfRuntime = !!config.workerBaseUrl && typeof caches !== 'undefined';
+      // CF Worker 使用边缘缓存；Node/Render 使用持久化下载缓存和限并发，
+      // 避免缺失预生成 TXT 时一次性下载全部直播源。
       if (!isNativeLiveGroups(lives)) {
         const liveUrls: Array<{ name: string; url: string; header?: Record<string, string> }> = [];
         for (const entry of lives) {
@@ -374,11 +375,20 @@ export function createApp(deps: AppDeps): Hono {
               try {
                 const channelSpeedMap = await loadChannelSpeedMap(storage);
                 const liveFetchTimeoutMs = isCfRuntime ? 4500 : 8000;
-                const groups = await filterLivesBySource(resolvedUrls, liveFetchTimeoutMs, channelSpeedMap, {
-                  maxUrlsPerChannel: 6,
-                  maxChannels: 12000,
-                  minChannelsPerSource: 1,
-                });
+                const groups = await filterLivesBySource(resolvedUrls, liveFetchTimeoutMs, channelSpeedMap, isCfRuntime
+                  ? {
+                      maxUrlsPerChannel: 6,
+                      maxChannels: 12000,
+                      minChannelsPerSource: 1,
+                    }
+                  : {
+                      maxUrlsPerChannel: 6,
+                      maxChannels: 12000,
+                      minChannelsPerSource: 1,
+                      storage,
+                      concurrency: 3,
+                      useCache: true,
+                    });
                 if (groups.length === 0) {
                   // 后台刷新失败时保留旧直播缓存，只有从未成功解析过才记录空缓存。
                   if (isCfRuntime && !hasRuntimeTxt) {
@@ -420,7 +430,7 @@ export function createApp(deps: AppDeps): Hono {
           };
 
           // 版本更新但旧直播可用：立即返回 stale 内容，后台刷新新版本。
-          if (isCfRuntime && hasRuntimeTxt && !runtimeVersionMatches) {
+          if (hasRuntimeTxt && !runtimeVersionMatches) {
             const staleResponse = c.body(applyBaseUrlPlaceholder(runtimeTxt!, baseUrl), 200, {
               'Content-Type': 'text/plain; charset=utf-8',
               'Cache-Control': 'public, max-age=300',
