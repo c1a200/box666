@@ -389,27 +389,6 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     logger.info('aggregation', 'Step 6.2: Similar-name dedup disabled, skipping');
   }
 
-  // Step 6.3: 搜索配额（复用 Step 6 的测速结果排序/截断，不新增网络请求）
-  if (merged.sites) {
-    const quotaConfig = await loadSearchQuota(storage);
-    const { sites: quotaSites, quotaReport } = applySearchQuota(merged.sites, quotaConfig, siteSourceMap, {
-      speedMap: siteSpeedMap,
-      jsExcluded: quotaJsExcluded,
-      totalSites: quotaTotalSites,
-    });
-    merged.sites = quotaSites;
-    logger.infoFields('aggregation', 'search-quota', {
-      total: quotaReport.totalSites, jsExcluded: quotaReport.jsExcluded,
-      pinned: quotaReport.pinnedCount, truncated: quotaReport.truncated,
-      searchable: quotaReport.searchable, quickSearchable: quotaReport.quickSearchable,
-      quickTruncated: quotaReport.quickTruncated, maxQuickSearch: quotaReport.maxQuickSearch,
-      autoLimit: quotaReport.autoLimit, speedSorted: quotaReport.speedSorted,
-    });
-    await storage.put(KV_SEARCH_QUOTA_REPORT, JSON.stringify({
-      updatedAt: new Date().toISOString(),
-      ...quotaReport,
-    }));
-  }
 
   // Step 6.5: 直播源频道级合并（方案 D+）
   // 收集所有 m3u/txt URL（配置源合来的 FongMi 格式 lives + admin 手动源）
@@ -599,6 +578,40 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     if (removed > 0) {
       logger.info('aggregation', `Step 6.9: Unified config center, removed ${removed} duplicate entries`);
     }
+  }
+
+  // Step 6.95: 最终搜索配额硬约束
+  // normalizeConfigCenterSites 仍可能移除站点，因此配额必须在所有站点处理完成后执行。
+  // 这样 KV_SEARCH_QUOTA_REPORT 和最终根配置始终使用同一份 sites。
+  if (merged.sites) {
+    const quotaConfig = await loadSearchQuota(storage);
+    const { sites: quotaSites, quotaReport } = applySearchQuota(merged.sites, quotaConfig, siteSourceMap, {
+      speedMap: siteSpeedMap,
+      jsExcluded: quotaJsExcluded,
+      totalSites: quotaTotalSites,
+    });
+    merged.sites = quotaSites;
+
+    // autoLimit=false 时 0 表示明确不限制；开启时保存前必须满足最终不变量。
+    if (quotaConfig.autoLimit && quotaReport.maxSearchable > 0 && quotaReport.searchable > quotaReport.maxSearchable) {
+      throw new Error(`search quota invariant failed: searchable=${quotaReport.searchable} max=${quotaReport.maxSearchable}`);
+    }
+    if (quotaConfig.autoLimit && quotaReport.maxQuickSearch > 0 && quotaReport.quickSearchable > quotaReport.maxQuickSearch) {
+      throw new Error(`quick-search quota invariant failed: quickSearchable=${quotaReport.quickSearchable} max=${quotaReport.maxQuickSearch}`);
+    }
+
+    logger.infoFields('aggregation', 'search-quota', {
+      total: quotaReport.totalSites, jsExcluded: quotaReport.jsExcluded,
+      pinned: quotaReport.pinnedCount, truncated: quotaReport.truncated,
+      searchable: quotaReport.searchable, quickSearchable: quotaReport.quickSearchable,
+      quickTruncated: quotaReport.quickTruncated, maxQuickSearch: quotaReport.maxQuickSearch,
+      autoLimit: quotaReport.autoLimit, speedSorted: quotaReport.speedSorted,
+      final: true,
+    });
+    await storage.put(KV_SEARCH_QUOTA_REPORT, JSON.stringify({
+      updatedAt: new Date().toISOString(),
+      ...quotaReport,
+    }));
   }
 
   // Step 7: JAR URL 改写（统一用占位符，请求时替换为实际 base URL）
