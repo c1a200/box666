@@ -401,7 +401,9 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     logger.infoFields('aggregation', 'search-quota', {
       total: quotaReport.totalSites, jsExcluded: quotaReport.jsExcluded,
       pinned: quotaReport.pinnedCount, truncated: quotaReport.truncated,
-      searchable: quotaReport.searchable, speedSorted: quotaReport.speedSorted,
+      searchable: quotaReport.searchable, quickSearchable: quotaReport.quickSearchable,
+      quickTruncated: quotaReport.quickTruncated, maxQuickSearch: quotaReport.maxQuickSearch,
+      autoLimit: quotaReport.autoLimit, speedSorted: quotaReport.speedSorted,
     });
     await storage.put(KV_SEARCH_QUOTA_REPORT, JSON.stringify({
       updatedAt: new Date().toISOString(),
@@ -451,7 +453,7 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
         /* ignore */
       }
     }
-    
+
     // Deduplicate live sources by URL
     const seenUrls = new Set<string>();
     const uniqueLives: TVBoxLive[] = [];
@@ -876,6 +878,8 @@ async function updateSiteHealth(
   const now = new Date().toISOString();
 
   for (const [key, probe] of probeMap) {
+    // 预算耗尽导致的未探测不能计为失败，否则会触发错误的健康降级和自动清理。
+    if (probe.result === 'not_probed') continue;
     const prev = healthMap[key];
     if (probe.result === 'ok') {
       healthMap[key] = { consecutiveFailures: 0, lastProbeTime: now, lastProbeResult: 'ok', lastSuccessTime: now };

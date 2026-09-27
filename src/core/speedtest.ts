@@ -2,7 +2,7 @@ import { TVBOX_UA, DEFAULT_SPEED_TEST_CONCURRENCY, DEFAULT_SPEED_TEST_BUDGET_MS 
 import { logger } from './logger';
 import type { TVBoxSite } from './types';
 
-export type ProbeResult = 'ok' | 'empty' | 'error' | 'timeout';
+export type ProbeResult = 'ok' | 'empty' | 'error' | 'timeout' | 'not_probed';
 
 export interface SiteProbeResult {
   key: string;
@@ -52,7 +52,7 @@ async function siteProbeWithRetry(
 ): Promise<{ speedMs: number | null; result: ProbeResult }> {
   for (let attempt = 0; attempt <= retries; attempt++) {
     const remainingMs = deadline - Date.now();
-    if (remainingMs <= 0) return { speedMs: null, result: 'timeout' };
+    if (remainingMs <= 0) return { speedMs: null, result: 'not_probed' };
 
     const attemptTimeoutMs = Math.min(timeoutMs, remainingMs);
     const result = await siteProbe(url, siteType, attemptTimeoutMs, deep);
@@ -103,7 +103,17 @@ export async function batchSiteSpeedTest(
 ): Promise<Map<string, SiteProbeResult>> {
   const tasks: Array<{ key: string; url: string; type: number }> = [];
 
-  for (const site of sites) {
+  const orderedSites = [...sites].sort((a, b) => {
+    const score = (site: TVBoxSite) => {
+      let value = 0;
+      if (site.searchable === 1) value += 100;
+      if (site.quickSearch !== 0) value += 10;
+      return value;
+    };
+    return score(b) - score(a);
+  });
+
+  for (const site of orderedSites) {
     const url = getTestableUrl(site);
     if (url) {
       tasks.push({ key: site.key, url, type: site.type });
@@ -175,17 +185,18 @@ export async function batchSiteSpeedTest(
       if (probeMap.has(task.key)) {
         completed++;
       } else {
-        probeMap.set(task.key, { key: task.key, speedMs: null, result: 'timeout' });
+        probeMap.set(task.key, { key: task.key, speedMs: null, result: 'not_probed' });
         marked++;
       }
     }
-    logger.warnFields('speedtest', 'budget-exhausted', { completed, timeout: marked, total: tasks.length });
+    logger.warnFields('speedtest', 'budget-exhausted', { completed, notProbed: marked, total: tasks.length });
   }
 
   const ok = [...probeMap.values()].filter(v => v.result === 'ok').length;
   const empty = [...probeMap.values()].filter(v => v.result === 'empty').length;
   const timedOut = [...probeMap.values()].filter(v => v.result === 'timeout').length;
-  logger.infoFields('speedtest', 'batch-done', { ok, empty, timeout: timedOut, error: probeMap.size - ok - empty - timedOut, total: probeMap.size });
+  const notProbed = [...probeMap.values()].filter(v => v.result === 'not_probed').length;
+  logger.infoFields('speedtest', 'batch-done', { ok, empty, timeout: timedOut, notProbed, error: probeMap.size - ok - empty - timedOut - notProbed, total: probeMap.size });
 
   return probeMap;
 }
@@ -203,30 +214,36 @@ export function filterUnreachableSites(
   sites: TVBoxSite[],
   speedMap: Map<string, SiteProbeResult>,
 ): { sites: TVBoxSite[]; filtered: number } {
-  const totalTestable = speedMap.size;
-  if (totalTestable === 0) return { sites, filtered: 0 };
+  if (speedMap.size === 0) return { sites, filtered: 0 };
 
   const reachable: TVBoxSite[] = [];
   const unreachable: TVBoxSite[] = [];
+  let probed = 0;
+  let reachableProbed = 0;
 
   for (const site of sites) {
     const probe = speedMap.get(site.key);
-    if (!probe) {
+    if (!probe || probe.result === 'not_probed') {
+      // 预算耗尽或未参与探测的源不能当作不可达，否则会误删大量有效源。
       reachable.push(site);
-    } else if (probe.result === 'ok') {
+      continue;
+    }
+
+    probed++;
+    if (probe.result === 'ok') {
       reachable.push(site);
+      reachableProbed++;
     } else {
       unreachable.push(site);
     }
   }
 
-  const reachableTestable = reachable.filter(s => speedMap.has(s.key)).length;
-  if (totalTestable > 0 && reachableTestable / totalTestable < 0.1) {
-    logger.warn('speedtest', `Safety valve: only ${reachableTestable}/${totalTestable} sites ok (<10%), keeping all`);
+  if (probed > 0 && reachableProbed / probed < 0.1) {
+    logger.warn('speedtest', 'Safety valve: only ' + reachableProbed + '/' + probed + ' probed sites ok (<10%), keeping all');
     return { sites, filtered: 0 };
   }
 
-  logger.infoFields('speedtest', 'filter-done', { filtered: unreachable.length, kept: reachable.length });
+  logger.infoFields('speedtest', 'filter-done', { filtered: unreachable.length, kept: reachable.length, probed, notProbed: speedMap.size - probed });
   return { sites: reachable, filtered: unreachable.length };
 }
 

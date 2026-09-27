@@ -240,6 +240,8 @@ export interface CredentialPolicyConfig {
 // 搜索配额配置（持久化到 KV）
 export interface SearchQuotaConfig {
   maxSearchable: number;        // 可搜索源上限，0 = 不限制
+  maxQuickSearch?: number;      // 快速搜索源上限，0 = 不限制
+  autoLimit?: boolean;          // 是否使用按部署形态自动选择的默认上限
   pinnedKeys: string[];         // 置顶源 key 列表（排到 sites 最前面）
   sortBySpeed: boolean;         // 是否复用站点测速结果，将较快的可搜索源排在前面
 }
@@ -249,8 +251,13 @@ export interface SearchQuotaReport {
   totalSites: number;           // 站点总数
   jsExcluded: number;           // JS 源排除数
   searchable: number;           // 最终可搜索数
+  quickSearchable: number;      // 最终快速搜索数
+  maxSearchable: number;        // 当前配置的搜索源上限，0 = 不限制
+  maxQuickSearch: number;       // 当前配置的快速搜索源上限，0 = 不限制
+  autoLimit: boolean;           // 是否使用自动安全上限
   pinnedCount: number;          // 置顶源命中数
   truncated: number;            // 被截断数（maxSearchable > 0 时）
+  quickTruncated: number;       // 快速搜索被截断数
   speedSorted: boolean;         // 是否实际按测速结果排序
 }
 
@@ -303,7 +310,7 @@ export interface SiteHealthRecord {
   key: string;
   consecutiveFailures: number;
   lastProbeTime: string;
-  lastProbeResult: 'ok' | 'empty' | 'error' | 'timeout';
+  lastProbeResult: 'ok' | 'empty' | 'error' | 'timeout' | 'not_probed';
   lastSuccessTime?: string;
 }
 export type SiteHealthMap = Record<string, SiteHealthRecord>;

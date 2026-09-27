@@ -194,11 +194,11 @@ export function deduplicateSimilarNames(
     }
 
     let bestIdx = indices[0];
-    let bestSpeed = speedMap.get(sites[bestIdx].api) ?? Infinity;
+    let bestSpeed = speedMap.get(sites[bestIdx].key) ?? Infinity;
 
     for (let k = 1; k < indices.length; k++) {
       const idx = indices[k];
-      const speed = speedMap.get(sites[idx].api) ?? Infinity;
+      const speed = speedMap.get(sites[idx].key) ?? Infinity;
       if (speed < bestSpeed) {
         bestSpeed = speed;
         bestIdx = idx;
@@ -209,7 +209,7 @@ export function deduplicateSimilarNames(
     dedupCount += indices.length - 1;
 
     if (indices.length > 1) {
-      const names = indices.map(i => `${sites[i].name || sites[i].key}(${speedMap.get(sites[i].api) ?? '?'}ms)`);
+      const names = indices.map(i => `${sites[i].name || sites[i].key}(${speedMap.get(sites[i].key) ?? '?'}ms)`);
       console.log(`[dedup-similar] Group: ${names.join(' | ')} → kept: ${sites[bestIdx].name || sites[bestIdx].key}`);
     }
   }

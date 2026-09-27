@@ -1,6 +1,7 @@
 // Hono 统一路由层
 
 import { Hono } from 'hono';
+import { gzipSync, deflateSync } from 'node:zlib';
 import { MemoryCachedStorage } from './storage/cached';
 import type { Storage } from './storage/interface';
 import type { AppConfig, MacCMSSourceEntry, LiveSourceEntry, NameTransformConfig, EdgeProxyConfig } from './core/types';
@@ -246,6 +247,21 @@ export function createApp(deps: AppDeps): Hono {
     return fallback;
   }
 
+  function compressedBody(c: any, body: string, headers: Record<string, string>): Response {
+    const accepted = c.req.header('Accept-Encoding') || '';
+    const encoding = accepted.includes('gzip') ? 'gzip' : accepted.includes('deflate') ? 'deflate' : '';
+    const baseHeaders = { ...headers, Vary: 'Accept-Encoding' };
+    if (!encoding || Buffer.byteLength(body) < 1024) {
+      return new Response(body, { status: 200, headers: baseHeaders });
+    }
+    const compressor = encoding === 'gzip' ? gzipSync : deflateSync;
+    const compressed = compressor(body);
+    return new Response(compressed, {
+      status: 200,
+      headers: { ...baseHeaders, 'Content-Encoding': encoding },
+    });
+  }
+
   // ─── 主配置 ────────────────────────────────────────────
   app.get('/', async (c) => {
     let cached = await storage.get(KV_MERGED_CONFIG);
@@ -261,9 +277,9 @@ export function createApp(deps: AppDeps): Hono {
     if (baseUrl instanceof Response) return baseUrl;
     cached = applyBaseUrlPlaceholder(cached, baseUrl);
 
-    return c.body(cached, 200, {
+    return compressedBody(c, cached, {
       'Content-Type': 'application/json; charset=utf-8',
-      'Cache-Control': 'public, max-age=1800',
+      'Cache-Control': 'public, max-age=1800, stale-while-revalidate=86400',
       'Access-Control-Allow-Origin': '*',
     });
   });
@@ -281,7 +297,7 @@ export function createApp(deps: AppDeps): Hono {
     if (prebuiltTxt !== null && prebuiltTxt !== KV_LIVE_MERGED_TXT_FALLBACK) {
       return c.body(applyBaseUrlPlaceholder(prebuiltTxt, baseUrl), 200, {
         'Content-Type': 'text/plain; charset=utf-8',
-        'Cache-Control': 'public, max-age=1800',
+        'Cache-Control': 'public, max-age=1800, stale-while-revalidate=86400',
         'Access-Control-Allow-Origin': '*',
       });
     }
@@ -297,7 +313,7 @@ export function createApp(deps: AppDeps): Hono {
     if (hasRuntimeTxt && runtimeVersionMatches) {
       return c.body(applyBaseUrlPlaceholder(runtimeTxt!, baseUrl), 200, {
         'Content-Type': 'text/plain; charset=utf-8',
-        'Cache-Control': 'public, max-age=1800',
+        'Cache-Control': 'public, max-age=1800, stale-while-revalidate=86400',
         'Access-Control-Allow-Origin': '*',
       });
     }
@@ -406,7 +422,7 @@ export function createApp(deps: AppDeps): Hono {
                 const response = new Response(txt, {
                   headers: {
                     'Content-Type': 'text/plain; charset=utf-8',
-                    'Cache-Control': 'public, max-age=1800',
+                    'Cache-Control': 'public, max-age=1800, stale-while-revalidate=86400',
                     'Access-Control-Allow-Origin': '*',
                   },
                 });
@@ -470,7 +486,7 @@ export function createApp(deps: AppDeps): Hono {
       const resolvedTxt = applyBaseUrlPlaceholder(nativeTxt, baseUrl);
       return c.body(resolvedTxt, 200, {
         'Content-Type': 'text/plain; charset=utf-8',
-        'Cache-Control': 'public, max-age=1800',
+        'Cache-Control': 'public, max-age=1800, stale-while-revalidate=86400',
         'Access-Control-Allow-Origin': '*',
       });
     } catch {
@@ -489,9 +505,9 @@ export function createApp(deps: AppDeps): Hono {
     const baseUrl = await resolveBaseUrl(c);
     if (baseUrl instanceof Response) return baseUrl;
     cached = applyBaseUrlPlaceholder(cached, baseUrl);
-    return c.body(cached, 200, {
+    return compressedBody(c, cached, {
       'Content-Type': 'application/json; charset=utf-8',
-      'Cache-Control': 'public, max-age=1800',
+      'Cache-Control': 'public, max-age=1800, stale-while-revalidate=86400',
       'Access-Control-Allow-Origin': '*',
       'Content-Disposition': 'attachment; filename="tvbox-config.json"',
     });
@@ -527,7 +543,7 @@ export function createApp(deps: AppDeps): Hono {
       const lives = JSON.parse(livesRaw);
       return c.body(JSON.stringify({ lives }), 200, {
         'Content-Type': 'application/json; charset=utf-8',
-        'Cache-Control': 'public, max-age=1800',
+        'Cache-Control': 'public, max-age=1800, stale-while-revalidate=86400',
         'Access-Control-Allow-Origin': '*',
         'Content-Disposition': 'attachment; filename="tvbox-live.json"',
       });
@@ -779,8 +795,13 @@ export function createApp(deps: AppDeps): Hono {
     if (typeof body.maxSearchable === 'number' && Number.isFinite(body.maxSearchable)) {
       current.maxSearchable = Math.max(0, Math.floor(body.maxSearchable));
     }
+    if (typeof body.maxQuickSearch === 'number' && Number.isFinite(body.maxQuickSearch)) {
+      current.maxQuickSearch = Math.max(0, Math.floor(body.maxQuickSearch));
+    }
+    if (typeof body.autoLimit === 'boolean') current.autoLimit = body.autoLimit;
     if (typeof body.sortBySpeed === 'boolean') current.sortBySpeed = body.sortBySpeed;
     if (Array.isArray(body.pinnedKeys)) current.pinnedKeys = body.pinnedKeys;
+
 
     await saveSearchQuota(storage, current);
     await markOutputDirty();
@@ -842,7 +863,13 @@ export function createApp(deps: AppDeps): Hono {
   app.get('/search-quota/summary', async (c) => {
     const raw = await storage.get(KV_SEARCH_QUOTA_REPORT);
     if (!raw) return c.json({ enabled: false });
-    return c.json({ enabled: true, ...JSON.parse(raw) });
+    try {
+      const report = JSON.parse(raw) as Record<string, unknown>;
+      const quota = await loadSearchQuota(storage);
+      return c.json({ enabled: true, maxSearchable: quota.maxSearchable, maxQuickSearch: quota.maxQuickSearch, autoLimit: quota.autoLimit, ...report });
+    } catch {
+      return c.json({ enabled: false });
+    }
   });
 
   // ─── 网盘凭证管理 API ───────────────────────────────────
@@ -1206,76 +1233,100 @@ export function createApp(deps: AppDeps): Hono {
       return c.json({ error: 'JAR unavailable from origin and no binary cache' }, 502);
     });
   } else if (config.localBaseUrl) {
-    // Node.js 版：用文件系统缓存
+    // Node.js 版：文件缓存 + 流式透传。不要先 await arrayBuffer，否则 4MB JAR
+    // 会等到完整下载完才向 TVBox 发首包；缓存写入放到后台完成。
     const fs = require('fs');
     const pathMod = require('path');
     const jarCacheDir = pathMod.resolve(process.env.DATA_DIR || pathMod.join(process.cwd(), 'data'), 'jars');
     if (!fs.existsSync(jarCacheDir)) fs.mkdirSync(jarCacheDir, { recursive: true });
 
-    // 并发下载锁：防止同一 JAR 被多个请求同时下载
-    const downloadLocks = new Map<string, Promise<Buffer | null>>();
+    // 过期缓存可先返回、后台刷新。Render 保活实例上可避免每轮 TTL 到期后
+    // 用户再次等待完整 JAR 下载。
+    const backgroundRefreshes = new Map<string, Promise<void>>();
+    function refreshJarInBackground(key: string, originalUrl: string, cachePath: string): void {
+      if (backgroundRefreshes.has(key)) return;
+      const task = (async () => {
+        const resp = await fetch(originalUrl, {
+          headers: { 'User-Agent': 'okhttp/3.12.0' },
+        });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const buffer = Buffer.from(await resp.arrayBuffer());
+        const tmpPath = cachePath + '.tmp';
+        fs.writeFileSync(tmpPath, buffer);
+        fs.renameSync(tmpPath, cachePath);
+        console.log('[jar-proxy] Refreshed ' + key + '.jar (' + (buffer.length / 1024).toFixed(1) + ' KB)');
+      })()
+        .catch((error: unknown) => {
+          console.log('[jar-proxy] Background refresh error for ' + key + ': ' + (error instanceof Error ? error.message : error));
+        })
+        .finally(() => backgroundRefreshes.delete(key));
+      backgroundRefreshes.set(key, task);
+    }
 
-    async function fetchAndCacheJar(key: string, originalUrl: string): Promise<Buffer | null> {
+    app.get('/jar/:key', async (c) => {
+      const key = c.req.param('key');
+
+      const originalUrl = await lookupJarUrl(key, storage);
+      if (!originalUrl) {
+        return c.json({ error: 'Unknown JAR key' }, 404);
+      }
+
+      const cachePath = pathMod.join(jarCacheDir, `${key}.jar`);
+      const ttl = isMd5Key(key) ? 86400_000 : 21600_000;
+      const cacheHeaders = {
+        'Content-Type': 'application/octet-stream',
+        'Cache-Control': `public, max-age=${ttl / 1000}`,
+        'Access-Control-Allow-Origin': '*',
+      };
+
+      // 命中缓存：同步读文件后返回；文件较小，通常远快于重新请求上游。
+      if (fs.existsSync(cachePath)) {
+        const stat = fs.statSync(cachePath);
+        const data = fs.readFileSync(cachePath);
+        if (Date.now() - stat.mtimeMs >= ttl) {
+          refreshJarInBackground(key, originalUrl, cachePath);
+        }
+        return new Response(data, { headers: cacheHeaders });
+      }
+
       try {
         const resp = await fetch(originalUrl, {
           headers: { 'User-Agent': 'okhttp/3.12.0' },
         });
         if (!resp.ok) {
           console.log(`[jar-proxy] Origin returned ${resp.status} for ${key}`);
-          return null;
+        } else if (resp.body) {
+          // 用 tee 分出一条流给客户端、另一条流后台写缓存，避免重复请求上游。
+          const [clientBody, cacheBody] = resp.body.tee();
+          void (async () => {
+            try {
+              const reader = cacheBody.getReader();
+              const chunks: Uint8Array[] = [];
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                if (value) chunks.push(value);
+              }
+              const buffer = Buffer.concat(chunks.map(chunk => Buffer.from(chunk)));
+              const tmpPath = pathMod.join(jarCacheDir, key + '.jar.tmp');
+              const targetPath = pathMod.join(jarCacheDir, key + '.jar');
+              fs.writeFileSync(tmpPath, buffer);
+              fs.renameSync(tmpPath, targetPath);
+              console.log('[jar-proxy] Cached ' + key + '.jar (' + (buffer.length / 1024).toFixed(1) + ' KB)');
+            } catch (error: unknown) {
+              console.log('[jar-proxy] Cache write error for ' + key + ': ' + (error instanceof Error ? error.message : error));
+            }
+          })();
+          return new Response(clientBody, { headers: cacheHeaders });
         }
-        const buf = Buffer.from(await resp.arrayBuffer());
-        fs.writeFileSync(pathMod.join(jarCacheDir, `${key}.jar`), buf);
-        console.log(`[jar-proxy] Cached ${key}.jar (${(buf.length / 1024).toFixed(1)} KB)`);
-        return buf;
       } catch (error: unknown) {
-        console.log(`[jar-proxy] Fetch error for ${key}: ${error instanceof Error ? error.message : error}`);
-        return null;
-      }
-    }
-
-    app.get('/jar/:key', async (c) => {
-      const key = c.req.param('key');
-
-      // 1. 查 storage 拿原始 URL
-      const originalUrl = await lookupJarUrl(key, storage);
-      if (!originalUrl) {
-        return c.json({ error: 'Unknown JAR key' }, 404);
+        console.log(`[jar-proxy] Origin fetch error for ${key}: ${error instanceof Error ? error.message : error}`);
       }
 
-      // 2. 查文件缓存
-      const cachePath = pathMod.join(jarCacheDir, `${key}.jar`);
+      // 上游暂时失败时，过期文件仍可作为可用兜底。
       if (fs.existsSync(cachePath)) {
-        const stat = fs.statSync(cachePath);
-        const ttl = isMd5Key(key) ? 86400_000 : 21600_000;
-        if (Date.now() - stat.mtimeMs < ttl) {
-          const buf = fs.readFileSync(cachePath);
-          return new Response(buf, {
-            headers: {
-              'Content-Type': 'application/octet-stream',
-              'Cache-Control': `public, max-age=${ttl / 1000}`,
-              'Access-Control-Allow-Origin': '*',
-            },
-          });
-        }
-      }
-
-      // 3. 下载（带并发锁）
-      let downloading = downloadLocks.get(key);
-      if (!downloading) {
-        downloading = fetchAndCacheJar(key, originalUrl).finally(() => downloadLocks.delete(key));
-        downloadLocks.set(key, downloading);
-      }
-
-      const buf = await downloading;
-      if (buf) {
-        return new Response(buf, {
-          headers: {
-            'Content-Type': 'application/octet-stream',
-            'Cache-Control': `public, max-age=${isMd5Key(key) ? 86400 : 21600}`,
-            'Access-Control-Allow-Origin': '*',
-          },
-        });
+        const data = fs.readFileSync(cachePath);
+        return new Response(data, { headers: cacheHeaders });
       }
 
       return c.json({ error: 'JAR unavailable from origin' }, 502);

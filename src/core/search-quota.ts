@@ -4,11 +4,29 @@ import type { TVBoxSite, SearchQuotaConfig, SearchQuotaReport } from './types';
 import type { Storage } from '../storage/interface';
 import { KV_SEARCH_QUOTA } from './config';
 
-const DEFAULT_SEARCH_QUOTA: SearchQuotaConfig = {
-  maxSearchable: 0,
-  pinnedKeys: [],
-  sortBySpeed: false,
-};
+function isNodeRuntime(): boolean {
+  return typeof process !== 'undefined' && !!process.env.PORT;
+}
+
+function defaultSearchLimit(): number {
+  // Render/Node 的并发资源高于免费 Worker；有 PORT 即视为 Render/Docker。
+  return isNodeRuntime() ? 80 : 60;
+}
+
+function defaultQuickSearchLimit(): number {
+  // 快速搜索只保留少量健康度最高的源，减少影视仓/TVBox 启动与首屏等待。
+  return isNodeRuntime() ? 40 : 30;
+}
+
+function createDefaultSearchQuota(): SearchQuotaConfig {
+  return {
+    maxSearchable: defaultSearchLimit(),
+    maxQuickSearch: defaultQuickSearchLimit(),
+    autoLimit: true,
+    pinnedKeys: [],
+    sortBySpeed: true,
+  };
+}
 
 function normalizeLimit(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0
@@ -16,33 +34,46 @@ function normalizeLimit(value: unknown): number {
     : 0;
 }
 
-/** 从 KV 加载搜索配额配置，并兼容旧版本缺少 sortBySpeed 的数据。 */
+/** 从 KV 加载搜索配额配置，并兼容旧版本缺少字段的数据。 */
 export async function loadSearchQuota(storage: Storage): Promise<SearchQuotaConfig> {
   const raw = await storage.get(KV_SEARCH_QUOTA);
   if (raw) {
     try {
       const parsed = JSON.parse(raw) as Partial<SearchQuotaConfig>;
+      const maxSearchable = normalizeLimit(parsed.maxSearchable);
+      const fallback = createDefaultSearchQuota();
+      const hasNewLimitFields = typeof parsed.autoLimit === 'boolean' || typeof parsed.maxQuickSearch === 'number';
+      // 仅对旧版配置做一次安全迁移；新版已保存后，autoLimit=false + 0 会永久表示不限。
+      const autoLimit = parsed.autoLimit === true || (!hasNewLimitFields && maxSearchable === 0);
       return {
-        maxSearchable: normalizeLimit(parsed.maxSearchable),
+        maxSearchable: autoLimit && maxSearchable === 0 ? fallback.maxSearchable : maxSearchable,
+        maxQuickSearch: autoLimit
+          ? (normalizeLimit(parsed.maxQuickSearch) || fallback.maxQuickSearch)
+          : normalizeLimit(parsed.maxQuickSearch),
+        autoLimit,
         pinnedKeys: Array.isArray(parsed.pinnedKeys)
           ? parsed.pinnedKeys.filter((key): key is string => typeof key === 'string')
           : [],
-        sortBySpeed: parsed.sortBySpeed === true,
+        // 旧配置没有 sortBySpeed 字段时默认开启，已有明确设置仍原样保留。
+        sortBySpeed: parsed.sortBySpeed !== false,
       };
     } catch {}
   }
-  return { ...DEFAULT_SEARCH_QUOTA };
+  return createDefaultSearchQuota();
 }
 
 /** 保存搜索配额配置。 */
 export async function saveSearchQuota(storage: Storage, config: SearchQuotaConfig): Promise<void> {
+  const maxSearchable = normalizeLimit(config.maxSearchable);
+  const autoLimit = config.autoLimit === true;
   await storage.put(KV_SEARCH_QUOTA, JSON.stringify({
-    maxSearchable: normalizeLimit(config.maxSearchable),
+    maxSearchable,
+    maxQuickSearch: normalizeLimit(config.maxQuickSearch),
+    autoLimit,
     pinnedKeys: Array.isArray(config.pinnedKeys) ? config.pinnedKeys : [],
     sortBySpeed: config.sortBySpeed === true,
   }));
 }
-
 /**
  * 提前排除 type=3 + HTTP URL 的 JS 源。
  * 这些源不应参与站点测速，也不应进入搜索配额候选。
@@ -69,12 +100,10 @@ export interface SearchQuotaApplyOptions {
  * 搜索配额控制。
  *
  * 1. 置顶源优先排到 sites 最前。
- * 2. 可选复用站点测速结果，把较快的可搜索源排到前面。
- * 3. maxSearchable > 0 时，超出上限的可搜索源改为 searchable=0。
+ * 2. 复用站点测速结果，把较快的可搜索源排在前面。
+ * 3. maxSearchable > 0 时限制全局搜索源；maxQuickSearch > 0 时额外限制快速搜索源。
  * 4. 置顶源永远不被截断；若置顶源数量本身超过上限，则保留全部置顶源。
- * 5. searchable=1 的源名称追加来源标识。
- *
- * 注意：这里只使用聚合流程中已经产生的测速结果，不会额外发起网络请求。
+ * 5. 名称标识只加给最终仍可搜索的源。
  */
 export function applySearchQuota(
   sites: TVBoxSite[],
@@ -83,6 +112,7 @@ export function applySearchQuota(
   options: SearchQuotaApplyOptions = {},
 ): { sites: TVBoxSite[]; quotaReport: SearchQuotaReport } {
   const limit = normalizeLimit(config.maxSearchable);
+  const quickLimit = normalizeLimit(config.maxQuickSearch);
   const speedMap = options.speedMap;
   const totalSites = options.totalSites ?? sites.length;
 
@@ -138,6 +168,24 @@ export function applySearchQuota(
     }
   }
 
+  // 快速搜索独立限制：不会删除站点，只把 quickSearch 置 0。
+  // Render 默认 40、CF 默认 30，足以覆盖常用源并显著缩短首屏等待。
+  let quickTruncated = 0;
+  const quickCandidates = [
+    ...pinned.filter(site => site.searchable === 1 && site.quickSearch !== 0),
+    ...keptCandidates.filter(site => site.searchable === 1 && site.quickSearch !== 0),
+  ];
+  if (quickLimit > 0) {
+    const keptQuickKeys = new Set(quickCandidates.slice(0, quickLimit).map(site => site.key));
+    const quickCandidateKeys = new Set(quickCandidates.map(site => site.key));
+    sites = sites.map(site => {
+      if (site.quickSearch === 0) return site;
+      if (!quickCandidateKeys.has(site.key)) return { ...site, quickSearch: 0 };
+      return keptQuickKeys.has(site.key) ? site : { ...site, quickSearch: 0 };
+    });
+    quickTruncated = quickCandidates.filter(site => !keptQuickKeys.has(site.key)).length;
+  }
+
   // 启用测速排序时，置顶源 + 保留的可搜索源排到最前；否则维持原有顺序。
   if (config.sortBySpeed && speedSorted) {
     const ordered = [...pinned, ...keptCandidates];
@@ -161,6 +209,7 @@ export function applySearchQuota(
   });
 
   const searchable = sites.filter(site => site.searchable === 1).length;
+  const quickSearchable = sites.filter(site => site.searchable === 1 && site.quickSearch !== 0).length;
   const pinnedCount = pinnedSearchable.length;
 
   return {
@@ -169,8 +218,13 @@ export function applySearchQuota(
       totalSites,
       jsExcluded: options.jsExcluded ?? 0,
       searchable,
+      quickSearchable,
+      maxSearchable: limit,
+      maxQuickSearch: quickLimit,
+      autoLimit: config.autoLimit === true,
       pinnedCount,
       truncated,
+      quickTruncated,
       speedSorted,
     },
   };
