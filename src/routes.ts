@@ -11,7 +11,7 @@ import { loadGroupOrder, saveGroupOrder } from './core/group-order';
 import { validateMacCMS } from './core/maccms';
 import { lookupJarUrl, isMd5Key, base64ToUint8Array, rewriteJarUrls } from './core/jar-proxy';
 import { BASE_URL_PLACEHOLDER } from './core/config';
-import { lookupLiveUrl } from './core/live-source';
+import { lookupLiveSource } from './core/live-source';
 import { adminHtml } from './core/admin';
 import { dashboardHtml } from './core/dashboard';
 import { configEditorHtml } from './core/config-editor';
@@ -1335,6 +1335,7 @@ export function createApp(deps: AppDeps): Hono {
   if (config.workerBaseUrl) {
     app.get('/live/:key', async (c) => {
       const key = c.req.param('key');
+      const isCfRuntime = !!config.workerBaseUrl && typeof caches !== 'undefined';
 
       // 1. 查 CF Cache
       const cache = (caches as any).default as Cache;
@@ -1342,28 +1343,35 @@ export function createApp(deps: AppDeps): Hono {
       const cached = await cache.match(cacheKey);
       if (cached) return cached;
 
-      // 2. 查 KV 拿原始 URL
-      const originalUrl = await lookupLiveUrl(key, storage);
-      if (!originalUrl) {
+      // 2. 查 KV 拿上游源元数据
+      const source = await lookupLiveSource(key, storage);
+      if (!source) {
         return c.json({ error: 'Unknown live source key' }, 404);
       }
 
-      // 3. 流式透传
+      // 3. 按源过滤后返回，客户端只看到可用频道和线路。
       try {
-        const resp = await fetch(originalUrl, {
-          headers: { 'User-Agent': 'okhttp/3.12.0' },
-        });
-
-        if (!resp.ok) {
-          return c.json({ error: `Origin returned ${resp.status}` }, 502);
-        }
+        const channelSpeedMap = await loadChannelSpeedMap(storage);
+        const groups = await filterLivesBySource(
+          [{ name: source.name || '直播源', url: source.url, ua: source.ua, header: source.header }],
+          isCfRuntime ? 4500 : 8000,
+          channelSpeedMap,
+          {
+            maxUrlsPerChannel: 6,
+            maxChannels: 12000,
+            minChannelsPerSource: 5,
+            maxAdRatio: 0.5,
+            minPlayableRatio: 0.2,
+          },
+        );
 
         // 4. 构建响应 + 异步写缓存
-        const response = new Response(resp.body, {
+        const response = new Response(formatLiveGroupsAsTxt(groups), {
           headers: {
             'Content-Type': 'text/plain; charset=utf-8',
             'Cache-Control': `public, max-age=${LIVE_PROXY_TTL}`,
             'Access-Control-Allow-Origin': '*',
+            'X-Live-Source-Filtered': '1',
           },
         });
 

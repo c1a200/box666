@@ -25,6 +25,13 @@ export interface LiveTestResult {
   speedMs: number;
 }
 
+export interface LiveProxySource {
+  name?: string;
+  url: string;
+  ua?: string;
+  header?: Record<string, string>;
+}
+
 /**
  * 对单个直播源 URL 做连通性测试
  * GET + 读取前 1KB 嗅探内容
@@ -133,7 +140,11 @@ export async function liveSourcesToTVBoxLives(
     if (workerBaseUrl) {
       // CF 模式：改写 URL + 写 KV 代理映射
       const key = await urlToKey(entry.url);
-      await storage.put(`${KV_LIVE_PREFIX}${key}`, entry.url);
+      const proxySource: LiveProxySource = { url: entry.url };
+      if (entry.name) proxySource.name = entry.name;
+      if (entry.ua) proxySource.ua = entry.ua;
+      if (entry.header) proxySource.header = entry.header;
+      await storage.put(`${KV_LIVE_PREFIX}${key}`, JSON.stringify(proxySource));
       url = `${workerBaseUrl.replace(/\/$/, '')}/live/${key}`;
     } else if (speedMap) {
       // 本地模式：追加延迟到 name
@@ -158,10 +169,35 @@ export async function liveSourcesToTVBoxLives(
 }
 
 /**
+ * 从 KV 查询直播源 key 对应的代理元数据。
+ * 兼容旧版本只存原始 URL 字符串的映射。
+ */
+export async function lookupLiveSource(key: string, storage: Storage): Promise<LiveProxySource | null> {
+  const raw = await storage.get(`${KV_LIVE_PREFIX}${key}`);
+  if (!raw) return null;
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<LiveProxySource>;
+    if (typeof parsed.url === 'string' && parsed.url) {
+      return {
+        url: parsed.url,
+        ...(typeof parsed.name === 'string' ? { name: parsed.name } : {}),
+        ...(typeof parsed.ua === 'string' ? { ua: parsed.ua } : {}),
+        ...(parsed.header && typeof parsed.header === 'object' ? { header: parsed.header } : {}),
+      };
+    }
+  } catch {
+    // 旧格式：值就是原始 URL
+  }
+
+  return { url: raw };
+}
+
+/**
  * 从 KV 查询直播源 key 对应的原始 URL
  */
 export async function lookupLiveUrl(key: string, storage: Storage): Promise<string | null> {
-  return storage.get(`${KV_LIVE_PREFIX}${key}`);
+  return (await lookupLiveSource(key, storage))?.url ?? null;
 }
 
 /**

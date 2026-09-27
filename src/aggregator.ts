@@ -9,6 +9,7 @@ import { macCMSToTVBoxSites, processMacCMSForLocal } from './core/maccms';
 import { rewriteJarUrls } from './core/jar-proxy';
 import { mergeLivesToNative, separatedMergeLives, formatLiveGroupsAsTxt, type LiveSourceInput } from './core/live-merger';
 import { loadSpeedMap as loadChannelSpeedMap } from './core/channel-probe';
+import { liveSourcesToTVBoxLives } from './core/live-source';
 import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_SOURCE_URLS, KV_LAST_UPDATE, KV_MANUAL_SOURCES, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_MERGE_REPORT, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_CHANNEL_MERGED_TREE, KV_AGG_LOGS, AGG_LOGS_MAX, KV_SITE_SNAPSHOT, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, BASE_URL_PLACEHOLDER, KV_SITE_HEALTH_MAP, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SOURCE_MAP, KV_SOURCE_URL_BLACKLIST } from './core/config';
 import { loadBlacklist, applyBlacklist, pruneBlacklist, saveBlacklist, siteFingerprint } from './core/blacklist';
 import { transformSiteNames } from './core/cleaner';
@@ -652,19 +653,12 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
       await storage.put(KV_LIVE_MERGED_TXT, formatLiveGroupsAsTxt(nativeLiveGroups));
       await storage.put(KV_LIVE_MERGED_TXT_VERSION, liveOutputVersion);
     } else if (config.workerBaseUrl && !liveDisabled && ((merged.lives?.length) || 0) > 0) {
-      // CF 非聚合模式仍由 /live 在请求时解析，但根配置必须统一指向该端点。
-      // 否则影视仓启动时会自己逐个直连几十个直播源，表现为首页长时间加载。
+      // CF 非聚合模式：全局 /live 继续由请求时解析；根配置在 Step 7.8
+      // 会改写成多个 /live/<key> 代理入口，避免影视仓直连几十个上游源。
       // 不清空旧 runtime TXT，也不提前更新它的版本，让 /live 采用 stale-while-revalidate。
       await storage.put(KV_LIVE_RUNTIME_EMPTY_AT, '');
       await storage.put(KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK);
       await storage.put(KV_LIVE_MERGED_TXT_VERSION, liveOutputVersion);
-      merged.lives = [
-        {
-          name: '直播',
-          type: 0,
-          url: `${BASE_URL_PLACEHOLDER}/live`,
-        },
-      ];
     } else {
       await storage.put(KV_LIVE_MERGED_TXT, '');
       await storage.put(KV_LIVE_MERGED_TXT_VERSION, liveOutputVersion);
@@ -681,7 +675,7 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     if (config.workerBaseUrl) {
       // CF Workers 模式
       const liveMergeMode = (await storage.get(KV_LIVE_MERGE_MODE)) || 'separated';
-      if (liveMergeMode === 'merged' || liveMergeMode === 'separated' || isNative) {
+      if (liveMergeMode === 'merged' || isNative) {
         merged.lives = [
           {
             name: '直播(聚合)',
@@ -691,7 +685,25 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
         ];
         console.log('[aggregation] Step 7.8: Unified live entry pointing to /live (CF Workers)');
       } else {
-        console.log('[aggregation] Step 7.8: Kept raw live sources directly on Workers (Separated Mode)');
+        const proxyEntries: Array<{ name: string; url: string; ua?: string; header?: Record<string, string> }> = [];
+        for (const live of merged.lives as TVBoxLive[]) {
+          const url = live.url || live.api;
+          if (live.type === 3 || !url || !/^https?:\/\//i.test(url)) continue;
+          proxyEntries.push({
+            name: live.name || '直播源',
+            url,
+            ...(live.ua ? { ua: live.ua } : {}),
+            ...(live.header ? { header: live.header } : {}),
+          });
+        }
+
+        if (proxyEntries.length === 0) {
+          merged.lives = [];
+          console.log('[aggregation] Step 7.8: No valid upstream live sources for separated mode');
+        } else {
+          merged.lives = await liveSourcesToTVBoxLives(proxyEntries, config.workerBaseUrl, storage);
+          console.log(`[aggregation] Step 7.8: Exposed ${merged.lives.length} filtered /live/<key> sources (CF Workers)`);
+        }
       }
     } else if (isNative) {
       // Node/Docker (Render) 模式：Native groups 不能直接放在 config JSON 的 lives 里，

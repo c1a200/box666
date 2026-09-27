@@ -123,6 +123,8 @@ export interface LiveSourceEntry {
   name: string;
   url: string;
   disabled?: boolean;
+  ua?: string;
+  header?: Record<string, string>;
 }
 
 // 源条目
