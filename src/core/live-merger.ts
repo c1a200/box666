@@ -50,6 +50,8 @@ export interface LiveDownloadStats {
 }
 
 const liveSourceMemoryCache = new Map<string, CachedLiveSource>();
+let liveSourceCacheLoad: Promise<void> | null = null;
+let liveSourceCacheSaveQueue: Promise<void> = Promise.resolve();
 
 function liveCacheKey(input: LiveSourceInput): string {
   const header = input.header ? JSON.stringify(input.header) : '';
@@ -73,31 +75,37 @@ function compactLiveSourceCache(): void {
 
 async function loadPersistentLiveSourceCache(storage?: Storage): Promise<void> {
   if (!storage) return;
-  try {
-    const raw = await storage.get(KV_LIVE_SOURCE_CACHE);
-    if (!raw) return;
-    const parsed = JSON.parse(raw) as Record<string, LiveSourceCacheEntry>;
-    const now = Date.now();
-    for (const [key, entry] of Object.entries(parsed)) {
-      if (!entry || typeof entry.content !== 'string' || entry.content.length <= 20) continue;
-      const cachedAt = Date.parse(entry.cachedAt || '') || now;
-      const existing = liveSourceMemoryCache.get(key);
-      if (existing && existing.cachedAt >= cachedAt) continue;
-      liveSourceMemoryCache.set(key, {
-        content: entry.content,
-        cachedAt,
-        lastAccess: now,
-        etag: entry.etag,
-        lastModified: entry.lastModified,
-      });
+  if (liveSourceCacheLoad) return liveSourceCacheLoad;
+  const task = (async () => {
+    try {
+      const raw = await storage.get(KV_LIVE_SOURCE_CACHE);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as Record<string, LiveSourceCacheEntry>;
+      const now = Date.now();
+      for (const [key, entry] of Object.entries(parsed)) {
+        if (!entry || typeof entry.content !== 'string' || entry.content.length <= 20) continue;
+        const cachedAt = Date.parse(entry.cachedAt || '') || now;
+        const existing = liveSourceMemoryCache.get(key);
+        if (existing && existing.cachedAt >= cachedAt) continue;
+        liveSourceMemoryCache.set(key, {
+          content: entry.content,
+          cachedAt,
+          lastAccess: now,
+          etag: entry.etag,
+          lastModified: entry.lastModified,
+        });
+      }
+    } catch {
+      // 缓存损坏不影响正常聚合
     }
-  } catch {
-    // 缓存损坏不影响正常聚合
-  }
+  })();
+  liveSourceCacheLoad = task.finally(() => {
+    liveSourceCacheLoad = null;
+  });
+  return liveSourceCacheLoad;
 }
 
-async function savePersistentLiveSourceCache(storage?: Storage): Promise<void> {
-  if (!storage) return;
+async function persistLiveSourceCache(storage: Storage): Promise<void> {
   compactLiveSourceCache();
   const payload: Record<string, LiveSourceCacheEntry> = {};
   for (const [key, entry] of liveSourceMemoryCache) {
@@ -117,6 +125,13 @@ async function savePersistentLiveSourceCache(storage?: Storage): Promise<void> {
   }
 }
 
+async function savePersistentLiveSourceCache(storage?: Storage): Promise<void> {
+  if (!storage) return;
+  // 串行排队并读取调用时的最新内存缓存，避免保存期间新产生的数据被漏写。
+  const task = liveSourceCacheSaveQueue.then(() => persistLiveSourceCache(storage));
+  liveSourceCacheSaveQueue = task.catch(() => undefined);
+  return task;
+}
 // ─── 解析后的频道条目 ──────────────────────────────────
 
 interface ChannelEntry {

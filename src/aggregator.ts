@@ -418,6 +418,16 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
   const liveDisabledRaw = await storage.get(KV_LIVE_DISABLED);
   const liveDisabled = liveDisabledRaw === 'true';
 
+  const previousLiveConfigRaw = await storage.get(KV_MERGED_CONFIG);
+  let previousLiveLives: TVBoxLive[] = [];
+  try {
+    const previousLiveConfig = previousLiveConfigRaw ? JSON.parse(previousLiveConfigRaw) : {};
+    previousLiveLives = Array.isArray(previousLiveConfig.lives) ? previousLiveConfig.lives : [];
+  } catch {
+    // 旧配置损坏时不影响本轮聚合
+  }
+  let liveMergeFailed = false;
+
   if (liveDisabled) {
     logger.info('aggregation', 'Step 6.5: Live disabled, skipping');
     merged.lives = [];
@@ -529,10 +539,20 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
       } else {
         mergeResult = await mergeLivesToNative(uniqueInputs, config.fetchTimeoutMs, channelSpeedMap, storage);
       }
-      merged.lives = mergeResult.groups;
 
-      // 保存合并树供 channel-probe 使用
-      await storage.put(KV_CHANNEL_MERGED_TREE, JSON.stringify(mergeResult.groups));
+      if (mergeResult.groups.length === 0 && previousLiveLives.length > 0) {
+        // 上游临时超时/解析失败时保留上一版可用直播，避免把 /live 清空。
+        liveMergeFailed = true;
+        merged.lives = previousLiveLives;
+        logger.warn('aggregation', 'Step 6.5: Live merge produced no groups, keeping previous live output');
+      } else {
+        merged.lives = mergeResult.groups;
+
+        // 仅在有有效合并结果时覆盖频道树，避免测速或后续请求失去上一版数据。
+        if (mergeResult.groups.length > 0) {
+          await storage.put(KV_CHANNEL_MERGED_TREE, JSON.stringify(mergeResult.groups));
+        }
+      }
 
       // 记录本轮直播聚合统计，便于后续排查缓存命中与上游失败情况。
       await storage.put(KV_LIVE_MERGE_REPORT, JSON.stringify({
@@ -599,35 +619,41 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     logger.infoFields('aggregation', 'pic-proxy-placeholder', { pic: merged.pic });
   }
 
-  // Save the final processed lives to KV_LIVE_MERGED_DATA (so /live.json can serve them)
-  await storage.put(KV_LIVE_MERGED_DATA, JSON.stringify(merged.lives || []));
-
-  // 预生成 TVBox 直播 txt，供 /live 直接返回，避免请求时实时下载/合并直播源。
-  const nativeLiveGroups = (merged.lives || []).filter(
-    (live): live is TVBoxLive & { group: string; channels: NonNullable<TVBoxLive['channels']> } =>
-      typeof live.group === 'string' && Array.isArray(live.channels),
-  );
-  const liveOutputVersion = String(Date.now());
-  if (nativeLiveGroups.length > 0) {
-    await storage.put(KV_LIVE_MERGED_TXT, formatLiveGroupsAsTxt(nativeLiveGroups));
-    await storage.put(KV_LIVE_MERGED_TXT_VERSION, liveOutputVersion);
-  } else if (config.workerBaseUrl && !liveDisabled && ((merged.lives?.length) || 0) > 0) {
-    // CF 非聚合模式仍由 /live 在请求时解析，但根配置必须统一指向该端点。
-    // 否则影视仓启动时会自己逐个直连几十个直播源，表现为首页长时间加载。
-    // 不清空旧 runtime TXT，也不提前更新它的版本，让 /live 采用 stale-while-revalidate。
-    await storage.put(KV_LIVE_RUNTIME_EMPTY_AT, '');
-    await storage.put(KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK);
-    await storage.put(KV_LIVE_MERGED_TXT_VERSION, liveOutputVersion);
-    merged.lives = [
-      {
-        name: '直播',
-        type: 0,
-        url: `${BASE_URL_PLACEHOLDER}/live`,
-      },
-    ];
+  // Save the final processed lives to KV_LIVE_MERGED_DATA (so /live.json can serve them).
+  // Node/Render 在直播源临时全部失败时保留上一版输出；直播主动禁用或无源时仍正常清空。
+  const preservePreviousLiveOutput = !config.workerBaseUrl && liveMergeFailed && previousLiveLives.length > 0;
+  if (preservePreviousLiveOutput) {
+    logger.warn('aggregation', 'Skipping live output overwrite because this refresh produced no valid channels');
   } else {
-    await storage.put(KV_LIVE_MERGED_TXT, '');
-    await storage.put(KV_LIVE_MERGED_TXT_VERSION, liveOutputVersion);
+    await storage.put(KV_LIVE_MERGED_DATA, JSON.stringify(merged.lives || []));
+
+    // 预生成 TVBox 直播 txt，供 /live 直接返回，避免请求时实时下载/合并直播源。
+    const nativeLiveGroups = (merged.lives || []).filter(
+      (live): live is TVBoxLive & { group: string; channels: NonNullable<TVBoxLive['channels']> } =>
+        typeof live.group === 'string' && Array.isArray(live.channels),
+    );
+    const liveOutputVersion = String(Date.now());
+    if (nativeLiveGroups.length > 0) {
+      await storage.put(KV_LIVE_MERGED_TXT, formatLiveGroupsAsTxt(nativeLiveGroups));
+      await storage.put(KV_LIVE_MERGED_TXT_VERSION, liveOutputVersion);
+    } else if (config.workerBaseUrl && !liveDisabled && ((merged.lives?.length) || 0) > 0) {
+      // CF 非聚合模式仍由 /live 在请求时解析，但根配置必须统一指向该端点。
+      // 否则影视仓启动时会自己逐个直连几十个直播源，表现为首页长时间加载。
+      // 不清空旧 runtime TXT，也不提前更新它的版本，让 /live 采用 stale-while-revalidate。
+      await storage.put(KV_LIVE_RUNTIME_EMPTY_AT, '');
+      await storage.put(KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK);
+      await storage.put(KV_LIVE_MERGED_TXT_VERSION, liveOutputVersion);
+      merged.lives = [
+        {
+          name: '直播',
+          type: 0,
+          url: `${BASE_URL_PLACEHOLDER}/live`,
+        },
+      ];
+    } else {
+      await storage.put(KV_LIVE_MERGED_TXT, '');
+      await storage.put(KV_LIVE_MERGED_TXT_VERSION, liveOutputVersion);
+    }
   }
 
   // Step 7.8: 统一直播入口 —— TVBox 的 lives 字段只认 FongMi 格式 {name,type,url}，
