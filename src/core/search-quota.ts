@@ -151,55 +151,62 @@ export function applySearchQuota(
     speedSorted = candidates.some(site => typeof speedMap.get(site.key) === 'number');
   }
 
-  // 可选截断：置顶源不占用普通源名额，但置顶源本身超过上限时不会丢弃。
+  // 先确定普通搜索保留集合；置顶源不受截断影响。
   let keptCandidates = candidates;
   let truncated = 0;
   if (limit > 0) {
     const effectiveLimit = Math.max(limit, pinnedSearchable.length);
     const keepCount = Math.max(0, effectiveLimit - pinnedSearchable.length);
     keptCandidates = candidates.slice(0, keepCount);
+
     const keptKeys = new Set(keptCandidates.map(site => site.key));
-    const droppedKeys = new Set(
+    truncated = new Set(
       candidates
         .filter(site => !keptKeys.has(site.key))
         .map(site => site.key),
-    );
-    if (droppedKeys.size > 0) {
-      truncated = droppedKeys.size;
-      sites = sites.map(site => (
-        droppedKeys.has(site.key) ? { ...site, searchable: 0 } : site
-      ));
-    }
+    ).size;
   }
+
+  const keptCandidateKeys = new Set(keptCandidates.map(site => site.key));
+  const allowedSearchableKeys = new Set<string>([...pinnedKeySet, ...keptCandidateKeys]);
 
   // 快速搜索独立限制：不会删除站点，只把 quickSearch 置 0。
   // Render 默认 40、CF 默认 30，足以覆盖常用源并显著缩短首屏等待。
-  let quickTruncated = 0;
   const quickCandidates = [
     ...pinned.filter(site => site.searchable === 1 && site.quickSearch !== 0),
     ...keptCandidates.filter(site => site.searchable === 1 && site.quickSearch !== 0),
   ];
-  if (quickLimit > 0) {
-    const keptQuickKeys = new Set(quickCandidates.slice(0, quickLimit).map(site => site.key));
-    const quickCandidateKeys = new Set(quickCandidates.map(site => site.key));
-    sites = sites.map(site => {
-      if (site.quickSearch === 0) return site;
-      if (!quickCandidateKeys.has(site.key)) return { ...site, quickSearch: 0 };
-      return keptQuickKeys.has(site.key) ? site : { ...site, quickSearch: 0 };
-    });
-    quickTruncated = quickCandidates.filter(site => !keptQuickKeys.has(site.key)).length;
-  }
+  const allowedQuickKeys = new Set(
+    quickLimit > 0
+      ? quickCandidates.slice(0, quickLimit).map(site => site.key)
+      : quickCandidates.map(site => site.key),
+  );
 
-  // 启用测速排序时，置顶源 + 保留的可搜索源排到最前；否则维持原有顺序。
+  // 先完成排序，再按最终顺序一次性应用所有配额，避免旧数组对象把已截断的
+  // quickSearch 状态重新带回来。
+  let orderedSites: TVBoxSite[];
   if (config.sortBySpeed && speedSorted) {
     const ordered = [...pinned, ...keptCandidates];
     const orderedKeys = new Set(ordered.map(site => site.key));
     const rest = sites.filter(site => !orderedKeys.has(site.key));
-    sites = [...ordered, ...rest];
+    orderedSites = [...ordered, ...rest];
   } else {
     const rest = sites.filter(site => !pinnedKeySet.has(site.key));
-    sites = [...pinned, ...rest];
+    orderedSites = [...pinned, ...rest];
   }
+
+  let quickTruncated = 0;
+  sites = orderedSites.map(site => {
+    let next = site;
+    if (site.searchable === 1 && !allowedSearchableKeys.has(site.key)) {
+      next = { ...next, searchable: 0 };
+    }
+    if (next.searchable === 1 && next.quickSearch !== 0 && !allowedQuickKeys.has(next.key)) {
+      next = { ...next, quickSearch: 0 };
+      quickTruncated++;
+    }
+    return next;
+  });
 
   // 来源标识：只给最终仍可搜索的源加标识。
   sites = sites.map(site => {
