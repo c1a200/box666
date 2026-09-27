@@ -389,12 +389,16 @@ export function createApp(deps: AppDeps): Hono {
                   ? {
                       maxUrlsPerChannel: 6,
                       maxChannels: 12000,
-                      minChannelsPerSource: 1,
+                      minChannelsPerSource: 5,
+                      maxAdRatio: 0.5,
+                      minPlayableRatio: 0.2,
                     }
                   : {
                       maxUrlsPerChannel: 6,
                       maxChannels: 12000,
-                      minChannelsPerSource: 1,
+                      minChannelsPerSource: 5,
+                      maxAdRatio: 0.5,
+                      minPlayableRatio: 0.2,
                       storage,
                       concurrency: 3,
                       useCache: true,

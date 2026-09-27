@@ -149,6 +149,9 @@ const AD_KEYWORDS = /广告|购物|福利|加微|微\s*信|群|客\s*服|优惠|
 const SEPARATED_MAX_URLS_PER_CHANNEL = 6;
 const SEPARATED_MAX_CHANNELS = 12000;
 const LIVE_KNOWN_MAX_SPEED_MS = 5000;
+const SEPARATED_MIN_CHANNELS_PER_SOURCE = 5;
+const SEPARATED_MAX_AD_RATIO = 0.5;
+const SEPARATED_MIN_PLAYABLE_RATIO = 0.2;
 
 // ─── 频道名规范化 ──────────────────────────────────────
 
@@ -706,7 +709,11 @@ export async function separatedMergeLives(
         maxUrlsPerChannel: SEPARATED_MAX_URLS_PER_CHANNEL,
         maxSpeedMs: LIVE_KNOWN_MAX_SPEED_MS,
       });
-      if (prepared.channels.length === 0) continue;
+      const quality = evaluateSourceQuality(prepared, {});
+      if (quality.discard) {
+        console.log('[live-merger] Discarded live source ' + sourceName + ': ' + quality.reason);
+        continue;
+      }
 
       const byGroup = new Map<string, TVBoxLiveChannel[]>();
       for (const { group, channel } of prepared.channels) {
@@ -886,8 +893,12 @@ export async function fetchAndParseLiveUrls(
   return groups;
 }
 export interface FilteredLiveOptions {
-  /** 最少频道数；低于该值的聚合/第三方源直接丢弃 */
+  /** 最少频道数；低于该值的上游源直接丢弃。默认 5。 */
   minChannelsPerSource?: number;
+  /** 广告/状态类条目占比超过该值时整源丢弃。默认 0.5。 */
+  maxAdRatio?: number;
+  /** 已知测速线路中可用线路的最低占比。默认 0.2。 */
+  minPlayableRatio?: number;
   /** 每个频道最多保留多少条可用线路 */
   maxUrlsPerChannel?: number;
   /** 最多输出多少个频道，0 表示不限制 */
@@ -964,6 +975,61 @@ function isUsableLiveUrl(raw: string): boolean {
 interface PreparedSourceChannels {
   channels: Array<{ group: string; channel: TVBoxLiveChannel }>;
   totalUrls: number;
+  totalEntries: number;
+  usableEntries: number;
+  adEntries: number;
+  statusEntries: number;
+  invalidUrlEntries: number;
+  knownSpeedEntries: number;
+  knownFailedEntries: number;
+  knownTooSlowEntries: number;
+}
+
+interface SourceQualityDecision {
+  discard: boolean;
+  reason?: string;
+  adRatio?: number;
+  playableRatio?: number;
+}
+
+function evaluateSourceQuality(
+  prepared: PreparedSourceChannels,
+  options: FilteredLiveOptions,
+): SourceQualityDecision {
+  const minChannels = Math.max(0, options.minChannelsPerSource ?? SEPARATED_MIN_CHANNELS_PER_SOURCE);
+  const maxAdRatio = Math.min(1, Math.max(0, options.maxAdRatio ?? SEPARATED_MAX_AD_RATIO));
+  const minPlayableRatio = Math.min(1, Math.max(0, options.minPlayableRatio ?? SEPARATED_MIN_PLAYABLE_RATIO));
+
+  if (prepared.totalEntries === 0) {
+    return { discard: true, reason: 'empty source' };
+  }
+
+  const adLike = prepared.adEntries + prepared.statusEntries;
+  const adRatio = adLike / prepared.totalEntries;
+  if (adLike >= 5 && adRatio > maxAdRatio) {
+    return { discard: true, reason: 'ad ratio ' + (adRatio * 100).toFixed(1) + '%', adRatio };
+  }
+
+  if (prepared.channels.length < minChannels) {
+    return {
+      discard: true,
+      reason: 'too few usable channels (' + prepared.channels.length + ' < ' + minChannels + ')',
+    };
+  }
+
+  const knownUnplayable = prepared.knownFailedEntries + prepared.knownTooSlowEntries;
+  const playableRatio = prepared.knownSpeedEntries > 0
+    ? (prepared.knownSpeedEntries - knownUnplayable) / prepared.knownSpeedEntries
+    : 1;
+  if (prepared.knownSpeedEntries >= minChannels && playableRatio < minPlayableRatio) {
+    return {
+      discard: true,
+      reason: 'low playable ratio ' + (playableRatio * 100).toFixed(1) + '%',
+      playableRatio,
+    };
+  }
+
+  return { discard: false, adRatio, playableRatio };
 }
 
 function knownLiveSpeed(entry: ChannelEntry, channelSpeedMap?: ChannelSpeedMap): number | undefined {
@@ -994,16 +1060,41 @@ function prepareSourceChannels(
 ): PreparedSourceChannels {
   const maxUrlsPerChannel = Math.max(1, options.maxUrlsPerChannel ?? SEPARATED_MAX_URLS_PER_CHANNEL);
   const maxSpeedMs = Math.max(0, options.maxSpeedMs ?? LIVE_KNOWN_MAX_SPEED_MS);
+  let adEntries = 0;
+  let statusEntries = 0;
+  let invalidUrlEntries = 0;
+  let knownSpeedEntries = 0;
+  let knownFailedEntries = 0;
+  let knownTooSlowEntries = 0;
 
   const filtered = entries.filter((entry) => {
     const name = entry.name.trim();
     const group = (entry.group || '其他').trim();
-    if (!name || !isUsableLiveUrl(entry.url)) return false;
-    if (LIVE_STATUS_NAME.test(name) || AD_KEYWORDS.test(name) || AD_KEYWORDS.test(group)) return false;
+    if (!name || !isUsableLiveUrl(entry.url)) {
+      invalidUrlEntries++;
+      return false;
+    }
+    if (LIVE_STATUS_NAME.test(name)) {
+      statusEntries++;
+      return false;
+    }
+    if (AD_KEYWORDS.test(name) || AD_KEYWORDS.test(group)) {
+      adEntries++;
+      return false;
+    }
 
     const speed = channelSpeedMap?.[entry.url.trim()];
-    if (speed?.kind === 'fail') return false;
-    if (maxSpeedMs > 0 && speed && speed.speedMs > maxSpeedMs) return false;
+    if (speed) {
+      knownSpeedEntries++;
+      if (speed.kind === 'fail') {
+        knownFailedEntries++;
+        return false;
+      }
+      if (maxSpeedMs > 0 && speed.speedMs > maxSpeedMs) {
+        knownTooSlowEntries++;
+        return false;
+      }
+    }
     return true;
   });
   filtered.sort((a, b) => compareLiveEntries(a, b, channelSpeedMap));
@@ -1036,7 +1127,18 @@ function prepareSourceChannels(
     }
   }
 
-  return { channels, totalUrls };
+  return {
+    channels,
+    totalUrls,
+    totalEntries: entries.length,
+    usableEntries: filtered.length,
+    adEntries,
+    statusEntries,
+    invalidUrlEntries,
+    knownSpeedEntries,
+    knownFailedEntries,
+    knownTooSlowEntries,
+  };
 }
 
 /**
@@ -1052,7 +1154,6 @@ export async function filterLivesBySource(
 ): Promise<TVBoxLiveGroup[]> {
   if (urls.length === 0) return [];
 
-  const minChannelsPerSource = Math.max(0, options.minChannelsPerSource ?? 1);
   const maxUrlsPerChannel = Math.max(1, options.maxUrlsPerChannel ?? SEPARATED_MAX_URLS_PER_CHANNEL);
   const maxChannels = Math.max(0, options.maxChannels ?? 0);
   const preserveSourceGroups = options.preserveSourceGroups !== false;
@@ -1117,8 +1218,11 @@ export async function filterLivesBySource(
       maxSpeedMs,
     });
 
-    // 频道过少的第三方聚合源通常质量较差，直接丢弃。
-    if (prepared.channels.length < minChannelsPerSource) continue;
+    const quality = evaluateSourceQuality(prepared, options);
+    if (quality.discard) {
+      console.log('[live-merger] Discarded live source ' + sourceName + ': ' + quality.reason);
+      continue;
+    }
 
     if (preserveSourceGroups) {
       const byGroup = new Map<string, TVBoxLiveChannel[]>();
