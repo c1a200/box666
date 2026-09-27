@@ -916,7 +916,7 @@ export interface FilteredLiveOptions {
 }
 
 const BAD_LIVE_URL = /^(?:about:blank|data:|javascript:|file:)/i;
-const LIVE_STATUS_NAME = /^(?:(?:更新|发布|同步|校验)(?:时间|日期)?|最后更新|源地址|直播源地址|订阅地址|播放地址|备用地址|update(?:d)?(?:\s*time)?|last\s*update)(?:\s*[:：].*)?$/i;
+const LIVE_STATUS_LABEL = /^(?:(?:列表)?(?:更新|发布|同步|校验)(?:时间|日期)?|最后更新|源地址|直播源地址|订阅地址|播放地址|备用地址|update(?:d)?(?:\s*time)?|last\s*update)(?:\s*[:：].*)?$/i;
 
 function isPrivateOrLocalHostname(hostname: string): boolean {
   const host = hostname.trim().toLowerCase().replace(/^\[|\]$/g, '');
@@ -1074,7 +1074,7 @@ function prepareSourceChannels(
       invalidUrlEntries++;
       return false;
     }
-    if (LIVE_STATUS_NAME.test(name)) {
+    if (LIVE_STATUS_LABEL.test(name) || LIVE_STATUS_LABEL.test(group)) {
       statusEntries++;
       return false;
     }
