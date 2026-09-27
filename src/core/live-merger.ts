@@ -828,7 +828,7 @@ export function applyChannelSpeedToGroups(
  * 用于 /live 端点在 FongMi 格式下实时转换
  */
 export async function fetchAndParseLiveUrls(
-  urls: Array<{ name: string; url: string; header?: Record<string, string> }>,
+  urls: Array<{ name: string; url: string; ua?: string; header?: Record<string, string> }>,
   timeoutMs = 8000,
   channelSpeedMap?: ChannelSpeedMap,
 ): Promise<TVBoxLiveGroup[]> {
@@ -841,7 +841,7 @@ export async function fetchAndParseLiveUrls(
       try {
         const resp = await fetch(input.url, {
           signal: controller.signal,
-          headers: { 'User-Agent': TVBOX_UA, ...(input.header || {}) },
+          headers: { 'User-Agent': input.ua || TVBOX_UA, ...(input.header || {}) },
         });
         if (!resp.ok) return null;
         const text = await resp.text();
@@ -1147,7 +1147,7 @@ function prepareSourceChannels(
  * 失效线路、重复线路以及明显无效地址。
  */
 export async function filterLivesBySource(
-  urls: Array<{ name: string; url: string; header?: Record<string, string> }>,
+  urls: Array<{ name: string; url: string; ua?: string; header?: Record<string, string> }>,
   timeoutMs = 8000,
   channelSpeedMap?: ChannelSpeedMap,
   options: FilteredLiveOptions = {},
@@ -1167,6 +1167,7 @@ export async function filterLivesBySource(
       urls.map((input) => ({
         name: input.name || 'source',
         url: input.url,
+        ua: input.ua,
         header: input.header,
       })),
       timeoutMs,
@@ -1191,7 +1192,7 @@ export async function filterLivesBySource(
         try {
           const resp = await fetch(input.url, {
             signal: controller.signal,
-            headers: { 'User-Agent': TVBOX_UA, ...(input.header || {}) },
+            headers: { 'User-Agent': input.ua || TVBOX_UA, ...(input.header || {}) },
           });
           if (!resp.ok) return null;
           const text = await resp.text();
