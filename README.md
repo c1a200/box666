@@ -269,6 +269,10 @@ KV 超时或不可用不会阻塞 Render 服务。
 | `SPEED_TEST_CONCURRENCY` | 站点测速并发数 | `18` |
 | `SPEED_TEST_BUDGET_MS` | 单批站点测速预算 | `140000` |
 | `AGGREGATION_TIMEOUT_MS` | 聚合等待上限；超时后后台继续且不重复启动 | `420000` |
+| `STARTUP_AGGREGATION_ENABLED` | Render/Node 启动时是否自动聚合 | `true` |
+| `STARTUP_AGGREGATION_DELAY_MS` | 无缓存时的启动聚合延迟 | `5000` |
+| `STARTUP_AGGREGATION_WARM_DELAY_MS` | 有缓存时的启动聚合延迟 | `600000` |
+| `STARTUP_AGGREGATION_MAX_AGE_MS` | 缓存超过该时间才立即聚合 | `86400000` |
 | `CF_KV_TIMEOUT_MS` | Render 访问 Cloudflare KV 的超时 | `2500` |
 | `DATA_DIR` | 数据存储目录（Docker/本地） | `./data` |
 

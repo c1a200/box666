@@ -131,6 +131,10 @@ interface ChannelEntry {
 // ─── 广告过滤关键字 ────────────────────────────────────
 const AD_KEYWORDS = /广告|购物|福利|加微|微\s*信|群|客\s*服|优惠|测试|测\s*试|防走失|专属|添加|关注|订阅|赞助/i;
 
+const SEPARATED_MAX_URLS_PER_CHANNEL = 6;
+const SEPARATED_MAX_CHANNELS = 12000;
+const LIVE_KNOWN_MAX_SPEED_MS = 5000;
+
 // ─── 频道名规范化 ──────────────────────────────────────
 
 const TRAD_SIMP_MAP: Record<string, string> = {
@@ -672,48 +676,39 @@ export async function separatedMergeLives(
     sourcesDownloaded++;
     const { input } = r.value;
     const content = r.value.outcome.content;
-    const sourceName = input.name || 'source';
+    const sourceName = sanitizeTxtLabel(input.name || 'source', 'source');
 
     try {
-      let entries = parseLiveContent(content, sourceName, input.speedMs);
-      
-      // 过滤包含广告、微信等关键字的频道
-      entries = entries.filter(e => !AD_KEYWORDS.test(e.name) && !AD_KEYWORDS.test(e.group));
-      
+      const entries = parseLiveContent(content, sourceName, input.speedMs);
+
       // 若为聚合而来的源，频道数量极少（少于 5 个）则直接丢弃该源
       if (input.isAggregated && entries.length < 5) {
         console.log(`[live-merger] Discarded aggregated live source ${sourceName} due to too few channels: ${entries.length}`);
         continue;
       }
 
-      if (entries.length === 0) continue;
+      const prepared = prepareSourceChannels(entries, channelSpeedMap, {
+        maxUrlsPerChannel: SEPARATED_MAX_URLS_PER_CHANNEL,
+        maxSpeedMs: LIVE_KNOWN_MAX_SPEED_MS,
+      });
+      if (prepared.channels.length === 0) continue;
 
-      // 按 group 分组（源内去重 + 过滤不可用链接）
-      const groupMap = new Map<string, Map<string, string[]>>();
-      for (const e of entries) {
-        const speed = channelSpeedMap?.[e.url];
-        if (speed?.kind === 'fail') continue;
-
-        const grp = e.group || '其他';
-        if (!groupMap.has(grp)) groupMap.set(grp, new Map());
-        const channels = groupMap.get(grp)!;
-        if (!channels.has(e.name)) channels.set(e.name, []);
-        const urls = channels.get(e.name)!;
-        if (!urls.includes(e.url)) urls.push(e.url);
+      const byGroup = new Map<string, TVBoxLiveChannel[]>();
+      for (const { group, channel } of prepared.channels) {
+        if (!byGroup.has(group)) byGroup.set(group, []);
+        byGroup.get(group)!.push(channel);
       }
 
       // 用「源名」前缀拼接 group 名
-      for (const [grp, channels] of groupMap) {
-        const prefixedGroup = `「${sourceName}」${grp}`;
-        const chs: TVBoxLiveChannel[] = [];
-        for (const [name, urls] of channels) {
-          if (urls.length === 0) continue;
-          chs.push({ name, urls });
-          totalUrls += urls.length;
-        }
-        if (chs.length === 0) continue;
-        totalChannels += chs.length;
-        allGroups.push({ group: prefixedGroup, channels: chs });
+      for (const [group, channels] of byGroup) {
+        if (totalChannels >= SEPARATED_MAX_CHANNELS) break;
+        const remaining = SEPARATED_MAX_CHANNELS - totalChannels;
+        const limited = channels.slice(0, remaining);
+        if (limited.length === 0) continue;
+
+        allGroups.push({ group: `「${scrubTypeLiteral(sourceName)}」${group}`, channels: limited });
+        totalChannels += limited.length;
+        for (const channel of limited) totalUrls += channel.urls.length;
       }
     } catch (err) {
       console.warn(`[live-merger] Separated parse failed for ${sourceName}: ${err}`);
@@ -820,5 +815,202 @@ export async function fetchAndParseLiveUrls(
     if (chs.length === 0) continue;
     groups.push({ group, channels: chs });
   }
+  return groups;
+}
+export interface FilteredLiveOptions {
+  /** 最少频道数；低于该值的聚合/第三方源直接丢弃 */
+  minChannelsPerSource?: number;
+  /** 每个频道最多保留多少条可用线路 */
+  maxUrlsPerChannel?: number;
+  /** 最多输出多少个频道，0 表示不限制 */
+  maxChannels?: number;
+  /** 是否保留源名分组前缀 */
+  preserveSourceGroups?: boolean;
+  /** 已知线路的延迟上限；超过该值直接丢弃，0 表示不限制 */
+  maxSpeedMs?: number;
+}
+
+const BAD_LIVE_URL = /^(?:about:blank|data:|javascript:|file:)/i;
+
+function isUsableLiveUrl(raw: string): boolean {
+  const url = raw.trim();
+  if (!url || BAD_LIVE_URL.test(url)) return false;
+  if (!/^https?:\/\//i.test(url)) return false;
+  try {
+    const parsed = new URL(url);
+    const hostname = parsed.hostname.toLowerCase();
+    if (
+      !hostname ||
+      hostname === 'localhost' ||
+      hostname === '127.0.0.1' ||
+      hostname === '0.0.0.0' ||
+      hostname === '[::1]' ||
+      hostname === '::1'
+    ) {
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+interface PreparedSourceChannels {
+  channels: Array<{ group: string; channel: TVBoxLiveChannel }>;
+  totalUrls: number;
+}
+
+function knownLiveSpeed(entry: ChannelEntry, channelSpeedMap?: ChannelSpeedMap): number | undefined {
+  const speed = channelSpeedMap?.[entry.url.trim()];
+  return speed && speed.kind !== 'fail' ? speed.speedMs : undefined;
+}
+
+function compareLiveEntries(a: ChannelEntry, b: ChannelEntry, channelSpeedMap?: ChannelSpeedMap): number {
+  const sa = knownLiveSpeed(a, channelSpeedMap);
+  const sb = knownLiveSpeed(b, channelSpeedMap);
+  if (sa != null && sb != null && sa !== sb) return sa - sb;
+  if (sa != null && sb == null) return -1;
+  if (sa == null && sb != null) return 1;
+
+  const sourceA = a.sourceSpeedMs ?? Number.POSITIVE_INFINITY;
+  const sourceB = b.sourceSpeedMs ?? Number.POSITIVE_INFINITY;
+  return sourceA - sourceB;
+}
+
+/**
+ * 对单个直播源做质量过滤。不同源分别调用，因此这里只做源内去重，
+ * 不会把一个源里的线路误当成另一个源的重复线路。
+ */
+function prepareSourceChannels(
+  entries: ChannelEntry[],
+  channelSpeedMap: ChannelSpeedMap | undefined,
+  options: FilteredLiveOptions,
+): PreparedSourceChannels {
+  const maxUrlsPerChannel = Math.max(1, options.maxUrlsPerChannel ?? SEPARATED_MAX_URLS_PER_CHANNEL);
+  const maxSpeedMs = Math.max(0, options.maxSpeedMs ?? LIVE_KNOWN_MAX_SPEED_MS);
+
+  const filtered = entries.filter((entry) => {
+    const name = entry.name.trim();
+    const group = (entry.group || '其他').trim();
+    if (!name || !isUsableLiveUrl(entry.url)) return false;
+    if (AD_KEYWORDS.test(name) || AD_KEYWORDS.test(group)) return false;
+
+    const speed = channelSpeedMap?.[entry.url.trim()];
+    if (speed?.kind === 'fail') return false;
+    if (maxSpeedMs > 0 && speed && speed.speedMs > maxSpeedMs) return false;
+    return true;
+  });
+  filtered.sort((a, b) => compareLiveEntries(a, b, channelSpeedMap));
+
+  const groupMap = new Map<string, Map<string, string[]>>();
+  const seenUrls = new Set<string>();
+  let totalUrls = 0;
+
+  for (const entry of filtered) {
+    const url = entry.url.trim();
+    if (seenUrls.has(url)) continue;
+
+    const group = scrubTypeLiteral((entry.group || '其他').trim());
+    const name = scrubTypeLiteral(entry.name.trim());
+    if (!groupMap.has(group)) groupMap.set(group, new Map());
+    const channels = groupMap.get(group)!;
+    if (!channels.has(name)) channels.set(name, []);
+    const channelUrls = channels.get(name)!;
+    seenUrls.add(url);
+    if (channelUrls.length >= maxUrlsPerChannel) continue;
+
+    channelUrls.push(scrubUrlType(url));
+    totalUrls++;
+  }
+
+  const channels: Array<{ group: string; channel: TVBoxLiveChannel }> = [];
+  for (const [group, groupChannels] of groupMap) {
+    for (const [name, urls] of groupChannels) {
+      if (urls.length > 0) channels.push({ group, channel: { name, urls } });
+    }
+  }
+
+  return { channels, totalUrls };
+}
+
+/**
+ * 非聚合直播输出：按原始直播源分别解析，只过滤不良频道和线路，不跨源合并频道。
+ * 这样应用端仍能区分不同来源，但不会直接拿到上游原始 m3u/txt 中的广告、
+ * 失效线路、重复线路以及明显无效地址。
+ */
+export async function filterLivesBySource(
+  urls: Array<{ name: string; url: string; header?: Record<string, string> }>,
+  timeoutMs = 8000,
+  channelSpeedMap?: ChannelSpeedMap,
+  options: FilteredLiveOptions = {},
+): Promise<TVBoxLiveGroup[]> {
+  if (urls.length === 0) return [];
+
+  const minChannelsPerSource = Math.max(0, options.minChannelsPerSource ?? 1);
+  const maxUrlsPerChannel = Math.max(1, options.maxUrlsPerChannel ?? SEPARATED_MAX_URLS_PER_CHANNEL);
+  const maxChannels = Math.max(0, options.maxChannels ?? 0);
+  const preserveSourceGroups = options.preserveSourceGroups !== false;
+  const maxSpeedMs = Math.max(0, options.maxSpeedMs ?? LIVE_KNOWN_MAX_SPEED_MS);
+
+  const results = await Promise.allSettled(
+    urls.map(async (input) => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const resp = await fetch(input.url, {
+          signal: controller.signal,
+          headers: { 'User-Agent': TVBOX_UA, ...(input.header || {}) },
+        });
+        if (!resp.ok) return null;
+        const text = await resp.text();
+        if (!text || text.length < 20) return null;
+        return { content: text, name: input.name || 'source' };
+      } catch {
+        return null;
+      } finally {
+        clearTimeout(timer);
+      }
+    }),
+  );
+
+  const groups: TVBoxLiveGroup[] = [];
+  let emittedChannels = 0;
+
+  for (const result of results) {
+    if (result.status !== 'fulfilled' || !result.value) continue;
+    const sourceName = sanitizeTxtLabel(result.value.name || 'source', 'source');
+    const entries = parseLiveContent(result.value.content, sourceName);
+    const prepared = prepareSourceChannels(entries, channelSpeedMap, {
+      maxUrlsPerChannel,
+      maxSpeedMs,
+    });
+
+    // 频道过少的第三方聚合源通常质量较差，直接丢弃。
+    if (prepared.channels.length < minChannelsPerSource) continue;
+
+    if (preserveSourceGroups) {
+      const byGroup = new Map<string, TVBoxLiveChannel[]>();
+      for (const { group, channel } of prepared.channels) {
+        if (!byGroup.has(group)) byGroup.set(group, []);
+        byGroup.get(group)!.push(channel);
+      }
+      for (const [group, channels] of byGroup) {
+        if (maxChannels > 0 && emittedChannels >= maxChannels) break;
+        const limited = maxChannels > 0 ? channels.slice(0, maxChannels - emittedChannels) : channels;
+        if (limited.length === 0) continue;
+        groups.push({ group: `「${scrubTypeLiteral(sourceName)}」${group}`, channels: limited });
+        emittedChannels += limited.length;
+      }
+    } else {
+      const remaining = maxChannels > 0 ? Math.max(0, maxChannels - emittedChannels) : prepared.channels.length;
+      const limited = prepared.channels.slice(0, remaining);
+      if (limited.length === 0) break;
+      groups.push({ group: sourceName, channels: limited.map(({ channel }) => channel) });
+      emittedChannels += limited.length;
+    }
+
+    if (maxChannels > 0 && emittedChannels >= maxChannels) break;
+  }
+
   return groups;
 }

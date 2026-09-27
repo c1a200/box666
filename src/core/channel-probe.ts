@@ -8,6 +8,7 @@ import {
   KV_CHANNEL_PROBE_STATUS,
   KV_CHANNEL_PROBE_ENABLED,
   KV_CHANNEL_MERGED_TREE,
+  KV_LIVE_RUNTIME_TXT_VERSION,
   CHANNEL_PROBE_CONCURRENCY,
   CHANNEL_PROBE_TIMEOUT_MS,
   CHANNEL_SPEED_TTL_MS,
@@ -100,12 +101,12 @@ interface ProbeResult {
   kind: 'm3u8' | 'ts' | 'tcp' | 'fail';
 }
 
-async function probeSingle(url: string): Promise<ProbeResult> {
+async function probeSingle(url: string, timeoutMs = CHANNEL_PROBE_TIMEOUT_MS): Promise<ProbeResult> {
   const isM3U8 = /\.m3u8(\?|$)/i.test(url);
   const isTs = /\.(ts|flv|mp4)(\?|$)/i.test(url);
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), CHANNEL_PROBE_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), Math.max(500, timeoutMs));
   const start = Date.now();
 
   try {
@@ -194,6 +195,98 @@ async function runWithConcurrency<T, R>(
   return results;
 }
 
+// ─── Cloudflare 有界分轮测速 ──────────────────────────
+
+export interface BoundedLiveProbeResult {
+  candidates: number;
+  probed: number;
+  success: number;
+  failed: number;
+  skipped: boolean;
+}
+
+function parseMergedGroups(raw: string | null): TVBoxLiveGroup[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed as TVBoxLiveGroup[] : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 免费 Worker 专用：每次只测一小批直播 URL，避免子请求数、CPU 和时长超限。
+ * 优先测未知、过期或上次失败的 URL；结果合并进现有测速表，不覆盖完整状态。
+ */
+export async function probeLiveUrlsBounded(
+  storage: Storage,
+  options: {
+    maxUrls?: number;
+    timeoutMs?: number;
+    concurrency?: number;
+    budgetMs?: number;
+  } = {},
+): Promise<BoundedLiveProbeResult> {
+  const maxUrls = Math.max(1, Math.min(64, options.maxUrls ?? 28));
+  const timeoutMs = Math.max(500, Math.min(8000, options.timeoutMs ?? 3000));
+  const concurrency = Math.max(1, Math.min(8, options.concurrency ?? 5));
+  const budgetMs = Math.max(1000, Math.min(60000, options.budgetMs ?? 25000));
+  const startedAt = Date.now();
+
+  const groups = parseMergedGroups(await storage.get(KV_CHANNEL_MERGED_TREE));
+  const allUrls = extractAllUrls(groups);
+  if (allUrls.length === 0) {
+    return { candidates: 0, probed: 0, success: 0, failed: 0, skipped: true };
+  }
+
+  const speedMap = pruneExpired(await loadSpeedMap(storage));
+  const now = Date.now();
+  const candidates = allUrls
+    .map((url) => {
+      const entry = speedMap[url];
+      const probedAt = entry ? Date.parse(entry.probedAt) : NaN;
+      const expired = !entry || !isFinite(probedAt) || now - probedAt >= CHANNEL_SPEED_TTL_MS;
+      const priority = !entry ? 0 : entry.kind === 'fail' ? 1 : expired ? 2 : 3;
+      return { url, priority, probedAt: isFinite(probedAt) ? probedAt : 0 };
+    })
+    .sort((a, b) => a.priority - b.priority || a.probedAt - b.probedAt)
+    .slice(0, maxUrls);
+
+  const results: ProbeResult[] = [];
+  let index = 0;
+  const workers = Array.from({ length: Math.min(concurrency, candidates.length) }, async () => {
+    while (index < candidates.length && Date.now() - startedAt < budgetMs) {
+      const candidate = candidates[index++];
+      results.push(await probeSingle(candidate.url, timeoutMs));
+    }
+  });
+  await Promise.all(workers);
+
+  const probedAt = new Date().toISOString();
+  let success = 0;
+  let failed = 0;
+  for (const result of results) {
+    speedMap[result.url] = {
+      speedMs: result.speedMs,
+      probedAt,
+      kind: result.kind,
+    };
+    if (result.kind === 'fail') failed++;
+    else success++;
+  }
+
+  if (results.length > 0) {
+    await saveSpeedMap(storage, speedMap);
+    await storage.put(KV_LIVE_RUNTIME_TXT_VERSION, `probe-${Date.now()}`);
+  }
+
+  console.log(
+    `[channel-probe] Bounded CF probe: ${results.length}/${candidates.length} URLs, ` +
+    `${success} success, ${failed} failed`,
+  );
+  return { candidates: candidates.length, probed: results.length, success, failed, skipped: false };
+}
 // ─── 主入口 ────────────────────────────────────────────
 
 let running = false;

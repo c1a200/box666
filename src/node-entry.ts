@@ -27,6 +27,8 @@ import {
   DEFAULT_SPEED_TEST_CONCURRENCY,
   DEFAULT_SPEED_TEST_BUDGET_MS,
   KV_CRON_INTERVAL,
+  KV_MERGED_CONFIG,
+  KV_LAST_UPDATE,
   DEFAULT_CRON_INTERVAL,
   CHANNEL_PROBE_CRON,
 } from './core/config';
@@ -253,6 +255,62 @@ async function main() {
   });
   console.log(`[channel-probe-cron] Scheduled: ${CHANNEL_PROBE_CRON} (runs when enabled)`);
 
+  const startupAggregationEnabled = process.env.STARTUP_AGGREGATION_ENABLED !== 'false';
+  const startupAggregationDelayMs = Math.max(
+    0,
+    parseInt(process.env.STARTUP_AGGREGATION_DELAY_MS || '') || 5000,
+  );
+  const startupAggregationWarmDelayMs = Math.max(
+    0,
+    parseInt(process.env.STARTUP_AGGREGATION_WARM_DELAY_MS || '') || 600_000,
+  );
+  const startupAggregationMaxAgeMs = Math.max(
+    60_000,
+    parseInt(process.env.STARTUP_AGGREGATION_MAX_AGE_MS || '') || 24 * 60 * 60 * 1000,
+  );
+
+  async function scheduleStartupAggregation(): Promise<void> {
+    if (!startupAggregationEnabled) {
+      console.log('[aggregation] Automatic startup aggregation disabled');
+      return;
+    }
+
+    let cachedConfig: string | null = null;
+    let lastUpdate: string | null = null;
+    try {
+      cachedConfig = await storage.get(KV_MERGED_CONFIG);
+      lastUpdate = await storage.get(KV_LAST_UPDATE);
+    } catch (err) {
+      console.warn('[aggregation] Failed to inspect startup cache:', err);
+    }
+
+    const parsedLastUpdate = lastUpdate && !lastUpdate.startsWith('ERROR')
+      ? Date.parse(lastUpdate)
+      : Number.NaN;
+    const cacheAgeMs = Number.isFinite(parsedLastUpdate) ? Date.now() - parsedLastUpdate : null;
+    const hasFreshCache = Boolean(cachedConfig)
+      && (lastUpdate === null || (cacheAgeMs !== null && cacheAgeMs >= 0 && cacheAgeMs <= startupAggregationMaxAgeMs));
+    const delayMs = hasFreshCache ? startupAggregationWarmDelayMs : startupAggregationDelayMs;
+
+    if (hasFreshCache && startupAggregationWarmDelayMs === 0) {
+      console.log('[aggregation] Fresh cached config found; skipping automatic startup aggregation');
+      return;
+    }
+
+    if (hasFreshCache) {
+      console.log('[aggregation] Fresh cached config found; delaying automatic aggregation by ' + delayMs + 'ms');
+    } else if (cachedConfig) {
+      console.log('[aggregation] Cached config is stale; scheduling aggregation in ' + delayMs + 'ms');
+    } else {
+      console.log('[aggregation] No cached config; scheduling initialization in ' + delayMs + 'ms');
+    }
+
+    setTimeout(() => {
+      console.log('[aggregation] Triggering automatic startup aggregation...');
+      void runWithGuard();
+    }, delayMs);
+  }
+
   const app = createApp({
     storage,
     config,
@@ -293,11 +351,8 @@ async function main() {
     console.log(`  TVBox 填入地址: http://${displayHost}:${info.port}/`);
     console.log('');
 
-    // 后台启动一次聚合，确保最新配置在部署或重启后能自动更新到数据库中，避免因未触发刷新导致配置不同步
-    setTimeout(() => {
-      console.log('[aggregation] Triggering automatic startup aggregation...');
-      runWithGuard();
-    }, 5000);
+    // 启动聚合策略：无缓存时尽早初始化；已有较新缓存时延后，避免与 TVBox 首次加载争抢资源。
+    void scheduleStartupAggregation();
   });
 }
 

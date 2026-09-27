@@ -3,6 +3,7 @@
 import { createApp } from './routes';
 import { KVStorage } from './storage/kv';
 import { runAggregation } from './aggregator';
+import { probeLiveUrlsBounded } from './core/channel-probe';
 import { DEFAULT_SPEED_TIMEOUT_MS, DEFAULT_SITE_TIMEOUT_MS, DEFAULT_FETCH_TIMEOUT_MS, DEFAULT_SPEED_TEST_CONCURRENCY, DEFAULT_SPEED_TEST_BUDGET_MS, KV_CRON_INTERVAL, KV_LAST_UPDATE, DEFAULT_CRON_INTERVAL } from './core/config';
 import type { AppConfig } from './core/types';
 
@@ -64,7 +65,18 @@ export default {
       const intervalMs = intervalMinutes * 60 * 1000;
 
       if (elapsed < intervalMs) {
-        console.log(`[scheduled] Skipping: ${Math.round(elapsed / 60000)}min since last update, interval is ${intervalMinutes}min`);
+        console.log(`[scheduled] Skipping aggregation: ${Math.round(elapsed / 60000)}min since last update, interval is ${intervalMinutes}min`);
+        // 免费 Worker：间隔未到时只做一小批直播测速，不启动完整聚合。
+        ctx.waitUntil(
+          probeLiveUrlsBounded(storage, {
+            maxUrls: 28,
+            timeoutMs: 3000,
+            concurrency: 5,
+            budgetMs: 25000,
+          }).catch((err) => {
+            console.warn('[scheduled] Bounded live probe failed:', err instanceof Error ? err.message : String(err));
+          }),
+        );
         return;
       }
     }
