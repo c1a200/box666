@@ -640,7 +640,7 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     if (config.workerBaseUrl) {
       // CF Workers 模式
       const liveMergeMode = (await storage.get(KV_LIVE_MERGE_MODE)) || 'separated';
-      if (liveMergeMode === 'merged' || isNative) {
+      if (liveMergeMode === 'merged' || liveMergeMode === 'separated' || isNative) {
         merged.lives = [
           {
             name: '直播(聚合)',

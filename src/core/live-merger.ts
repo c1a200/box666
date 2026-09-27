@@ -831,6 +831,46 @@ export interface FilteredLiveOptions {
 }
 
 const BAD_LIVE_URL = /^(?:about:blank|data:|javascript:|file:)/i;
+const LIVE_STATUS_NAME = /^(?:(?:更新|发布|同步|校验)(?:时间|日期)?|最后更新|源地址|直播源地址|订阅地址|播放地址|备用地址|update(?:d)?(?:\s*time)?|last\s*update)(?:\s*[:：].*)?$/i;
+
+function isPrivateOrLocalHostname(hostname: string): boolean {
+  const host = hostname.trim().toLowerCase().replace(/^\[|\]$/g, '');
+  if (!host) return true;
+  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) return true;
+  if (host === '::1' || host === '0:0:0:0:0:0:0:1') return true;
+
+  // IPv4 literal: reject loopback, unspecified, link-local, private, CGNAT,
+  // benchmarking and multicast/reserved ranges that can never be public streams.
+  const ipv4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4) {
+    const octets = ipv4.slice(1).map((part) => Number(part));
+    if (octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return true;
+    const [a, b] = octets;
+    return (
+      a === 0 ||
+      a === 10 ||
+      a === 127 ||
+      (a === 100 && b >= 64 && b <= 127) ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 192 && b === 0) ||
+      (a === 198 && (b === 18 || b === 19)) ||
+      a >= 224
+    );
+  }
+
+  // IPv6 loopback / unspecified / link-local / unique-local / multicast.
+  if (host.includes(':')) {
+    return (
+      host === '::' ||
+      host.startsWith('fe8') || host.startsWith('fe9') || host.startsWith('fea') || host.startsWith('feb') ||
+      host.startsWith('fc') || host.startsWith('fd') ||
+      host.startsWith('ff')
+    );
+  }
+  return false;
+}
 
 function isUsableLiveUrl(raw: string): boolean {
   const url = raw.trim();
@@ -838,17 +878,9 @@ function isUsableLiveUrl(raw: string): boolean {
   if (!/^https?:\/\//i.test(url)) return false;
   try {
     const parsed = new URL(url);
-    const hostname = parsed.hostname.toLowerCase();
-    if (
-      !hostname ||
-      hostname === 'localhost' ||
-      hostname === '127.0.0.1' ||
-      hostname === '0.0.0.0' ||
-      hostname === '[::1]' ||
-      hostname === '::1'
-    ) {
-      return false;
-    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+    if (!parsed.hostname || parsed.username || parsed.password) return false;
+    if (isPrivateOrLocalHostname(parsed.hostname)) return false;
     return true;
   } catch {
     return false;
@@ -893,7 +925,7 @@ function prepareSourceChannels(
     const name = entry.name.trim();
     const group = (entry.group || '其他').trim();
     if (!name || !isUsableLiveUrl(entry.url)) return false;
-    if (AD_KEYWORDS.test(name) || AD_KEYWORDS.test(group)) return false;
+    if (LIVE_STATUS_NAME.test(name) || AD_KEYWORDS.test(name) || AD_KEYWORDS.test(group)) return false;
 
     const speed = channelSpeedMap?.[entry.url.trim()];
     if (speed?.kind === 'fail') return false;
