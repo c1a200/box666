@@ -1,7 +1,6 @@
 // Hono 统一路由层
 
 import { Hono } from 'hono';
-import { gzipSync, deflateSync } from 'node:zlib';
 import { MemoryCachedStorage } from './storage/cached';
 import type { Storage } from './storage/interface';
 import type { AppConfig, MacCMSSourceEntry, LiveSourceEntry, NameTransformConfig, EdgeProxyConfig } from './core/types';
@@ -247,18 +246,13 @@ export function createApp(deps: AppDeps): Hono {
     return fallback;
   }
 
-  function compressedBody(c: any, body: string, headers: Record<string, string>): Response {
-    const accepted = c.req.header('Accept-Encoding') || '';
-    const encoding = accepted.includes('gzip') ? 'gzip' : accepted.includes('deflate') ? 'deflate' : '';
-    const baseHeaders = { ...headers, Vary: 'Accept-Encoding' };
-    if (!encoding || Buffer.byteLength(body) < 1024) {
-      return new Response(body, { status: 200, headers: baseHeaders });
-    }
-    const compressor = encoding === 'gzip' ? gzipSync : deflateSync;
-    const compressed = compressor(body);
-    return new Response(compressed, {
+  function configBody(body: string, headers: Record<string, string>): Response {
+    // 不手工压缩：Cloudflare 边缘可能在客户端未请求 gzip 时剥离
+    // Content-Encoding，却保留压缩字节，导致 TVBox/影视仓 JSON 解析失败。
+    // 始终保持原始 JSON，由平台按 Accept-Encoding 正常协商压缩。
+    return new Response(body, {
       status: 200,
-      headers: { ...baseHeaders, 'Content-Encoding': encoding },
+      headers: { ...headers, Vary: 'Accept-Encoding' },
     });
   }
 
@@ -277,7 +271,7 @@ export function createApp(deps: AppDeps): Hono {
     if (baseUrl instanceof Response) return baseUrl;
     cached = applyBaseUrlPlaceholder(cached, baseUrl);
 
-    return compressedBody(c, cached, {
+    return configBody(cached, {
       'Content-Type': 'application/json; charset=utf-8',
       'Cache-Control': 'public, max-age=1800, stale-while-revalidate=86400',
       'Access-Control-Allow-Origin': '*',
@@ -505,7 +499,7 @@ export function createApp(deps: AppDeps): Hono {
     const baseUrl = await resolveBaseUrl(c);
     if (baseUrl instanceof Response) return baseUrl;
     cached = applyBaseUrlPlaceholder(cached, baseUrl);
-    return compressedBody(c, cached, {
+    return configBody(cached, {
       'Content-Type': 'application/json; charset=utf-8',
       'Cache-Control': 'public, max-age=1800, stale-while-revalidate=86400',
       'Access-Control-Allow-Origin': '*',
@@ -866,7 +860,7 @@ export function createApp(deps: AppDeps): Hono {
     try {
       const report = JSON.parse(raw) as Record<string, unknown>;
       const quota = await loadSearchQuota(storage);
-      return c.json({ enabled: true, maxSearchable: quota.maxSearchable, maxQuickSearch: quota.maxQuickSearch, autoLimit: quota.autoLimit, ...report });
+      return c.json({ enabled: true, ...report, maxSearchable: quota.maxSearchable, maxQuickSearch: quota.maxQuickSearch, autoLimit: quota.autoLimit });
     } catch {
       return c.json({ enabled: false });
     }

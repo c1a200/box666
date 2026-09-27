@@ -43,10 +43,14 @@ export async function loadSearchQuota(storage: Storage): Promise<SearchQuotaConf
       const maxSearchable = normalizeLimit(parsed.maxSearchable);
       const fallback = createDefaultSearchQuota();
       const hasNewLimitFields = typeof parsed.autoLimit === 'boolean' || typeof parsed.maxQuickSearch === 'number';
-      // 仅对旧版配置做一次安全迁移；新版已保存后，autoLimit=false + 0 会永久表示不限。
-      const autoLimit = parsed.autoLimit === true || (!hasNewLimitFields && maxSearchable === 0);
+      const isLegacyQuota = !hasNewLimitFields;
+      // 旧版配置一律迁移到安全上限；只有用户在新版后台明确关闭后，才保留 0 = 不限制。
+      const autoLimit = isLegacyQuota ? true : parsed.autoLimit === true;
+      const effectiveMaxSearchable = isLegacyQuota
+        ? fallback.maxSearchable
+        : (autoLimit && maxSearchable === 0 ? fallback.maxSearchable : maxSearchable);
       return {
-        maxSearchable: autoLimit && maxSearchable === 0 ? fallback.maxSearchable : maxSearchable,
+        maxSearchable: effectiveMaxSearchable,
         maxQuickSearch: autoLimit
           ? (normalizeLimit(parsed.maxQuickSearch) || fallback.maxQuickSearch)
           : normalizeLimit(parsed.maxQuickSearch),
