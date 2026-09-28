@@ -3,7 +3,7 @@
 import type { TVBoxParse, TVBoxSite, SearchQuotaConfig, SearchQuotaReport } from './types';
 import type { Storage } from '../storage/interface';
 import { KV_SEARCH_QUOTA } from './config';
-const QUOTA_SCHEMA_VERSION = 6;
+const QUOTA_SCHEMA_VERSION = 7;
 
 function isNodeRuntime(): boolean {
   return typeof process !== 'undefined' && !!process.env.PORT;
@@ -16,12 +16,12 @@ function defaultSearchLimit(): number {
 
 function defaultQuickSearchLimit(): number {
   // 快速搜索只保留少量健康度最高的源，减少影视仓/TVBox 启动与首屏等待。
-  return isNodeRuntime() ? 24 : 15;
+  return isNodeRuntime() ? 32 : 20;
 }
 
 function defaultStartupQuickSearchLimit(): number {
   // 根配置保留全部通过健康/速度筛选的快速源；Render 资源更充足，可多保留一些；CF 保持较小上限。
-  return isNodeRuntime() ? 24 : 15;
+  return isNodeRuntime() ? 32 : 20;
 }
 
 function defaultParseLimit(): number {
