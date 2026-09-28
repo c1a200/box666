@@ -304,6 +304,32 @@ function sanitizeTxtLabel(label: string, fallback: string): string {
 }
 
 /**
+ * 频道自然排序：央视主频道按 CCTV 数字顺序排列，5+ 紧跟在 5 后，
+ * 其他频道再用中文数字感知比较，避免上游顺序导致 CCTV1/2/3 乱序。
+ */
+function cctvChannelRank(name: string): number | null {
+  const match = name.match(/(?:CCTV|中央|央视)[-_\s]*0*(\d{1,2})(\+)?/i);
+  if (!match) return null;
+  return Number(match[1]) * 10 + (match[2] ? 1 : 0);
+}
+
+export function compareLiveChannelNames(a: string, b: string): number {
+  const rankA = cctvChannelRank(a);
+  const rankB = cctvChannelRank(b);
+  if (rankA != null && rankB != null && rankA !== rankB) return rankA - rankB;
+  if (rankA != null && rankB == null) return -1;
+  if (rankA == null && rankB != null) return 1;
+  return a.localeCompare(b, 'zh-CN', { numeric: true, sensitivity: 'base' });
+}
+
+/** 仅按频道名稳定排序，保留调用方原有的直播源分组顺序。 */
+export function sortLiveGroupsForOutput(groups: TVBoxLiveGroup[]): TVBoxLiveGroup[] {
+  return groups.map((group) => ({
+    ...group,
+    channels: [...(group.channels || [])].sort((a, b) => compareLiveChannelNames(a.name, b.name)),
+  }));
+}
+/**
  * 将 TVBox Native live groups 转为 DIYP/txt 格式：
  *   央视,#genre#
  *   CCTV-1,http://url1$源A#http://url2$源B
@@ -311,7 +337,7 @@ function sanitizeTxtLabel(label: string, fallback: string): string {
 export function formatLiveGroupsAsTxt(groups: TVBoxLiveGroup[]): string {
   const lines: string[] = [];
 
-  for (const group of groups) {
+  for (const group of sortLiveGroupsForOutput(groups)) {
     const groupName = sanitizeTxtLabel(group.group || '', '其他');
     lines.push(`${groupName},#genre#`);
 
@@ -693,7 +719,7 @@ export async function mergeLivesToNative(
   // 组装 groups
   const groups: TVBoxLiveGroup[] = [];
   for (const [group, channels] of groupMap) {
-    groups.push({ group, channels });
+    groups.push({ group, channels: [...channels].sort((a, b) => compareLiveChannelNames(a.name, b.name)) });
   }
 
   // 最终安全校验（双保险第二道）：
@@ -1010,7 +1036,7 @@ export async function fetchAndParseLiveUrls(
       chs.push({ name, urls });
     }
     if (chs.length === 0) continue;
-    groups.push({ group, channels: chs });
+    groups.push({ group, channels: [...chs].sort((a, b) => compareLiveChannelNames(a.name, b.name)) });
   }
   return groups;
 }
@@ -1503,7 +1529,7 @@ export async function filterLivesBySourceDetailed(
         if (maxChannels > 0 && emittedChannels >= maxChannels) break;
         const limited = maxChannels > 0 ? channels.slice(0, maxChannels - emittedChannels) : channels;
         if (limited.length === 0) continue;
-        groups.push({ group: scrubTypeLiteral(group), channels: limited });
+        groups.push({ group: scrubTypeLiteral(group), channels: [...limited].sort((a, b) => compareLiveChannelNames(a.name, b.name)) });
         emittedChannels += limited.length;
       }
     } else {

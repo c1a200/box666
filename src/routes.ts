@@ -21,7 +21,7 @@ import { loadCredentials, saveCredential, deleteCredential, loadCredentialPolicy
 import { generateQR, pollQRStatus, passwordLogin, PLATFORM_NAMES, QR_PLATFORMS, PASSWORD_PLATFORMS } from './core/cloud-login';
 import { assessAllSources } from './core/credential-risk';
 import { generateTokenJson } from './core/credential-injector';
-import { formatLiveGroupsAsTxt, filterLivesBySource, filterLivesBySourceDetailed } from './core/live-merger';
+import { formatLiveGroupsAsTxt, filterLivesBySource, filterLivesBySourceDetailed, sortLiveGroupsForOutput } from './core/live-merger';
 import { containsBlockedLiveUrl, isBlockedLiveSource, isBlockedLiveUrl } from './core/live-policy';
 import type { TVBoxConfig, SearchQuotaConfig, CloudPlatform, CloudCredential, TVBoxLive, TVBoxLiveGroup } from './core/types';
 import { mountChannelProbeRoutes } from './routes/channel-probe-admin';
@@ -356,8 +356,8 @@ export function createApp(deps: AppDeps): Hono {
 
     // CF 分离模式在根配置中保留少量最快的直播入口；完整直播清单仍在
     // /live.json 和 /config-full.json 中，Render 的单个聚合入口不受影响。
-    if (config.workerBaseUrl && Array.isArray(parsed.lives) && parsed.lives.length > 4) {
-      parsed.lives = parsed.lives.slice(0, 4);
+    if (config.workerBaseUrl && Array.isArray(parsed.lives) && parsed.lives.length > 8) {
+      parsed.lives = parsed.lives.slice(0, 8);
     }
 
     const parses = Array.isArray(parsed.parses) ? parsed.parses : [];
@@ -719,6 +719,9 @@ export function createApp(deps: AppDeps): Hono {
     }
 
     lives = filterBlockedLiveEntries(lives);
+    if (lives.length > 0 && lives.every((live) => Array.isArray(live.channels))) {
+      lives = sortLiveGroupsForOutput(lives as unknown as TVBoxLiveGroup[]) as unknown as TVBoxLive[];
+    }
 
     return c.body(JSON.stringify({ lives }), 200, {
       'Content-Type': 'application/json; charset=utf-8',

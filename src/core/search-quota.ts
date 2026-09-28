@@ -3,7 +3,7 @@
 import type { TVBoxParse, TVBoxSite, SearchQuotaConfig, SearchQuotaReport } from './types';
 import type { Storage } from '../storage/interface';
 import { KV_SEARCH_QUOTA } from './config';
-const QUOTA_SCHEMA_VERSION = 5;
+const QUOTA_SCHEMA_VERSION = 6;
 
 function isNodeRuntime(): boolean {
   return typeof process !== 'undefined' && !!process.env.PORT;
@@ -20,8 +20,8 @@ function defaultQuickSearchLimit(): number {
 }
 
 function defaultStartupQuickSearchLimit(): number {
-  // 根配置只保留极少量快速源，完整搜索仍通过 /config-full.json 和后台使用。
-  return isNodeRuntime() ? 8 : 6;
+  // 根配置保留全部通过健康/速度筛选的快速源；Render 资源更充足，可多保留一些；CF 保持较小上限。
+  return isNodeRuntime() ? 24 : 15;
 }
 
 function defaultParseLimit(): number {
@@ -61,7 +61,12 @@ export async function loadSearchQuota(storage: Storage): Promise<SearchQuotaConf
       const maxSearchable = normalizeLimit(parsed.maxSearchable);
       const fallback = createDefaultSearchQuota();
       const hasNewLimitFields = typeof parsed.autoLimit === 'boolean' || typeof parsed.maxQuickSearch === 'number';
-      const isLegacyQuota = !hasNewLimitFields || (parsed.quotaSchemaVersion ?? 1) < QUOTA_SCHEMA_VERSION;
+      const quotaVersion = parsed.quotaSchemaVersion ?? 1;
+      // v5 起已包含自动配额字段；只有更早版本才重置为安全默认值。
+      const isLegacyQuota = !hasNewLimitFields || quotaVersion < 5;
+      const oldStartupDefault = isNodeRuntime() ? 8 : 6;
+      const parsedStartupLimit = normalizeLimit(parsed.maxStartupQuickSearch);
+      const migrateStartupLimit = quotaVersion < QUOTA_SCHEMA_VERSION && parsedStartupLimit === oldStartupDefault;
       // 旧版配置一律迁移到安全上限；只有用户在新版后台明确关闭后，才保留 0 = 不限制。
       const autoLimit = isLegacyQuota ? true : parsed.autoLimit === true;
       const parsedMaxParses = normalizeLimit(parsed.maxParses);
@@ -73,9 +78,10 @@ export async function loadSearchQuota(storage: Storage): Promise<SearchQuotaConf
         maxQuickSearch: autoLimit
           ? (normalizeLimit(parsed.maxQuickSearch) || fallback.maxQuickSearch)
           : normalizeLimit(parsed.maxQuickSearch),
-        maxStartupQuickSearch: (isLegacyQuota || !normalizeLimit(parsed.maxStartupQuickSearch))
+        // schema 6 起，旧版过紧的 8/6 上限自动迁移到新的安全上限；之后用户明确设置的值仍保留。
+        maxStartupQuickSearch: (isLegacyQuota || migrateStartupLimit || parsedStartupLimit === 0)
           ? fallback.maxStartupQuickSearch
-          : normalizeLimit(parsed.maxStartupQuickSearch),
+          : parsedStartupLimit,
         // schema 升级必须采用新的安全上限，不能继承旧版本 maxParses=10。
         maxParses: isLegacyQuota
           ? fallback.maxParses
