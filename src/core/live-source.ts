@@ -2,7 +2,7 @@
 
 import type { LiveSourceEntry, TVBoxLive } from './types';
 import type { Storage } from '../storage/interface';
-import { LIVE_PROXY_TTL } from './config';
+import { KV_LIVE_TEXT_PREFIX, LIVE_PROXY_TTL } from './config';
 import { isBlockedLiveSource } from './live-policy';
 
 const KV_LIVE_PREFIX = 'live:';
@@ -216,6 +216,7 @@ export async function liveSourcesToTVBoxLives(
   workerBaseUrl: string | undefined,
   storage: Storage,
   speedMap?: Map<string, number>,
+  prebuiltTexts?: Record<string, string>,
 ): Promise<TVBoxLive[]> {
   const lives: TVBoxLive[] = [];
 
@@ -233,6 +234,10 @@ export async function liveSourcesToTVBoxLives(
     }
 
     for (const entry of proxyEntries) {
+      const prebuilt = prebuiltTexts?.[entry.url];
+      if (prebuilt && prebuilt.trim() && prebuilt.includes('#genre#')) {
+        await storage.put(`${KV_LIVE_TEXT_PREFIX}${entry.key}`, prebuilt);
+      }
       lives.push({
         name: entry.name || '直播源',
         type: 0,

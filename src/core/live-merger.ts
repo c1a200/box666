@@ -70,6 +70,7 @@ export interface LiveDownloadStats {
   cacheMisses: number;
   revalidated: number;
   staleFallbacks: number;
+  sourceTexts?: Record<string, string>;
 }
 
 const liveSourceMemoryCache = new Map<string, CachedLiveSource>();
@@ -524,6 +525,8 @@ export interface MergeLivesResult {
   cacheMisses: number;
   revalidated: number;
   staleFallbacks: number;
+  /** 分离模式下按原始源 URL 预构建的过滤后 TXT（仅 CF 使用） */
+  sourceTexts?: Record<string, string>;
 }
 
 export async function mergeLivesToNative(
@@ -792,6 +795,7 @@ export async function separatedMergeLives(
   const allGroups: TVBoxLiveGroup[] = [];
   let totalChannels = 0;
   let totalUrls = 0;
+  const sourceTexts: Record<string, string> = {};
 
   for (const r of downloadResults) {
     if (r.status !== 'fulfilled' || !r.value.outcome.content) {
@@ -828,16 +832,24 @@ export async function separatedMergeLives(
         byGroup.get(group)!.push(channel);
       }
 
-      // 保留上游 group 名，频道线路仍带 $源名 后缀
+      // 保留上游 group 名，频道线路仍带 $源名 后缀。
+      // 同时为 CF 分离模式预生成该源的过滤后 TXT，/live/<key> 首次请求直接命中。
+      const sourceGroups: TVBoxLiveGroup[] = [];
       for (const [group, channels] of byGroup) {
         if (totalChannels >= SEPARATED_MAX_CHANNELS) break;
         const remaining = SEPARATED_MAX_CHANNELS - totalChannels;
         const limited = channels.slice(0, remaining);
         if (limited.length === 0) continue;
 
-        allGroups.push({ group: scrubTypeLiteral(group), channels: limited });
+        const groupValue = { group: scrubTypeLiteral(group), channels: limited };
+        allGroups.push(groupValue);
+        sourceGroups.push(groupValue);
         totalChannels += limited.length;
         for (const channel of limited) totalUrls += channel.urls.length;
+      }
+      const sourceText = formatLiveGroupsAsTxt(sourceGroups);
+      if (sourceText.trim() && sourceText.includes('#genre#')) {
+        sourceTexts[input.url] = sourceText;
       }
     } catch (err) {
       console.warn(`[live-merger] Separated parse failed for ${sourceName}: ${err}`);
@@ -856,6 +868,7 @@ export async function separatedMergeLives(
     cacheMisses: downloadStats.cacheMisses,
     revalidated: downloadStats.revalidated,
     staleFallbacks: downloadStats.staleFallbacks,
+    sourceTexts,
   };
 }
 
@@ -1030,6 +1043,8 @@ export interface FilteredLiveSourceResult {
   valid: LiveSourceInput[];
   invalid: LiveSourceInput[];
   transient: LiveSourceInput[];
+  /** 按原始源 URL 预构建的过滤后 TXT，供 CF /live/<key> 直接复用。 */
+  texts: Record<string, string>;
 }
 
 const BAD_LIVE_URL = /^(?:about:blank|data:|javascript:|file:)/i;
@@ -1275,14 +1290,14 @@ export async function filterLiveSourcesDetailed(
   channelSpeedMap?: ChannelSpeedMap,
   options: FilteredLiveOptions = {},
 ): Promise<FilteredLiveSourceResult> {
-  if (sources.length === 0) return { valid: [], invalid: [], transient: [] };
+  if (sources.length === 0) return { valid: [], invalid: [], transient: [], texts: {} };
 
   const blocked = sources.filter(isBlockedLiveSource);
   const candidates = blocked.length > 0 ? sources.filter((source) => !isBlockedLiveSource(source)) : sources;
   if (blocked.length > 0) {
     console.log('[live-merger] Blocked live sources: ' + blocked.map((source) => sanitizeTxtLabel(source.name || 'source', 'source')).join(', '));
   }
-  if (candidates.length === 0) return { valid: [], invalid: blocked, transient: [] };
+  if (candidates.length === 0) return { valid: [], invalid: blocked, transient: [], texts: {} };
 
   const concurrency = Math.max(1, options.concurrency ?? 3);
   const batched = await downloadLiveBatched(
@@ -1296,6 +1311,7 @@ export async function filterLiveSourcesDetailed(
   const valid: LiveSourceInput[] = [];
   const invalid: LiveSourceInput[] = [];
   const transient: LiveSourceInput[] = [];
+  const texts: Record<string, string> = {};
 
   for (let i = 0; i < batched.results.length; i++) {
     const result = batched.results[i];
@@ -1328,11 +1344,24 @@ export async function filterLiveSourcesDetailed(
       console.log('[live-merger] Discarded live source ' + sourceName + ': ' + quality.reason);
       continue;
     }
+    const sourceGroups: TVBoxLiveGroup[] = [];
+    const byGroup = new Map<string, TVBoxLiveChannel[]>();
+    for (const { group, channel } of prepared.channels) {
+      if (!byGroup.has(group)) byGroup.set(group, []);
+      byGroup.get(group)!.push(channel);
+    }
+    for (const [group, channels] of byGroup) {
+      if (channels.length > 0) sourceGroups.push({ group, channels });
+    }
+    const sourceText = formatLiveGroupsAsTxt(sourceGroups);
+    if (sourceText.trim() && sourceText.includes('#genre#')) {
+      texts[input.url] = sourceText;
+    }
     valid.push(input);
   }
 
   console.log(`[live-merger] Validated ${valid.length}/${sources.length} live sources (invalid=${invalid.length + blocked.length}, transient=${transient.length})`);
-  return { valid, invalid: [...invalid, ...blocked], transient };
+  return { valid, invalid: [...invalid, ...blocked], transient, texts };
 }
 
 /**

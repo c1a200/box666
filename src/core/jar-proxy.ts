@@ -4,6 +4,9 @@ import type { TVBoxConfig } from './types';
 import type { Storage } from '../storage/interface';
 
 const KV_JAR_PREFIX = 'jar:';
+export const KV_JAR_BIN_PREFIX = 'jar_bin:';
+const JAR_PREWARM_TIMEOUT_MS = 8000;
+const JAR_PREWARM_MAX_BYTES = 8 * 1024 * 1024;
 
 /**
  * 解析 spider/jar 字符串
@@ -86,6 +89,7 @@ export async function rewriteJarUrls(
   config: TVBoxConfig,
   workerBaseUrl: string,
   storage: Storage,
+  options: { prewarmBinaries?: boolean } = {},
 ): Promise<TVBoxConfig> {
   // Step 1: 收集所有唯一 JAR URL
   const uniqueJars = new Map<string, { md5: string | null }>(); // url → {md5}
@@ -129,6 +133,37 @@ export async function rewriteJarUrls(
   }
 
   console.log(`[jar-proxy] Wrote ${urlKeyMap.size} KV mappings`);
+
+  // CF 专属：把 JAR 二进制预写入 KV，避免 /jar 首次请求先等慢上游。
+  // 仅 Worker 路径启用；Render 不传该选项，保持原行为。
+  if (options.prewarmBinaries) {
+    const prewarmTargets = Array.from(urlKeyMap.entries()).slice(0, 8);
+    await Promise.all(prewarmTargets.map(async ([url, key]) => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), JAR_PREWARM_TIMEOUT_MS);
+      try {
+        const resp = await fetch(url, {
+          headers: { 'User-Agent': 'okhttp/3.12.0' },
+          signal: controller.signal,
+        });
+        if (!resp.ok) {
+          console.log(`[jar-proxy] Prewarm skipped ${key}: HTTP ${resp.status}`);
+          return;
+        }
+        const bytes = new Uint8Array(await resp.arrayBuffer());
+        if (bytes.byteLength <= 0 || bytes.byteLength > JAR_PREWARM_MAX_BYTES) {
+          console.log(`[jar-proxy] Prewarm skipped ${key}: size ${bytes.byteLength}`);
+          return;
+        }
+        await storage.put(`${KV_JAR_BIN_PREFIX}${key}`, uint8ArrayToBase64(bytes));
+        console.log(`[jar-proxy] Prewarmed ${key} (${(bytes.byteLength / 1024).toFixed(1)} KB)`);
+      } catch (error: unknown) {
+        console.log(`[jar-proxy] Prewarm failed ${key}: ${error instanceof Error ? error.message : String(error)}`);
+      } finally {
+        clearTimeout(timer);
+      }
+    }));
+  }
 
   // Step 3: 纯内存改写
   const result = { ...config };

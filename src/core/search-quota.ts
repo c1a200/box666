@@ -296,6 +296,7 @@ export interface ParseHealthReport {
   timeouts: number;
   httpErrors: number;
   networkErrors: number;
+  failedProbe?: boolean;
   kept: number;
   removedNames: string[];
   parseLimit?: number;
@@ -336,6 +337,15 @@ export async function probeAndPruneParses(
   let networkErrors = 0;
   let cursor = 0;
 
+  // Cloudflare Worker 的子请求在批量探测时可能整体失败（DNS/出口/WAF 等）。
+  // 这时无法把“网络异常”等同于“源已失效”，否则一次部署就可能把全部
+  // parses 清空。只有出现足够多的明确响应时，才信任本轮失败结论；否则
+  // 回退为按配置上限截断原始候选，保证客户端仍可用。
+  const minTrustedResponses = candidates.length >= 4
+    ? Math.max(2, Math.ceil(candidates.length * 0.1))
+    : 1;
+  let definitiveResponses = 0;
+
   const workers = Array.from({ length: Math.min(Math.max(1, concurrency), candidates.length) }, async () => {
     while (cursor < candidates.length) {
       const parse = candidates[cursor++];
@@ -352,6 +362,7 @@ export async function probeAndPruneParses(
         });
         await response.body?.cancel();
         const status = response.status;
+        definitiveResponses++;
         keep = (status >= 200 && status < 400) || status === 401 || status === 403 || status === 429;
         // 401/403/429 可能是地区限制、鉴权或临时限流，不能据此永久删除。
         if (!keep) httpErrors++;
@@ -369,13 +380,17 @@ export async function probeAndPruneParses(
   });
 
   await Promise.all(workers);
+
+  const failedProbe = pruneDeadParses
+    && candidates.length > 0
+    && definitiveResponses < minTrustedResponses;
   results.sort((a, b) => {
     if (a.keep !== b.keep) return a.keep ? -1 : 1;
     return a.ms - b.ms;
   });
 
   const dead = results.filter((result) => !result.keep);
-  let next = pruneDeadParses
+  let next = pruneDeadParses && !failedProbe
     ? results.filter((result) => result.keep).map((result) => result.parse)
     : results.map((result) => result.parse);
   const parseTruncated = maxParses > 0 ? Math.max(0, next.length - maxParses) : 0;
@@ -389,8 +404,9 @@ export async function probeAndPruneParses(
       timeouts,
       httpErrors,
       networkErrors,
+      failedProbe,
       kept: next.length,
-      removedNames: dead.map((result) => result.parse.name).filter(Boolean),
+      removedNames: failedProbe ? [] : dead.map((result) => result.parse.name).filter(Boolean),
       parseLimit: maxParses,
       parseTruncated,
       parseKept: next.length,

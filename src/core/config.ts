@@ -77,6 +77,8 @@ export const KV_LIVE_MERGE_REPORT = 'live_merge_report'; // 最近一次直播�
 export const KV_LIVE_SOURCE_CACHE = 'live_source_cache'; // m3u/txt 下载缓存
 export const KV_LIVE_MERGED_TXT_VERSION = 'live_merged_txt_version'; // 预生成直播 TXT 内容版本
 export const KV_LIVE_RUNTIME_TXT_VERSION = 'live_runtime_txt_version'; // 实时解析直播 TXT 对应版本
+// CF 分离模式：每个 /live/<key> 的预构建过滤后 TXT（仅 CF 写入/读取）
+export const KV_LIVE_TEXT_PREFIX = 'live_txt:'; // live_txt:<key> -> 过滤后的直播 TXT
 
 // 聚合日志
 export const KV_AGG_LOGS = 'agg_logs';

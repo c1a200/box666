@@ -4,7 +4,7 @@ import { Hono } from 'hono';
 import { MemoryCachedStorage } from './storage/cached';
 import type { Storage } from './storage/interface';
 import type { AppConfig, MacCMSSourceEntry, LiveSourceEntry, NameTransformConfig, EdgeProxyConfig } from './core/types';
-import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_MANUAL_SOURCES, KV_LAST_UPDATE, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_RUNTIME_TXT, KV_LIVE_RUNTIME_TXT_VERSION, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, LIVE_PROXY_TTL, IMG_PROXY_TTL, KV_NAME_TRANSFORM, KV_CRON_INTERVAL, DEFAULT_CRON_INTERVAL, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_PARSE_HEALTH_REPORT, KV_AGG_LOGS, KV_BG_SETTINGS, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, KV_SMART_BASE_URL_ENABLED, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SITE_HEALTH_MAP, KV_CHANNEL_MERGED_TREE } from './core/config';
+import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_MANUAL_SOURCES, KV_LAST_UPDATE, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_RUNTIME_TXT, KV_LIVE_RUNTIME_TXT_VERSION, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, LIVE_PROXY_TTL, IMG_PROXY_TTL, KV_NAME_TRANSFORM, KV_CRON_INTERVAL, DEFAULT_CRON_INTERVAL, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_PARSE_HEALTH_REPORT, KV_AGG_LOGS, KV_BG_SETTINGS, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, KV_SMART_BASE_URL_ENABLED, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SITE_HEALTH_MAP, KV_CHANNEL_MERGED_TREE, KV_LIVE_TEXT_PREFIX } from './core/config';
 import { getRequestBaseUrl, applyBaseUrlPlaceholder, assertHostAllowed } from './core/base-url';
 import { logger } from './core/logger';
 import { loadGroupOrder, saveGroupOrder } from './core/group-order';
@@ -974,6 +974,7 @@ export function createApp(deps: AppDeps): Hono {
         report.parseLimit = parseReport.parseLimit;
         report.parseTruncated = parseReport.parseTruncated;
         report.parseKept = parseReport.parseKept;
+        report.parseProbeFailed = parseReport.failedProbe === true;
       } catch {}
     }
     return c.json(report);
@@ -1304,51 +1305,48 @@ export function createApp(deps: AppDeps): Hono {
       const cached = await cache.match(cacheKey);
       if (cached) return cached;
 
-      // 2. 查 KV 拿原始 URL
+      const ttl = isMd5Key(key) ? 86400 : 21600; // MD5 key → 24h, URL hash → 6h
+      const binaryHeaders = {
+        'Content-Type': 'application/octet-stream',
+        'Cache-Control': `public, max-age=${ttl}`,
+        'Access-Control-Allow-Origin': '*',
+      };
+
+      // 2. 优先读 KV 预缓存二进制。聚合阶段已预写入时，客户端无需等待慢上游。
+      const binBase64 = await storage.get('jar_bin:' + key);
+      if (binBase64) {
+        const binary = base64ToUint8Array(binBase64);
+        const response = new Response(binary, { headers: binaryHeaders });
+        c.executionCtx.waitUntil(cache.put(cacheKey, response.clone()));
+        return response;
+      }
+
+      // 3. 查 KV 原始 URL
       const originalUrl = await lookupJarUrl(key, storage);
       if (!originalUrl) {
         return c.json({ error: 'Unknown JAR key' }, 404);
       }
 
-      // 3. 流式透传
-      const ttl = isMd5Key(key) ? 86400 : 21600; // MD5 key → 24h, URL hash → 6h
+      // 4. 回源必须带超时，避免上游卡住整个客户端启动。
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 7000);
       try {
         const resp = await fetch(originalUrl, {
           headers: { 'User-Agent': 'okhttp/3.12.0' },
+          signal: controller.signal,
         });
 
         if (resp.ok) {
-          const response = new Response(resp.body, {
-            headers: {
-              'Content-Type': 'application/octet-stream',
-              'Cache-Control': `public, max-age=${ttl}`,
-              'Access-Control-Allow-Origin': '*',
-            },
-          });
+          const response = new Response(resp.body, { headers: binaryHeaders });
           c.executionCtx.waitUntil(cache.put(cacheKey, response.clone()));
           return response;
         }
 
-        // Origin 失败 → 降级到 KV 二进制缓存
-        console.log(`[jar-proxy] Origin returned ${resp.status} for ${key}, trying KV binary cache`);
+        console.log(`[jar-proxy] Origin returned ${resp.status} for ${key}`);
       } catch (error: unknown) {
         console.log(`[jar-proxy] Origin fetch error for ${key}: ${error instanceof Error ? error.message : error}`);
-      }
-
-      // 4. 降级：从 KV 读取 base64 编码的 JAR 二进制
-      const binBase64 = await storage.get('jar_bin:' + key);
-      if (binBase64) {
-        console.log(`[jar-proxy] Serving ${key} from KV binary cache`);
-        const binary = base64ToUint8Array(binBase64);
-        const response = new Response(binary, {
-          headers: {
-            'Content-Type': 'application/octet-stream',
-            'Cache-Control': `public, max-age=${ttl}`,
-            'Access-Control-Allow-Origin': '*',
-          },
-        });
-        c.executionCtx.waitUntil(cache.put(cacheKey, response.clone()));
-        return response;
+      } finally {
+        clearTimeout(timer);
       }
 
       return c.json({ error: 'JAR unavailable from origin and no binary cache' }, 502);
@@ -1464,7 +1462,7 @@ export function createApp(deps: AppDeps): Hono {
       const cache = (caches as any).default as Cache;
       // Version the live cache key so updated grouping/filter policy is not hidden
       // by an old cached live text response after deployment.
-      const cacheKey = new Request(`https://live-cache.internal/live/${encodeURIComponent(key)}?v=20260928-3`);
+      const cacheKey = new Request(`https://live-cache.internal/live/${encodeURIComponent(key)}?v=20260929-1`);
       const cached = await cache.match(cacheKey);
       if (cached) {
         const cachedText = await cached.clone().text();
@@ -1489,6 +1487,21 @@ export function createApp(deps: AppDeps): Hono {
           'Cache-Control': 'no-store',
           'Access-Control-Allow-Origin': '*',
         });
+      }
+
+      const prebuilt = await storage.get(`${KV_LIVE_TEXT_PREFIX}${key}`);
+      if (prebuilt && prebuilt.trim() && prebuilt.includes('#genre#')) {
+        const response = new Response(prebuilt, {
+          headers: {
+            'Content-Type': 'text/plain; charset=utf-8',
+            'Cache-Control': `public, max-age=${LIVE_PROXY_TTL}`,
+            'Access-Control-Allow-Origin': '*',
+            'X-Live-Source-Filtered': '1',
+            'X-Live-Source-Prebuild': '1',
+          },
+        });
+        c.executionCtx.waitUntil(cache.put(cacheKey, response.clone()));
+        return response;
       }
 
       try {

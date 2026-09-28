@@ -273,6 +273,7 @@ export interface SearchQuotaReport {
   parseLimit?: number;          // 当前解析器上限，0 = 不限制
   parseTruncated?: number;      // 因解析器上限被截断数
   parseKept?: number;           // 最终保留的解析器数
+  parseProbeFailed?: boolean;   // 探测整体失败，已降级为保守保留
 }
 
 // ═══ 聚合日志 ══════════════════════════════════════════

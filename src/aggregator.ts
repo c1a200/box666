@@ -657,6 +657,7 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
       timeouts: parseReport.timeouts,
       httpErrors: parseReport.httpErrors,
       networkErrors: parseReport.networkErrors,
+      failedProbe: parseReport.failedProbe === true,
       parseLimit: parseReport.parseLimit ?? 0,
       parseTruncated: parseReport.parseTruncated ?? 0,
     });
@@ -668,7 +669,9 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
 
   // Step 7: JAR URL 改写（统一用占位符，请求时替换为实际 base URL）
   logger.infoFields('aggregation', 'Step 7: rewriting JAR URLs', { placeholder: BASE_URL_PLACEHOLDER });
-  merged = await rewriteJarUrls(merged, BASE_URL_PLACEHOLDER, storage);
+  merged = await rewriteJarUrls(merged, BASE_URL_PLACEHOLDER, storage, {
+    prewarmBinaries: !!config.workerBaseUrl,
+  });
 
   // Step 7.5: 注入图片代理前缀（统一用占位符或边缘代理）
   const edgeRaw = await storage.get(KV_EDGE_PROXIES);
@@ -784,6 +787,8 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
               filteredProxyEntries,
               config.workerBaseUrl,
               storage,
+              undefined,
+              validated.texts,
             );
             console.log(
               `[aggregation] Step 7.8: Exposed ${merged.lives.length} quality-validated /live/<key> sources (CF Workers)`,
