@@ -317,8 +317,9 @@ export function createApp(deps: AppDeps): Hono {
     return repaired;
   }
   /**
-   * 解析根地址的动态启动源数量参数。
-   * 支持 ?sites=N，并兼容 ?search=N / ?startup=N；非法值按未传处理。
+   * 解析根地址的动态启动源数量兼容参数。
+   * 管理后台的 startupSiteLimit 优先；?sites=N / ?search=N / ?startup=N
+   * 仅作为旧链接的临时回退，非法值按未传处理。
    */
   function parseStartupSiteLimit(c: { req: { query: (name: string) => string | undefined } }): number | undefined {
     const raw = c.req.query('sites') || c.req.query('search') || c.req.query('startup');
@@ -350,12 +351,14 @@ export function createApp(deps: AppDeps): Hono {
 
     const pinnedKeys = new Set(quota.pinnedKeys || []);
     const startupQuickLimit = quota.maxStartupQuickSearch ?? 0;
+    const configuredSiteLimit = quota.startupSiteLimit ?? 0;
+    const effectiveSiteLimit = configuredSiteLimit > 0 ? configuredSiteLimit : dynamicSiteLimit;
     let quickSeen = 0;
-    let dynamicSeen = 0;
+    let startupSeen = 0;
     let sites = Array.isArray(parsed.sites) ? parsed.sites : [];
-    if (dynamicSiteLimit && dynamicSiteLimit > 0) {
-      // 动态数量只影响本次根配置请求。优先读取未被配额截断的候选池，
-      // 池中顺序已经是“置顶源优先 + 其余按保存的测速结果排序”。
+    if (effectiveSiteLimit && effectiveSiteLimit > 0) {
+      // 管理后台配置优先；URL 参数仅作为旧链接回退。优先读取未被配额
+      // 截断的候选池，池中顺序已经是“置顶源优先 + 其余按保存的测速结果排序”。
       try {
         const poolRaw = await storage.get(KV_STARTUP_SITE_POOL);
         if (poolRaw) {
@@ -375,15 +378,15 @@ export function createApp(deps: AppDeps): Hono {
     // 和管理后台中；需要全量站点时把启动模式切到 full。
     const keptSites = sites.filter((site) => {
       if (pinnedKeys.has(site.key)) {
-        if (dynamicSiteLimit && dynamicSiteLimit > 0) dynamicSeen++;
+        if (effectiveSiteLimit && effectiveSiteLimit > 0) startupSeen++;
         return true;
       }
       if (site.type === 3) return false;
       if (site.searchable !== 1 || site.quickSearch === 0) return false;
-      if (dynamicSiteLimit && dynamicSiteLimit > 0) {
-        // ?sites=N 按最终启动源总数计算；置顶源即使超过 N 也不会被截断。
-        if (dynamicSeen >= dynamicSiteLimit) return false;
-        dynamicSeen++;
+      if (effectiveSiteLimit && effectiveSiteLimit > 0) {
+        // 后台启动源数量按最终启动源总数计算；置顶源即使超过 N 也不会被截断。
+        if (startupSeen >= effectiveSiteLimit) return false;
+        startupSeen++;
       } else if (startupQuickLimit > 0 && quickSeen >= startupQuickLimit) {
         return false;
       }
@@ -1017,6 +1020,9 @@ export function createApp(deps: AppDeps): Hono {
     if (typeof body.maxStartupQuickSearch === 'number' && Number.isFinite(body.maxStartupQuickSearch)) {
       current.maxStartupQuickSearch = Math.max(0, Math.floor(body.maxStartupQuickSearch));
     }
+    if (typeof body.startupSiteLimit === 'number' && Number.isFinite(body.startupSiteLimit)) {
+      current.startupSiteLimit = Math.min(1000, Math.max(0, Math.floor(body.startupSiteLimit)));
+    }
     if (typeof body.maxParses === 'number' && Number.isFinite(body.maxParses)) {
       current.maxParses = Math.max(0, Math.floor(body.maxParses));
     }
@@ -1107,7 +1113,7 @@ export function createApp(deps: AppDeps): Hono {
     try {
       const report = JSON.parse(raw) as Record<string, unknown>;
       const quota = await loadSearchQuota(storage);
-      return c.json({ enabled: true, ...report, maxSearchable: quota.maxSearchable, maxQuickSearch: quota.maxQuickSearch, maxParses: quota.maxParses, autoLimit: quota.autoLimit });
+      return c.json({ enabled: true, ...report, maxSearchable: quota.maxSearchable, maxQuickSearch: quota.maxQuickSearch, startupSiteLimit: quota.startupSiteLimit ?? 0, maxParses: quota.maxParses, autoLimit: quota.autoLimit });
     } catch {
       return c.json({ enabled: false });
     }

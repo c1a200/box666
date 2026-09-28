@@ -8,6 +8,8 @@ export interface SiteProbeResult {
   key: string;
   speedMs: number | null;
   result: ProbeResult;
+  consecutiveFailures?: number;
+  lastSuccessTime?: string;
 }
 
 async function siteProbe(url: string, siteType: number, timeoutMs: number, deep: boolean): Promise<{ speedMs: number | null; result: ProbeResult }> {

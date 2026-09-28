@@ -363,7 +363,8 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
       }
     }
 
-    // 更新站点健康状态 & 自动标记/屏蔽
+    // 更新站点健康状态 & 自动标记/屏蔽；同时把历史健康信息回填到本次探测结果，
+    // 供质量分级使用，避免仅凭单次波动误判。
     await updateSiteHealth(storage, siteProbeMap, merged);
   } else {
     logger.info('aggregation', 'Step 6: No sites to test');
@@ -607,6 +608,7 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     const quotaConfig = await loadSearchQuota(storage);
     const { sites: quotaSites, candidateSites, quotaReport } = applySearchQuota(merged.sites, quotaConfig, siteSourceMap, {
       speedMap: siteSpeedMap,
+      probeMap: siteProbeMap,
       jsExcluded: quotaJsExcluded,
       totalSites: quotaTotalSites,
     });
@@ -1005,6 +1007,11 @@ async function updateSiteHealth(
     // 预算耗尽导致的未探测不能计为失败，否则会触发错误的健康降级和自动清理。
     if (probe.result === 'not_probed') continue;
     const prev = healthMap[key];
+    // 供质量分级读取：本次探测结果 + 历史连续失败/上次成功时间。
+    probe.consecutiveFailures = probe.result === 'ok'
+      ? 0
+      : (prev?.consecutiveFailures ?? 0) + 1;
+    probe.lastSuccessTime = probe.result === 'ok' ? now : prev?.lastSuccessTime;
     if (probe.result === 'ok') {
       healthMap[key] = { consecutiveFailures: 0, lastProbeTime: now, lastProbeResult: 'ok', lastSuccessTime: now };
     } else {

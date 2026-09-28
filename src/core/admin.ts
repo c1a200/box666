@@ -478,6 +478,7 @@ ${sharedStyles}
     <div class="section">
       <div class="section-title" data-i18n="sqSelected">Active Search Sources</div>
       <div id="sqSelectedInfo" style="margin-bottom:8px;font-size:0.8rem;color:var(--text-secondary)"></div>
+      <div id="sqQualityGrades" style="margin-bottom:8px;font-size:0.8rem;color:var(--text-secondary)"></div>
       <div id="sqSelectedTable" style="max-height:500px;overflow:auto">
         <div style="color:var(--text-secondary);font-size:0.85rem" data-i18n="sqNoData">Run aggregation to see results</div>
       </div>
@@ -571,6 +572,8 @@ ${sharedStyles}
         <input type="number" id="maxQuickSearchInput" class="nt-input" style="width:80px" min="0" max="1000" value="0">
         <label class="form-label" style="margin:0" data-i18n="maxStartupQuickSearch">Startup quick search</label>
         <input type="number" id="maxStartupQuickSearchInput" class="nt-input" style="width:80px" min="0" max="1000" value="0">
+        <label class="form-label" style="margin:0" data-i18n="startupSiteLimit">Startup site count</label>
+        <input type="number" id="startupSiteLimitInput" class="nt-input" style="width:80px" min="0" max="1000" value="0">
         <label class="form-label" style="margin:0" data-i18n="maxParses">Max parsers</label>
         <input type="number" id="maxParsesInput" class="nt-input" style="width:80px" min="0" max="1000" value="0">
         <label style="display:flex;gap:6px;align-items:center;font-size:0.8rem;color:var(--text-secondary)">
@@ -598,6 +601,7 @@ ${sharedStyles}
         <span class="status-text" id="searchQuotaStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
       </div>
       <div style="margin-top:6px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="searchQuotaDesc">Limit searchable sources to reduce TVBox crashes. 0 = unlimited. JS URL sources are always excluded. Pinned sources are not truncated. Manage pinned sources in the Search tab.</div>
+      <div style="margin-top:4px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="startupSiteLimitDesc">Number of fastest searchable sources returned in the root startup config. 0 uses Startup quick search; ?sites=N remains only as a legacy temporary override.</div>
       <div style="margin-top:4px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="sortSearchBySpeedDesc">Uses existing site speed-test results to put faster sources first; no extra network requests. Pinned sources stay first.</div>
       <div style="margin-top:4px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="leanStartupDesc">Removes non-searchable remote JAR/extension sites to shorten TVBox startup. Searchable and pinned sources are always kept.</div>
       <div style="margin-top:4px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="startupModeDesc">Lean serves a trimmed config at the root address for faster startup. Full is still available at /config-full.json.</div>
@@ -813,9 +817,9 @@ const translations = {
     noHealthData:'No data yet', healthFails:'Fails',
     healthLastOk:'Last OK',
     searchQuota:'Search Quota',
-    maxSearchable:'Max searchable', maxQuickSearch:'Max quick search', maxStartupQuickSearch:'Startup quick search', maxParses:'Max parsers', autoSearchLimit:'Auto safe limit', searchQuotaDesc:'Limit searchable and quick-search sources to reduce TVBox startup and search delays. Auto safe limit is enabled by default; turn it off to treat 0 as unlimited. JS URL sources are always excluded and pinned sources are not truncated. The root URL also accepts ?sites=N to temporarily return the first N healthy sources in saved speed-test order.', sortSearchBySpeed:'Sort by speed', sortSearchBySpeedDesc:'Uses existing site speed-test results to put faster sources first; no extra network requests. Pinned sources stay first.', leanStartup:'Lean startup', leanStartupDesc:'Removes remote JAR/extension sites from the root startup config to shorten TVBox startup; pinned sources are kept.', maxStartupQuickSearchDesc:'Lean mode keeps only this many fast-search sources at the root address; 0 uses the safe default. Full config remains available at /config-full.json.', startupMode:'Startup mode', startupModeLean:'Lean', startupModeFull:'Full', startupModeDesc:'Lean serves a trimmed config at the root address for faster startup. Full is still available at /config-full.json.', pruneDeadParses:'Prune dead parsers', pruneDeadParsesDesc:'Probes parser endpoints and removes confirmed failures/timeouts so clients do not wait for each dead parser during startup.',
+    maxSearchable:'Max searchable', maxQuickSearch:'Max quick search', maxStartupQuickSearch:'Startup quick search', startupSiteLimit:'Startup site count', maxParses:'Max parsers', autoSearchLimit:'Auto safe limit', searchQuotaDesc:'Limit searchable and quick-search sources to reduce TVBox startup and search delays. Auto safe limit is enabled by default; turn it off to treat 0 as unlimited. JS URL sources are always excluded and pinned sources are not truncated. The root startup config uses the admin Startup site count; ?sites=N remains only as a legacy temporary override.', sortSearchBySpeed:'Sort by speed', sortSearchBySpeedDesc:'Uses existing site speed-test results to put faster sources first; no extra network requests. Pinned sources stay first.', leanStartup:'Lean startup', leanStartupDesc:'Removes remote JAR/extension sites from the root startup config to shorten TVBox startup; pinned sources are kept.', maxStartupQuickSearchDesc:'Lean mode keeps only this many fast-search sources at the root address; 0 uses the safe default. Full config remains available at /config-full.json.', startupSiteLimitDesc:'Number of fastest searchable sources returned in the root startup config. 0 uses Startup quick search; ?sites=N remains only as a legacy temporary override.', startupMode:'Startup mode', startupModeLean:'Lean', startupModeFull:'Full', startupModeDesc:'Lean serves a trimmed config at the root address for faster startup. Full is still available at /config-full.json.', pruneDeadParses:'Prune dead parsers', pruneDeadParsesDesc:'Probes parser endpoints and removes confirmed failures/timeouts so clients do not wait for each dead parser during startup.',
     tabSearchQuota:'Search',
-    sqSelected:'Active Search Sources', sqNoData:'Run aggregation to see results',
+    sqSelected:'Active Search Sources', sqQuality:'Quality grades', sqExcellent:'Excellent', sqGood:'Good', sqUsable:'Usable', sqUnknown:'Unknown', sqUnusable:'Unusable', sqPoolTotal:'Candidate pool', sqNoData:'Run aggregation to see results',
     sqKey:'Key', sqName:'Name', sqSource:'Source', sqReason:'Reason', sqAction:'Action',
     sqPin:'Pin', sqUnpin:'Unpin',
     sqPinned:'Pinned', sqPinnedDesc:'Drag to reorder. Top sources are searched first in TVBox.', sqOtherSources:'Other Sources',
@@ -895,9 +899,9 @@ const translations = {
     noHealthData:'暂无数据', healthFails:'失败',
     healthLastOk:'最后成功',
     searchQuota:'搜索配额',
-    maxSearchable:'可搜索源上限', maxQuickSearch:'快速搜索源上限', maxStartupQuickSearch:'启动快速源上限', maxParses:'解析器上限', autoSearchLimit:'自动安全配额', searchQuotaDesc:'同时限制普通搜索和快速搜索源数量，减少影视仓/TVBox 启动与搜索等待。默认开启自动安全配额；关闭后，填 0 才表示永久不限制。JS URL 源始终排除，置顶源不会被截断。根地址还支持 ?sites=N，按已保存的测速顺序临时返回前 N 个健康源。', sortSearchBySpeed:'按测速速度排序', sortSearchBySpeedDesc:'复用现有站点测速结果，将较快的源排在前面；不会额外发起测速请求。置顶源始终最前。', leanStartup:'轻量启动', leanStartupDesc:'根配置启动阶段去掉远程 JAR/扩展站点，缩短影视仓/TVBox 启动时间；置顶源仍保留。', maxStartupQuickSearchDesc:'轻量模式在根地址只保留这么多快速搜索源；填 0 使用安全默认值。完整配置仍可通过 /config-full.json 获取。', startupMode:'启动模式', startupModeLean:'轻量', startupModeFull:'完整', startupModeDesc:'轻量模式在根地址返回裁剪后的启动配置以加快启动；完整配置仍可通过 /config-full.json 获取。', pruneDeadParses:'剔除失效解析器', pruneDeadParsesDesc:'主动探测解析器地址并剔除确认超时或失效的项，避免客户端启动时逐个等待死解析器。',
+    maxSearchable:'可搜索源上限', maxQuickSearch:'快速搜索源上限', maxStartupQuickSearch:'启动快速源上限', startupSiteLimit:'启动源数量', maxParses:'解析器上限', autoSearchLimit:'自动安全配额', searchQuotaDesc:'同时限制普通搜索和快速搜索源数量，减少影视仓/TVBox 启动与搜索等待。默认开启自动安全配额；关闭后，填 0 才表示永久不限制。JS URL 源始终排除，置顶源不会被截断。根地址启动配置使用后台“启动源数量”；?sites=N 仅保留为旧链接的临时兼容参数。', sortSearchBySpeed:'按测速速度排序', sortSearchBySpeedDesc:'复用现有站点测速结果，将较快的源排在前面；不会额外发起测速请求。置顶源始终最前。', leanStartup:'轻量启动', leanStartupDesc:'根配置启动阶段去掉远程 JAR/扩展站点，缩短影视仓/TVBox 启动时间；置顶源仍保留。', maxStartupQuickSearchDesc:'轻量模式在根地址只保留这么多快速搜索源；填 0 使用安全默认值。完整配置仍可通过 /config-full.json 获取。', startupSiteLimitDesc:'根地址启动配置返回的最快可搜索源数量；填 0 使用“启动快速源上限”。?sites=N 仅保留为旧链接的临时兼容参数。', startupMode:'启动模式', startupModeLean:'轻量', startupModeFull:'完整', startupModeDesc:'轻量模式在根地址返回裁剪后的启动配置以加快启动；完整配置仍可通过 /config-full.json 获取。', pruneDeadParses:'剔除失效解析器', pruneDeadParsesDesc:'主动探测解析器地址并剔除确认超时或失效的项，避免客户端启动时逐个等待死解析器。',
     tabSearchQuota:'搜索',
-    sqSelected:'活跃搜索源', sqNoData:'执行聚合后查看结果',
+    sqSelected:'活跃搜索源', sqQuality:'质量分级', sqExcellent:'优', sqGood:'良', sqUsable:'可用', sqUnknown:'未探测', sqUnusable:'不可用', sqPoolTotal:'候选池', sqNoData:'执行聚合后查看结果',
     sqKey:'Key', sqName:'名称', sqSource:'来源', sqReason:'原因', sqAction:'操作',
     sqPin:'置顶', sqUnpin:'取消置顶',
     sqPinned:'置顶源', sqPinnedDesc:'上下移动排序，排在前面的源在 TVBox 搜索时优先执行', sqOtherSources:'其他源',
@@ -1896,6 +1900,7 @@ async function loadSearchQuota() {
     $('maxSearchableInput').value = d.maxSearchable ?? 0;
     $('maxQuickSearchInput').value = d.maxQuickSearch ?? 0;
     $('maxStartupQuickSearchInput').value = d.maxStartupQuickSearch ?? 0;
+    $('startupSiteLimitInput').value = d.startupSiteLimit ?? 0;
     $('maxParsesInput').value = d.maxParses ?? 0;
     $('autoSearchLimitInput').checked = d.autoLimit === true;
     $('sortSearchBySpeedInput').checked = d.sortBySpeed === true;
@@ -1914,6 +1919,7 @@ async function saveSearchQuota() {
     maxSearchable: parseInt($('maxSearchableInput').value) || 0,
     maxQuickSearch: parseInt($('maxQuickSearchInput').value) || 0,
     maxStartupQuickSearch: parseInt($('maxStartupQuickSearchInput').value) || 0,
+    startupSiteLimit: parseInt($('startupSiteLimitInput').value) || 0,
     maxParses: parseInt($('maxParsesInput').value) || 0,
     autoLimit: $('autoSearchLimitInput').checked,
     sortBySpeed: $('sortSearchBySpeedInput').checked,
@@ -1953,6 +1959,13 @@ async function loadSearchQuotaReport() {
     $('tabSearchQuota').style.display = '';
     $('sqSelectedInfo').textContent = d.totalSites + ' sites → ' + d.jsExcluded + ' JS excluded → ' + d.searchable + ' searchable' + (d.truncated > 0 ? ' (' + d.truncated + ' truncated)' : '') + (typeof d.quickSearchable === 'number' ? ', ' + d.quickSearchable + ' quick' + (d.quickTruncated > 0 ? ' (' + d.quickTruncated + ' limited)' : '') : '') + (d.pinnedCount > 0 ? ', ' + d.pinnedCount + ' pinned' : '') + (d.leanRemoved > 0 ? ', ' + d.leanRemoved + ' ' + t('sqLeanRemoved') : '') + (typeof d.parseRemoved === 'number' && d.parseRemoved > 0 ? ', ' + d.parseRemoved + ' dead parses pruned' : '') + (typeof d.parseKept === 'number' ? ', ' + d.parseKept + ' parsers kept' + (d.parseTruncated > 0 ? ' (' + d.parseTruncated + ' limited)' : '') : '') + (d.speedParsed ? ', speed-sorted' : d.speedSorted ? ', speed-sorted' : '');
     $('badgeSearchQuota').textContent = d.searchable;
+
+    const q = d.qualityGrades;
+    if (q) {
+      $('sqQualityGrades').textContent = t('sqQuality') + ': ' + t('sqExcellent') + ' ' + q.excellent.count + ' (' + q.excellent.cumulative + ') / ' + t('sqGood') + ' ' + q.good.count + ' (' + q.good.cumulative + ') / ' + t('sqUsable') + ' ' + q.usable.count + ' (' + q.usable.cumulative + ') / ' + t('sqUnknown') + ' ' + q.unknown.count + ' (' + q.unknown.cumulative + ') / ' + t('sqUnusable') + ' ' + q.unusable.count + ' · ' + t('sqPoolTotal') + ': ' + q.poolTotal;
+    } else {
+      $('sqQualityGrades').textContent = '';
+    }
 
     // 加载站点列表
     const cfgRes = await auth.authFetch('/config-full.json');

@@ -244,6 +244,7 @@ export interface SearchQuotaConfig {
   maxSearchable: number;        // 可搜索源上限，0 = 不限制
   maxQuickSearch?: number;      // 快速搜索源上限，0 = 不限制
   maxStartupQuickSearch?: number; // 根配置启动阶段快速搜索源上限，0 = 不额外裁剪
+  startupSiteLimit?: number;      // 根配置启动源数量；0 = 使用启动快速源上限
   autoLimit?: boolean;          // 是否使用按部署形态自动选择的默认上限
   pinnedKeys: string[];         // 置顶源 key 列表（排到 sites 最前面）
   sortBySpeed: boolean;         // 是否复用站点测速结果，将较快的可搜索源排在前面
@@ -267,6 +268,7 @@ export interface SearchQuotaReport {
   quickTruncated: number;       // 快速搜索被截断数
   speedSorted: boolean;         // 是否实际按测速结果排序
   leanRemoved: number;          // 轻量启动剔除的远程扩展站点数
+  qualityGrades?: SiteQualityGrades; // 未截断候选池的质量分级统计
   parseProbed?: number;         // 解析器探测数
   parseRemoved?: number;        // 解析器剔除数
   parseTimeouts?: number;       // 解析器超时数
@@ -278,6 +280,22 @@ export interface SearchQuotaReport {
   parseProbeFailed?: boolean;   // 探测整体失败，已降级为保守保留
 }
 
+// 站点质量分级（基于聚合阶段已有验活/测速结果，不额外发起请求）
+export type SiteQualityGrade = 'excellent' | 'good' | 'usable' | 'unknown' | 'unusable';
+
+export interface SiteQualityGradeBucket {
+  count: number;
+  cumulative: number;
+}
+
+export interface SiteQualityGrades {
+  excellent: SiteQualityGradeBucket; // 验活通过且测速很快
+  good: SiteQualityGradeBucket;      // 验活通过且速度正常
+  usable: SiteQualityGradeBucket;    // 验活通过但速度偏慢/无测速数据
+  unknown: SiteQualityGradeBucket;   // 未完成探测，保守保留
+  unusable: SiteQualityGradeBucket;  // 空响应、超时或错误，不进入可搜索池
+  poolTotal: number;                 // 可搜索候选池总数（不含不可用）
+}
 // ═══ 聚合日志 ══════════════════════════════════════════
 
 export interface AggLogFailedSource {

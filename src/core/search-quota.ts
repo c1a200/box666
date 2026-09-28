@@ -1,6 +1,7 @@
 // 搜索配额控制（复用站点测速结果）
 
-import type { TVBoxParse, TVBoxSite, SearchQuotaConfig, SearchQuotaReport } from './types';
+import type { TVBoxParse, TVBoxSite, SearchQuotaConfig, SearchQuotaReport, SiteQualityGrades } from './types';
+import type { SiteProbeResult } from './speedtest';
 import type { Storage } from '../storage/interface';
 import { KV_SEARCH_QUOTA } from './config';
 const QUOTA_SCHEMA_VERSION = 7;
@@ -82,6 +83,7 @@ export async function loadSearchQuota(storage: Storage): Promise<SearchQuotaConf
         maxStartupQuickSearch: (isLegacyQuota || migrateStartupLimit || parsedStartupLimit === 0)
           ? fallback.maxStartupQuickSearch
           : parsedStartupLimit,
+        startupSiteLimit: normalizeLimit(parsed.startupSiteLimit),
         // schema 升级必须采用新的安全上限，不能继承旧版本 maxParses=10。
         maxParses: isLegacyQuota
           ? fallback.maxParses
@@ -113,6 +115,7 @@ export async function saveSearchQuota(storage: Storage, config: SearchQuotaConfi
     maxSearchable,
     maxQuickSearch: normalizeLimit(config.maxQuickSearch),
     maxStartupQuickSearch: normalizeLimit(config.maxStartupQuickSearch),
+    startupSiteLimit: normalizeLimit(config.startupSiteLimit),
     maxParses: normalizeLimit(config.maxParses),
     autoLimit,
     pinnedKeys: Array.isArray(config.pinnedKeys) ? config.pinnedKeys : [],
@@ -167,8 +170,65 @@ export function excludeJsUrlSites(sites: TVBoxSite[]): { sites: TVBoxSite[]; jsE
   return { sites: next, jsExcluded };
 }
 
+const QUALITY_EXCELLENT_MS = 1000;
+const QUALITY_GOOD_MS = 3000;
+
+function createEmptyQualityGrades(): SiteQualityGrades {
+  return {
+    excellent: { count: 0, cumulative: 0 },
+    good: { count: 0, cumulative: 0 },
+    usable: { count: 0, cumulative: 0 },
+    unknown: { count: 0, cumulative: 0 },
+    unusable: { count: 0, cumulative: 0 },
+    poolTotal: 0,
+  };
+}
+
+/**
+ * 基于本次验活结果、连续失败次数和测速延迟，对“未截断的可搜索候选池”分级。
+ * 不额外发请求；不可用源不进入池，仅用于后台提示。
+ */
+function buildQualityGrades(
+  candidateSites: TVBoxSite[],
+  probeMap?: Map<string, SiteProbeResult>,
+): SiteQualityGrades {
+  const grades = createEmptyQualityGrades();
+  for (const site of candidateSites) {
+    const probe = probeMap?.get(site.key);
+    if (!probe || probe.result === 'not_probed') {
+      grades.unknown.count++;
+      grades.poolTotal++;
+      continue;
+    }
+    if (probe.result !== 'ok') {
+      grades.unusable.count++;
+      continue;
+    }
+    const failures = probe.consecutiveFailures ?? 0;
+    const speed = probe.speedMs;
+    if (failures >= 3 || speed == null) {
+      grades.usable.count++;
+    } else if (speed <= QUALITY_EXCELLENT_MS) {
+      grades.excellent.count++;
+    } else if (speed <= QUALITY_GOOD_MS) {
+      grades.good.count++;
+    } else {
+      grades.usable.count++;
+    }
+    grades.poolTotal++;
+  }
+
+  let cumulative = 0;
+  for (const grade of ['excellent', 'good', 'usable', 'unknown'] as const) {
+    cumulative += grades[grade].count;
+    grades[grade].cumulative = cumulative;
+  }
+  grades.unusable.cumulative = grades.unusable.count;
+  return grades;
+}
 export interface SearchQuotaApplyOptions {
   speedMap?: Map<string, number | null>;
+  probeMap?: Map<string, SiteProbeResult>;
   jsExcluded?: number;
   totalSites?: number;
 }
@@ -302,6 +362,7 @@ export function applySearchQuota(
   // 来源标识：只给最终仍可搜索的源加标识。
   sites = sites.map(site => withSourceLabel(site, siteSourceMap));
   const labeledCandidates = startupCandidateSites.map(site => withSourceLabel(site, siteSourceMap));
+  const qualityGrades = buildQualityGrades(startupCandidateSites, options.probeMap);
 
   const searchable = sites.filter(site => site.searchable === 1).length;
   const quickSearchable = sites.filter(site => site.searchable === 1 && site.quickSearch !== 0).length;
@@ -323,6 +384,7 @@ export function applySearchQuota(
       quickTruncated,
       speedSorted,
       leanRemoved,
+      qualityGrades,
     },
   };
 }
