@@ -247,8 +247,10 @@ export interface SearchQuotaConfig {
   pinnedKeys: string[];         // 置顶源 key 列表（排到 sites 最前面）
   sortBySpeed: boolean;         // 是否复用站点测速结果，将较快的可搜索源排在前面
   leanStartup?: boolean;        // 轻量启动：剔除不参与搜索的远程 JAR/扩展站点
+  pruneDeadParses?: boolean;    // 聚合时探测并剔除确认失效的解析器
+  maxParses?: number;           // 健康解析器上限，0 = 不限制
+  quotaSchemaVersion?: number;  // 自动配额迁移版本
 }
-
 // 搜索配额报告
 export interface SearchQuotaReport {
   totalSites: number;           // 站点总数
@@ -263,6 +265,14 @@ export interface SearchQuotaReport {
   quickTruncated: number;       // 快速搜索被截断数
   speedSorted: boolean;         // 是否实际按测速结果排序
   leanRemoved: number;          // 轻量启动剔除的远程扩展站点数
+  parseProbed?: number;         // 解析器探测数
+  parseRemoved?: number;        // 解析器剔除数
+  parseTimeouts?: number;       // 解析器超时数
+  parseHttpErrors?: number;     // 解析器 HTTP 错误数
+  parseNetworkErrors?: number;  // 解析器网络错误数
+  parseLimit?: number;          // 当前解析器上限，0 = 不限制
+  parseTruncated?: number;      // 因解析器上限被截断数
+  parseKept?: number;           // 最终保留的解析器数
 }
 
 // ═══ 聚合日志 ══════════════════════════════════════════

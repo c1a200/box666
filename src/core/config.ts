@@ -66,6 +66,7 @@ export const KV_CREDENTIAL_ENCRYPTION_KEY = 'credential_encryption_key';
 // 搜索配额
 export const KV_SEARCH_QUOTA = 'search_quota';
 export const KV_SEARCH_QUOTA_REPORT = 'search_quota_report';
+export const KV_PARSE_HEALTH_REPORT = 'parse_health_report';
 
 // ═══ 直播频道级测速（方案 D+）══════════════════════════
 export const KV_CHANNEL_SPEED_MAP = 'channel_speed_map';

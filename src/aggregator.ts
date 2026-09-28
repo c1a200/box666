@@ -7,16 +7,16 @@ import { mergeConfigs, cleanLocalRefs, cleanEmptyEntries } from './core/merger';
 import { batchSiteSpeedTest, appendSpeedToName, filterUnreachableSites, type SiteProbeResult } from './core/speedtest';
 import { macCMSToTVBoxSites, processMacCMSForLocal } from './core/maccms';
 import { rewriteJarUrls } from './core/jar-proxy';
-import { mergeLivesToNative, separatedMergeLives, formatLiveGroupsAsTxt, filterValidLiveSources, type LiveSourceInput } from './core/live-merger';
+import { mergeLivesToNative, separatedMergeLives, formatLiveGroupsAsTxt, filterLiveSourcesDetailed, type LiveSourceInput } from './core/live-merger';
 import { loadSpeedMap as loadChannelSpeedMap } from './core/channel-probe';
 import { liveSourcesToTVBoxLives } from './core/live-source';
 import { isBlockedLiveSource, partitionBlockedLiveSources } from './core/live-policy';
-import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_SOURCE_URLS, KV_LAST_UPDATE, KV_MANUAL_SOURCES, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_MERGE_REPORT, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_CHANNEL_MERGED_TREE, KV_AGG_LOGS, AGG_LOGS_MAX, KV_SITE_SNAPSHOT, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, BASE_URL_PLACEHOLDER, KV_SITE_HEALTH_MAP, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SOURCE_MAP, KV_SOURCE_URL_BLACKLIST } from './core/config';
+import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_SOURCE_URLS, KV_LAST_UPDATE, KV_MANUAL_SOURCES, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_MERGE_REPORT, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_PARSE_HEALTH_REPORT, KV_CHANNEL_MERGED_TREE, KV_AGG_LOGS, AGG_LOGS_MAX, KV_SITE_SNAPSHOT, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, BASE_URL_PLACEHOLDER, KV_SITE_HEALTH_MAP, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SOURCE_MAP, KV_SOURCE_URL_BLACKLIST } from './core/config';
 import { loadBlacklist, applyBlacklist, pruneBlacklist, saveBlacklist, siteFingerprint } from './core/blacklist';
 import { transformSiteNames } from './core/cleaner';
 import { parseConfigJson, type FetchProxyConfig } from './core/fetcher';
 import { scrapeSourceList, scrapeMacCMSSources, type ScrapeSourceConfig, type ScrapeMacCMSConfig } from './core/source-scraper';
-import { loadSearchQuota, applySearchQuota, excludeJsUrlSites } from './core/search-quota';
+import { loadSearchQuota, applySearchQuota, excludeJsUrlSites, probeAndPruneParses } from './core/search-quota';
 import { loadCredentials } from './core/credential-store';
 import { loadCredentialPolicy } from './core/credential-store';
 import { injectCredentials } from './core/credential-injector';
@@ -635,6 +635,37 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     }));
   }
 
+  // Step 6.96: 解析器健康探测
+  // 客户端会逐个初始化 parses，死解析器会让首屏等待多个超时周期。
+  // 先做并发探测并剔除确认失效项，再写入最终配置。
+  if (merged.parses && merged.parses.length > 0) {
+    const quotaConfig = await loadSearchQuota(storage);
+    const beforeParses = merged.parses.length;
+    const { parses: healthyParses, report: parseReport } = await probeAndPruneParses(
+      merged.parses,
+      config.workerBaseUrl ? 3000 : 3500,
+      config.workerBaseUrl ? 6 : 12,
+      quotaConfig.maxParses ?? 0,
+      quotaConfig.pruneDeadParses !== false,
+    );
+    merged.parses = healthyParses;
+    logger.infoFields('aggregation', 'parse-health-processed', {
+      before: beforeParses,
+      after: merged.parses.length,
+      probed: parseReport.probed,
+      removed: parseReport.removed,
+      timeouts: parseReport.timeouts,
+      httpErrors: parseReport.httpErrors,
+      networkErrors: parseReport.networkErrors,
+      parseLimit: parseReport.parseLimit ?? 0,
+      parseTruncated: parseReport.parseTruncated ?? 0,
+    });
+    await storage.put(KV_PARSE_HEALTH_REPORT, JSON.stringify({
+      updatedAt: new Date().toISOString(),
+      ...parseReport,
+    }));
+  }
+
   // Step 7: JAR URL 改写（统一用占位符，请求时替换为实际 base URL）
   logger.infoFields('aggregation', 'Step 7: rewriting JAR URLs', { placeholder: BASE_URL_PLACEHOLDER });
   merged = await rewriteJarUrls(merged, BASE_URL_PLACEHOLDER, storage);
@@ -725,7 +756,7 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
           // CF 分离模式只暴露通过整源质量门禁的入口。这里关闭浏览器 UA 兜底，
           // 避免“浏览器能打开、播放器不能播”的上游源进入应用端。
           const channelSpeedMap = await loadChannelSpeedMap(storage);
-          const validatedInputs = await filterValidLiveSources(
+          const validated = await filterLiveSourcesDetailed(
             proxyEntries,
             config.fetchTimeoutMs,
             channelSpeedMap,
@@ -737,15 +768,26 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
               minPlayableRatio: 0.2,
             },
           );
-          const validUrls = new Set(validatedInputs.map((input) => input.url));
+          const validUrls = new Set(validated.valid.map((input) => input.url));
           const filteredProxyEntries = proxyEntries.filter((entry) => validUrls.has(entry.url));
 
           if (filteredProxyEntries.length === 0) {
-            merged.lives = [];
-            console.log('[aggregation] Step 7.8: No upstream live source passed quality gates');
+            if (validated.transient.length > 0) {
+              merged.lives = previousLiveLives;
+              console.log('[aggregation] Step 7.8: All live checks were transient, keeping previous manifest');
+            } else {
+              merged.lives = [];
+              console.log('[aggregation] Step 7.8: No upstream live source passed quality gates');
+            }
           } else {
-            merged.lives = await liveSourcesToTVBoxLives(filteredProxyEntries, config.workerBaseUrl, storage);
-            console.log(`[aggregation] Step 7.8: Exposed ${merged.lives.length} quality-validated /live/<key> sources (CF Workers)`);
+            merged.lives = await liveSourcesToTVBoxLives(
+              filteredProxyEntries,
+              config.workerBaseUrl,
+              storage,
+            );
+            console.log(
+              `[aggregation] Step 7.8: Exposed ${merged.lives.length} quality-validated /live/<key> sources (CF Workers)`,
+            );
           }
         }
       }

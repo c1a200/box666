@@ -4,12 +4,12 @@ import { Hono } from 'hono';
 import { MemoryCachedStorage } from './storage/cached';
 import type { Storage } from './storage/interface';
 import type { AppConfig, MacCMSSourceEntry, LiveSourceEntry, NameTransformConfig, EdgeProxyConfig } from './core/types';
-import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_MANUAL_SOURCES, KV_LAST_UPDATE, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_RUNTIME_TXT, KV_LIVE_RUNTIME_TXT_VERSION, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, LIVE_PROXY_TTL, IMG_PROXY_TTL, KV_NAME_TRANSFORM, KV_CRON_INTERVAL, DEFAULT_CRON_INTERVAL, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_AGG_LOGS, KV_BG_SETTINGS, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, KV_SMART_BASE_URL_ENABLED, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SITE_HEALTH_MAP, KV_CHANNEL_MERGED_TREE } from './core/config';
+import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_MANUAL_SOURCES, KV_LAST_UPDATE, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_RUNTIME_TXT, KV_LIVE_RUNTIME_TXT_VERSION, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, LIVE_PROXY_TTL, IMG_PROXY_TTL, KV_NAME_TRANSFORM, KV_CRON_INTERVAL, DEFAULT_CRON_INTERVAL, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_PARSE_HEALTH_REPORT, KV_AGG_LOGS, KV_BG_SETTINGS, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, KV_SMART_BASE_URL_ENABLED, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SITE_HEALTH_MAP, KV_CHANNEL_MERGED_TREE } from './core/config';
 import { getRequestBaseUrl, applyBaseUrlPlaceholder, assertHostAllowed } from './core/base-url';
 import { logger } from './core/logger';
 import { loadGroupOrder, saveGroupOrder } from './core/group-order';
 import { validateMacCMS } from './core/maccms';
-import { lookupJarUrl, isMd5Key, base64ToUint8Array, rewriteJarUrls } from './core/jar-proxy';
+import { lookupJarUrl, isMd5Key, base64ToUint8Array, rewriteJarUrls, normalizeJarRequestKey } from './core/jar-proxy';
 import { BASE_URL_PLACEHOLDER } from './core/config';
 import { lookupLiveSource, listLiveProxyEntries, removeLiveProxyEntry } from './core/live-source';
 import { adminHtml } from './core/admin';
@@ -898,9 +898,13 @@ export function createApp(deps: AppDeps): Hono {
     if (typeof body.maxQuickSearch === 'number' && Number.isFinite(body.maxQuickSearch)) {
       current.maxQuickSearch = Math.max(0, Math.floor(body.maxQuickSearch));
     }
+    if (typeof body.maxParses === 'number' && Number.isFinite(body.maxParses)) {
+      current.maxParses = Math.max(0, Math.floor(body.maxParses));
+    }
     if (typeof body.autoLimit === 'boolean') current.autoLimit = body.autoLimit;
     if (typeof body.sortBySpeed === 'boolean') current.sortBySpeed = body.sortBySpeed;
     if (typeof body.leanStartup === 'boolean') current.leanStartup = body.leanStartup;
+    if (typeof body.pruneDeadParses === 'boolean') current.pruneDeadParses = body.pruneDeadParses;
     if (Array.isArray(body.pinnedKeys)) current.pinnedKeys = body.pinnedKeys;
 
 
@@ -957,7 +961,22 @@ export function createApp(deps: AppDeps): Hono {
     if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
     const raw = await storage.get(KV_SEARCH_QUOTA_REPORT);
     if (!raw) return c.json({ error: 'No report yet. Run aggregation first.' }, 404);
-    return c.json(JSON.parse(raw));
+    const report = JSON.parse(raw) as Record<string, unknown>;
+    const parseRaw = await storage.get(KV_PARSE_HEALTH_REPORT);
+    if (parseRaw) {
+      try {
+        const parseReport = JSON.parse(parseRaw) as Record<string, unknown>;
+        report.parseProbed = parseReport.probed;
+        report.parseRemoved = parseReport.removed;
+        report.parseTimeouts = parseReport.timeouts;
+        report.parseHttpErrors = parseReport.httpErrors;
+        report.parseNetworkErrors = parseReport.networkErrors;
+        report.parseLimit = parseReport.parseLimit;
+        report.parseTruncated = parseReport.parseTruncated;
+        report.parseKept = parseReport.parseKept;
+      } catch {}
+    }
+    return c.json(report);
   });
 
   // 报告精简版（dashboard 无需鉴权）
@@ -967,7 +986,7 @@ export function createApp(deps: AppDeps): Hono {
     try {
       const report = JSON.parse(raw) as Record<string, unknown>;
       const quota = await loadSearchQuota(storage);
-      return c.json({ enabled: true, ...report, maxSearchable: quota.maxSearchable, maxQuickSearch: quota.maxQuickSearch, autoLimit: quota.autoLimit });
+      return c.json({ enabled: true, ...report, maxSearchable: quota.maxSearchable, maxQuickSearch: quota.maxQuickSearch, maxParses: quota.maxParses, autoLimit: quota.autoLimit });
     } catch {
       return c.json({ enabled: false });
     }
@@ -1276,7 +1295,8 @@ export function createApp(deps: AppDeps): Hono {
   if (config.workerBaseUrl) {
     // CF 版：用 CF Cache + KV 二进制缓存
     app.get('/jar/:key', async (c) => {
-      const key = c.req.param('key');
+      const rawKey = c.req.param('key');
+      const key = normalizeJarRequestKey(rawKey);
 
       // 1. 查 CF Cache
       const cache = (caches as any).default as Cache;
@@ -1365,7 +1385,8 @@ export function createApp(deps: AppDeps): Hono {
     }
 
     app.get('/jar/:key', async (c) => {
-      const key = c.req.param('key');
+      const rawKey = c.req.param('key');
+      const key = normalizeJarRequestKey(rawKey);
 
       const originalUrl = await lookupJarUrl(key, storage);
       if (!originalUrl) {

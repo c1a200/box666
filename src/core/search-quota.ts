@@ -1,8 +1,9 @@
 // 搜索配额控制（复用站点测速结果）
 
-import type { TVBoxSite, SearchQuotaConfig, SearchQuotaReport } from './types';
+import type { TVBoxParse, TVBoxSite, SearchQuotaConfig, SearchQuotaReport } from './types';
 import type { Storage } from '../storage/interface';
 import { KV_SEARCH_QUOTA } from './config';
+const QUOTA_SCHEMA_VERSION = 3;
 
 function isNodeRuntime(): boolean {
   return typeof process !== 'undefined' && !!process.env.PORT;
@@ -10,22 +11,30 @@ function isNodeRuntime(): boolean {
 
 function defaultSearchLimit(): number {
   // Render/Node 的并发资源高于免费 Worker；有 PORT 即视为 Render/Docker。
-  return isNodeRuntime() ? 80 : 60;
+  return isNodeRuntime() ? 50 : 40;
 }
 
 function defaultQuickSearchLimit(): number {
   // 快速搜索只保留少量健康度最高的源，减少影视仓/TVBox 启动与首屏等待。
-  return isNodeRuntime() ? 40 : 30;
+  return isNodeRuntime() ? 24 : 15;
+}
+
+function defaultParseLimit(): number {
+  // 客户端启动时会逐个初始化解析器；只保留响应最快的健康项。
+  return isNodeRuntime() ? 10 : 7;
 }
 
 function createDefaultSearchQuota(): SearchQuotaConfig {
   return {
     maxSearchable: defaultSearchLimit(),
     maxQuickSearch: defaultQuickSearchLimit(),
+    maxParses: defaultParseLimit(),
     autoLimit: true,
     pinnedKeys: [],
     sortBySpeed: true,
     leanStartup: true,
+    pruneDeadParses: true,
+    quotaSchemaVersion: QUOTA_SCHEMA_VERSION,
   };
 }
 
@@ -44,7 +53,7 @@ export async function loadSearchQuota(storage: Storage): Promise<SearchQuotaConf
       const maxSearchable = normalizeLimit(parsed.maxSearchable);
       const fallback = createDefaultSearchQuota();
       const hasNewLimitFields = typeof parsed.autoLimit === 'boolean' || typeof parsed.maxQuickSearch === 'number';
-      const isLegacyQuota = !hasNewLimitFields;
+      const isLegacyQuota = !hasNewLimitFields || (parsed.quotaSchemaVersion ?? 1) < QUOTA_SCHEMA_VERSION;
       // 旧版配置一律迁移到安全上限；只有用户在新版后台明确关闭后，才保留 0 = 不限制。
       const autoLimit = isLegacyQuota ? true : parsed.autoLimit === true;
       const effectiveMaxSearchable = isLegacyQuota
@@ -55,6 +64,9 @@ export async function loadSearchQuota(storage: Storage): Promise<SearchQuotaConf
         maxQuickSearch: autoLimit
           ? (normalizeLimit(parsed.maxQuickSearch) || fallback.maxQuickSearch)
           : normalizeLimit(parsed.maxQuickSearch),
+        maxParses: autoLimit
+          ? (normalizeLimit(parsed.maxParses) || fallback.maxParses)
+          : normalizeLimit(parsed.maxParses),
         autoLimit,
         pinnedKeys: Array.isArray(parsed.pinnedKeys)
           ? parsed.pinnedKeys.filter((key): key is string => typeof key === 'string')
@@ -63,6 +75,8 @@ export async function loadSearchQuota(storage: Storage): Promise<SearchQuotaConf
         sortBySpeed: parsed.sortBySpeed !== false,
         // 旧配置没有该字段时默认开启轻量启动；用户明确关闭后保留关闭状态。
         leanStartup: parsed.leanStartup !== false,
+        pruneDeadParses: parsed.pruneDeadParses !== false,
+        quotaSchemaVersion: QUOTA_SCHEMA_VERSION,
       };
     } catch {}
   }
@@ -76,10 +90,13 @@ export async function saveSearchQuota(storage: Storage, config: SearchQuotaConfi
   await storage.put(KV_SEARCH_QUOTA, JSON.stringify({
     maxSearchable,
     maxQuickSearch: normalizeLimit(config.maxQuickSearch),
+    maxParses: normalizeLimit(config.maxParses),
     autoLimit,
     pinnedKeys: Array.isArray(config.pinnedKeys) ? config.pinnedKeys : [],
     sortBySpeed: config.sortBySpeed === true,
     leanStartup: config.leanStartup !== false,
+    pruneDeadParses: config.pruneDeadParses !== false,
+    quotaSchemaVersion: QUOTA_SCHEMA_VERSION,
   }));
 }
 
@@ -98,7 +115,7 @@ function hasRemoteJarOrExt(site: TVBoxSite): boolean {
  * type=0/1/4、可搜索站点和置顶站点都不会被此函数命中。
  */
 export function isLeanStartupRemovableSite(site: TVBoxSite): boolean {
-  return site.searchable !== 1 && site.type === 3 && hasRemoteJarOrExt(site);
+  return site.searchable !== 1 && hasRemoteJarOrExt(site);
 }
 /**
  * 提前排除 type=3 + HTTP URL 的 JS 源。
@@ -270,6 +287,113 @@ export function applySearchQuota(
       quickTruncated,
       speedSorted,
       leanRemoved,
+    },
+  };
+}
+export interface ParseHealthReport {
+  probed: number;
+  removed: number;
+  timeouts: number;
+  httpErrors: number;
+  networkErrors: number;
+  kept: number;
+  removedNames: string[];
+  parseLimit?: number;
+  parseTruncated?: number;
+  parseKept?: number;
+}
+
+interface ParseProbeResult {
+  parse: TVBoxParse;
+  ms: number;
+  keep: boolean;
+}
+
+function isProbeableParse(parse: TVBoxParse): boolean {
+  return typeof parse.url === 'string' && /^https?:\/\//i.test(parse.url);
+}
+
+/**
+ * 探测解析器入口，剔除明确失效项，并按响应时间排序后限制发布数量。
+ *
+ * 客户端会逐个初始化 parses；一个 8 秒超时就会直接拖慢首屏。这里主动探测并
+ * 移除超时、网络错误和明确的 4xx/5xx，保留 401/403/429，避免把临时受限的
+ * 解析器永久删掉。无法探测的非 HTTP 项仍会保留，排在健康项之后。
+ */
+export async function probeAndPruneParses(
+  parses: TVBoxParse[],
+  timeoutMs = 3500,
+  concurrency = 12,
+  maxParses = 0,
+  pruneDeadParses = true,
+): Promise<{ parses: TVBoxParse[]; report: ParseHealthReport }> {
+  const candidates = parses.filter(isProbeableParse);
+  const results: ParseProbeResult[] = parses
+    .filter((parse) => !isProbeableParse(parse))
+    .map((parse) => ({ parse, ms: Number.POSITIVE_INFINITY, keep: true }));
+  let timeouts = 0;
+  let httpErrors = 0;
+  let networkErrors = 0;
+  let cursor = 0;
+
+  const workers = Array.from({ length: Math.min(Math.max(1, concurrency), candidates.length) }, async () => {
+    while (cursor < candidates.length) {
+      const parse = candidates[cursor++];
+      const startedAt = Date.now();
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      let keep = false;
+      try {
+        const response = await fetch(parse.url, {
+          method: 'GET',
+          redirect: 'follow',
+          signal: controller.signal,
+          headers: { 'User-Agent': 'okhttp/3.12.13' },
+        });
+        await response.body?.cancel();
+        const status = response.status;
+        keep = (status >= 200 && status < 400) || status === 401 || status === 403 || status === 429;
+        // 401/403/429 可能是地区限制、鉴权或临时限流，不能据此永久删除。
+        if (!keep) httpErrors++;
+      } catch (error: unknown) {
+        if (error instanceof Error && error.name === 'AbortError') {
+          timeouts++;
+        } else {
+          networkErrors++;
+        }
+      } finally {
+        clearTimeout(timer);
+        results.push({ parse, ms: Date.now() - startedAt, keep });
+      }
+    }
+  });
+
+  await Promise.all(workers);
+  results.sort((a, b) => {
+    if (a.keep !== b.keep) return a.keep ? -1 : 1;
+    return a.ms - b.ms;
+  });
+
+  const dead = results.filter((result) => !result.keep);
+  let next = pruneDeadParses
+    ? results.filter((result) => result.keep).map((result) => result.parse)
+    : results.map((result) => result.parse);
+  const parseTruncated = maxParses > 0 ? Math.max(0, next.length - maxParses) : 0;
+  if (parseTruncated > 0) next = next.slice(0, maxParses);
+
+  return {
+    parses: next,
+    report: {
+      probed: candidates.length,
+      removed: pruneDeadParses ? dead.length : 0,
+      timeouts,
+      httpErrors,
+      networkErrors,
+      kept: next.length,
+      removedNames: dead.map((result) => result.parse.name).filter(Boolean),
+      parseLimit: maxParses,
+      parseTruncated,
+      parseKept: next.length,
     },
   };
 }

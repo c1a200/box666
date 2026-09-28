@@ -569,6 +569,8 @@ ${sharedStyles}
 
         <label class="form-label" style="margin:0" data-i18n="maxQuickSearch">Max quick search</label>
         <input type="number" id="maxQuickSearchInput" class="nt-input" style="width:80px" min="0" max="1000" value="0">
+        <label class="form-label" style="margin:0" data-i18n="maxParses">Max parsers</label>
+        <input type="number" id="maxParsesInput" class="nt-input" style="width:80px" min="0" max="1000" value="0">
         <label style="display:flex;gap:6px;align-items:center;font-size:0.8rem;color:var(--text-secondary)">
           <input type="checkbox" id="autoSearchLimitInput">
           <span data-i18n="autoSearchLimit">Auto safe limit</span>
@@ -582,11 +584,16 @@ ${sharedStyles}
           <span data-i18n="leanStartup">Lean startup</span>
         </label>
         <button class="btn btn-sm" id="searchQuotaSaveBtn" onclick="saveSearchQuota()" data-i18n="save">Save</button>
+        <label style="display:flex;gap:6px;align-items:center;font-size:0.8rem;color:var(--text-secondary)">
+          <input type="checkbox" id="pruneDeadParsesInput">
+          <span data-i18n="pruneDeadParses">Prune dead parsers</span>
+        </label>
         <span class="status-text" id="searchQuotaStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
       </div>
       <div style="margin-top:6px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="searchQuotaDesc">Limit searchable sources to reduce TVBox crashes. 0 = unlimited. JS URL sources are always excluded. Pinned sources are not truncated. Manage pinned sources in the Search tab.</div>
       <div style="margin-top:4px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="sortSearchBySpeedDesc">Uses existing site speed-test results to put faster sources first; no extra network requests. Pinned sources stay first.</div>
       <div style="margin-top:4px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="leanStartupDesc">Removes non-searchable remote JAR/extension sites to shorten TVBox startup. Searchable and pinned sources are always kept.</div>
+      <div style="margin-top:4px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="pruneDeadParsesDesc">Probes parser endpoints and removes confirmed failures/timeouts so clients do not wait for each dead parser during startup.</div>
     </div>
 
     <div class="section">
@@ -798,7 +805,7 @@ const translations = {
     noHealthData:'No data yet', healthFails:'Fails',
     healthLastOk:'Last OK',
     searchQuota:'Search Quota',
-    maxSearchable:'Max searchable', maxQuickSearch:'Max quick search', autoSearchLimit:'Auto safe limit', searchQuotaDesc:'Limit searchable and quick-search sources to reduce TVBox startup and search delays. Auto safe limit is enabled by default; turn it off to treat 0 as unlimited. JS URL sources are always excluded and pinned sources are not truncated.', sortSearchBySpeed:'Sort by speed', sortSearchBySpeedDesc:'Uses existing site speed-test results to put faster sources first; no extra network requests. Pinned sources stay first.', leanStartup:'Lean startup', leanStartupDesc:'Removes non-searchable remote JAR/extension sites to shorten TVBox startup. Searchable and pinned sources are always kept.',
+    maxSearchable:'Max searchable', maxQuickSearch:'Max quick search', maxParses:'Max parsers', autoSearchLimit:'Auto safe limit', searchQuotaDesc:'Limit searchable and quick-search sources to reduce TVBox startup and search delays. Auto safe limit is enabled by default; turn it off to treat 0 as unlimited. JS URL sources are always excluded and pinned sources are not truncated.', sortSearchBySpeed:'Sort by speed', sortSearchBySpeedDesc:'Uses existing site speed-test results to put faster sources first; no extra network requests. Pinned sources stay first.', leanStartup:'Lean startup', leanStartupDesc:'Removes non-searchable remote JAR/extension sites to shorten TVBox startup. Searchable and pinned sources are always kept.', pruneDeadParses:'Prune dead parsers', pruneDeadParsesDesc:'Probes parser endpoints and removes confirmed failures/timeouts so clients do not wait for each dead parser during startup.',
     tabSearchQuota:'Search',
     sqSelected:'Active Search Sources', sqNoData:'Run aggregation to see results',
     sqKey:'Key', sqName:'Name', sqSource:'Source', sqReason:'Reason', sqAction:'Action',
@@ -880,7 +887,7 @@ const translations = {
     noHealthData:'暂无数据', healthFails:'失败',
     healthLastOk:'最后成功',
     searchQuota:'搜索配额',
-    maxSearchable:'可搜索源上限', maxQuickSearch:'快速搜索源上限', autoSearchLimit:'自动安全配额', searchQuotaDesc:'同时限制普通搜索和快速搜索源数量，减少影视仓/TVBox 启动与搜索等待。默认开启自动安全配额；关闭后，填 0 才表示永久不限制。JS URL 源始终排除，置顶源不会被截断。', sortSearchBySpeed:'按测速速度排序', sortSearchBySpeedDesc:'复用现有站点测速结果，将较快的源排在前面；不会额外发起测速请求。置顶源始终最前。', leanStartup:'轻量启动', leanStartupDesc:'剔除不参与搜索的远程 JAR/扩展站点，缩短影视仓/TVBox 启动时间；可搜索源和置顶源始终保留。',
+    maxSearchable:'可搜索源上限', maxQuickSearch:'快速搜索源上限', maxParses:'解析器上限', autoSearchLimit:'自动安全配额', searchQuotaDesc:'同时限制普通搜索和快速搜索源数量，减少影视仓/TVBox 启动与搜索等待。默认开启自动安全配额；关闭后，填 0 才表示永久不限制。JS URL 源始终排除，置顶源不会被截断。', sortSearchBySpeed:'按测速速度排序', sortSearchBySpeedDesc:'复用现有站点测速结果，将较快的源排在前面；不会额外发起测速请求。置顶源始终最前。', leanStartup:'轻量启动', leanStartupDesc:'剔除不参与搜索的远程 JAR/扩展站点，缩短影视仓/TVBox 启动时间；可搜索源和置顶源始终保留。', pruneDeadParses:'剔除失效解析器', pruneDeadParsesDesc:'主动探测解析器地址并剔除确认超时或失效的项，避免客户端启动时逐个等待死解析器。',
     tabSearchQuota:'搜索',
     sqSelected:'活跃搜索源', sqNoData:'执行聚合后查看结果',
     sqKey:'Key', sqName:'名称', sqSource:'来源', sqReason:'原因', sqAction:'操作',
@@ -1880,9 +1887,11 @@ async function loadSearchQuota() {
     const d = await res.json();
     $('maxSearchableInput').value = d.maxSearchable ?? 0;
     $('maxQuickSearchInput').value = d.maxQuickSearch ?? 0;
+    $('maxParsesInput').value = d.maxParses ?? 0;
     $('autoSearchLimitInput').checked = d.autoLimit === true;
     $('sortSearchBySpeedInput').checked = d.sortBySpeed === true;
     $('leanStartupInput').checked = d.leanStartup !== false;
+    $('pruneDeadParsesInput').checked = d.pruneDeadParses !== false;
     sqPinnedKeys = new Set(d.pinnedKeys || []);
     loadSearchQuotaReport();
   } catch {}
@@ -1894,9 +1903,11 @@ async function saveSearchQuota() {
   const data = {
     maxSearchable: parseInt($('maxSearchableInput').value) || 0,
     maxQuickSearch: parseInt($('maxQuickSearchInput').value) || 0,
+    maxParses: parseInt($('maxParsesInput').value) || 0,
     autoLimit: $('autoSearchLimitInput').checked,
     sortBySpeed: $('sortSearchBySpeedInput').checked,
     leanStartup: $('leanStartupInput').checked,
+    pruneDeadParses: $('pruneDeadParsesInput').checked,
     pinnedKeys: [...sqPinnedKeys],
   };
   try {
@@ -1928,7 +1939,7 @@ async function loadSearchQuotaReport() {
 
     // 显示 Search 页签
     $('tabSearchQuota').style.display = '';
-    $('sqSelectedInfo').textContent = d.totalSites + ' sites → ' + d.jsExcluded + ' JS excluded → ' + d.searchable + ' searchable' + (d.truncated > 0 ? ' (' + d.truncated + ' truncated)' : '') + (typeof d.quickSearchable === 'number' ? ', ' + d.quickSearchable + ' quick' + (d.quickTruncated > 0 ? ' (' + d.quickTruncated + ' limited)' : '') : '') + (d.pinnedCount > 0 ? ', ' + d.pinnedCount + ' pinned' : '') + (d.leanRemoved > 0 ? ', ' + d.leanRemoved + ' ' + t('sqLeanRemoved') : '') + (d.speedSorted ? ', speed-sorted' : '');
+    $('sqSelectedInfo').textContent = d.totalSites + ' sites → ' + d.jsExcluded + ' JS excluded → ' + d.searchable + ' searchable' + (d.truncated > 0 ? ' (' + d.truncated + ' truncated)' : '') + (typeof d.quickSearchable === 'number' ? ', ' + d.quickSearchable + ' quick' + (d.quickTruncated > 0 ? ' (' + d.quickTruncated + ' limited)' : '') : '') + (d.pinnedCount > 0 ? ', ' + d.pinnedCount + ' pinned' : '') + (d.leanRemoved > 0 ? ', ' + d.leanRemoved + ' ' + t('sqLeanRemoved') : '') + (typeof d.parseRemoved === 'number' && d.parseRemoved > 0 ? ', ' + d.parseRemoved + ' dead parses pruned' : '') + (typeof d.parseKept === 'number' ? ', ' + d.parseKept + ' parsers kept' + (d.parseTruncated > 0 ? ' (' + d.parseTruncated + ' limited)' : '') : '') + (d.speedParsed ? ', speed-sorted' : d.speedSorted ? ', speed-sorted' : '');
     $('badgeSearchQuota').textContent = d.searchable;
 
     // 加载站点列表

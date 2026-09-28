@@ -159,6 +159,15 @@ export async function lookupJarUrl(key: string, storage: Storage): Promise<strin
 }
 
 /**
+ * 兼容客户端在 JAR 代理地址后追加的 ;md5;... / ;pk;... 元数据。
+ * 这些后缀属于 spider 描述，不是 KV 中的 JAR key。
+ */
+export function normalizeJarRequestKey(rawKey: string): string {
+  const suffixIndex = rawKey.search(/;(?:md5|pk);/i);
+  return suffixIndex >= 0 ? rawKey.substring(0, suffixIndex) : rawKey;
+}
+
+/**
  * 判断 JAR key 是否为 MD5（32 位 hex）
  * 用于决定 Cache TTL：MD5 key → 24h，URL hash key → 6h
  */
