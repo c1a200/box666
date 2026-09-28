@@ -19,6 +19,11 @@ function defaultQuickSearchLimit(): number {
   return isNodeRuntime() ? 24 : 15;
 }
 
+function defaultStartupQuickSearchLimit(): number {
+  // 根配置只保留极少量快速源，完整搜索仍通过 /config-full.json 和后台使用。
+  return isNodeRuntime() ? 8 : 6;
+}
+
 function defaultParseLimit(): number {
   // 客户端启动时会逐个初始化解析器；只保留响应最快的健康项。
   // 启动阶段每个解析器都可能串行等待，10 个会直接放大成十几秒。
@@ -29,6 +34,7 @@ function createDefaultSearchQuota(): SearchQuotaConfig {
   return {
     maxSearchable: defaultSearchLimit(),
     maxQuickSearch: defaultQuickSearchLimit(),
+    maxStartupQuickSearch: defaultStartupQuickSearchLimit(),
     maxParses: defaultParseLimit(),
     autoLimit: true,
     pinnedKeys: [],
@@ -67,6 +73,9 @@ export async function loadSearchQuota(storage: Storage): Promise<SearchQuotaConf
         maxQuickSearch: autoLimit
           ? (normalizeLimit(parsed.maxQuickSearch) || fallback.maxQuickSearch)
           : normalizeLimit(parsed.maxQuickSearch),
+        maxStartupQuickSearch: (isLegacyQuota || typeof parsed.maxStartupQuickSearch !== 'number')
+          ? fallback.maxStartupQuickSearch
+          : normalizeLimit(parsed.maxStartupQuickSearch),
         // schema 升级必须采用新的安全上限，不能继承旧版本 maxParses=10。
         maxParses: isLegacyQuota
           ? fallback.maxParses
@@ -97,6 +106,7 @@ export async function saveSearchQuota(storage: Storage, config: SearchQuotaConfi
   await storage.put(KV_SEARCH_QUOTA, JSON.stringify({
     maxSearchable,
     maxQuickSearch: normalizeLimit(config.maxQuickSearch),
+    maxStartupQuickSearch: normalizeLimit(config.maxStartupQuickSearch),
     maxParses: normalizeLimit(config.maxParses),
     autoLimit,
     pinnedKeys: Array.isArray(config.pinnedKeys) ? config.pinnedKeys : [],

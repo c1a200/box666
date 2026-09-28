@@ -337,14 +337,22 @@ export function createApp(deps: AppDeps): Hono {
     }
 
     const pinnedKeys = new Set(quota.pinnedKeys || []);
+    const startupQuickLimit = quota.maxStartupQuickSearch ?? 0;
+    let quickSeen = 0;
     const sites = Array.isArray(parsed.sites) ? parsed.sites : [];
-    // type=3 是远程 JAR/扩展源，客户端通常会逐个初始化。轻量模式只保留
-    // 参与快速搜索或明确置顶的远程源，其余站点（type 0/1/4）完整保留。
-    const keptSites = sites.filter((site) => (
-      site.type !== 3
-      || pinnedKeys.has(site.key)
-      || site.quickSearch === 1
-    ));
+    // 启动阶段不加载任何远程 JAR/type=3 源：客户端会下载并初始化这些
+    // 资源，正是影视仓/TVBox 首屏等待几十秒的主要原因。完整配置仍保留
+    // 全部远程源，后台和 /config-full.json 不受影响。
+    const keptSites = sites
+      .filter((site) => site.type !== 3 || pinnedKeys.has(site.key))
+      .map((site) => {
+        if (site.searchable !== 1 || !site.quickSearch) return site;
+        if (!pinnedKeys.has(site.key) && startupQuickLimit > 0 && quickSeen >= startupQuickLimit) {
+          return { ...site, quickSearch: 0 };
+        }
+        quickSeen++;
+        return site;
+      });
     parsed.sites = keptSites;
 
     const parses = Array.isArray(parsed.parses) ? parsed.parses : [];
@@ -959,6 +967,9 @@ export function createApp(deps: AppDeps): Hono {
     }
     if (typeof body.maxQuickSearch === 'number' && Number.isFinite(body.maxQuickSearch)) {
       current.maxQuickSearch = Math.max(0, Math.floor(body.maxQuickSearch));
+    }
+    if (typeof body.maxStartupQuickSearch === 'number' && Number.isFinite(body.maxStartupQuickSearch)) {
+      current.maxStartupQuickSearch = Math.max(0, Math.floor(body.maxStartupQuickSearch));
     }
     if (typeof body.maxParses === 'number' && Number.isFinite(body.maxParses)) {
       current.maxParses = Math.max(0, Math.floor(body.maxParses));

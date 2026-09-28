@@ -243,6 +243,7 @@ export interface CredentialPolicyConfig {
 export interface SearchQuotaConfig {
   maxSearchable: number;        // 可搜索源上限，0 = 不限制
   maxQuickSearch?: number;      // 快速搜索源上限，0 = 不限制
+  maxStartupQuickSearch?: number; // 根配置启动阶段快速搜索源上限，0 = 不额外裁剪
   autoLimit?: boolean;          // 是否使用按部署形态自动选择的默认上限
   pinnedKeys: string[];         // 置顶源 key 列表（排到 sites 最前面）
   sortBySpeed: boolean;         // 是否复用站点测速结果，将较快的可搜索源排在前面
