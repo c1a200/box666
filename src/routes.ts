@@ -11,7 +11,7 @@ import { loadGroupOrder, saveGroupOrder } from './core/group-order';
 import { validateMacCMS } from './core/maccms';
 import { lookupJarUrl, isMd5Key, base64ToUint8Array, rewriteJarUrls } from './core/jar-proxy';
 import { BASE_URL_PLACEHOLDER } from './core/config';
-import { lookupLiveSource, liveSourcesToTVBoxLives } from './core/live-source';
+import { lookupLiveSource, listLiveProxyEntries, removeLiveProxyEntry } from './core/live-source';
 import { adminHtml } from './core/admin';
 import { dashboardHtml } from './core/dashboard';
 import { configEditorHtml } from './core/config-editor';
@@ -246,25 +246,25 @@ export function createApp(deps: AppDeps): Hono {
     return fallback;
   }
 
-  function isSelfLiveProxyUrl(rawUrl: string | undefined): boolean {
-    if (!rawUrl || !config.workerBaseUrl) return false;
-    try {
-      const parsedUrl = new URL(rawUrl);
-      const baseUrl = new URL(config.workerBaseUrl);
-      if (parsedUrl.origin !== baseUrl.origin) return false;
-      return parsedUrl.pathname === '/live'
-        || parsedUrl.pathname === '/live-config'
-        || parsedUrl.pathname === '/live.json'
-        || parsedUrl.pathname.startsWith('/live/');
-    } catch {
-      return false;
-    }
+  /**
+   * 从已验证的 CF 直播代理清单构建 FongMi 入口。
+   * 清单是 CF 分离模式的唯一事实来源，不能再从旧 KV_LIVE_MERGED_DATA 恢复。
+   */
+  async function getCfSeparatedLives(): Promise<TVBoxLive[]> {
+    if (!config.workerBaseUrl) return [];
+    const entries = await listLiveProxyEntries(storage);
+    const baseUrl = config.workerBaseUrl.replace(/\/$/, '');
+    return entries.map((entry) => ({
+      name: entry.name || '直播源',
+      type: 0,
+      url: `${baseUrl}/live/${entry.key}`,
+    }));
   }
 
   /**
    * CF 分离模式兼容修复：
    * 旧版本可能把根配置里的 lives 写成单个 /live（聚合）指针。
-   * 这里使用已保存的上游直播源清单即时生成多个 /live/<key>，并只写一个紧凑代理清单。
+   * 这里只使用当前已验证的代理清单生成多个 /live/<key>，不会复活旧入口。
    * Render 不进入此分支，保持原有行为。
    */
   async function repairCfSeparatedLives(cached: string): Promise<string> {
@@ -281,47 +281,7 @@ export function createApp(deps: AppDeps): Hono {
     }
 
     const currentLives = Array.isArray(parsedConfig.lives) ? parsedConfig.lives : [];
-    const liveRaw = await storage.get(KV_LIVE_MERGED_DATA);
-    if (!liveRaw) return cached;
-
-    let upstreamLives: unknown;
-    try {
-      upstreamLives = JSON.parse(liveRaw);
-    } catch {
-      return cached;
-    }
-    if (!Array.isArray(upstreamLives) || upstreamLives.length === 0) return cached;
-
-    const entries: LiveSourceEntry[] = [];
-    const seen = new Set<string>();
-    for (const item of upstreamLives) {
-      if (!item || typeof item !== 'object') continue;
-      const live = item as TVBoxLive;
-      const url = (live.url || live.api || '').trim();
-      if (!url || live.type === 3 || isSelfLiveProxyUrl(url)) continue;
-      try {
-        const parsedUrl = new URL(url);
-        if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') continue;
-        if (parsedUrl.hostname === 'localhost' || parsedUrl.hostname === '127.0.0.1') continue;
-      } catch {
-        continue;
-      }
-      const coreUrl = url.replace(/\/+$/, '');
-      if (seen.has(coreUrl)) continue;
-      seen.add(coreUrl);
-      entries.push({
-        name: live.name || '直播源',
-        url,
-        ...(live.ua ? { ua: live.ua } : {}),
-        ...(live.header ? { header: live.header } : {}),
-      });
-    }
-
-    if (entries.length === 0) return cached;
-
-    const proxyLives = await liveSourcesToTVBoxLives(entries, config.workerBaseUrl, storage);
-    if (proxyLives.length === 0) return cached;
-
+    const proxyLives = await getCfSeparatedLives();
     const currentUrls = currentLives.map((live) => (live.url || live.api || '').trim());
     const expectedUrls = proxyLives.map((live) => (live.url || live.api || '').trim());
     const alreadyUpToDate = currentUrls.length === expectedUrls.length
@@ -331,10 +291,9 @@ export function createApp(deps: AppDeps): Hono {
     parsedConfig.lives = proxyLives;
     const repaired = JSON.stringify(parsedConfig);
     await storage.put(KV_MERGED_CONFIG, repaired);
-    console.log(`[routes] CF separated lives repaired: ${proxyLives.length} independent /live/<key> entries`);
+    console.log(`[routes] CF separated lives repaired: ${proxyLives.length} verified /live/<key> entries`);
     return repaired;
   }
-
   function configBody(body: string, headers: Record<string, string>): Response {
     // 不手工压缩：Cloudflare 边缘可能在客户端未请求 gzip 时剥离
     // Content-Encoding，却保留压缩字节，导致 TVBox/影视仓 JSON 解析失败。
@@ -603,44 +562,61 @@ export function createApp(deps: AppDeps): Hono {
   });
 
   app.get('/live.json', async (c) => {
-    let livesRaw = await storage.get(KV_LIVE_MERGED_DATA);
-    if (!livesRaw) {
-      // 兜底读取 KV_MERGED_CONFIG_FULL 或 KV_MERGED_CONFIG (防旧版本升级/空状态)
-      const cached = await storage.get(KV_MERGED_CONFIG_FULL) || await storage.get(KV_MERGED_CONFIG);
-      if (cached) {
-        try {
-          const full = JSON.parse(cached);
-          const lives = full.lives || [];
-          // 过滤掉 worker 上生成的指向自身 /live.json 的单条目
-          const isUnified = lives.length === 1 && lives[0].url && lives[0].url.endsWith('/live.json');
-          if (!isUnified) {
-            livesRaw = JSON.stringify(lives);
+    const baseUrl = await resolveBaseUrl(c);
+    if (baseUrl instanceof Response) return baseUrl;
+
+    let lives: TVBoxLive[];
+    if (config.workerBaseUrl) {
+      const liveMergeMode = (await storage.get(KV_LIVE_MERGE_MODE)) || 'separated';
+      if (liveMergeMode === 'separated') {
+        // CF 分离模式只导出当前有效代理清单，避免旧的上游直链或空入口被导出。
+        lives = await getCfSeparatedLives();
+      } else {
+        let livesRaw = await storage.get(KV_LIVE_MERGED_DATA);
+        if (!livesRaw) {
+          const cached = await storage.get(KV_MERGED_CONFIG_FULL) || await storage.get(KV_MERGED_CONFIG);
+          if (cached) {
+            try {
+              const full = JSON.parse(cached);
+              livesRaw = JSON.stringify(full.lives || []);
+            } catch { /* ignore */ }
           }
-        } catch { /* ignore */ }
+        }
+        if (!livesRaw) return c.json({ lives: [] });
+        livesRaw = applyBaseUrlPlaceholder(livesRaw, baseUrl);
+        try {
+          lives = JSON.parse(livesRaw);
+        } catch {
+          return c.json({ error: 'Config parse error' }, 500);
+        }
+      }
+    } else {
+      let livesRaw = await storage.get(KV_LIVE_MERGED_DATA);
+      if (!livesRaw) {
+        const cached = await storage.get(KV_MERGED_CONFIG_FULL) || await storage.get(KV_MERGED_CONFIG);
+        if (cached) {
+          try {
+            const full = JSON.parse(cached);
+            livesRaw = JSON.stringify(full.lives || []);
+          } catch { /* ignore */ }
+        }
+      }
+      if (!livesRaw) return c.json({ lives: [] });
+      livesRaw = applyBaseUrlPlaceholder(livesRaw, baseUrl);
+      try {
+        lives = JSON.parse(livesRaw);
+      } catch {
+        return c.json({ error: 'Config parse error' }, 500);
       }
     }
 
-    if (!livesRaw) {
-      return c.json({ lives: [] });
-    }
-
-    const baseUrl = await resolveBaseUrl(c);
-    if (baseUrl instanceof Response) return baseUrl;
-    livesRaw = applyBaseUrlPlaceholder(livesRaw, baseUrl);
-
-    try {
-      const lives = JSON.parse(livesRaw);
-      return c.body(JSON.stringify({ lives }), 200, {
-        'Content-Type': 'application/json; charset=utf-8',
-        'Cache-Control': 'public, max-age=1800, stale-while-revalidate=86400',
-        'Access-Control-Allow-Origin': '*',
-        'Content-Disposition': 'attachment; filename="tvbox-live.json"',
-      });
-    } catch {
-      return c.json({ error: 'Config parse error' }, 500);
-    }
+    return c.body(JSON.stringify({ lives }), 200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'public, max-age=1800, stale-while-revalidate=86400',
+      'Access-Control-Allow-Origin': '*',
+      'Content-Disposition': 'attachment; filename="tvbox-live.json"',
+    });
   });
-
   // ─── 监控面板 ──────────────────────────────────────────
   app.get('/status', (c) => {
     return c.html(dashboardHtml);
@@ -1428,19 +1404,30 @@ export function createApp(deps: AppDeps): Hono {
       const key = c.req.param('key');
       const isCfRuntime = !!config.workerBaseUrl && typeof caches !== 'undefined';
 
-      // 1. 查 CF Cache
       const cache = (caches as any).default as Cache;
       const cacheKey = new Request(c.req.url);
       const cached = await cache.match(cacheKey);
-      if (cached) return cached;
-
-      // 2. 查 KV 拿上游源元数据
-      const source = await lookupLiveSource(key, storage);
-      if (!source) {
-        return c.json({ error: 'Unknown live source key' }, 404);
+      if (cached) {
+        const cachedText = await cached.clone().text();
+        if (cachedText.trim() && cachedText.includes('#genre#')) {
+          return cached;
+        }
+        await cache.delete(cacheKey);
+        await removeLiveProxyEntry(key, storage);
+        return c.json({ error: 'Invalid or empty live source' }, 404, {
+          'Cache-Control': 'no-store',
+          'Access-Control-Allow-Origin': '*',
+        });
       }
 
-      // 3. 按源过滤后返回，客户端只看到可用频道和线路。
+      const source = await lookupLiveSource(key, storage);
+      if (!source) {
+        return c.json({ error: 'Unknown live source key' }, 404, {
+          'Cache-Control': 'no-store',
+          'Access-Control-Allow-Origin': '*',
+        });
+      }
+
       try {
         const channelSpeedMap = await loadChannelSpeedMap(storage);
         const groups = await filterLivesBySource(
@@ -1453,11 +1440,23 @@ export function createApp(deps: AppDeps): Hono {
             minChannelsPerSource: 5,
             maxAdRatio: 0.5,
             minPlayableRatio: 0.2,
+            storage,
+            concurrency: 1,
+            useCache: true,
           },
         );
 
-        // 4. 构建响应 + 异步写缓存
-        const response = new Response(formatLiveGroupsAsTxt(groups), {
+        const text = formatLiveGroupsAsTxt(groups);
+        if (!text.trim() || !text.includes('#genre#')) {
+          await cache.delete(cacheKey);
+          await removeLiveProxyEntry(key, storage);
+          return c.json({ error: 'Invalid or empty live source' }, 404, {
+            'Cache-Control': 'no-store',
+            'Access-Control-Allow-Origin': '*',
+          });
+        }
+
+        const response = new Response(text, {
           headers: {
             'Content-Type': 'text/plain; charset=utf-8',
             'Cache-Control': `public, max-age=${LIVE_PROXY_TTL}`,
@@ -1470,11 +1469,13 @@ export function createApp(deps: AppDeps): Hono {
         return response;
       } catch (error: unknown) {
         const msg = error instanceof Error ? error.message : String(error);
-        return c.json({ error: msg }, 502);
+        return c.json({ error: msg }, 502, {
+          'Cache-Control': 'no-store',
+          'Access-Control-Allow-Origin': '*',
+        });
       }
     });
   }
-
   // ─── 图片代理（仅 CF 版）──────────────────────────────
   if (config.workerBaseUrl) {
     app.get('/img/*', async (c) => {

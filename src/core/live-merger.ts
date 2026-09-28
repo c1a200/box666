@@ -53,9 +53,9 @@ const liveSourceMemoryCache = new Map<string, CachedLiveSource>();
 let liveSourceCacheLoad: Promise<void> | null = null;
 let liveSourceCacheSaveQueue: Promise<void> = Promise.resolve();
 
-function liveCacheKey(input: LiveSourceInput): string {
+function liveCacheKey(input: LiveSourceInput, browserFallback = true): string {
   const header = input.header ? JSON.stringify(input.header) : '';
-  return input.url + '\n' + (input.ua || '') + '\n' + header;
+  return input.url + '\n' + (input.ua || '') + '\n' + header + '\n' + (browserFallback ? 'browser' : 'player');
 }
 
 function compactLiveSourceCache(): void {
@@ -316,8 +316,9 @@ async function downloadLive(
   input: LiveSourceInput,
   timeoutMs: number,
   stats: LiveDownloadStats,
+  browserFallback = true,
 ): Promise<DownloadOutcome> {
-  const key = liveCacheKey(input);
+  const key = liveCacheKey(input, browserFallback);
   const cached = liveSourceMemoryCache.get(key);
   const now = Date.now();
   const cacheFresh = !!cached && now - cached.cachedAt < LIVE_SOURCE_CACHE_TTL_MS;
@@ -329,7 +330,9 @@ async function downloadLive(
   }
 
   stats.cacheMisses++;
-  const uas = [input.ua || TVBOX_UA, BROWSER_UA];
+  const uas = browserFallback
+    ? [input.ua || TVBOX_UA, BROWSER_UA]
+    : [input.ua || TVBOX_UA];
   for (const ua of uas) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -382,6 +385,7 @@ async function downloadLiveBatched(
   fetchTimeoutMs: number,
   concurrencyLimit = 3,
   storage?: Storage,
+  browserFallback = true,
 ): Promise<{
   results: PromiseSettledResult<{ input: LiveSourceInput; outcome: DownloadOutcome }>[];
   stats: LiveDownloadStats;
@@ -392,7 +396,7 @@ async function downloadLiveBatched(
   for (let i = 0; i < sources.length; i += concurrencyLimit) {
     const chunk = sources.slice(i, i + concurrencyLimit);
     const chunkPromises = chunk.map((s) =>
-      downloadLive(s, fetchTimeoutMs, stats).then((outcome) => ({ input: s, outcome })),
+      downloadLive(s, fetchTimeoutMs, stats, browserFallback).then((outcome) => ({ input: s, outcome })),
     );
     const chunkResults = await Promise.allSettled(chunkPromises);
     results.push(...chunkResults);
@@ -471,18 +475,34 @@ export async function mergeLivesToNative(
     if (r.status === 'fulfilled' && r.value.outcome.content) {
       sourcesDownloaded++;
       try {
-        let entries = parseLiveContent(r.value.outcome.content, r.value.input.name, r.value.input.speedMs);
-        
-        // 过滤包含广告、微信等关键字的频道
-        entries = entries.filter(e => !AD_KEYWORDS.test(e.name) && !AD_KEYWORDS.test(e.group));
-        
-        // 若为聚合而来的源，频道数量极少（少于 5 个）则直接丢弃该源，过滤广告/垃圾源
-        if (r.value.input.isAggregated && entries.length < 5) {
-          console.log(`[live-merger] Discarded aggregated live source ${r.value.input.name} due to too few channels: ${entries.length}`);
+        const sourceName = sanitizeTxtLabel(r.value.input.name || 'source', 'source');
+        const entries = parseLiveContent(r.value.outcome.content, sourceName, r.value.input.speedMs);
+        const prepared = prepareSourceChannels(entries, channelSpeedMap, {
+          maxUrlsPerChannel: SEPARATED_MAX_URLS_PER_CHANNEL,
+          maxSpeedMs: LIVE_KNOWN_MAX_SPEED_MS,
+        });
+        const quality = evaluateSourceQuality(prepared, {
+          minChannelsPerSource: SEPARATED_MIN_CHANNELS_PER_SOURCE,
+          maxAdRatio: SEPARATED_MAX_AD_RATIO,
+          minPlayableRatio: SEPARATED_MIN_PLAYABLE_RATIO,
+        });
+        if (quality.discard) {
+          console.log(`[live-merger] Discarded live source ${sourceName}: ${quality.reason}`);
           continue;
         }
 
-        allEntries.push(...entries);
+        // 复用已验证的频道条目，避免同一源在合并阶段再次解析。
+        for (const { group, channel } of prepared.channels) {
+          for (const url of channel.urls) {
+            allEntries.push({
+              group,
+              name: channel.name,
+              url,
+              source: sourceName,
+              sourceSpeedMs: r.value.input.speedMs,
+            });
+          }
+        }
       } catch (err) {
         console.warn(`[live-merger] Parse failed for ${r.value.input.name}: ${err}`);
       }
@@ -1142,6 +1162,51 @@ function prepareSourceChannels(
 }
 
 /**
+ * 对一组上游直播源做完整的源级门禁。只有成功下载、能被解析，
+ * 且通过频道数量、广告比例和已知线路可播放比例检查的源才会返回。
+ * 返回原始输入对象，便于之后复用其 UA/header 或生成代理清单。
+ */
+export async function filterValidLiveSources(
+  sources: LiveSourceInput[],
+  timeoutMs = 8000,
+  channelSpeedMap?: ChannelSpeedMap,
+  options: FilteredLiveOptions = {},
+): Promise<LiveSourceInput[]> {
+  if (sources.length === 0) return [];
+
+  const concurrency = Math.max(1, options.concurrency ?? 3);
+  const batched = await downloadLiveBatched(
+    sources,
+    timeoutMs,
+    concurrency,
+    options.storage,
+    false,
+  );
+
+  const valid: LiveSourceInput[] = [];
+  for (const result of batched.results) {
+    if (result.status !== 'fulfilled' || !result.value.outcome.content) continue;
+    const { input, outcome } = result.value;
+    const content = outcome.content;
+    if (!content) continue;
+    const sourceName = sanitizeTxtLabel(input.name || 'source', 'source');
+    const entries = parseLiveContent(content, sourceName, input.speedMs);
+    const prepared = prepareSourceChannels(entries, channelSpeedMap, {
+      maxUrlsPerChannel: options.maxUrlsPerChannel ?? SEPARATED_MAX_URLS_PER_CHANNEL,
+      maxSpeedMs: options.maxSpeedMs ?? LIVE_KNOWN_MAX_SPEED_MS,
+    });
+    const quality = evaluateSourceQuality(prepared, options);
+    if (quality.discard) {
+      console.log('[live-merger] Discarded live source ' + sourceName + ': ' + quality.reason);
+      continue;
+    }
+    valid.push(input);
+  }
+
+  console.log(`[live-merger] Validated ${valid.length}/${sources.length} live sources`);
+  return valid;
+}
+/**
  * 非聚合直播输出：按原始直播源分别解析，只过滤不良频道和线路，不跨源合并频道。
  * 这样应用端仍能区分不同来源，但不会直接拿到上游原始 m3u/txt 中的广告、
  * 失效线路、重复线路以及明显无效地址。
@@ -1173,6 +1238,7 @@ export async function filterLivesBySource(
       timeoutMs,
       Math.max(1, options.concurrency ?? 3),
       options.storage,
+      false,
     );
     results = batched.results.map((result): PromiseSettledResult<{ content: string; name: string } | null> => {
       if (result.status !== 'fulfilled') {

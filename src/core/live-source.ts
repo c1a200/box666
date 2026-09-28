@@ -34,7 +34,7 @@ export interface LiveProxySource {
   header?: Record<string, string>;
 }
 
-interface LiveProxyManifestEntry extends LiveProxySource {
+export interface LiveProxyManifestEntry extends LiveProxySource {
   key: string;
 }
 
@@ -262,6 +262,36 @@ export async function liveSourcesToTVBoxLives(
   }
 
   return lives;
+}
+
+/**
+ * 读取当前已验证的直播代理清单。
+ * 该清单是 CF 分离模式的唯一入口来源，避免从旧的原始源清单恢复已删除的空源。
+ */
+export async function listLiveProxyEntries(storage: Storage): Promise<LiveProxyManifestEntry[]> {
+  const manifest = parseLiveProxyManifest(await storage.get(KV_LIVE_PROXY_MANIFEST));
+  return manifest?.entries ?? [];
+}
+
+/**
+ * 从代理清单删除一个已经确认无效的直播入口。
+ * 即使删除后为空也显式写回空清单，防止修复逻辑再次恢复旧入口。
+ */
+export async function removeLiveProxyEntry(key: string, storage: Storage): Promise<boolean> {
+  const raw = await storage.get(KV_LIVE_PROXY_MANIFEST);
+  const manifest = parseLiveProxyManifest(raw);
+  if (!manifest) return false;
+  const entries = manifest.entries.filter((entry) => entry.key !== key);
+  if (entries.length === manifest.entries.length) return false;
+  const next: LiveProxyManifest = {
+    version: LIVE_PROXY_MANIFEST_VERSION,
+    signature: manifestSignature(entries),
+    entries,
+  };
+  await storage.put(KV_LIVE_PROXY_MANIFEST, JSON.stringify(next));
+  await storage.put(`${KV_LIVE_PREFIX}${key}`, '');
+  console.log(`[live-source] Removed invalid live proxy entry ${key}`);
+  return true;
 }
 
 /**
