@@ -22,6 +22,7 @@ import { generateQR, pollQRStatus, passwordLogin, PLATFORM_NAMES, QR_PLATFORMS, 
 import { assessAllSources } from './core/credential-risk';
 import { generateTokenJson } from './core/credential-injector';
 import { formatLiveGroupsAsTxt, filterLivesBySource, filterLivesBySourceDetailed } from './core/live-merger';
+import { isBlockedLiveSource } from './core/live-policy';
 import type { TVBoxConfig, SearchQuotaConfig, CloudPlatform, CloudCredential, TVBoxLive, TVBoxLiveGroup } from './core/types';
 import { mountChannelProbeRoutes } from './routes/channel-probe-admin';
 import { loadSpeedMap as loadChannelSpeedMap } from './core/channel-probe';
@@ -1405,7 +1406,9 @@ export function createApp(deps: AppDeps): Hono {
       const isCfRuntime = !!config.workerBaseUrl && typeof caches !== 'undefined';
 
       const cache = (caches as any).default as Cache;
-      const cacheKey = new Request(c.req.url);
+      // Version the live cache key so updated grouping/filter policy is not hidden
+      // by an old cached live text response after deployment.
+      const cacheKey = new Request(`https://live-cache.internal/live/${encodeURIComponent(key)}?v=20260928-2`);
       const cached = await cache.match(cacheKey);
       if (cached) {
         const cachedText = await cached.clone().text();
@@ -1421,7 +1424,11 @@ export function createApp(deps: AppDeps): Hono {
       }
 
       const source = await lookupLiveSource(key, storage);
-      if (!source) {
+      if (!source || isBlockedLiveSource(source)) {
+        if (source && isBlockedLiveSource(source)) {
+          await cache.delete(cacheKey);
+          await removeLiveProxyEntry(key, storage);
+        }
         return c.json({ error: 'Unknown live source key' }, 404, {
           'Cache-Control': 'no-store',
           'Access-Control-Allow-Origin': '*',

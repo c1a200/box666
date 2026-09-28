@@ -3,6 +3,7 @@
 import type { LiveSourceEntry, TVBoxLive } from './types';
 import type { Storage } from '../storage/interface';
 import { LIVE_PROXY_TTL } from './config';
+import { isBlockedLiveSource } from './live-policy';
 
 const KV_LIVE_PREFIX = 'live:';
 export const KV_LIVE_PROXY_MANIFEST = 'live_proxy_manifest';
@@ -105,7 +106,7 @@ async function prepareManifestEntries(entries: LiveSourceEntry[]): Promise<LiveP
   const prepared: LiveProxyManifestEntry[] = [];
   for (const entry of entries) {
     const url = entry.url.trim();
-    if (!url) continue;
+    if (!url || isBlockedLiveSource({ name: entry.name, url })) continue;
     prepared.push({
       key: await urlToKey(url),
       url,
@@ -270,7 +271,7 @@ export async function liveSourcesToTVBoxLives(
  */
 export async function listLiveProxyEntries(storage: Storage): Promise<LiveProxyManifestEntry[]> {
   const manifest = parseLiveProxyManifest(await storage.get(KV_LIVE_PROXY_MANIFEST));
-  return manifest?.entries ?? [];
+  return (manifest?.entries ?? []).filter((entry) => !isBlockedLiveSource(entry));
 }
 
 /**
@@ -281,7 +282,7 @@ export async function removeLiveProxyEntry(key: string, storage: Storage): Promi
   const raw = await storage.get(KV_LIVE_PROXY_MANIFEST);
   const manifest = parseLiveProxyManifest(raw);
   if (!manifest) return false;
-  const entries = manifest.entries.filter((entry) => entry.key !== key);
+  const entries = manifest.entries.filter((entry) => entry.key !== key && !isBlockedLiveSource(entry));
   if (entries.length === manifest.entries.length) return false;
   const next: LiveProxyManifest = {
     version: LIVE_PROXY_MANIFEST_VERSION,

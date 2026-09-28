@@ -8,6 +8,7 @@ import {
   KV_CHANNEL_PROBE_STATUS,
   KV_CHANNEL_PROBE_ENABLED,
   KV_CHANNEL_MERGED_TREE,
+  KV_LIVE_MERGE_MODE,
   KV_LIVE_MERGED_TXT,
   KV_LIVE_MERGED_TXT_VERSION,
   KV_LIVE_RUNTIME_TXT_VERSION,
@@ -16,7 +17,7 @@ import {
   CHANNEL_SPEED_TTL_MS,
   TVBOX_UA,
 } from './config';
-import { applyChannelSpeedToGroups, extractAllUrls, formatLiveGroupsAsTxt } from './live-merger';
+import { AGGREGATED_MAX_URLS_PER_CHANNEL, applyChannelSpeedToGroups, extractAllUrls, formatLiveGroupsAsTxt } from './live-merger';
 
 // ─── 开关/状态 ─────────────────────────────────────────
 
@@ -434,8 +435,10 @@ export async function runChannelProbe(storage: Storage): Promise<ChannelProbeSta
     await saveSpeedMap(storage, fresh);
 
     // 测速完成后立即刷新 /live 的预生成内容。若过滤结果为空，保留上一版，
-    // 避免一次异常测速把直播频道全部清空。
-    const filteredGroups = applyChannelSpeedToGroups(groups, fresh);
+    // 避免一次异常测速把直播频道全部清空。聚合模式最多保留 9 路，分离模式 6 路。
+    const liveMergeMode = (await storage.get(KV_LIVE_MERGE_MODE)) || 'separated';
+    const maxUrlsPerChannel = liveMergeMode === 'merged' ? AGGREGATED_MAX_URLS_PER_CHANNEL : 6;
+    const filteredGroups = applyChannelSpeedToGroups(groups, fresh, undefined, maxUrlsPerChannel);
     if (filteredGroups.length > 0) {
       const liveVersion = `probe-${Date.now()}`;
       await Promise.all([

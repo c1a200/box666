@@ -9,6 +9,7 @@ import type {
 } from './types';
 import type { Storage } from '../storage/interface';
 import { TVBOX_UA, BROWSER_UA, KV_LIVE_SOURCE_CACHE } from './config';
+import { isBlockedLiveSource, isBlockedLiveUrl } from './live-policy';
 
 // ─── 输入条目 ──────────────────────────────────────────
 
@@ -169,6 +170,7 @@ interface ChannelEntry {
 const AD_KEYWORDS = /广告|购物|福利|加微|微\s*信|群|客\s*服|优惠|测试|测\s*试|防走失|专属|添加|关注|订阅|赞助/i;
 
 const SEPARATED_MAX_URLS_PER_CHANNEL = 6;
+export const AGGREGATED_MAX_URLS_PER_CHANNEL = 9;
 const SEPARATED_MAX_CHANNELS = 12000;
 const LIVE_KNOWN_MAX_SPEED_MS = 5000;
 const SEPARATED_MIN_CHANNELS_PER_SOURCE = 5;
@@ -364,6 +366,19 @@ async function downloadLive(
   stats: LiveDownloadStats,
   browserFallback = true,
 ): Promise<DownloadOutcome> {
+  // Blocked sources are treated as permanently invalid and never hit the network
+  // or a stale cache. This also removes them from regenerated manifests.
+  if (isBlockedLiveSource(input)) {
+    return {
+      content: null,
+      failure: 'invalid',
+      reason: 'blocked source',
+      cacheHit: false,
+      revalidated: false,
+      staleFallback: false,
+    };
+  }
+
   const key = liveCacheKey(input, browserFallback);
   const cached = liveSourceMemoryCache.get(key);
   const now = Date.now();
@@ -650,8 +665,11 @@ export async function mergeLivesToNative(
       return ssA - ssB;
     });
 
+    // Render 聚合模式每个频道最多保留 9 条线路，避免客户端加载过慢。
+    const limitedUrlList = urlList.slice(0, AGGREGATED_MAX_URLS_PER_CHANNEL);
+
     // 拼 $ 源名（URL 预防性 encode 避免 type 泄漏）
-    const urlStrs = urlList.map((e) => `${scrubUrlType(e.url)}$${scrubTypeLiteral(e.source)}`);
+    const urlStrs = limitedUrlList.map((e) => `${scrubUrlType(e.url)}$${scrubTypeLiteral(e.source)}`);
     totalUrls += urlStrs.length;
 
     const channel: TVBoxLiveChannel = {
@@ -742,7 +760,7 @@ export async function mergeLivesToNative(
 }
 
 /**
- * 按源分类模式：每个源独立解析，用「源名」前缀拼接 group 名，不做跨源去重
+ * 按源分类模式：每个源独立解析，保留上游 group 名，不做跨源去重
  */
 export async function separatedMergeLives(
   sources: LiveSourceInput[],
@@ -810,14 +828,14 @@ export async function separatedMergeLives(
         byGroup.get(group)!.push(channel);
       }
 
-      // 用「源名」前缀拼接 group 名
+      // 保留上游 group 名，频道线路仍带 $源名 后缀
       for (const [group, channels] of byGroup) {
         if (totalChannels >= SEPARATED_MAX_CHANNELS) break;
         const remaining = SEPARATED_MAX_CHANNELS - totalChannels;
         const limited = channels.slice(0, remaining);
         if (limited.length === 0) continue;
 
-        allGroups.push({ group: `「${scrubTypeLiteral(sourceName)}」${group}`, channels: limited });
+        allGroups.push({ group: scrubTypeLiteral(group), channels: limited });
         totalChannels += limited.length;
         for (const channel of limited) totalUrls += channel.urls.length;
       }
@@ -872,6 +890,7 @@ export function applyChannelSpeedToGroups(
   groups: TVBoxLiveGroup[],
   speedMap: ChannelSpeedMap,
   maxSpeedMs = LIVE_KNOWN_MAX_SPEED_MS,
+  maxUrlsPerChannel = SEPARATED_MAX_URLS_PER_CHANNEL,
 ): TVBoxLiveGroup[] {
   const speedLimit = Math.max(0, maxSpeedMs);
   const output: TVBoxLiveGroup[] = [];
@@ -903,7 +922,7 @@ export function applyChannelSpeedToGroups(
         return a.index - b.index;
       });
 
-      const urls = ranked.slice(0, SEPARATED_MAX_URLS_PER_CHANNEL).map((item) => item.url);
+      const urls = ranked.slice(0, Math.max(1, maxUrlsPerChannel)).map((item) => item.url);
       if (urls.length > 0) channels.push({ ...channel, urls });
     }
     if (channels.length > 0) output.push({ ...group, channels });
@@ -925,6 +944,7 @@ export async function fetchAndParseLiveUrls(
 
   const results = await Promise.allSettled(
     urls.map(async (input) => {
+      if (isBlockedLiveSource(input)) return null;
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       try {
@@ -949,7 +969,7 @@ export async function fetchAndParseLiveUrls(
     if (r.status !== 'fulfilled' || !r.value) continue;
     let entries = parseLiveContent(r.value.content, r.value.name);
     // 过滤广告频道
-    entries = entries.filter(e => !AD_KEYWORDS.test(e.name) && !AD_KEYWORDS.test(e.group));
+    entries = entries.filter(e => !isBlockedLiveUrl(e.url) && !AD_KEYWORDS.test(e.name) && !AD_KEYWORDS.test(e.group));
     allEntries.push(...entries);
   }
 
@@ -1056,7 +1076,7 @@ function isPrivateOrLocalHostname(hostname: string): boolean {
 
 function isUsableLiveUrl(raw: string): boolean {
   const url = raw.trim();
-  if (!url || BAD_LIVE_URL.test(url)) return false;
+  if (!url || BAD_LIVE_URL.test(url) || isBlockedLiveUrl(url)) return false;
   if (!/^https?:\/\//i.test(url)) return false;
   try {
     const parsed = new URL(url);
@@ -1257,9 +1277,16 @@ export async function filterLiveSourcesDetailed(
 ): Promise<FilteredLiveSourceResult> {
   if (sources.length === 0) return { valid: [], invalid: [], transient: [] };
 
+  const blocked = sources.filter(isBlockedLiveSource);
+  const candidates = blocked.length > 0 ? sources.filter((source) => !isBlockedLiveSource(source)) : sources;
+  if (blocked.length > 0) {
+    console.log('[live-merger] Blocked live sources: ' + blocked.map((source) => sanitizeTxtLabel(source.name || 'source', 'source')).join(', '));
+  }
+  if (candidates.length === 0) return { valid: [], invalid: blocked, transient: [] };
+
   const concurrency = Math.max(1, options.concurrency ?? 3);
   const batched = await downloadLiveBatched(
-    sources,
+    candidates,
     timeoutMs,
     concurrency,
     options.storage,
@@ -1273,7 +1300,7 @@ export async function filterLiveSourcesDetailed(
   for (let i = 0; i < batched.results.length; i++) {
     const result = batched.results[i];
     if (result.status !== 'fulfilled') {
-      transient.push(sources[i]);
+      transient.push(candidates[i]);
       continue;
     }
     const { input, outcome } = result.value;
@@ -1304,8 +1331,8 @@ export async function filterLiveSourcesDetailed(
     valid.push(input);
   }
 
-  console.log(`[live-merger] Validated ${valid.length}/${sources.length} live sources (invalid=${invalid.length}, transient=${transient.length})`);
-  return { valid, invalid, transient };
+  console.log(`[live-merger] Validated ${valid.length}/${sources.length} live sources (invalid=${invalid.length + blocked.length}, transient=${transient.length})`);
+  return { valid, invalid: [...invalid, ...blocked], transient };
 }
 
 /**
@@ -1335,6 +1362,10 @@ export async function filterLivesBySourceDetailed(
   options: FilteredLiveOptions = {},
 ): Promise<FilteredLiveGroupsResult> {
   if (urls.length === 0) return { groups: [] };
+  const candidates = urls.filter((input) => !isBlockedLiveSource(input));
+  if (candidates.length === 0) {
+    return { groups: [], failure: 'invalid', reason: 'blocked source' };
+  }
 
   const maxUrlsPerChannel = Math.max(1, options.maxUrlsPerChannel ?? SEPARATED_MAX_URLS_PER_CHANNEL);
   const maxChannels = Math.max(0, options.maxChannels ?? 0);
@@ -1346,7 +1377,7 @@ export async function filterLivesBySourceDetailed(
     && (options.useCache === true || options.storage !== undefined || options.concurrency !== undefined);
   if (useBatchedDownloads) {
     const batched = await downloadLiveBatched(
-      urls.map((input) => ({
+      candidates.map((input) => ({
         name: input.name || 'source',
         url: input.url,
         ua: input.ua,
@@ -1371,7 +1402,7 @@ export async function filterLivesBySourceDetailed(
     });
   } else {
     results = await Promise.allSettled(
-      urls.map(async (input) => {
+      candidates.map(async (input) => {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), timeoutMs);
         try {
@@ -1443,7 +1474,7 @@ export async function filterLivesBySourceDetailed(
         if (maxChannels > 0 && emittedChannels >= maxChannels) break;
         const limited = maxChannels > 0 ? channels.slice(0, maxChannels - emittedChannels) : channels;
         if (limited.length === 0) continue;
-        groups.push({ group: `「${scrubTypeLiteral(sourceName)}」${group}`, channels: limited });
+        groups.push({ group: scrubTypeLiteral(group), channels: limited });
         emittedChannels += limited.length;
       }
     } else {
