@@ -22,7 +22,7 @@ function defaultQuickSearchLimit(): number {
 function defaultParseLimit(): number {
   // 客户端启动时会逐个初始化解析器；只保留响应最快的健康项。
   // 启动阶段每个解析器都可能串行等待，10 个会直接放大成十几秒。
-  return isNodeRuntime() ? 6 : 5;
+  return isNodeRuntime() ? 3 : 3;
 }
 
 function createDefaultSearchQuota(): SearchQuotaConfig {
@@ -373,6 +373,7 @@ export async function probeAndPruneParses(
         definitiveResponses++;
         keep = (status >= 200 && status < 400) || status === 401 || status === 403 || status === 429;
         // 401/403/429 可能是地区限制、鉴权或临时限流，不能据此永久删除。
+        // 其他 4xx/5xx 是已证实的失效入口，保留在 keep=false 分支等待剔除。
         if (!keep) httpErrors++;
       } catch (error: unknown) {
         if (error instanceof Error && error.name === 'AbortError') {
