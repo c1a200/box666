@@ -346,14 +346,26 @@ export function createApp(deps: AppDeps): Hono {
     const keptSites = sites
       .filter((site) => site.type !== 3 || pinnedKeys.has(site.key))
       .map((site) => {
-        if (site.searchable !== 1 || !site.quickSearch) return site;
-        if (!pinnedKeys.has(site.key) && startupQuickLimit > 0 && quickSeen >= startupQuickLimit) {
-          return { ...site, quickSearch: 0 };
+        if (site.searchable !== 1) return site;
+        const isPinned = pinnedKeys.has(site.key);
+        // 根地址只让启动快速源参与搜索；其余源仍保留在列表中，但不再
+        // 触发客户端启动阶段初始化。完整配置仍可通过 /config-full.json 获取。
+        if (!isPinned && startupQuickLimit > 0 && quickSeen >= startupQuickLimit) {
+          return { ...site, searchable: 0, quickSearch: 0 };
+        }
+        if (!isPinned && site.quickSearch === 0) {
+          return { ...site, searchable: 0 };
         }
         quickSeen++;
         return site;
       });
     parsed.sites = keptSites;
+
+    // CF 分离模式在根配置中保留少量最快的直播入口；完整直播清单仍在
+    // /live.json 和 /config-full.json 中，Render 的单个聚合入口不受影响。
+    if (config.workerBaseUrl && Array.isArray(parsed.lives) && parsed.lives.length > 4) {
+      parsed.lives = parsed.lives.slice(0, 4);
+    }
 
     const parses = Array.isArray(parsed.parses) ? parsed.parses : [];
     const maxParses = quota.maxParses ?? 0;
