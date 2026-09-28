@@ -22,7 +22,7 @@ import { generateQR, pollQRStatus, passwordLogin, PLATFORM_NAMES, QR_PLATFORMS, 
 import { assessAllSources } from './core/credential-risk';
 import { generateTokenJson } from './core/credential-injector';
 import { formatLiveGroupsAsTxt, filterLivesBySource, filterLivesBySourceDetailed } from './core/live-merger';
-import { isBlockedLiveSource } from './core/live-policy';
+import { containsBlockedLiveUrl, isBlockedLiveSource, isBlockedLiveUrl } from './core/live-policy';
 import type { TVBoxConfig, SearchQuotaConfig, CloudPlatform, CloudCredential, TVBoxLive, TVBoxLiveGroup } from './core/types';
 import { mountChannelProbeRoutes } from './routes/channel-probe-admin';
 import { loadSpeedMap as loadChannelSpeedMap } from './core/channel-probe';
@@ -98,7 +98,28 @@ function normalizeImportedLives(parsed: unknown): LiveSourceEntry[] {
       url,
     };
     if (typeof record.disabled === 'boolean') entry.disabled = record.disabled;
+    if (isBlockedLiveSource(entry)) continue;
     result.push(entry);
+  }
+  return result;
+}
+
+function filterBlockedLiveEntries(lives: TVBoxLive[]): TVBoxLive[] {
+  const result: TVBoxLive[] = [];
+  for (const live of lives) {
+    if (Array.isArray(live.channels)) {
+      const channels = live.channels
+        .map((channel) => ({
+          ...channel,
+          urls: channel.urls.filter((url) => !isBlockedLiveUrl(url)),
+        }))
+        .filter((channel) => channel.urls.length > 0);
+      if (channels.length > 0) result.push({ ...live, channels });
+      continue;
+    }
+
+    const url = live.url || live.api || '';
+    if (!isBlockedLiveSource({ name: live.name, url })) result.push(live);
   }
   return result;
 }
@@ -337,8 +358,12 @@ export function createApp(deps: AppDeps): Hono {
     // 优先返回聚合阶段预生成的 txt，避免每次请求都实时下载/合并直播源。
     const prebuiltTxt = await storage.get(KV_LIVE_MERGED_TXT);
     // 空字符串也是有效结果（例如直播被禁用/没有可用频道），
-    // 必须直接返回，不能回退到慢速实时解析。
-    if (prebuiltTxt !== null && prebuiltTxt !== KV_LIVE_MERGED_TXT_FALLBACK) {
+    // 必须直接返回，不能回退到慢速实时解析；但包含已屏蔽线路的旧缓存必须重建。
+    if (
+      prebuiltTxt !== null
+      && prebuiltTxt !== KV_LIVE_MERGED_TXT_FALLBACK
+      && !containsBlockedLiveUrl(prebuiltTxt)
+    ) {
       return c.body(applyBaseUrlPlaceholder(prebuiltTxt, baseUrl), 200, {
         'Content-Type': 'text/plain; charset=utf-8',
         'Cache-Control': 'public, max-age=1800, stale-while-revalidate=86400',
@@ -353,7 +378,7 @@ export function createApp(deps: AppDeps): Hono {
     const runtimeVersion = await storage.get(KV_LIVE_RUNTIME_TXT_VERSION);
     const runtimeTxt = await storage.get(KV_LIVE_RUNTIME_TXT);
     const runtimeVersionMatches = runtimeVersion !== null && runtimeVersion === (mergedVersion || 'legacy');
-    const hasRuntimeTxt = Boolean(runtimeTxt && runtimeTxt.trim());
+    const hasRuntimeTxt = Boolean(runtimeTxt && runtimeTxt.trim() && !containsBlockedLiveUrl(runtimeTxt));
     if (hasRuntimeTxt && runtimeVersionMatches) {
       return c.body(applyBaseUrlPlaceholder(runtimeTxt!, baseUrl), 200, {
         'Content-Type': 'text/plain; charset=utf-8',
@@ -394,9 +419,14 @@ export function createApp(deps: AppDeps): Hono {
       }
     }
 
-    // 过滤掉指向自身或 live.json 的单条目，防止死循环
+    // 过滤掉指向自身或 live.json 的单条目，防止死循环；同时应用共享屏蔽策略，
+    // 避免旧缓存或未重跑聚合时把已屏蔽源重新暴露。
     if (Array.isArray(lives)) {
-      lives = lives.filter(l => !(l.url && (l.url.endsWith('/live') || l.url.endsWith('/live-config') || l.url.endsWith('/live.json'))));
+      lives = filterBlockedLiveEntries(lives as TVBoxLive[]);
+      lives = lives.filter((live) => {
+        const url = live.url || live.api || '';
+        return !(url && (url.endsWith('/live') || url.endsWith('/live-config') || url.endsWith('/live.json')));
+      });
     }
 
     try {
@@ -412,7 +442,9 @@ export function createApp(deps: AppDeps): Hono {
           if (entry.type === 3 || url === 'yqk' || typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
             continue;
           }
-          liveUrls.push({ name: entry.name || url, url, header: entry.header });
+          const liveSource = { name: entry.name || url, url };
+          if (isBlockedLiveSource(liveSource)) continue;
+          liveUrls.push({ ...liveSource, header: entry.header });
         }
         if (liveUrls.length > 0) {
           const resolvedUrls = liveUrls.map(u => ({
@@ -610,6 +642,8 @@ export function createApp(deps: AppDeps): Hono {
         return c.json({ error: 'Config parse error' }, 500);
       }
     }
+
+    lives = filterBlockedLiveEntries(lives);
 
     return c.body(JSON.stringify({ lives }), 200, {
       'Content-Type': 'application/json; charset=utf-8',
@@ -1408,7 +1442,7 @@ export function createApp(deps: AppDeps): Hono {
       const cache = (caches as any).default as Cache;
       // Version the live cache key so updated grouping/filter policy is not hidden
       // by an old cached live text response after deployment.
-      const cacheKey = new Request(`https://live-cache.internal/live/${encodeURIComponent(key)}?v=20260928-2`);
+      const cacheKey = new Request(`https://live-cache.internal/live/${encodeURIComponent(key)}?v=20260928-3`);
       const cached = await cache.match(cacheKey);
       if (cached) {
         const cachedText = await cached.clone().text();
@@ -1548,7 +1582,7 @@ export function createApp(deps: AppDeps): Hono {
     }
     const raw = await storage.get(KV_LIVE_SOURCES);
     const entries: LiveSourceEntry[] = raw ? JSON.parse(raw) : [];
-    return c.json(entries);
+    return c.json(entries.filter((entry) => !isBlockedLiveSource(entry)));
   });
 
   app.get('/admin/lives/export', async (c) => {
@@ -1557,7 +1591,7 @@ export function createApp(deps: AppDeps): Hono {
     }
     const raw = await storage.get(KV_LIVE_SOURCES);
     const entries: LiveSourceEntry[] = raw ? JSON.parse(raw) : [];
-    return c.json(entries);
+    return c.json(entries.filter((entry) => !isBlockedLiveSource(entry)));
   });
 
   app.post('/admin/lives/import', async (c) => {
@@ -1652,6 +1686,9 @@ export function createApp(deps: AppDeps): Hono {
     }
 
     const name = body.name?.trim() || autoNameFromUrl(url);
+    if (isBlockedLiveSource({ name, url })) {
+      return c.json({ error: 'This live source is blocked by policy' }, 400);
+    }
     const raw = await storage.get(KV_LIVE_SOURCES);
     const entries: LiveSourceEntry[] = raw ? JSON.parse(raw) : [];
 
@@ -1715,6 +1752,9 @@ export function createApp(deps: AppDeps): Hono {
     }
 
     const name = body.name?.trim() || autoNameFromUrl(url);
+    if (isBlockedLiveSource({ name, url })) {
+      return c.json({ error: 'This live source is blocked by policy' }, 400);
+    }
     const raw = await storage.get(KV_LIVE_SOURCES);
     const entries: LiveSourceEntry[] = raw ? JSON.parse(raw) : [];
 
@@ -1757,6 +1797,9 @@ export function createApp(deps: AppDeps): Hono {
     const entries: LiveSourceEntry[] = raw ? JSON.parse(raw) : [];
     const entry = entries.find((e) => e.url === url);
     if (!entry) return c.json({ error: 'Source not found' }, 404);
+    if (!body.disabled && isBlockedLiveSource(entry)) {
+      return c.json({ error: 'This live source is blocked by policy' }, 400);
+    }
 
     entry.disabled = !!body.disabled;
     await storage.put(KV_LIVE_SOURCES, JSON.stringify(entries));
