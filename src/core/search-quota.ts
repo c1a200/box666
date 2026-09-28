@@ -3,7 +3,7 @@
 import type { TVBoxParse, TVBoxSite, SearchQuotaConfig, SearchQuotaReport } from './types';
 import type { Storage } from '../storage/interface';
 import { KV_SEARCH_QUOTA } from './config';
-const QUOTA_SCHEMA_VERSION = 4;
+const QUOTA_SCHEMA_VERSION = 5;
 
 function isNodeRuntime(): boolean {
   return typeof process !== 'undefined' && !!process.env.PORT;
@@ -73,7 +73,7 @@ export async function loadSearchQuota(storage: Storage): Promise<SearchQuotaConf
         maxQuickSearch: autoLimit
           ? (normalizeLimit(parsed.maxQuickSearch) || fallback.maxQuickSearch)
           : normalizeLimit(parsed.maxQuickSearch),
-        maxStartupQuickSearch: (isLegacyQuota || typeof parsed.maxStartupQuickSearch !== 'number')
+        maxStartupQuickSearch: (isLegacyQuota || !normalizeLimit(parsed.maxStartupQuickSearch))
           ? fallback.maxStartupQuickSearch
           : normalizeLimit(parsed.maxStartupQuickSearch),
         // schema 升级必须采用新的安全上限，不能继承旧版本 maxParses=10。
