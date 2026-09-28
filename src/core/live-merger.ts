@@ -35,8 +35,29 @@ interface CachedLiveSource {
   lastModified?: string;
 }
 
+export type LiveDownloadFailure = 'transient' | 'invalid';
+
+function failureFromHttpStatus(status: number): LiveDownloadFailure {
+  return status === 408 || status === 425 || status === 429 || status >= 500
+    ? 'transient'
+    : 'invalid';
+}
+
+function looksLikeHtmlError(content: string): boolean {
+  const head = content.slice(0, 2048);
+  return /<!doctype\s+html|<html[\s>]|<head[\s>]|<body[\s>]|cloudflare|attention required|error\s+5\d\d/i.test(head);
+}
+
+function looksLikeLivePayload(content: string, contentType: string): boolean {
+  if (!content || content.length <= 20 || looksLikeHtmlError(content)) return false;
+  if (/#EXTM3U|#EXTINF|#genre#/i.test(content)) return true;
+  return contentType.includes('mpegurl') || contentType.includes('text/plain');
+}
+
 interface DownloadOutcome {
   content: string | null;
+  failure?: LiveDownloadFailure;
+  reason?: string;
   cacheHit: boolean;
   revalidated: boolean;
   staleFallback: boolean;
@@ -333,6 +354,9 @@ async function downloadLive(
   const uas = browserFallback
     ? [input.ua || TVBOX_UA, BROWSER_UA]
     : [input.ua || TVBOX_UA];
+  let lastFailure: LiveDownloadFailure | undefined;
+  let lastReason: string | undefined;
+
   for (const ua of uas) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -352,22 +376,35 @@ async function downloadLive(
         return { content: cached.content, cacheHit: true, revalidated: true, staleFallback: false };
       }
 
-      if (resp.ok) {
-        const text = await resp.text();
-        if (text && text.length > 20) {
-          const entry: CachedLiveSource = {
-            content: text,
-            cachedAt: now,
-            lastAccess: now,
-            etag: resp.headers.get('etag') || undefined,
-            lastModified: resp.headers.get('last-modified') || undefined,
-          };
-          liveSourceMemoryCache.set(key, entry);
-          return { content: text, cacheHit: false, revalidated: false, staleFallback: false };
-        }
+      if (!resp.ok) {
+        // 429/5xx/网络类状态是上游暂时不可用，不能据此永久删除入口。
+        lastFailure = failureFromHttpStatus(resp.status);
+        lastReason = `HTTP ${resp.status}`;
+        continue;
       }
-    } catch {
+
+      const contentType = (resp.headers.get('content-type') || '').toLowerCase();
+      const text = await resp.text();
+      if (looksLikeLivePayload(text, contentType)) {
+        const entry: CachedLiveSource = {
+          content: text,
+          cachedAt: now,
+          lastAccess: now,
+          etag: resp.headers.get('etag') || undefined,
+          lastModified: resp.headers.get('last-modified') || undefined,
+        };
+        liveSourceMemoryCache.set(key, entry);
+        return { content: text, cacheHit: false, revalidated: false, staleFallback: false };
+      }
+
+      // 2xx 但不是直播内容（HTML 错误页、JSON、空响应等）确认无效。
+      lastFailure = 'invalid';
+      lastReason = text ? 'unexpected content' : 'empty content';
+    } catch (error: unknown) {
       clearTimeout(timer);
+      // 超时、DNS、连接中断和 Worker fetch 异常都视为暂时失败。
+      lastFailure = 'transient';
+      lastReason = error instanceof Error ? error.message : String(error);
     }
   }
 
@@ -377,7 +414,14 @@ async function downloadLive(
     return { content: cached.content, cacheHit: true, revalidated: false, staleFallback: true };
   }
 
-  return { content: null, cacheHit: false, revalidated: false, staleFallback: false };
+  return {
+    content: null,
+    failure: lastFailure ?? 'transient',
+    reason: lastReason,
+    cacheHit: false,
+    revalidated: false,
+    staleFallback: false,
+  };
 }
 
 async function downloadLiveBatched(
@@ -933,6 +977,14 @@ export interface FilteredLiveOptions {
   concurrency?: number;
   /** 是否启用带缓存、限并发的下载路径 */
   useCache?: boolean;
+  /** 是否保留临时失败的上游入口（默认 true，避免一次限流就清空清单） */
+  preserveTransientFailures?: boolean;
+}
+
+export interface FilteredLiveSourceResult {
+  valid: LiveSourceInput[];
+  invalid: LiveSourceInput[];
+  transient: LiveSourceInput[];
 }
 
 const BAD_LIVE_URL = /^(?:about:blank|data:|javascript:|file:)/i;
@@ -1166,13 +1218,19 @@ function prepareSourceChannels(
  * 且通过频道数量、广告比例和已知线路可播放比例检查的源才会返回。
  * 返回原始输入对象，便于之后复用其 UA/header 或生成代理清单。
  */
-export async function filterValidLiveSources(
+export interface FilteredLiveGroupsResult {
+  groups: TVBoxLiveGroup[];
+  failure?: LiveDownloadFailure;
+  reason?: string;
+}
+
+export async function filterLiveSourcesDetailed(
   sources: LiveSourceInput[],
   timeoutMs = 8000,
   channelSpeedMap?: ChannelSpeedMap,
   options: FilteredLiveOptions = {},
-): Promise<LiveSourceInput[]> {
-  if (sources.length === 0) return [];
+): Promise<FilteredLiveSourceResult> {
+  if (sources.length === 0) return { valid: [], invalid: [], transient: [] };
 
   const concurrency = Math.max(1, options.concurrency ?? 3);
   const batched = await downloadLiveBatched(
@@ -1184,11 +1242,28 @@ export async function filterValidLiveSources(
   );
 
   const valid: LiveSourceInput[] = [];
-  for (const result of batched.results) {
-    if (result.status !== 'fulfilled' || !result.value.outcome.content) continue;
+  const invalid: LiveSourceInput[] = [];
+  const transient: LiveSourceInput[] = [];
+
+  for (let i = 0; i < batched.results.length; i++) {
+    const result = batched.results[i];
+    if (result.status !== 'fulfilled') {
+      transient.push(sources[i]);
+      continue;
+    }
     const { input, outcome } = result.value;
     const content = outcome.content;
-    if (!content) continue;
+    if (!content) {
+      if (outcome.failure === 'invalid') {
+        invalid.push(input);
+        console.log('[live-merger] Invalid live source ' + sanitizeTxtLabel(input.name || 'source', 'source') + ': ' + (outcome.reason || 'download failed'));
+      } else {
+        transient.push(input);
+        console.log('[live-merger] Transient live failure ' + sanitizeTxtLabel(input.name || 'source', 'source') + ': ' + (outcome.reason || 'download failed'));
+      }
+      continue;
+    }
+
     const sourceName = sanitizeTxtLabel(input.name || 'source', 'source');
     const entries = parseLiveContent(content, sourceName, input.speedMs);
     const prepared = prepareSourceChannels(entries, channelSpeedMap, {
@@ -1197,34 +1272,51 @@ export async function filterValidLiveSources(
     });
     const quality = evaluateSourceQuality(prepared, options);
     if (quality.discard) {
+      invalid.push(input);
       console.log('[live-merger] Discarded live source ' + sourceName + ': ' + quality.reason);
       continue;
     }
     valid.push(input);
   }
 
-  console.log(`[live-merger] Validated ${valid.length}/${sources.length} live sources`);
-  return valid;
+  console.log(`[live-merger] Validated ${valid.length}/${sources.length} live sources (invalid=${invalid.length}, transient=${transient.length})`);
+  return { valid, invalid, transient };
+}
+
+/**
+ * 兼容旧调用：只返回已确认有效的源。
+ * 临时失败的上游由调用方按 preserveTransientFailures 决定是否保留。
+ */
+export async function filterValidLiveSources(
+  sources: LiveSourceInput[],
+  timeoutMs = 8000,
+  channelSpeedMap?: ChannelSpeedMap,
+  options: FilteredLiveOptions = {},
+): Promise<LiveSourceInput[]> {
+  const result = await filterLiveSourcesDetailed(sources, timeoutMs, channelSpeedMap, options);
+  return options.preserveTransientFailures === false
+    ? result.valid
+    : [...result.valid, ...result.transient];
 }
 /**
  * 非聚合直播输出：按原始直播源分别解析，只过滤不良频道和线路，不跨源合并频道。
  * 这样应用端仍能区分不同来源，但不会直接拿到上游原始 m3u/txt 中的广告、
  * 失效线路、重复线路以及明显无效地址。
  */
-export async function filterLivesBySource(
+export async function filterLivesBySourceDetailed(
   urls: Array<{ name: string; url: string; ua?: string; header?: Record<string, string> }>,
   timeoutMs = 8000,
   channelSpeedMap?: ChannelSpeedMap,
   options: FilteredLiveOptions = {},
-): Promise<TVBoxLiveGroup[]> {
-  if (urls.length === 0) return [];
+): Promise<FilteredLiveGroupsResult> {
+  if (urls.length === 0) return { groups: [] };
 
   const maxUrlsPerChannel = Math.max(1, options.maxUrlsPerChannel ?? SEPARATED_MAX_URLS_PER_CHANNEL);
   const maxChannels = Math.max(0, options.maxChannels ?? 0);
   const preserveSourceGroups = options.preserveSourceGroups !== false;
   const maxSpeedMs = Math.max(0, options.maxSpeedMs ?? LIVE_KNOWN_MAX_SPEED_MS);
 
-  let results: PromiseSettledResult<{ content: string; name: string } | null>[];
+  let results: PromiseSettledResult<{ content: string; name: string; failure?: LiveDownloadFailure; reason?: string }>[];
   const useBatchedDownloads = options.useCache !== false
     && (options.useCache === true || options.storage !== undefined || options.concurrency !== undefined);
   if (useBatchedDownloads) {
@@ -1240,14 +1332,16 @@ export async function filterLivesBySource(
       options.storage,
       false,
     );
-    results = batched.results.map((result): PromiseSettledResult<{ content: string; name: string } | null> => {
+    results = batched.results.map((result): PromiseSettledResult<{ content: string; name: string; failure?: LiveDownloadFailure; reason?: string }> => {
       if (result.status !== 'fulfilled') {
         return { status: 'rejected', reason: result.reason };
       }
       const { outcome, input } = result.value;
       return {
         status: 'fulfilled',
-        value: outcome.content ? { content: outcome.content, name: input.name || 'source' } : null,
+        value: outcome.content
+          ? { content: outcome.content, name: input.name || 'source' }
+          : { content: '', name: input.name || 'source', failure: outcome.failure, reason: outcome.reason },
       };
     });
   } else {
@@ -1260,12 +1354,17 @@ export async function filterLivesBySource(
             signal: controller.signal,
             headers: { 'User-Agent': input.ua || TVBOX_UA, ...(input.header || {}) },
           });
-          if (!resp.ok) return null;
+          if (!resp.ok) {
+            return { content: '', name: input.name || 'source', failure: failureFromHttpStatus(resp.status), reason: `HTTP ${resp.status}` };
+          }
+          const contentType = (resp.headers.get('content-type') || '').toLowerCase();
           const text = await resp.text();
-          if (!text || text.length < 20) return null;
+          if (!looksLikeLivePayload(text, contentType)) {
+            return { content: '', name: input.name || 'source', failure: 'invalid', reason: text ? 'unexpected content' : 'empty content' };
+          }
           return { content: text, name: input.name || 'source' };
-        } catch {
-          return null;
+        } catch (error: unknown) {
+          return { content: '', name: input.name || 'source', failure: 'transient', reason: error instanceof Error ? error.message : String(error) };
         } finally {
           clearTimeout(timer);
         }
@@ -1276,8 +1375,24 @@ export async function filterLivesBySource(
   const groups: TVBoxLiveGroup[] = [];
   let emittedChannels = 0;
 
+  let hasTransientFailure = false;
+  let hasInvalidFailure = false;
+  let reason: string | undefined;
   for (const result of results) {
-    if (result.status !== 'fulfilled' || !result.value) continue;
+    if (result.status !== 'fulfilled' || !result.value) {
+      hasTransientFailure = true;
+      reason ??= result.status === 'rejected' ? String(result.reason) : undefined;
+      continue;
+    }
+    if (!result.value.content) {
+      if (result.value.failure === 'invalid') {
+        hasInvalidFailure = true;
+      } else {
+        hasTransientFailure = true;
+      }
+      reason ??= result.value.reason;
+      continue;
+    }
     const sourceName = sanitizeTxtLabel(result.value.name || 'source', 'source');
     const entries = parseLiveContent(result.value.content, sourceName);
     const prepared = prepareSourceChannels(entries, channelSpeedMap, {
@@ -1287,6 +1402,8 @@ export async function filterLivesBySource(
 
     const quality = evaluateSourceQuality(prepared, options);
     if (quality.discard) {
+      hasInvalidFailure = true;
+      reason = quality.reason;
       console.log('[live-merger] Discarded live source ' + sourceName + ': ' + quality.reason);
       continue;
     }
@@ -1315,5 +1432,28 @@ export async function filterLivesBySource(
     if (maxChannels > 0 && emittedChannels >= maxChannels) break;
   }
 
-  return groups;
+  return {
+    groups,
+    failure: groups.length > 0
+      ? undefined
+      : hasTransientFailure
+        ? 'transient'
+        : hasInvalidFailure
+          ? 'invalid'
+          : undefined,
+    reason: groups.length > 0 ? undefined : reason,
+  };
+}
+
+/**
+ * 兼容旧调用：仅返回已生成的分组。
+ */
+export async function filterLivesBySource(
+  urls: Array<{ name: string; url: string; ua?: string; header?: Record<string, string> }>,
+  timeoutMs = 8000,
+  channelSpeedMap?: ChannelSpeedMap,
+  options: FilteredLiveOptions = {},
+): Promise<TVBoxLiveGroup[]> {
+  const result = await filterLivesBySourceDetailed(urls, timeoutMs, channelSpeedMap, options);
+  return result.groups;
 }

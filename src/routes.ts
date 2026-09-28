@@ -21,7 +21,7 @@ import { loadCredentials, saveCredential, deleteCredential, loadCredentialPolicy
 import { generateQR, pollQRStatus, passwordLogin, PLATFORM_NAMES, QR_PLATFORMS, PASSWORD_PLATFORMS } from './core/cloud-login';
 import { assessAllSources } from './core/credential-risk';
 import { generateTokenJson } from './core/credential-injector';
-import { formatLiveGroupsAsTxt, filterLivesBySource } from './core/live-merger';
+import { formatLiveGroupsAsTxt, filterLivesBySource, filterLivesBySourceDetailed } from './core/live-merger';
 import type { TVBoxConfig, SearchQuotaConfig, CloudPlatform, CloudCredential, TVBoxLive, TVBoxLiveGroup } from './core/types';
 import { mountChannelProbeRoutes } from './routes/channel-probe-admin';
 import { loadSpeedMap as loadChannelSpeedMap } from './core/channel-probe';
@@ -1412,9 +1412,9 @@ export function createApp(deps: AppDeps): Hono {
         if (cachedText.trim() && cachedText.includes('#genre#')) {
           return cached;
         }
+        // 缓存内容异常不代表上游永久失效；仅清除坏缓存并让客户端稍后重试。
         await cache.delete(cacheKey);
-        await removeLiveProxyEntry(key, storage);
-        return c.json({ error: 'Invalid or empty live source' }, 404, {
+        return c.json({ error: 'Cached live source is invalid or empty' }, 502, {
           'Cache-Control': 'no-store',
           'Access-Control-Allow-Origin': '*',
         });
@@ -1430,7 +1430,7 @@ export function createApp(deps: AppDeps): Hono {
 
       try {
         const channelSpeedMap = await loadChannelSpeedMap(storage);
-        const groups = await filterLivesBySource(
+        const result = await filterLivesBySourceDetailed(
           [{ name: source.name || '直播源', url: source.url, ua: source.ua, header: source.header }],
           isCfRuntime ? 4500 : 8000,
           channelSpeedMap,
@@ -1446,11 +1446,21 @@ export function createApp(deps: AppDeps): Hono {
           },
         );
 
-        const text = formatLiveGroupsAsTxt(groups);
+        const text = formatLiveGroupsAsTxt(result.groups);
         if (!text.trim() || !text.includes('#genre#')) {
+          if (result.failure === 'invalid') {
+            // 下载成功但确认质量不合格：永久删除该入口。
+            await cache.delete(cacheKey);
+            await removeLiveProxyEntry(key, storage);
+            return c.json({ error: 'Invalid or empty live source' }, 404, {
+              'Cache-Control': 'no-store',
+              'Access-Control-Allow-Origin': '*',
+            });
+          }
+
+          // 超时、限流、5xx、网络异常等临时失败：返回 502，保留 manifest 入口。
           await cache.delete(cacheKey);
-          await removeLiveProxyEntry(key, storage);
-          return c.json({ error: 'Invalid or empty live source' }, 404, {
+          return c.json({ error: result.reason || 'Live source temporarily unavailable' }, 502, {
             'Cache-Control': 'no-store',
             'Access-Control-Allow-Origin': '*',
           });
