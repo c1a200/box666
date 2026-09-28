@@ -4,7 +4,7 @@ import { Hono } from 'hono';
 import { MemoryCachedStorage } from './storage/cached';
 import type { Storage } from './storage/interface';
 import type { AppConfig, MacCMSSourceEntry, LiveSourceEntry, NameTransformConfig, EdgeProxyConfig } from './core/types';
-import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_MANUAL_SOURCES, KV_LAST_UPDATE, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_RUNTIME_TXT, KV_LIVE_RUNTIME_TXT_VERSION, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, LIVE_PROXY_TTL, IMG_PROXY_TTL, KV_NAME_TRANSFORM, KV_CRON_INTERVAL, DEFAULT_CRON_INTERVAL, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_PARSE_HEALTH_REPORT, KV_AGG_LOGS, KV_BG_SETTINGS, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, KV_SMART_BASE_URL_ENABLED, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SITE_HEALTH_MAP, KV_CHANNEL_MERGED_TREE, KV_LIVE_TEXT_PREFIX } from './core/config';
+import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_STARTUP_SITE_POOL, KV_MANUAL_SOURCES, KV_LAST_UPDATE, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_RUNTIME_TXT, KV_LIVE_RUNTIME_TXT_VERSION, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, LIVE_PROXY_TTL, IMG_PROXY_TTL, KV_NAME_TRANSFORM, KV_CRON_INTERVAL, DEFAULT_CRON_INTERVAL, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_PARSE_HEALTH_REPORT, KV_AGG_LOGS, KV_BG_SETTINGS, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, KV_SMART_BASE_URL_ENABLED, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SITE_HEALTH_MAP, KV_CHANNEL_MERGED_TREE, KV_LIVE_TEXT_PREFIX } from './core/config';
 import { getRequestBaseUrl, applyBaseUrlPlaceholder, assertHostAllowed } from './core/base-url';
 import { logger } from './core/logger';
 import { loadGroupOrder, saveGroupOrder } from './core/group-order';
@@ -317,10 +317,22 @@ export function createApp(deps: AppDeps): Hono {
     return repaired;
   }
   /**
+   * 解析根地址的动态启动源数量参数。
+   * 支持 ?sites=N，并兼容 ?search=N / ?startup=N；非法值按未传处理。
+   */
+  function parseStartupSiteLimit(c: { req: { query: (name: string) => string | undefined } }): number | undefined {
+    const raw = c.req.query('sites') || c.req.query('search') || c.req.query('startup');
+    if (!raw || !/^\d+$/.test(raw)) return undefined;
+    const value = Number(raw);
+    if (!Number.isSafeInteger(value) || value < 1) return undefined;
+    return Math.min(value, 1000);
+  }
+
+  /**
    * 客户端启动配置裁剪。完整聚合结果始终保存在 KV_MERGED_CONFIG，
    * 根地址默认只返回启动必需项，避免影视仓串行初始化大量远程 JAR/解析器。
    */
-  async function buildStartupConfig(cached: string): Promise<string> {
+  async function buildStartupConfig(cached: string, dynamicSiteLimit?: number): Promise<string> {
     let quota: SearchQuotaConfig;
     try {
       quota = await loadSearchQuota(storage);
@@ -339,16 +351,42 @@ export function createApp(deps: AppDeps): Hono {
     const pinnedKeys = new Set(quota.pinnedKeys || []);
     const startupQuickLimit = quota.maxStartupQuickSearch ?? 0;
     let quickSeen = 0;
-    const sites = Array.isArray(parsed.sites) ? parsed.sites : [];
+    let dynamicSeen = 0;
+    let sites = Array.isArray(parsed.sites) ? parsed.sites : [];
+    if (dynamicSiteLimit && dynamicSiteLimit > 0) {
+      // 动态数量只影响本次根配置请求。优先读取未被配额截断的候选池，
+      // 池中顺序已经是“置顶源优先 + 其余按保存的测速结果排序”。
+      try {
+        const poolRaw = await storage.get(KV_STARTUP_SITE_POOL);
+        if (poolRaw) {
+          const pool = JSON.parse(poolRaw) as { sites?: typeof sites };
+          if (Array.isArray(pool.sites)) {
+            sites = pool.sites.filter((site) => site.type !== 3 || pinnedKeys.has(site.key));
+          }
+        }
+      } catch {
+        // 候选池损坏时回退到当前最终配置，保持旧行为。
+      }
+    }
+
     // 轻量根配置只返回置顶源和少量启动快速源。不要把其余站点仅仅改成
     // searchable=0 后继续放在 sites 中，因为不少客户端仍会初始化这些
     // 站点 API，导致首屏等待几十秒。完整站点仍保留在 /config-full.json
     // 和管理后台中；需要全量站点时把启动模式切到 full。
     const keptSites = sites.filter((site) => {
-      if (pinnedKeys.has(site.key)) return true;
+      if (pinnedKeys.has(site.key)) {
+        if (dynamicSiteLimit && dynamicSiteLimit > 0) dynamicSeen++;
+        return true;
+      }
       if (site.type === 3) return false;
       if (site.searchable !== 1 || site.quickSearch === 0) return false;
-      if (startupQuickLimit > 0 && quickSeen >= startupQuickLimit) return false;
+      if (dynamicSiteLimit && dynamicSiteLimit > 0) {
+        // ?sites=N 按最终启动源总数计算；置顶源即使超过 N 也不会被截断。
+        if (dynamicSeen >= dynamicSiteLimit) return false;
+        dynamicSeen++;
+      } else if (startupQuickLimit > 0 && quickSeen >= startupQuickLimit) {
+        return false;
+      }
       quickSeen++;
       return true;
     });
@@ -394,7 +432,7 @@ export function createApp(deps: AppDeps): Hono {
     }
 
     cached = await repairCfSeparatedLives(cached);
-    cached = await buildStartupConfig(cached);
+    cached = await buildStartupConfig(cached, parseStartupSiteLimit(c));
     const baseUrl = await resolveBaseUrl(c);
     if (baseUrl instanceof Response) return baseUrl;
     cached = applyBaseUrlPlaceholder(cached, baseUrl);

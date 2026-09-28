@@ -12,6 +12,7 @@ export const DEFAULT_SPEED_TEST_BUDGET_MS = 140000; // 单批测速总预算（�
 // KV keys
 export const KV_MERGED_CONFIG = 'merged_config';
 export const KV_MERGED_CONFIG_FULL = 'merged_config_full'; // 黑名单过滤前的完整配置（供配置编辑器使用）
+export const KV_STARTUP_SITE_POOL = 'startup_site_pool'; // 根配置动态裁剪用的完整候选池（已按测速排序，不受 maxSearchable 截断）
 export const KV_SOURCE_URLS = 'source_urls';
 export const KV_LAST_UPDATE = 'last_update';
 export const KV_MANUAL_SOURCES = 'manual_sources';

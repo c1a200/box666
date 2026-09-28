@@ -11,7 +11,7 @@ import { mergeLivesToNative, separatedMergeLives, formatLiveGroupsAsTxt, filterL
 import { loadSpeedMap as loadChannelSpeedMap } from './core/channel-probe';
 import { liveSourcesToTVBoxLives } from './core/live-source';
 import { isBlockedLiveSource, partitionBlockedLiveSources } from './core/live-policy';
-import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_SOURCE_URLS, KV_LAST_UPDATE, KV_MANUAL_SOURCES, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_MERGE_REPORT, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_PARSE_HEALTH_REPORT, KV_CHANNEL_MERGED_TREE, KV_AGG_LOGS, AGG_LOGS_MAX, KV_SITE_SNAPSHOT, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, BASE_URL_PLACEHOLDER, KV_SITE_HEALTH_MAP, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SOURCE_MAP, KV_SOURCE_URL_BLACKLIST } from './core/config';
+import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_STARTUP_SITE_POOL, KV_SOURCE_URLS, KV_LAST_UPDATE, KV_MANUAL_SOURCES, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_MERGE_REPORT, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_PARSE_HEALTH_REPORT, KV_CHANNEL_MERGED_TREE, KV_AGG_LOGS, AGG_LOGS_MAX, KV_SITE_SNAPSHOT, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, BASE_URL_PLACEHOLDER, KV_SITE_HEALTH_MAP, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SOURCE_MAP, KV_SOURCE_URL_BLACKLIST } from './core/config';
 import { loadBlacklist, applyBlacklist, pruneBlacklist, saveBlacklist, siteFingerprint } from './core/blacklist';
 import { transformSiteNames } from './core/cleaner';
 import { parseConfigJson, type FetchProxyConfig } from './core/fetcher';
@@ -605,12 +605,20 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
   // 这样 KV_SEARCH_QUOTA_REPORT 和最终根配置始终使用同一份 sites。
   if (merged.sites) {
     const quotaConfig = await loadSearchQuota(storage);
-    const { sites: quotaSites, quotaReport } = applySearchQuota(merged.sites, quotaConfig, siteSourceMap, {
+    const { sites: quotaSites, candidateSites, quotaReport } = applySearchQuota(merged.sites, quotaConfig, siteSourceMap, {
       speedMap: siteSpeedMap,
       jsExcluded: quotaJsExcluded,
       totalSites: quotaTotalSites,
     });
     merged.sites = quotaSites;
+
+    // 保存动态根配置候选池：已做健康/去重/归一化并按测速排序，但未按
+    // maxSearchable / maxQuickSearch 截断。根地址的 ?sites=N 只读这份池，
+    // 单次请求临时取前 N 个，不会反向修改最终配置或另一套部署的 KV。
+    await storage.put(KV_STARTUP_SITE_POOL, JSON.stringify({
+      updatedAt: new Date().toISOString(),
+      sites: candidateSites,
+    }));
 
     // autoLimit=false 时 0 表示明确不限制；开启时保存前必须满足最终不变量。
     if (quotaConfig.autoLimit && quotaReport.maxSearchable > 0 && quotaReport.searchable > quotaReport.maxSearchable) {

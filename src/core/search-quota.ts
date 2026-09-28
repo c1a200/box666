@@ -131,6 +131,16 @@ function hasRemoteJarOrExt(site: TVBoxSite): boolean {
   );
 }
 
+function withSourceLabel(site: TVBoxSite, siteSourceMap: Map<string, string>): TVBoxSite {
+  if (site.searchable !== 1) return site;
+  const sourceName = siteSourceMap.get(site.key);
+  if (sourceName && site.name && !site.name.includes('「')) {
+    const label = sourceName.length > 6 ? sourceName.substring(0, 6) : sourceName;
+    return { ...site, name: site.name + ' 「' + label + '」' };
+  }
+  return site;
+}
+
 /**
  * 判断站点是否可以在轻量启动模式下剔除。
  *
@@ -177,7 +187,7 @@ export function applySearchQuota(
   config: SearchQuotaConfig,
   siteSourceMap: Map<string, string>,
   options: SearchQuotaApplyOptions = {},
-): { sites: TVBoxSite[]; quotaReport: SearchQuotaReport } {
+): { sites: TVBoxSite[]; candidateSites: TVBoxSite[]; quotaReport: SearchQuotaReport } {
   const limit = normalizeLimit(config.maxSearchable);
   const quickLimit = normalizeLimit(config.maxQuickSearch);
   const speedMap = options.speedMap;
@@ -213,6 +223,14 @@ export function applySearchQuota(
     });
     speedSorted = candidates.some(site => typeof speedMap.get(site.key) === 'number');
   }
+
+  // 保存未受 maxSearchable / maxQuickSearch 截断影响的启动候选池。
+  // 置顶源始终在最前；其余源沿用上面的测速顺序。根地址 ?sites=N
+  // 只在单次请求中从这个池取前 N 个，不会改写最终配置。
+  const startupCandidateSites = [
+    ...pinnedSearchable.filter(site => site.type !== 3 && site.quickSearch !== 0),
+    ...candidates.filter(site => site.type !== 3 && site.searchable === 1 && site.quickSearch !== 0),
+  ];
 
   // 先确定普通搜索保留集合；置顶源不受截断影响。
   let keptCandidates = candidates;
@@ -282,15 +300,8 @@ export function applySearchQuota(
   const leanRemoved = beforeLean - sites.length;
 
   // 来源标识：只给最终仍可搜索的源加标识。
-  sites = sites.map(site => {
-    if (site.searchable !== 1) return site;
-    const sourceName = siteSourceMap.get(site.key);
-    if (sourceName && site.name && !site.name.includes('「')) {
-      const label = sourceName.length > 6 ? sourceName.substring(0, 6) : sourceName;
-      return { ...site, name: `${site.name} 「${label}」` };
-    }
-    return site;
-  });
+  sites = sites.map(site => withSourceLabel(site, siteSourceMap));
+  const labeledCandidates = startupCandidateSites.map(site => withSourceLabel(site, siteSourceMap));
 
   const searchable = sites.filter(site => site.searchable === 1).length;
   const quickSearchable = sites.filter(site => site.searchable === 1 && site.quickSearch !== 0).length;
@@ -298,6 +309,7 @@ export function applySearchQuota(
 
   return {
     sites,
+    candidateSites: labeledCandidates,
     quotaReport: {
       totalSites,
       jsExcluded: options.jsExcluded ?? 0,
