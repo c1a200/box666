@@ -316,6 +316,49 @@ export function createApp(deps: AppDeps): Hono {
     console.log(`[routes] CF separated lives repaired: ${proxyLives.length} verified /live/<key> entries`);
     return repaired;
   }
+  /**
+   * 客户端启动配置裁剪。完整聚合结果始终保存在 KV_MERGED_CONFIG，
+   * 根地址默认只返回启动必需项，避免影视仓串行初始化大量远程 JAR/解析器。
+   */
+  async function buildStartupConfig(cached: string): Promise<string> {
+    let quota: SearchQuotaConfig;
+    try {
+      quota = await loadSearchQuota(storage);
+    } catch {
+      return cached;
+    }
+    if (quota.startupMode === 'full') return cached;
+
+    let parsed: TVBoxConfig;
+    try {
+      parsed = JSON.parse(cached) as TVBoxConfig;
+    } catch {
+      return cached;
+    }
+
+    const pinnedKeys = new Set(quota.pinnedKeys || []);
+    const sites = Array.isArray(parsed.sites) ? parsed.sites : [];
+    // type=3 是远程 JAR/扩展源，客户端通常会逐个初始化。轻量模式只保留
+    // 参与快速搜索或明确置顶的远程源，其余站点（type 0/1/4）完整保留。
+    const keptSites = sites.filter((site) => (
+      site.type !== 3
+      || pinnedKeys.has(site.key)
+      || site.quickSearch === 1
+    ));
+    parsed.sites = keptSites;
+
+    const parses = Array.isArray(parsed.parses) ? parsed.parses : [];
+    const maxParses = quota.maxParses ?? 0;
+    parsed.parses = maxParses > 0 ? parses.slice(0, maxParses) : parses;
+
+    // 只有最终完全没有 type=3 源时才移除根 spider。type=3 站点可能
+    // 不写自己的 jar 字段而依赖全局 spider，不能仅凭 jar/ext 字段判断。
+    if (!keptSites.some((site) => site.type === 3)) {
+      delete parsed.spider;
+    }
+
+    return JSON.stringify(parsed);
+  }
   function configBody(body: string, headers: Record<string, string>): Response {
     // 不手工压缩：Cloudflare 边缘可能在客户端未请求 gzip 时剥离
     // Content-Encoding，却保留压缩字节，导致 TVBox/影视仓 JSON 解析失败。
@@ -338,6 +381,7 @@ export function createApp(deps: AppDeps): Hono {
     }
 
     cached = await repairCfSeparatedLives(cached);
+    cached = await buildStartupConfig(cached);
     const baseUrl = await resolveBaseUrl(c);
     if (baseUrl instanceof Response) return baseUrl;
     cached = applyBaseUrlPlaceholder(cached, baseUrl);
@@ -583,6 +627,7 @@ export function createApp(deps: AppDeps): Hono {
       return c.json({ error: 'No config available yet.' }, 503);
     }
     cached = await repairCfSeparatedLives(cached);
+    cached = await buildStartupConfig(cached);
     const baseUrl = await resolveBaseUrl(c);
     if (baseUrl instanceof Response) return baseUrl;
     cached = applyBaseUrlPlaceholder(cached, baseUrl);
@@ -594,6 +639,23 @@ export function createApp(deps: AppDeps): Hono {
     });
   });
 
+  // 完整配置入口：不受轻量启动模式影响，始终返回最终聚合结果。
+  app.get('/config-full.json', async (c) => {
+    let cached = await storage.get(KV_MERGED_CONFIG);
+    if (!cached) {
+      return c.json({ error: 'No config available yet.' }, 503);
+    }
+    cached = await repairCfSeparatedLives(cached);
+    const baseUrl = await resolveBaseUrl(c);
+    if (baseUrl instanceof Response) return baseUrl;
+    cached = applyBaseUrlPlaceholder(cached, baseUrl);
+    return configBody(cached, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'public, max-age=1800, stale-while-revalidate=86400',
+      'Access-Control-Allow-Origin': '*',
+      'Content-Disposition': 'attachment; filename="tvbox-config-full.json"',
+    });
+  });
   app.get('/live.json', async (c) => {
     const baseUrl = await resolveBaseUrl(c);
     if (baseUrl instanceof Response) return baseUrl;
@@ -904,6 +966,7 @@ export function createApp(deps: AppDeps): Hono {
     if (typeof body.autoLimit === 'boolean') current.autoLimit = body.autoLimit;
     if (typeof body.sortBySpeed === 'boolean') current.sortBySpeed = body.sortBySpeed;
     if (typeof body.leanStartup === 'boolean') current.leanStartup = body.leanStartup;
+    if (body.startupMode === 'lean' || body.startupMode === 'full') current.startupMode = body.startupMode;
     if (typeof body.pruneDeadParses === 'boolean') current.pruneDeadParses = body.pruneDeadParses;
     if (Array.isArray(body.pinnedKeys)) current.pinnedKeys = body.pinnedKeys;
 

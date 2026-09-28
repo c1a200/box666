@@ -3,7 +3,7 @@
 import type { TVBoxParse, TVBoxSite, SearchQuotaConfig, SearchQuotaReport } from './types';
 import type { Storage } from '../storage/interface';
 import { KV_SEARCH_QUOTA } from './config';
-const QUOTA_SCHEMA_VERSION = 3;
+const QUOTA_SCHEMA_VERSION = 4;
 
 function isNodeRuntime(): boolean {
   return typeof process !== 'undefined' && !!process.env.PORT;
@@ -21,7 +21,8 @@ function defaultQuickSearchLimit(): number {
 
 function defaultParseLimit(): number {
   // 客户端启动时会逐个初始化解析器；只保留响应最快的健康项。
-  return isNodeRuntime() ? 10 : 7;
+  // 启动阶段每个解析器都可能串行等待，10 个会直接放大成十几秒。
+  return isNodeRuntime() ? 6 : 5;
 }
 
 function createDefaultSearchQuota(): SearchQuotaConfig {
@@ -33,6 +34,7 @@ function createDefaultSearchQuota(): SearchQuotaConfig {
     pinnedKeys: [],
     sortBySpeed: true,
     leanStartup: true,
+    startupMode: 'lean',
     pruneDeadParses: true,
     quotaSchemaVersion: QUOTA_SCHEMA_VERSION,
   };
@@ -56,6 +58,7 @@ export async function loadSearchQuota(storage: Storage): Promise<SearchQuotaConf
       const isLegacyQuota = !hasNewLimitFields || (parsed.quotaSchemaVersion ?? 1) < QUOTA_SCHEMA_VERSION;
       // 旧版配置一律迁移到安全上限；只有用户在新版后台明确关闭后，才保留 0 = 不限制。
       const autoLimit = isLegacyQuota ? true : parsed.autoLimit === true;
+      const parsedMaxParses = normalizeLimit(parsed.maxParses);
       const effectiveMaxSearchable = isLegacyQuota
         ? fallback.maxSearchable
         : (autoLimit && maxSearchable === 0 ? fallback.maxSearchable : maxSearchable);
@@ -64,9 +67,12 @@ export async function loadSearchQuota(storage: Storage): Promise<SearchQuotaConf
         maxQuickSearch: autoLimit
           ? (normalizeLimit(parsed.maxQuickSearch) || fallback.maxQuickSearch)
           : normalizeLimit(parsed.maxQuickSearch),
-        maxParses: autoLimit
-          ? (normalizeLimit(parsed.maxParses) || fallback.maxParses)
-          : normalizeLimit(parsed.maxParses),
+        // schema 升级必须采用新的安全上限，不能继承旧版本 maxParses=10。
+        maxParses: isLegacyQuota
+          ? fallback.maxParses
+          : autoLimit
+            ? (parsedMaxParses || fallback.maxParses)
+            : parsedMaxParses,
         autoLimit,
         pinnedKeys: Array.isArray(parsed.pinnedKeys)
           ? parsed.pinnedKeys.filter((key): key is string => typeof key === 'string')
@@ -75,6 +81,7 @@ export async function loadSearchQuota(storage: Storage): Promise<SearchQuotaConf
         sortBySpeed: parsed.sortBySpeed !== false,
         // 旧配置没有该字段时默认开启轻量启动；用户明确关闭后保留关闭状态。
         leanStartup: parsed.leanStartup !== false,
+        startupMode: parsed.startupMode === 'full' ? 'full' : 'lean',
         pruneDeadParses: parsed.pruneDeadParses !== false,
         quotaSchemaVersion: QUOTA_SCHEMA_VERSION,
       };
@@ -95,6 +102,7 @@ export async function saveSearchQuota(storage: Storage, config: SearchQuotaConfi
     pinnedKeys: Array.isArray(config.pinnedKeys) ? config.pinnedKeys : [],
     sortBySpeed: config.sortBySpeed === true,
     leanStartup: config.leanStartup !== false,
+    startupMode: config.startupMode === 'full' ? 'full' : 'lean',
     pruneDeadParses: config.pruneDeadParses !== false,
     quotaSchemaVersion: QUOTA_SCHEMA_VERSION,
   }));

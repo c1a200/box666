@@ -247,6 +247,7 @@ export interface SearchQuotaConfig {
   pinnedKeys: string[];         // 置顶源 key 列表（排到 sites 最前面）
   sortBySpeed: boolean;         // 是否复用站点测速结果，将较快的可搜索源排在前面
   leanStartup?: boolean;        // 轻量启动：剔除不参与搜索的远程 JAR/扩展站点
+  startupMode?: 'lean' | 'full';// 客户端根配置模式：lean=快速启动，full=完整功能
   pruneDeadParses?: boolean;    // 聚合时探测并剔除确认失效的解析器
   maxParses?: number;           // 健康解析器上限，0 = 不限制
   quotaSchemaVersion?: number;  // 自动配额迁移版本
