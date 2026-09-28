@@ -340,25 +340,18 @@ export function createApp(deps: AppDeps): Hono {
     const startupQuickLimit = quota.maxStartupQuickSearch ?? 0;
     let quickSeen = 0;
     const sites = Array.isArray(parsed.sites) ? parsed.sites : [];
-    // 启动阶段不加载任何远程 JAR/type=3 源：客户端会下载并初始化这些
-    // 资源，正是影视仓/TVBox 首屏等待几十秒的主要原因。完整配置仍保留
-    // 全部远程源，后台和 /config-full.json 不受影响。
-    const keptSites = sites
-      .filter((site) => site.type !== 3 || pinnedKeys.has(site.key))
-      .map((site) => {
-        if (site.searchable !== 1) return site;
-        const isPinned = pinnedKeys.has(site.key);
-        // 根地址只让启动快速源参与搜索；其余源仍保留在列表中，但不再
-        // 触发客户端启动阶段初始化。完整配置仍可通过 /config-full.json 获取。
-        if (!isPinned && startupQuickLimit > 0 && quickSeen >= startupQuickLimit) {
-          return { ...site, searchable: 0, quickSearch: 0 };
-        }
-        if (!isPinned && site.quickSearch === 0) {
-          return { ...site, searchable: 0 };
-        }
-        quickSeen++;
-        return site;
-      });
+    // 轻量根配置只返回置顶源和少量启动快速源。不要把其余站点仅仅改成
+    // searchable=0 后继续放在 sites 中，因为不少客户端仍会初始化这些
+    // 站点 API，导致首屏等待几十秒。完整站点仍保留在 /config-full.json
+    // 和管理后台中；需要全量站点时把启动模式切到 full。
+    const keptSites = sites.filter((site) => {
+      if (pinnedKeys.has(site.key)) return true;
+      if (site.type === 3) return false;
+      if (site.searchable !== 1 || site.quickSearch === 0) return false;
+      if (startupQuickLimit > 0 && quickSeen >= startupQuickLimit) return false;
+      quickSeen++;
+      return true;
+    });
     parsed.sites = keptSites;
 
     // CF 分离模式在根配置中保留少量最快的直播入口；完整直播清单仍在
