@@ -900,6 +900,7 @@ export function createApp(deps: AppDeps): Hono {
     }
     if (typeof body.autoLimit === 'boolean') current.autoLimit = body.autoLimit;
     if (typeof body.sortBySpeed === 'boolean') current.sortBySpeed = body.sortBySpeed;
+    if (typeof body.leanStartup === 'boolean') current.leanStartup = body.leanStartup;
     if (Array.isArray(body.pinnedKeys)) current.pinnedKeys = body.pinnedKeys;
 
 

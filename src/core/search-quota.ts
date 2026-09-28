@@ -25,6 +25,7 @@ function createDefaultSearchQuota(): SearchQuotaConfig {
     autoLimit: true,
     pinnedKeys: [],
     sortBySpeed: true,
+    leanStartup: true,
   };
 }
 
@@ -60,6 +61,8 @@ export async function loadSearchQuota(storage: Storage): Promise<SearchQuotaConf
           : [],
         // 旧配置没有 sortBySpeed 字段时默认开启，已有明确设置仍原样保留。
         sortBySpeed: parsed.sortBySpeed !== false,
+        // 旧配置没有该字段时默认开启轻量启动；用户明确关闭后保留关闭状态。
+        leanStartup: parsed.leanStartup !== false,
       };
     } catch {}
   }
@@ -76,7 +79,26 @@ export async function saveSearchQuota(storage: Storage, config: SearchQuotaConfi
     autoLimit,
     pinnedKeys: Array.isArray(config.pinnedKeys) ? config.pinnedKeys : [],
     sortBySpeed: config.sortBySpeed === true,
+    leanStartup: config.leanStartup !== false,
   }));
+}
+
+function hasRemoteJarOrExt(site: TVBoxSite): boolean {
+  return (
+    (typeof site.jar === 'string' && /^https?:\/\//i.test(site.jar))
+    || (typeof site.ext === 'string' && /^https?:\/\//i.test(site.ext))
+  );
+}
+
+/**
+ * 判断站点是否可以在轻量启动模式下剔除。
+ *
+ * 只处理“不可搜索的 type=3 远程扩展站点”：这些站点仍会触发客户端下载/
+ * 初始化远程 JAR 或扩展，却不参与搜索，是 TVBox/影视仓启动慢的主要来源。
+ * type=0/1/4、可搜索站点和置顶站点都不会被此函数命中。
+ */
+export function isLeanStartupRemovableSite(site: TVBoxSite): boolean {
+  return site.searchable !== 1 && site.type === 3 && hasRemoteJarOrExt(site);
 }
 /**
  * 提前排除 type=3 + HTTP URL 的 JS 源。
@@ -201,12 +223,22 @@ export function applySearchQuota(
     if (site.searchable === 1 && !allowedSearchableKeys.has(site.key)) {
       next = { ...next, searchable: 0 };
     }
+    // 不可搜索源不能保留 quickSearch=1，否则部分客户端仍会在启动阶段初始化。
+    if (next.searchable !== 1 && next.quickSearch !== 0) {
+      next = { ...next, quickSearch: 0 };
+    }
     if (next.searchable === 1 && next.quickSearch !== 0 && !allowedQuickKeys.has(next.key)) {
       next = { ...next, quickSearch: 0 };
       quickTruncated++;
     }
     return next;
   });
+
+  const beforeLean = sites.length;
+  if (config.leanStartup !== false) {
+    sites = sites.filter(site => pinnedKeySet.has(site.key) || !isLeanStartupRemovableSite(site));
+  }
+  const leanRemoved = beforeLean - sites.length;
 
   // 来源标识：只给最终仍可搜索的源加标识。
   sites = sites.map(site => {
@@ -237,6 +269,7 @@ export function applySearchQuota(
       truncated,
       quickTruncated,
       speedSorted,
+      leanRemoved,
     },
   };
 }

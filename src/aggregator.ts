@@ -626,6 +626,7 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
       searchable: quotaReport.searchable, quickSearchable: quotaReport.quickSearchable,
       quickTruncated: quotaReport.quickTruncated, maxQuickSearch: quotaReport.maxQuickSearch,
       autoLimit: quotaReport.autoLimit, speedSorted: quotaReport.speedSorted,
+      leanRemoved: quotaReport.leanRemoved,
       final: true,
     });
     await storage.put(KV_SEARCH_QUOTA_REPORT, JSON.stringify({
