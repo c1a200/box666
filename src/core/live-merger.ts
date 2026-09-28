@@ -25,6 +25,7 @@ export interface LiveSourceInput {
 
 const LIVE_SOURCE_CACHE_TTL_MS = 30 * 60 * 1000;
 const LIVE_SOURCE_CACHE_MAX_CONTENT = 512 * 1024;
+const LIVE_SOURCE_MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024;
 const LIVE_SOURCE_CACHE_MAX_TOTAL = 2 * 1024 * 1024;
 
 interface CachedLiveSource {
@@ -333,6 +334,30 @@ export function parseLiveContent(content: string, source: string, sourceSpeedMs?
 
 // ─── 下载 m3u/txt ──────────────────────────────────────
 
+async function readLimitedText(resp: Response, maxBytes = LIVE_SOURCE_MAX_DOWNLOAD_BYTES): Promise<string> {
+  const body = resp.body;
+  if (!body) return '';
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let total = 0;
+  let text = '';
+  try {
+    while (total < maxBytes) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value || value.byteLength === 0) continue;
+      const remaining = maxBytes - total;
+      const chunk = value.byteLength > remaining ? value.subarray(0, remaining) : value;
+      total += chunk.byteLength;
+      text += decoder.decode(chunk, { stream: total < maxBytes });
+      if (total >= maxBytes) break;
+    }
+    if (total < maxBytes) text += decoder.decode();
+  } finally {
+    try { await reader.cancel(); } catch { /* ignore */ }
+  }
+  return text;
+}
 async function downloadLive(
   input: LiveSourceInput,
   timeoutMs: number,
@@ -384,7 +409,7 @@ async function downloadLive(
       }
 
       const contentType = (resp.headers.get('content-type') || '').toLowerCase();
-      const text = await resp.text();
+      const text = await readLimitedText(resp);
       if (looksLikeLivePayload(text, contentType)) {
         const entry: CachedLiveSource = {
           content: text,
@@ -908,7 +933,7 @@ export async function fetchAndParseLiveUrls(
           headers: { 'User-Agent': input.ua || TVBOX_UA, ...(input.header || {}) },
         });
         if (!resp.ok) return null;
-        const text = await resp.text();
+        const text = await readLimitedText(resp);
         if (!text || text.length < 20) return null;
         return { content: text, name: input.name };
       } catch {
@@ -1358,7 +1383,7 @@ export async function filterLivesBySourceDetailed(
             return { content: '', name: input.name || 'source', failure: failureFromHttpStatus(resp.status), reason: `HTTP ${resp.status}` };
           }
           const contentType = (resp.headers.get('content-type') || '').toLowerCase();
-          const text = await resp.text();
+          const text = await readLimitedText(resp);
           if (!looksLikeLivePayload(text, contentType)) {
             return { content: '', name: input.name || 'source', failure: 'invalid', reason: text ? 'unexpected content' : 'empty content' };
           }
