@@ -29,7 +29,7 @@ import {
 } from './core/quality';
 import { loadCredentials, saveCredential, deleteCredential, loadCredentialPolicy, saveCredentialPolicy } from './core/credential-store';
 import { generateQR, pollQRStatus, passwordLogin, PLATFORM_NAMES, QR_PLATFORMS, PASSWORD_PLATFORMS } from './core/cloud-login';
-import { assessAllSources } from './core/credential-risk';
+import { assessAllSources, isClientCredentialApi } from './core/credential-risk';
 import { generateTokenJson } from './core/credential-injector';
 import { formatLiveGroupsAsTxt, filterLivesBySource, filterLivesBySourceDetailed, sortLiveGroupsForOutput } from './core/live-merger';
 import { containsBlockedLiveUrl, isBlockedLiveSource, isBlockedLiveUrl } from './core/live-policy';
@@ -402,8 +402,11 @@ export function createApp(deps: AppDeps): Hono {
     const pinnedKeySet = new Set(pinnedSites.map((site) => site.key));
     const rest = orderedSites.filter((site) => !pinnedKeySet.has(site.key));
 
-    // type=3 远程扩展只在置顶时保留，避免客户端串行下载 JAR 拖慢首屏。
-    const eligibleRest = rest.filter((site) => site.type !== 3);
+    // 非置顶的普通 type=3 远程扩展仍会被剔除，避免客户端串行下载 JAR 拖慢首屏；
+    // 但已知网盘/客户端凭证 API 需要下发给客户端登录后使用，必须保留。
+    const eligibleRest = rest.filter(
+      (site) => site.type !== 3 || isClientCredentialApi(site.api),
+    );
     const limit = quota.maxSearchable ?? 0;
     const limitedRest = limit > 0 ? eligibleRest.slice(0, Math.max(0, limit)) : eligibleRest;
 

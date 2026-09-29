@@ -1,7 +1,7 @@
 // 搜索配额控制（复用站点测速结果）
 
 import type { TVBoxParse, TVBoxSite, SearchQuotaConfig, SearchQuotaReport, SiteHealthMap, SiteQualityGrade, SiteQualityGrades, SearchQualitySnapshot } from './types';
-import type { SiteProbeResult } from './speedtest';
+import { isSiteProbeable, type SiteProbeResult } from './speedtest';
 import type { Storage } from '../storage/interface';
 import { KV_SEARCH_QUOTA } from './config';
 const QUOTA_SCHEMA_VERSION = 8;
@@ -164,6 +164,7 @@ function createEmptyQualityGrades(): SiteQualityGrades {
     excellent: { count: 0, cumulative: 0 },
     good: { count: 0, cumulative: 0 },
     usable: { count: 0, cumulative: 0 },
+    untestable: { count: 0, cumulative: 0 },
     timeout: { count: 0, cumulative: 0 },
     unusable: { count: 0, cumulative: 0 },
     poolTotal: 0,
@@ -180,6 +181,9 @@ function getSiteQualityGrade(
   probeMap?: Map<string, SiteProbeResult>,
   healthMap?: SiteHealthMap,
 ): SiteQualityGrade {
+  // 客户端 JAR/扩展或网盘登录型源没有可由服务端直接请求的 URL；
+  // 它们不是“超时”，应作为客户端可验证候选保留。
+  if (!isSiteProbeable(site)) return 'untestable';
   const probe = probeMap?.get(site.key);
   const health = healthMap?.[site.key];
   const failures = probe?.consecutiveFailures ?? health?.consecutiveFailures ?? 0;
@@ -213,11 +217,11 @@ function buildQualityGrades(
   for (const site of candidateSites) {
     const grade = getSiteQualityGrade(site, probeMap, healthMap);
     grades[grade].count++;
-    if (grade !== 'unusable') grades.poolTotal++;
+    if (grade !== 'timeout' && grade !== 'unusable') grades.poolTotal++;
   }
 
   let cumulative = 0;
-  for (const grade of ['excellent', 'good', 'usable', 'timeout'] as const) {
+  for (const grade of ['excellent', 'good', 'usable', 'untestable', 'timeout'] as const) {
     cumulative += grades[grade].count;
     grades[grade].cumulative = cumulative;
   }
@@ -281,10 +285,10 @@ export function applySearchQuota(
     }
   }
 
-  // 只有优/良/可用进入客户端候选池；超时与不可用均不可绕过，置顶也不能例外。
+  // 优/良/可用/客户端不可探测源进入客户端候选池；超时与不可用均不可绕过，置顶也不能例外。
   const isUsableForSearch = (site: TVBoxSite): boolean => {
     const grade = gradeForSite(site);
-    return grade === 'excellent' || grade === 'good' || grade === 'usable';
+    return grade === 'excellent' || grade === 'good' || grade === 'usable' || grade === 'untestable';
   };
   const pinnedSearchable = pinned.filter(site => site.searchable === 1 && isUsableForSearch(site));
   let candidates = sites.filter(site => site.searchable === 1 && !pinnedKeySet.has(site.key) && isUsableForSearch(site));
@@ -295,8 +299,9 @@ export function applySearchQuota(
     excellent: 0,
     good: 1,
     usable: 2,
-    timeout: 3,
-    unusable: 4,
+    untestable: 3,
+    timeout: 4,
+    unusable: 5,
   };
   const hasPool = qualityEntries.size > 0;
   const hasProbe = !!options.probeMap && options.probeMap.size > 0;

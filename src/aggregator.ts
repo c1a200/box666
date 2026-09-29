@@ -20,7 +20,6 @@ import { loadSearchQuota, applySearchQuota, excludeJsUrlSites, probeAndPrunePars
 import { loadCredentials } from './core/credential-store';
 import { loadCredentialPolicy } from './core/credential-store';
 import { injectCredentials } from './core/credential-injector';
-import { getDirectPlatformFromApi } from './core/credential-risk';
 import { loadGroupOrder, applyGroupOrder } from './core/group-order';
 import { deduplicateSimilarNames } from './core/dedup';
 import { logger } from './core/logger';
@@ -301,23 +300,10 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     merged = transformSiteNames(merged, {});
   }
 
-  // Step 5.7: 网盘凭证注入与无凭据网盘源清洗
+  // Step 5.7: 网盘凭证注入
+  // 服务端没有凭证不代表客户端不可用：客户端可以自行登录网盘。
+  // 因此这里只注入已有凭证，绝不删除未配置凭证的直连网盘源。
   const credentials = await loadCredentials(storage);
-  if (merged.sites && merged.sites.length > 0) {
-    // 过滤掉用户未登录的直连网盘源（只有当用户配置了对应平台凭证时才保留该平台的直连网盘站点）
-    const beforeCount = merged.sites.length;
-    merged.sites = merged.sites.filter(site => {
-      const directPlatform = getDirectPlatformFromApi(site.api);
-      if (directPlatform) {
-        return credentials.has(directPlatform);
-      }
-      return true;
-    });
-    const removedCount = beforeCount - merged.sites.length;
-    if (removedCount > 0) {
-      logger.info('aggregation', `Filtered out ${removedCount} unconfigured direct netdisk sites`);
-    }
-  }
 
   if (credentials.size > 0 && merged.sites && merged.sites.length > 0) {
     logger.info('aggregation', 'Step 5.7: Injecting cloud credentials...');

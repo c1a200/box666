@@ -85,6 +85,11 @@ function getPlatformsFromApi(api: string): CloudPlatform[] | null {
   return API_PLATFORM_PATTERNS.find((item) => item.pattern.test(api))?.platforms || null;
 }
 
+/** 是否为需要客户端登录网盘/执行 JAR 的已知客户端 API。 */
+export function isClientCredentialApi(api: string): boolean {
+  return getPlatformsFromApi(api) !== null;
+}
+
 function isTokenJsonApi(api: string): boolean {
   return API_PLATFORM_PATTERNS.some((item) => item.tokenJson && item.pattern.test(api));
 }

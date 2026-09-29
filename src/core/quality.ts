@@ -48,7 +48,8 @@ export const QUALITY_THRESHOLDS = {
 const DEFAULT_BATCH_SIZE = 80;
 const MAX_SCHEDULE_TIMES = 12;
 const DEFAULT_FULL_REPEAT_DAYS = 7;
-const CANDIDATE_GRADES = new Set<SiteQualityGrade>(['excellent', 'good', 'usable']);
+const CANDIDATE_GRADES = new Set<SiteQualityGrade>(['excellent', 'good', 'usable', 'untestable']);
+const SERVER_PROBE_GRADES = new Set<SiteQualityGrade>(['excellent', 'good', 'usable']);
 
 function isNodeRuntime(): boolean {
   return typeof process !== 'undefined' && !!process.env.PORT;
@@ -300,6 +301,7 @@ function createEmptyGrades(): SiteQualityGrades {
     excellent: { count: 0, cumulative: 0 },
     good: { count: 0, cumulative: 0 },
     usable: { count: 0, cumulative: 0 },
+    untestable: { count: 0, cumulative: 0 },
     timeout: { count: 0, cumulative: 0 },
     unusable: { count: 0, cumulative: 0 },
     poolTotal: 0,
@@ -308,7 +310,7 @@ function createEmptyGrades(): SiteQualityGrades {
 
 function normalizeGrade(value: unknown): SiteQualityGrade {
   if (value === 'unknown') return 'timeout';
-  if (value === 'excellent' || value === 'good' || value === 'usable' || value === 'timeout' || value === 'unusable') return value;
+  if (value === 'excellent' || value === 'good' || value === 'usable' || value === 'untestable' || value === 'timeout' || value === 'unusable') return value;
   return 'timeout';
 }
 
@@ -335,8 +337,9 @@ function compareGrade(a: SiteQualityGrade, b: SiteQualityGrade): number {
     excellent: 0,
     good: 1,
     usable: 2,
-    timeout: 3,
-    unusable: 4,
+    untestable: 3,
+    timeout: 4,
+    unusable: 5,
   };
   return rank[a] - rank[b];
 }
@@ -360,7 +363,7 @@ function buildGrades(entries: SearchQualitySnapshot['entries']): SiteQualityGrad
     if (CANDIDATE_GRADES.has(grade)) grades.poolTotal++;
   }
   let cumulative = 0;
-  for (const grade of ['excellent', 'good', 'usable', 'timeout'] as const) {
+  for (const grade of ['excellent', 'good', 'usable', 'untestable', 'timeout'] as const) {
     cumulative += grades[grade].count;
     grades[grade].cumulative = cumulative;
   }
@@ -448,8 +451,8 @@ export async function loadHealthMap(storage: Storage): Promise<SiteHealthMap> {
  *
  * 必须覆盖所有 searchable===1 的站点，包含 type=3 的远程扩展（csp_* 守卫）。
  * 它们同样占用前端配置的 maxSearchable 名额，因此必须计入分级统计与排序；
- * 不可探测的 type=3 站点不会被 batchSiteSpeedTest 发起请求，只会落到
- * timeout，不占用候选池名额。
+ * 不可探测的 type=3 客户端扩展不会由服务端发起请求，单独归入 untestable；
+ * 它们仍然下发给客户端，由客户端登录/执行，不占用服务端探测预算。
  */
 export function collectSearchableSites(sites: TVBoxSite[]): TVBoxSite[] {
   const seen = new Set<string>();
@@ -467,7 +470,8 @@ function candidateKeysFromPool(pool: SearchQualitySnapshot | null): Set<string> 
   const keys = new Set<string>();
   if (!pool || !Array.isArray(pool.entries)) return keys;
   for (const entry of pool.entries) {
-    if (CANDIDATE_GRADES.has(normalizeGrade(entry.grade))) keys.add(entry.key);
+    const grade = normalizeGrade(entry.grade);
+    if (SERVER_PROBE_GRADES.has(grade)) keys.add(entry.key);
   }
   return keys;
 }
@@ -483,8 +487,8 @@ export function qualityTargetSites(sites: TVBoxSite[], pool: SearchQualitySnapsh
 /**
  * 对可搜索池执行一次质量分级并持久化。
  *
- * candidate 模式只重测当前优/良/可用候选池；full 模式重测全部 searchable。
- * 两种模式都保留 timeout/unusable 的历史统计，但它们不会进入候选池。
+ * candidate 模式只重测当前优/良/可用候选池；full 模式重测全部可服务端探测的 searchable。
+ * untestable 由客户端执行，不参与服务端重测；timeout/unusable 保留历史统计但不进入候选池。
  */
 export async function runQualityGrading(
   storage: Storage,
@@ -550,6 +554,17 @@ function buildQualityEntries(
 ): SearchQualitySnapshot['entries'] {
   const now = new Date().toISOString();
   return searchable.map((site) => {
+    if (!isSiteProbeable(site)) {
+      return {
+        key: site.key,
+        name: site.name || site.key,
+        grade: 'untestable',
+        speedMs: null,
+        result: 'not_probed',
+        probedAt: undefined,
+        consecutiveFailures: 0,
+      };
+    }
     const probe = probeMap.get(site.key);
     const previousEntry = previousEntries.get(site.key);
     const freshProbe = !!probe && probe.result !== 'not_probed';
