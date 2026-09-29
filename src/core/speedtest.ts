@@ -12,7 +12,17 @@ export interface SiteProbeResult {
   lastSuccessTime?: string;
 }
 
-async function siteProbe(url: string, siteType: number, timeoutMs: number, deep: boolean): Promise<{ speedMs: number | null; result: ProbeResult }> {
+export interface SiteProbeOptions {
+  headers?: Record<string, string>;
+}
+
+async function siteProbe(
+  url: string,
+  siteType: number,
+  timeoutMs: number,
+  deep: boolean,
+  options: SiteProbeOptions = {},
+): Promise<{ speedMs: number | null; result: ProbeResult }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -20,7 +30,7 @@ async function siteProbe(url: string, siteType: number, timeoutMs: number, deep:
     const start = Date.now();
     const resp = await fetch(url, {
       signal: controller.signal,
-      headers: { 'User-Agent': TVBOX_UA },
+      headers: { 'User-Agent': TVBOX_UA, ...(options.headers || {}) },
     });
     const speedMs = Date.now() - start;
 
@@ -51,13 +61,14 @@ async function siteProbeWithRetry(
   deep: boolean,
   deadline: number,
   retries = 1,
+  options: SiteProbeOptions = {},
 ): Promise<{ speedMs: number | null; result: ProbeResult }> {
   for (let attempt = 0; attempt <= retries; attempt++) {
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) return { speedMs: null, result: 'not_probed' };
 
     const attemptTimeoutMs = Math.min(timeoutMs, remainingMs);
-    const result = await siteProbe(url, siteType, attemptTimeoutMs, deep);
+    const result = await siteProbe(url, siteType, attemptTimeoutMs, deep, options);
     if (result.result !== 'timeout' && result.result !== 'error') return result;
     if (attempt === retries || Date.now() >= deadline) return result;
 
@@ -102,8 +113,9 @@ export async function batchSiteSpeedTest(
   deep = false,
   concurrency: number = DEFAULT_SPEED_TEST_CONCURRENCY,
   budgetMs: number = DEFAULT_SPEED_TEST_BUDGET_MS,
+  headersByKey?: Map<string, Record<string, string>>,
 ): Promise<Map<string, SiteProbeResult>> {
-  const tasks: Array<{ key: string; url: string; type: number }> = [];
+  const tasks: Array<{ key: string; url: string; type: number; headers?: Record<string, string> }> = [];
 
   const orderedSites = [...sites].sort((a, b) => {
     const score = (site: TVBoxSite) => {
@@ -118,7 +130,7 @@ export async function batchSiteSpeedTest(
   for (const site of orderedSites) {
     const url = getTestableUrl(site);
     if (url) {
-      tasks.push({ key: site.key, url, type: site.type });
+      tasks.push({ key: site.key, url, type: site.type, headers: headersByKey?.get(site.key) });
     }
   }
 
@@ -155,7 +167,7 @@ export async function batchSiteSpeedTest(
         active++;
         updateCounter++;
 
-        siteProbeWithRetry(task.url, task.type, timeoutMs, deep, deadline).then((probe) => {
+        siteProbeWithRetry(task.url, task.type, timeoutMs, deep, deadline, 1, { headers: task.headers }).then((probe) => {
           if (settled) return;
           probeMap.set(task.key, { key: task.key, ...probe });
           active--;
@@ -220,6 +232,7 @@ export function appendSpeedToName(sites: TVBoxSite[], speedMap: Map<string, Site
 export function filterUnreachableSites(
   sites: TVBoxSite[],
   speedMap: Map<string, SiteProbeResult>,
+  protectedKeys: Set<string> = new Set(),
 ): { sites: TVBoxSite[]; filtered: number } {
   if (speedMap.size === 0) return { sites, filtered: 0 };
 
@@ -229,6 +242,10 @@ export function filterUnreachableSites(
   let reachableProbed = 0;
 
   for (const site of sites) {
+    if (protectedKeys.has(site.key)) {
+      reachable.push(site);
+      continue;
+    }
     const probe = speedMap.get(site.key);
     if (!probe || probe.result === 'not_probed') {
       // 预算耗尽或未参与探测的源不能当作不可达，否则会误删大量有效源。

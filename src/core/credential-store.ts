@@ -45,6 +45,179 @@ async function decrypt(key: CryptoKey, encrypted: string): Promise<string> {
   return new TextDecoder().decode(plainBuffer);
 }
 
+// ─── 凭证清洗 ──────────────────────────────────────────
+
+/**
+ * 只保留非空字符串并去除首尾空白，避免历史 KV、扫码结果或手动输入中的
+ * 空白值被当作已配置凭证，进而生成无效 token.json。
+ */
+export function sanitizeCredentialMap(raw: unknown): Record<string, string> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const cleaned: Record<string, string> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === 'string' && value.trim().length > 0) cleaned[key] = value.trim();
+  }
+  return cleaned;
+}
+
+const ACCOUNT_PASSWORD_PLATFORMS = new Set<CloudPlatform>([
+  'pan123',
+  'tianyi',
+  'thunder',
+  'pikpak',
+]);
+
+function firstCredentialValue(map: Record<string, string>, fields: string[]): string {
+  for (const field of fields) {
+    const value = map[field]?.trim();
+    if (value) return value;
+  }
+  return '';
+}
+
+/**
+ * 把前端手动输入或旧版本 KV 中常见的多种格式统一为客户端 JAR 可识别的字段。
+ * - pan123 / tianyi / thunder / pikpak: username + password
+ * - 其余平台: 保留 cookie/token 等原字段
+ *
+ * 支持 user:pass、user=pass、JSON {username,password}、{user,pass}、{account,password}
+ * 以及平台常见别名。密码中的冒号不会被截断。
+ */
+export function normalizeCredentialInput(
+  platform: CloudPlatform,
+  raw: unknown,
+): Record<string, string> {
+  const map = sanitizeCredentialMap(raw);
+  if (!ACCOUNT_PASSWORD_PLATFORMS.has(platform)) return map;
+
+  let username = firstCredentialValue(map, ['username', 'user', 'account', 'email', 'phone']);
+  let password = firstCredentialValue(map, ['password', 'pass', 'pwd']);
+
+  // 兼容旧版本误把整段 user:pass 存进 cookie/token 的情况。
+  const packed = firstCredentialValue(map, ['cookie', 'token', 'credential', 'value']);
+  if ((!username || !password) && packed) {
+    const colon = packed.indexOf(':');
+    const equal = packed.indexOf('=');
+    let separator = -1;
+    if (colon > 0) separator = colon;
+    if (equal > 0 && (separator < 0 || equal < separator)) separator = equal;
+    if (separator > 0) {
+      if (!username) username = packed.slice(0, separator).trim();
+      if (!password) password = packed.slice(separator + 1).trim();
+    }
+  }
+
+  if (!username || !password) return map;
+
+  const normalized: Record<string, string> = { username, password };
+  // 保留 JAR/扩展可能同时读取的兼容字段，但不再把用户名密码塞进 cookie。
+  const token = firstCredentialValue(map, ['token', 'tuctoken', 'p123token', '123_token']);
+  if (token) normalized.token = token;
+  return normalized;
+}
+
+export function normalizeCloudCredential(credential: CloudCredential): CloudCredential {
+  return {
+    ...credential,
+    credential: normalizeCredentialInput(credential.platform, credential.credential),
+  };
+}
+
+function credentialValue(credential: CloudCredential | undefined, field: string): string {
+  const value = credential?.credential?.[field];
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+/**
+ * 判断凭证字段是否满足对应客户端 JAR 的最低要求。
+ *
+ * 这里只检查“字段是否完整”，不检查登录状态或有效期；调用方可继续使用
+ * isCredentialDistributable() 做统一下发判定。
+ */
+export function isCredentialComplete(
+  platform: CloudPlatform,
+  credential: CloudCredential | undefined,
+): boolean {
+  if (!credential?.credential) return false;
+  switch (platform) {
+    case 'quark':
+    case 'uc':
+    case 'baidu':
+    case 'pan115':
+    case 'bilibili':
+      return !!credentialValue(credential, 'cookie');
+    case 'aliyun':
+      return !!(credentialValue(credential, 'refresh_token')
+        || credentialValue(credential, 'token')
+        || credentialValue(credential, 'ali_token')
+        || credentialValue(credential, 'open_token'));
+    case 'tianyi':
+      return !!(credentialValue(credential, 'cookie')
+        || (credentialValue(credential, 'username') && credentialValue(credential, 'password')));
+    case 'pan123':
+    case 'thunder':
+      return !!(credentialValue(credential, 'token')
+        || (credentialValue(credential, 'username') && credentialValue(credential, 'password')));
+    case 'pikpak':
+      return !!(credentialValue(credential, 'username') && credentialValue(credential, 'password'));
+    default:
+      return Object.values(credential.credential).some((value) => typeof value === 'string' && value.trim().length > 0);
+  }
+}
+
+/**
+ * 唯一的下发判定入口。
+ *
+ * - 字段必须满足平台最低完整性要求。
+ * - status=expired 或 expiresAt 已过期时不允许下发。
+ * - status=unknown 的历史数据在字段完整且未过期时允许下发，兼容旧 KV。
+ */
+export function isCredentialDistributable(
+  platform: CloudPlatform,
+  credential: CloudCredential | undefined,
+  now = Date.now(),
+): boolean {
+  if (!credential || credential.status === 'expired') return false;
+  if (!isCredentialComplete(platform, credential)) return false;
+  if (!credential.expiresAt) return true;
+  const expiresAt = Date.parse(credential.expiresAt);
+  return Number.isFinite(expiresAt) && expiresAt > now;
+}
+
+/**
+ * Pan.init 接口专用判定。
+ *
+ * 与 token.json 的下发契约不同：p123/xunlei/tianyi 的 Pan.init 端点固定返回
+ * username+password JSON，token/cookie 不能代替；quark/uc/baidu 固定返回 Cookie 文本。
+ * 该函数用于避免生成一个客户端可请求但服务端必然返回 404 的初始化地址。
+ */
+export function isPanInitCredentialDistributable(
+  platform: CloudPlatform,
+  credential: CloudCredential | undefined,
+  now = Date.now(),
+): boolean {
+  if (!isCredentialDistributable(platform, credential, now)) return false;
+  const value = (field: string): string => credentialValue(credential, field);
+  switch (platform) {
+    case 'pan123':
+    case 'thunder':
+    case 'tianyi':
+      return !!value('username') && !!value('password');
+    case 'quark':
+    case 'uc':
+    case 'baidu':
+      return !!value('cookie');
+    default:
+      return false;
+  }
+}
+
+function sanitizeCloudCredential(credential: CloudCredential): CloudCredential | null {
+  const normalized = normalizeCloudCredential(credential);
+  if (Object.keys(normalized.credential).length === 0) return null;
+  return normalized;
+}
+
 // ─── 凭证 CRUD ──────────────────────────────────────────
 
 export async function loadCredentials(storage: Storage): Promise<Map<CloudPlatform, CloudCredential>> {
@@ -57,7 +230,8 @@ export async function loadCredentials(storage: Storage): Promise<Map<CloudPlatfo
     const json = await decrypt(key, raw);
     const arr: CloudCredential[] = JSON.parse(json);
     for (const cred of arr) {
-      map.set(cred.platform, cred);
+      const sanitized = sanitizeCloudCredential(cred);
+      if (sanitized) map.set(sanitized.platform, sanitized);
     }
   } catch (err) {
     console.error('[credential-store] Failed to decrypt credentials:', err instanceof Error ? err.message : err);
@@ -67,8 +241,10 @@ export async function loadCredentials(storage: Storage): Promise<Map<CloudPlatfo
 }
 
 export async function saveCredential(storage: Storage, credential: CloudCredential): Promise<void> {
+  const sanitized = sanitizeCloudCredential(credential);
+  if (!sanitized) throw new Error('credential must contain at least one non-empty string');
   const existing = await loadCredentials(storage);
-  existing.set(credential.platform, credential);
+  existing.set(sanitized.platform, sanitized);
 
   const key = await getOrCreateEncryptionKey(storage);
   const json = JSON.stringify([...existing.values()]);

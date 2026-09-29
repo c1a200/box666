@@ -485,6 +485,19 @@ ${sharedStyles}
       <div id="cloudLoginGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px">
       </div>
     </div>
+    <!-- 凭证下发控制 -->
+    <div class="section">
+      <div class="section-title" data-i18n="credentialDistributionTitle">Credential Distribution</div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:8px;font-size:0.85rem;color:var(--text-bright)">
+          <input type="checkbox" id="credentialDistributionCheck" onchange="saveCredentialDistribution()">
+          <span data-i18n="credentialDistributionEnable">Inject saved cloud credentials into client config</span>
+        </label>
+        <span class="status-text" id="credentialDistributionStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
+      </div>
+      <div style="margin-top:6px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="credentialDistributionDesc">Enabled by default. When disabled, aggregation will not inject credentials and /token.json will return empty; server-side quality grading can still use saved credentials for probing.</div>
+    </div>
+
     <!-- 手动粘贴凭证 -->
     <div class="section">
       <div class="section-title" data-i18n="cloudManualPaste">Manual Credential Paste</div>
@@ -576,7 +589,7 @@ ${sharedStyles}
       <input type="hidden" id="pruneDeadParsesInput">
       <div id="searchQuotaStats" style="margin-top:8px;font-size:0.8rem;color:var(--text-secondary);line-height:1.6"></div>
       <div style="margin-top:6px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="searchQuotaDesc">只影响下发到应用端的数据：可搜索源上限和解析器上限，0 表示不限制。JS 地址源始终排除；置顶源不参与截断。可在“搜索”页管理置顶源。</div>
-      <div style="margin-top:4px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="qualityGradeDesc">质量分级（后台测速，不影响应用端启动速度）：优 ≤1000ms、良 1001-3000ms、可用 3001-6000ms、客户端登录/JAR 为服务端无法直接探测、超时 &gt;6000ms 或无结果、不可用为明确失败。优/良/可用/客户端登录源会下发给应用端，超时和不可用不进入候选池；“客户端登录/JAR”只表示服务端不能验证，不代表源不可用。</div>
+      <div style="margin-top:4px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="qualityGradeDesc">质量分级（后台分块测速，不影响应用端启动速度）：优 ≤1000ms、良 1001-3000ms、可用 3001-6000ms。前端凭证会用于服务端真实 HTTP 探测；只有确实探测成功且达到优/良/可用的凭证源，才进入对应测速等级。凭证已保存但未成功验证、或 JAR/客户端专用源，保留为“凭证就绪/客户端登录”，不会伪装成已测速；凭证探测失败会回退到“凭证就绪”，不会永久判死。超时和不可用不进入候选池。</div>
     </div>
 
     <div class="section">
@@ -601,7 +614,7 @@ ${sharedStyles}
         <button class="btn btn-sm" onclick="refreshQualityReport()" data-i18n="qualityRefresh">刷新分级状态</button>
         <span class="status-text" id="qualityScheduleStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
       </div>
-      <div style="margin-top:8px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="qualityScheduleDesc">分级在后台异步执行，点击后立即返回，不会阻塞网页或其他请求。日常只重测服务端可探测的候选池（优/良/可用）；客户端登录/JAR 源会保留但不参与服务端重测。到达全量周期或候选池为空时自动全量分级。Cloudflare 每次只跑一个分片，由后续 cron 续跑；Node/Render 一次跑完但不阻塞请求。</div>
+      <div style="margin-top:8px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="qualityScheduleDesc">分级在后台异步执行，点击后立即返回，不会阻塞网页或其他请求。日常只重测服务端可探测的候选池（优/良/可用）；凭证就绪源中只有可真实 HTTP 探测的会重测，JAR/客户端专用源保留但不参与服务端重测。到达全量周期或候选池为空时自动全量分级。Cloudflare 和 Node/Render 都按小分片执行并在分片间让出事件循环；Node/Render 异常重启后会从已保存游标继续。</div>
       <div id="qualityDynamicStats" style="margin-top:10px;font-size:0.82rem;color:var(--text-secondary);line-height:1.7"></div>
     </div>
     <div class="section">
@@ -816,8 +829,8 @@ const translations = {
     qualityEnabled:'Enable scheduled grading',
     qualityTimes:'Times', qualityTimesPh:'e.g. 04:30, 16:30', qualityRepeatDays:'Candidate pool refresh (days)', qualityFullRepeatDays:'Full grading interval (days)',
     qualityRunCandidate:'Retest candidate pool', qualityRunFull:'Full re-grade', qualityRunNow:'Run now', qualityRefresh:'Refresh grading status', qualityStatusLabel:'Status', qualityStatusMode:'mode',
-    qualityScheduleDesc:'Grading runs asynchronously in the background and returns immediately, so the page and other requests are never blocked. Daily runs only re-test the server-probeable candidate pool (excellent/good/usable); credential-ready and untestable client-login/JAR sources are kept and skipped by server retests. When the full-grading interval is reached or the candidate pool is empty, a full grading run happens automatically. On Cloudflare each run is split into small batches across cron ticks; on Node/Render a run completes in one background pass without blocking requests.',
-    qualityGradeDesc:'Quality grades (probed in the background, no impact on client startup): excellent <=1000ms, good 1001-3000ms, usable 3001-6000ms, credential-ready for client-login/JAR sources whose required saved credentials are all valid, untestable for client-login/JAR sources without usable credentials, timeout >6000ms or no result, unusable for confirmed failures. Excellent/good/usable/credential-ready/untestable stay in the candidate pool; timeout and unusable are never served. Credential-ready only reflects saved credential status and never exposes credential values. Normally set only two values: searchable-source limit and parser limit. The page shows actual counts, grade breakdown and recommended values.',
+    qualityScheduleDesc:'Grading runs asynchronously in the background and returns immediately, so the page and other requests are never blocked. Daily runs only re-test the server-probeable candidate pool (excellent/good/usable); only credential-ready sources that support real HTTP probing are retested, while JAR/client-only sources are kept but skipped. When the full-grading interval is reached or the candidate pool is empty, a full grading run happens automatically. Both Cloudflare and Node/Render run in small chunks and yield between chunks; Node/Render resumes from the saved cursor after a restart.',
+    qualityGradeDesc:'Quality grades (probed in chunks in the background, no impact on client startup): excellent <=1000ms, good 1001-3000ms, usable 3001-6000ms. Saved frontend credentials are used for real server-side HTTP probes; a credential-backed source receives excellent/good/usable only after a successful probe at that speed. Sources with credentials but no successful server-side validation, and JAR/client-only sources, stay credential-ready/untestable instead of being falsely promoted. Failed credential probes fall back to credential-ready rather than permanent timeout/unusable. Timeout and unusable are never served. Normally set only two values: searchable-source limit and parser limit. The page shows actual counts, grade breakdown and recommended values.',
     qualityNoSnapshot:'No grading result yet. Run grading once to build the quality pool.',
     qualityStateIdle:'idle', qualityStateRunning:'running', qualityStateDone:'done', qualityStateError:'error',
     qualityLastRun:'Last run', qualityNextRun:'Next run', qualityLastFullRun:'Last full run', qualityNextFullRun:'Next full run', qualityNever:'never',
@@ -852,6 +865,9 @@ const translations = {
     probeDeep:'Deep (validate content)', probeShallow:'Shallow (HTTP only)',
     autoCleanLabel:'Auto-blacklist after 5 consecutive failures (max 5/run)',
     siteProbeDesc:'Deep mode checks type0/type1 content validity. Failed sites get [⚠] marker after 3 failures.',
+    credentialDistributionTitle:'凭证下发',
+    credentialDistributionEnable:'将已保存的网盘凭证注入客户端配置',
+    credentialDistributionDesc:'默认开启。关闭后聚合不会注入凭证，/token.json 返回空；后台质量分级仍可使用已保存凭证进行探测。',
     cloudManualPasteHelp: '<strong>💡 Manual Login Guide (Tianyi / 123Pan / UC):</strong><br>' +
       '• <strong>Tianyi</strong>: Web QR is unstable. Use your phone browser to log in to <a href="https://h5.cloud.189.cn" target="_blank" style="color:var(--accent)">h5.cloud.189.cn</a>, copy the Cookie header value, select "Tianyi" above, and paste.<br>' +
       '• <strong>123Pan</strong>: Third-party login is restricted. Log in to 123Pan Web -> Tool Center -> Third-Party Mount -> Generate WebDAV password. Select "123网盘" above and paste the password.',
@@ -915,8 +931,8 @@ const translations = {
     qualityEnabled:'启用定时分级',
     qualityTimes:'执行时间', qualityTimesPh:'例如 04:30, 16:30', qualityRepeatDays:'候选池重排周期（天）', qualityFullRepeatDays:'全量分级周期（天）',
     qualityRunCandidate:'重测候选池', qualityRunFull:'全量重测', qualityRunNow:'立即执行', qualityRefresh:'刷新分级状态', qualityStatusLabel:'状态', qualityStatusMode:'模式',
-    qualityScheduleDesc:'分级在后台异步执行，点击后立即返回，不会阻塞网页或其他请求。日常只重测候选池（优/良/可用）；凭证就绪和客户端登录/JAR 源会保留但不参与服务端重测。到达全量周期或候选池为空时自动全量分级。Cloudflare 每次只跑一个分片，由后续 cron 续跑；Node/Render 一次跑完但不阻塞请求。',
-    qualityGradeDesc:'质量分级（后台测速，不影响应用端启动速度）：优 ≤1000ms；良 1001-3000ms；可用 3001-6000ms；凭证就绪表示客户端登录/JAR 源所需凭证已有效保存；客户端登录/JAR 表示未具备有效凭证、服务端无法直接验证；超时 >6000ms 或无结果；不可用为明确失败。优/良/可用/凭证就绪/客户端登录源会下发给应用端，超时和不可用不进入候选池。凭证状态只用于服务端分级，不会输出凭证内容。日常只需填写两个值：可搜索源上限和解析器上限；页面会显示实际数量、分级统计和推荐值。',
+    qualityScheduleDesc:'分级在后台异步执行，点击后立即返回，不会阻塞网页或其他请求。日常只重测候选池（优/良/可用）；凭证就绪源中只有可真实 HTTP 探测的会重测，客户端登录/JAR 源保留但不参与服务端重测。到达全量周期或候选池为空时自动全量分级。Cloudflare 和 Node/Render 都按小分片执行并在分片间让出事件循环；Node/Render 异常重启后会从已保存游标继续。',
+    qualityGradeDesc:'质量分级（后台分块测速，不影响应用端启动速度）：优 ≤1000ms；良 1001-3000ms；可用 3001-6000ms。前端保存的凭证会用于服务端真实 HTTP 探测；凭证源只有在探测成功且达到对应速度时，才进入优/良/可用。凭证已保存但未成功验证、或 JAR/客户端专用源，保留为“凭证就绪/客户端登录”，不会伪装成已测速；凭证探测失败回退到“凭证就绪”，不会永久判死。超时和不可用不进入候选池。凭证内容不会输出。日常只需填写可搜索源上限和解析器上限；页面会显示实际数量、分级统计和推荐值。',
     qualityNoSnapshot:'尚无分级结果，先执行一次分级以建立质量池。',
     qualityStateIdle:'空闲', qualityStateRunning:'运行中', qualityStateDone:'已完成', qualityStateError:'错误',
     qualityLastRun:'上次执行', qualityNextRun:'下次执行', qualityLastFullRun:'上次全量', qualityNextFullRun:'下次全量', qualityNever:'从未',
@@ -951,6 +967,9 @@ const translations = {
     probeDeep:'深度（验证内容有效性）', probeShallow:'浅层（仅 HTTP 可达）',
     autoCleanLabel:'连续失败 5 次自动屏蔽（每次最多 5 个）',
     siteProbeDesc:'深度模式会检查 type0/type1 站点是否返回有效内容。连续失败 3 次的站点会被标记 [⚠]。',
+    credentialDistributionTitle:'Credential Distribution',
+    credentialDistributionEnable:'Inject saved cloud credentials into client config',
+    credentialDistributionDesc:'Enabled by default. When disabled, aggregation will not inject credentials and /token.json returns empty; server-side quality grading can still use saved credentials for probing.',
     cloudManualPasteHelp: '<strong>💡 手动配置指引 (天翼云盘 / 123网盘)：</strong><br>' +
       '• <strong>天翼云盘</strong>：扫码极易失效，推荐手动抓取 Cookie 粘贴至上方。用手机浏览器登录 <a href="https://h5.cloud.189.cn" target="_blank" style="color:var(--accent)">h5.cloud.189.cn</a>，复制带 Cookie 的请求头填入。<br>' +
       '• <strong>123网盘</strong>：第三方扫码受限，建议在 123网盘官网「工具中心」→「第三方挂载」生成 WebDAV 授权密码，在上方选择「123网盘」并填入密码。',
@@ -1006,6 +1025,7 @@ async function loadAll() {
   loadSpeedTest();
   loadEdgeProxies();
   loadSearchQuota();
+  loadCredentialDistribution();
   loadCloudCredentials();
   loadChannelProbe();
   loadDedupConfig();
@@ -2397,8 +2417,43 @@ const PLATFORM_NAMES = {
 };
 const QR_PLATFORMS = ['bilibili','aliyun','quark','uc','pan115','baidu'];
 const MANUAL_ONLY_PLATFORMS = ['pan123','tianyi'];
-const PW_PLATFORMS = ['thunder','pikpak'];
+const PW_PLATFORMS = ['pan123','tianyi','thunder','pikpak'];
 let cloudCredentials = {};
+
+async function loadCredentialDistribution() {
+  try {
+    const res = await auth.authFetch('/admin/credential-distribution');
+    if (!res.ok) return;
+    const data = await res.json();
+    const check = $('credentialDistributionCheck');
+    if (check) check.checked = data.enabled !== false;
+  } catch {}
+}
+
+async function saveCredentialDistribution() {
+  const check = $('credentialDistributionCheck');
+  const status = $('credentialDistributionStatus');
+  if (!check || !status) return;
+  check.disabled = true;
+  status.textContent = '...';
+  try {
+    const res = await auth.authFetch('/admin/credential-distribution', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: check.checked }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Save failed');
+    status.textContent = check.checked ? 'ON' : 'OFF';
+    toast(check.checked ? 'Credential distribution enabled' : 'Credential distribution disabled', 'success');
+  } catch (e) {
+    check.checked = !check.checked;
+    status.textContent = '';
+    toast('Save failed: ' + (e && e.message ? e.message : e), 'error');
+  } finally {
+    check.disabled = false;
+  }
+}
 
 async function loadCloudCredentials() {
   try {

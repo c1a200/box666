@@ -16,8 +16,15 @@ export interface SourceRiskAssessment {
 // cookie 相关的 ext 字段名（各 Spider 约定）
 const COOKIE_FIELD_NAMES = new Set([
   'cookie', 'cookies', 'token', 'refresh_token', 'open_token',
-  'quark_cookie', 'uccookie', 'tyitoken', 'dutoken', 'p123token', 'tuctoken',
-  'bili_cookie', 'ali_token',
+  'quark_cookie', 'quarkcookie', 'uccookie', 'uc_cookie',
+  'tyitoken', 'tianyi_cookie', 'tianyicookie',
+  'dutoken', 'baidu_cookie', 'baiducookie',
+  'p123token', '123_token', '123token',
+  'tuctoken', 'thunder_username', 'thunder_password', 'xunlei_username', 'xunlei_password',
+  'p123_username', 'p123_password', 'tianyi_username', 'tianyi_password',
+  'pikpak_username', 'pikpak_password',
+  'bili_cookie', 'bilibili_cookie', 'ali_token',
+  '115_cookie', '115cookie',
 ]);
 
 // 官方网盘域名（B类源直连这些域名视为安全）
@@ -36,26 +43,49 @@ const OFFICIAL_DOMAINS = new Set([
 const FIELD_TO_PLATFORM: Record<string, CloudPlatform> = {
   'cookie': 'quark',         // 默认 cookie 字段通常是夸克（最常见）
   'quark_cookie': 'quark',
+  'quarkcookie': 'quark',
   'uccookie': 'uc',
+  'uc_cookie': 'uc',
   'bili_cookie': 'bilibili',
+  'bilibili_cookie': 'bilibili',
   'ali_token': 'aliyun',
   'refresh_token': 'aliyun',
   'open_token': 'aliyun',
   'token': 'aliyun',
   'tyitoken': 'tianyi',
+  'tianyi_cookie': 'tianyi',
+  'tianyicookie': 'tianyi',
   'dutoken': 'baidu',
+  'baidu_cookie': 'baidu',
+  'baiducookie': 'baidu',
   'p123token': 'pan123',
+  '123_token': 'pan123',
+  '123token': 'pan123',
   'tuctoken': 'thunder',
+  'thunder_username': 'thunder',
+  'thunder_password': 'thunder',
+  'xunlei_username': 'thunder',
+  'xunlei_password': 'thunder',
+  'p123_username': 'pan123',
+  'p123_password': 'pan123',
+  'tianyi_username': 'tianyi',
+  'tianyi_password': 'tianyi',
+  'pikpak_username': 'pikpak',
+  'pikpak_password': 'pikpak',
+  '115_cookie': 'pan115',
+  '115cookie': 'pan115',
 };
 
 // 从 api class 推断需要的平台
 const API_TO_PLATFORMS: Record<string, CloudPlatform[]> = {
   'csp_Bili': ['bilibili'],
   'csp_BiliR': ['bilibili'],
-  'csp_Wobg': ['aliyun', 'quark', 'uc', 'pan115', 'thunder', 'pikpak'],
-  'csp_Wogg': ['aliyun', 'quark', 'uc', 'pan115', 'thunder', 'pikpak'],
+  'csp_Wobg': ['aliyun', 'quark', 'uc', 'pan115', 'thunder', 'pikpak', 'tianyi', 'baidu', 'pan123'],
+  'csp_Wogg': ['aliyun', 'quark', 'uc', 'pan115', 'thunder', 'pikpak', 'tianyi', 'baidu', 'pan123'],
   'csp_Mogg': ['quark', 'aliyun', 'uc', 'tianyi', 'baidu', 'pan123', 'thunder'],
   'csp_Pan115': ['pan115'],
+  'csp_P123': ['pan123'],
+  'csp_XunLei': ['thunder'],
 };
 
 const TOKEN_JSON_PLATFORMS: CloudPlatform[] = [
@@ -71,23 +101,74 @@ const TOKEN_JSON_PLATFORMS: CloudPlatform[] = [
   'pan123',
 ];
 
+export const ALIST_PLATFORMS: CloudPlatform[] = [
+  'aliyun', 'quark', 'uc', 'pan115', 'thunder',
+  'pikpak', 'tianyi', 'baidu', 'pan123',
+];
+
 const API_PLATFORM_PATTERNS: Array<{ pattern: RegExp; platforms: CloudPlatform[]; tokenJson?: boolean }> = [
   { pattern: /^csp_Bili/i, platforms: ['bilibili'] },
-  { pattern: /^csp_Wo[bg]g/i, platforms: ['aliyun', 'quark', 'uc', 'pan115', 'thunder', 'pikpak'], tokenJson: true },
+  { pattern: /^csp_Wo[bg]g(?:Guard)?/i, platforms: ['aliyun', 'quark', 'uc', 'pan115', 'thunder', 'pikpak', 'tianyi', 'baidu', 'pan123'], tokenJson: true },
   { pattern: /^csp_Mogg/i, platforms: ['quark', 'aliyun', 'uc', 'tianyi', 'baidu', 'pan123', 'thunder'] },
   { pattern: /^csp_Pan115/i, platforms: ['pan115'] },
+  { pattern: /^csp_AList/i, platforms: ALIST_PLATFORMS },
+  { pattern: /^csp_P123/i, platforms: ['pan123'] },
+  { pattern: /^csp_XunLei(?!8)/i, platforms: ['thunder'] },
 ];
 
 function getPlatformsFromApi(api: string): CloudPlatform[] | null {
+  // csp_Xunlei8 stores a raw referer/base URL in ext; it does not consume
+  // Thunder username/password credentials. Never classify it as a client-login source.
+  if (isXunlei8Api(api)) return null;
+
   const exact = API_TO_PLATFORMS[api];
   if (exact) return exact;
 
   return API_PLATFORM_PATTERNS.find((item) => item.pattern.test(api))?.platforms || null;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function parseExtObject(ext: unknown): Record<string, unknown> | null {
+  if (isRecord(ext)) return ext;
+  if (typeof ext !== 'string' || !ext.trim()) return null;
+
+  try {
+    const parsed = JSON.parse(ext);
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/** csp_AweSomeGuard 只有在 ext.sp 为 AList 时才按 AList 凭证源处理。 */
+export function isAweSomeGuardAList(site: TVBoxSite): boolean {
+  if (!/^csp_AweSomeGuard/i.test(site.api)) return false;
+  const ext = parseExtObject(site.ext);
+  if (!ext) return false;
+  return typeof ext.sp === 'string' && ext.sp.toLowerCase() === 'alist';
+}
+
+/** 判断源是否为 AList 或 AweSomeGuard(AList) 凭证源。 */
+export function isAListSite(site: TVBoxSite): boolean {
+  return /^csp_AList/i.test(site.api) || isAweSomeGuardAList(site);
+}
+
+/** csp_Xunlei8 的 ext 是 Referer/base URL，不是迅雷账号凭证。 */
+export function isXunlei8Api(api: string): boolean {
+  return /^csp_Xunlei8/i.test(api);
+}
+
 /** 是否为需要客户端登录网盘/执行 JAR 的已知客户端 API。 */
 export function isClientCredentialApi(api: string): boolean {
-  return getPlatformsFromApi(api) !== null;
+  return getPlatformsFromApi(api) !== null || /^csp_AList/i.test(api);
+}
+
+/** 判断源是否需要下发客户端网盘凭证。 */
+export function isClientCredentialSite(site: TVBoxSite): boolean {
+  return isClientCredentialApi(site.api) || isAListSite(site);
 }
 
 /** 返回源所需的网盘平台；不发起任何网络请求。 */
@@ -100,6 +181,9 @@ function isTokenJsonApi(api: string): boolean {
 }
 
 export function getDirectPlatformFromApi(api: string): CloudPlatform | null {
+  if (/^csp_(AList|AweSomeGuard)/i.test(api)) return null;
+  if (isXunlei8Api(api)) return null;
+
   const name = api.toLowerCase();
   if (name.includes('ali')) return 'aliyun';
   if (name.includes('quark')) return 'quark';
@@ -126,7 +210,8 @@ export function assessSourceRisk(site: TVBoxSite): SourceRiskAssessment {
     thirdPartyDomains: [],
   };
 
-  const apiPlatforms = getPlatformsFromApi(site.api);
+  const apiPlatforms = getPlatformsFromApi(site.api)
+    || (isAListSite(site) ? ALIST_PLATFORMS : null);
   if (apiPlatforms) {
     result.neededPlatforms = [...apiPlatforms];
   }
@@ -158,7 +243,7 @@ export function assessSourceRisk(site: TVBoxSite): SourceRiskAssessment {
       // 从 ext 字段名推断
       const platforms = new Set<CloudPlatform>();
       for (const field of cookieFieldNames) {
-        const p = FIELD_TO_PLATFORM[field];
+        const p = FIELD_TO_PLATFORM[field.toLowerCase()];
         if (p) platforms.add(p);
       }
       result.neededPlatforms = [...platforms];
@@ -239,9 +324,10 @@ function analyzeExt(ext: string | Record<string, unknown>, api: string): ExtAnal
 
   // ext 是 JSON 对象
   for (const key of Object.keys(ext)) {
-    if (COOKIE_FIELD_NAMES.has(key.toLowerCase())) {
+    const keyLower = key.toLowerCase();
+    if (COOKIE_FIELD_NAMES.has(keyLower)) {
       result.hasCookieFields = true;
-      result.cookieFieldNames.push(key);
+      result.cookieFieldNames.push(keyLower);
     }
   }
 

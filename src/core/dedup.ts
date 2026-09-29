@@ -1,6 +1,7 @@
 // 去重逻辑
 
 import type { TVBoxSite, TVBoxParse, TVBoxLive, TVBoxDoh, TVBoxRule } from './types';
+import { getCredentialPlatformsForSite, isClientCredentialSite } from './credential-risk';
 
 /**
  * 站点去重
@@ -146,6 +147,84 @@ export function deduplicateHosts(hosts: string[]): string[] {
  */
 export function deduplicateStrings(arr: string[]): string[] {
   return [...new Set(arr)];
+}
+
+/**
+ * 客户端凭证源身份去重。
+ *
+ * 只处理已知需要客户端网盘/JAR 的源。身份键同时包含规范化后的 jar、api、
+ * type 和网盘平台集合，因此不会把“共用同一 JAR 但 API 不同”的源误合并。
+ * 同身份优先保留：探测成功且更快 > ext 更完整 > 原始顺序更早。
+ */
+export function deduplicateClientCredentialSites(
+  sites: TVBoxSite[],
+  speedMap: Map<string, number | null>,
+): TVBoxSite[] {
+  const normalizeUrl = (value?: string): string => {
+    const raw = (value || '').trim();
+    if (!raw) return '';
+    try {
+      const parsed = new URL(raw);
+      parsed.hash = '';
+      return parsed.toString().replace(/\/$/, '').toLowerCase();
+    } catch {
+      return raw.replace(/\/$/, '').toLowerCase();
+    }
+  };
+
+  const extScore = (site: TVBoxSite): number => {
+    if (site.ext === undefined || site.ext === null || site.ext === '') return 0;
+    if (typeof site.ext === 'object') {
+      try { return Object.keys(site.ext as Record<string, unknown>).length + 1; } catch { return 1; }
+    }
+    return String(site.ext).length;
+  };
+
+  const scoreOf = (site: TVBoxSite): number => {
+    const speed = speedMap.get(site.key);
+    if (typeof speed === 'number' && Number.isFinite(speed)) return speed;
+    return Number.POSITIVE_INFINITY;
+  };
+
+  const identity = (site: TVBoxSite): string => {
+    const platforms = [...getCredentialPlatformsForSite(site)].sort().join(',');
+    return [
+      normalizeUrl(site.jar),
+      normalizeUrl(site.api),
+      String(site.type ?? 0),
+      platforms,
+    ].join('|');
+  };
+
+  const result: TVBoxSite[] = [];
+  const indexByIdentity = new Map<string, number>();
+
+  for (const site of sites) {
+    if (!isClientCredentialSite(site)) {
+      result.push(site);
+      continue;
+    }
+
+    const key = identity(site);
+    const existingIndex = indexByIdentity.get(key);
+    if (existingIndex === undefined) {
+      indexByIdentity.set(key, result.length);
+      result.push(site);
+      continue;
+    }
+
+    const existing = result[existingIndex];
+    const existingSpeed = scoreOf(existing);
+    const currentSpeed = scoreOf(site);
+    const betterProbe = currentSpeed < existingSpeed;
+    const sameProbe = currentSpeed === existingSpeed;
+    const betterExt = extScore(site) > extScore(existing);
+    if (betterProbe || (sameProbe && betterExt)) {
+      result[existingIndex] = site;
+    }
+  }
+
+  return result;
 }
 
 /**

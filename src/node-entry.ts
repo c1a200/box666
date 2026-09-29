@@ -27,7 +27,8 @@ import {
   loadQualityPool,
   qualityTargetSites,
   collectSearchableSites,
-  runQualityGrading,
+  loadQualityStatus,
+  runQualityGradingChunk,
   shouldRunQualityNow,
   shouldRunFullQualityNow,
   updateQualityStatus,
@@ -38,6 +39,8 @@ import {
   DEFAULT_FETCH_TIMEOUT_MS,
   DEFAULT_SPEED_TEST_CONCURRENCY,
   DEFAULT_SPEED_TEST_BUDGET_MS,
+  DEFAULT_QUALITY_PROBE_CHUNK_SIZE,
+  DEFAULT_QUALITY_PROBE_YIELD_MS,
   KV_CRON_INTERVAL,
   KV_MERGED_CONFIG,
   KV_LAST_UPDATE,
@@ -233,8 +236,11 @@ async function main() {
     }
     qualityRunning = true;
     try {
+      const persisted = await loadQualityStatus(storage);
+      const resuming = persisted.state === 'running';
       const fullDue = await shouldRunFullQualityNow(storage, new Date(), config.qualityTimezone);
-      const mode: SearchQualityRunMode = requestedMode || (fullDue ? 'full' : 'candidate');
+      const mode: SearchQualityRunMode = requestedMode
+        || (resuming && persisted.mode ? persisted.mode : (fullDue ? 'full' : 'candidate'));
       const storedSites = await loadQualityCandidates(storage);
       const allSites = collectSearchableSites(storedSites);
       if (allSites.length === 0) {
@@ -244,20 +250,58 @@ async function main() {
         await finishQualityRun(storage, 0, 0, false, mode, config.qualityTimezone);
         return;
       }
+
       const pool = await loadQualityPool(storage);
       const target = qualityTargetSites(allSites, pool, mode);
       const targetTotal = target.length > 0 ? target.length : allSites.length;
-      await beginQualityRun(storage, targetTotal, 0, mode);
-      const snapshot = await runQualityGrading(storage, allSites, {
+      let cursor = resuming ? Math.max(0, persisted.cursor || 0) : 0;
+      if (!resuming) {
+        await beginQualityRun(storage, targetTotal, DEFAULT_QUALITY_PROBE_CHUNK_SIZE, mode);
+      } else {
+        await updateQualityStatus(storage, {
+          state: 'running',
+          mode,
+          total: targetTotal,
+          batchSize: DEFAULT_QUALITY_PROBE_CHUNK_SIZE,
+          error: undefined,
+        });
+      }
+
+      let result = await runQualityGradingChunk(
+        storage,
+        allSites,
+        cursor,
+        DEFAULT_QUALITY_PROBE_CHUNK_SIZE,
         mode,
-        markRun: false,
-        timezone: config.qualityTimezone,
-        onProgress: async (processed, total) => {
-          await updateQualityStatus(storage, { cursor: processed, processed, total, state: 'running', mode });
-        },
-      });
-      await finishQualityRun(storage, targetTotal, targetTotal, true, mode, config.qualityTimezone);
-      console.log('[quality] Completed (' + mode + '): ' + targetTotal + ' targets, ' + snapshot.graded + '/' + snapshot.total + ' graded');
+        config.qualityTimezone,
+      );
+      cursor = result.cursor;
+      let processed = cursor;
+      while (!result.done) {
+        await updateQualityStatus(storage, {
+          state: 'running',
+          mode: result.mode,
+          cursor,
+          processed,
+          total: result.targetTotal,
+          batchSize: DEFAULT_QUALITY_PROBE_CHUNK_SIZE,
+        });
+        await new Promise<void>((resolve) => setTimeout(resolve, DEFAULT_QUALITY_PROBE_YIELD_MS));
+        result = await runQualityGradingChunk(
+          storage,
+          allSites,
+          cursor,
+          DEFAULT_QUALITY_PROBE_CHUNK_SIZE,
+          result.mode,
+          config.qualityTimezone,
+        );
+        cursor = result.cursor;
+        processed = cursor;
+      }
+
+      const finalTotal = result.targetTotal || targetTotal;
+      await finishQualityRun(storage, finalTotal, finalTotal, true, result.mode, config.qualityTimezone);
+      console.log('[quality] Completed (' + result.mode + '): ' + finalTotal + ' targets');
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       console.error('[quality] Error:', message);

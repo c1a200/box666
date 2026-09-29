@@ -4,7 +4,7 @@ import { Hono } from 'hono';
 import { MemoryCachedStorage } from './storage/cached';
 import type { Storage } from './storage/interface';
 import type { AppConfig, MacCMSSourceEntry, LiveSourceEntry, NameTransformConfig, EdgeProxyConfig, SearchQualityRunMode } from './core/types';
-import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_STARTUP_SITE_POOL, KV_MANUAL_SOURCES, KV_LAST_UPDATE, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_RUNTIME_TXT, KV_LIVE_RUNTIME_TXT_VERSION, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, LIVE_PROXY_TTL, IMG_PROXY_TTL, KV_NAME_TRANSFORM, KV_CRON_INTERVAL, DEFAULT_CRON_INTERVAL, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_PARSE_HEALTH_REPORT, KV_AGG_LOGS, KV_BG_SETTINGS, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, KV_SMART_BASE_URL_ENABLED, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SITE_HEALTH_MAP, KV_CHANNEL_MERGED_TREE, KV_LIVE_TEXT_PREFIX } from './core/config';
+import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_STARTUP_SITE_POOL, KV_MANUAL_SOURCES, KV_LAST_UPDATE, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_RUNTIME_TXT, KV_LIVE_RUNTIME_TXT_VERSION, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, LIVE_PROXY_TTL, IMG_PROXY_TTL, KV_NAME_TRANSFORM, KV_CRON_INTERVAL, DEFAULT_CRON_INTERVAL, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_PARSE_HEALTH_REPORT, KV_AGG_LOGS, KV_BG_SETTINGS, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, KV_SMART_BASE_URL_ENABLED, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SITE_HEALTH_MAP, KV_CHANNEL_MERGED_TREE, KV_LIVE_TEXT_PREFIX, KV_CREDENTIAL_DISTRIBUTION_ENABLED } from './core/config';
 import { getRequestBaseUrl, applyBaseUrlPlaceholder, assertHostAllowed } from './core/base-url';
 import { logger } from './core/logger';
 import { loadGroupOrder, saveGroupOrder } from './core/group-order';
@@ -27,10 +27,10 @@ import {
   updateQualityStatus,
   excludedQualityKeys,
 } from './core/quality';
-import { loadCredentials, saveCredential, deleteCredential, loadCredentialPolicy, saveCredentialPolicy } from './core/credential-store';
+import { isPanInitCredentialDistributable, loadCredentials, saveCredential, deleteCredential, loadCredentialPolicy, saveCredentialPolicy, normalizeCredentialInput } from './core/credential-store';
 import { generateQR, pollQRStatus, passwordLogin, PLATFORM_NAMES, QR_PLATFORMS, PASSWORD_PLATFORMS } from './core/cloud-login';
-import { assessAllSources, isClientCredentialApi } from './core/credential-risk';
-import { generateTokenJson } from './core/credential-injector';
+import { assessAllSources, isClientCredentialSite } from './core/credential-risk';
+import { generateTokenJson, injectAListDriveCredentials } from './core/credential-injector';
 import { formatLiveGroupsAsTxt, filterLivesBySource, filterLivesBySourceDetailed, sortLiveGroupsForOutput } from './core/live-merger';
 import { containsBlockedLiveUrl, isBlockedLiveSource, isBlockedLiveUrl } from './core/live-policy';
 import type { TVBoxConfig, TVBoxSite, SearchQuotaConfig, CloudPlatform, CloudCredential, TVBoxLive, TVBoxLiveGroup } from './core/types';
@@ -51,6 +51,99 @@ export interface AppDeps {
   enableChannelProbe?: boolean; // 仅 Node/Docker 入口启用
   enableBuilder?: boolean;      // 仅 Node/Docker 入口启用（配置构建器）
   isSyncing?: () => boolean;
+}
+
+const ALIST_PROXY_MAX_BYTES = 2 * 1024 * 1024;
+const ALIST_PROXY_TIMEOUT_MS = 8000;
+const ALIST_PROXY_MAX_REDIRECTS = 5;
+
+function isPrivateOrLocalHostname(hostname: string): boolean {
+  const host = hostname.trim().toLowerCase().replace(/^\[|\]$/g, '');
+  if (!host) return true;
+  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) return true;
+  if (host === '::1' || host === '0:0:0:0:0:0:0:1') return true;
+
+  const ipv4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4) {
+    const octets = ipv4.slice(1).map((part) => Number(part));
+    if (octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return true;
+    const [a, b] = octets;
+    return (
+      a === 0 || a === 10 || a === 127 ||
+      (a === 100 && b >= 64 && b <= 127) ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 192 && b === 0) ||
+      (a === 198 && (b === 18 || b === 19)) ||
+      a >= 224
+    );
+  }
+
+  if (host.includes(':')) {
+    return (
+      host === '::' ||
+      host.startsWith('fe8') || host.startsWith('fe9') || host.startsWith('fea') || host.startsWith('feb') ||
+      host.startsWith('fc') || host.startsWith('fd') || host.startsWith('ff')
+    );
+  }
+  return false;
+}
+
+function validatePublicHttpUrl(raw: string): URL | null {
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    if (!url.hostname || url.username || url.password) return null;
+    if (isPrivateOrLocalHostname(url.hostname)) return null;
+    return url;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchAListJson(rawUrl: string): Promise<Record<string, any>> {
+  let current = validatePublicHttpUrl(rawUrl);
+  if (!current) throw new Error('invalid_url');
+
+  for (let redirects = 0; redirects <= ALIST_PROXY_MAX_REDIRECTS; redirects++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ALIST_PROXY_TIMEOUT_MS);
+    let response: Response;
+    try {
+      response = await fetch(current.toString(), {
+        method: 'GET',
+        redirect: 'manual',
+        signal: controller.signal,
+        headers: { 'User-Agent': 'TVBox-AList-Credential-Proxy/1.0' },
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get('location');
+      if (!location || redirects === ALIST_PROXY_MAX_REDIRECTS) throw new Error('invalid_redirect');
+      current = validatePublicHttpUrl(new URL(location, current).toString());
+      if (!current) throw new Error('invalid_redirect');
+      continue;
+    }
+    if (!response.ok) throw new Error('upstream_' + response.status);
+
+    const contentLength = Number(response.headers.get('content-length') || '0');
+    if (contentLength > ALIST_PROXY_MAX_BYTES) throw new Error('too_large');
+    const text = await response.text();
+    if (new TextEncoder().encode(text).byteLength > ALIST_PROXY_MAX_BYTES) throw new Error('too_large');
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw new Error('invalid_json');
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid_json');
+    return parsed as Record<string, any>;
+  }
+  throw new Error('too_many_redirects');
 }
 
 function autoNameFromUrl(url: string): string {
@@ -405,7 +498,7 @@ export function createApp(deps: AppDeps): Hono {
     // 非置顶的普通 type=3 远程扩展仍会被剔除，避免客户端串行下载 JAR 拖慢首屏；
     // 但已知网盘/客户端凭证 API 需要下发给客户端登录后使用，必须保留。
     const eligibleRest = rest.filter(
-      (site) => site.type !== 3 || isClientCredentialApi(site.api),
+      (site) => site.type !== 3 || isClientCredentialSite(site),
     );
     const limit = quota.maxSearchable ?? 0;
     const limitedRest = limit > 0 ? eligibleRest.slice(0, Math.max(0, limit)) : eligibleRest;
@@ -1249,20 +1342,33 @@ export function createApp(deps: AppDeps): Hono {
     }
     const mode: SearchQualityRunMode = modeRaw;
     const status = await loadQualityStatus(storage);
-    if (status.state === 'running') {
+    const startedAt = status.startedAt ? Date.parse(status.startedAt) : Number.NaN;
+    const staleRunning = status.state === 'running'
+      && (!Number.isFinite(startedAt) || Date.now() - startedAt > 30 * 60 * 1000);
+    if (status.state === 'running' && !staleRunning) {
       return c.json({ success: true, alreadyRunning: true, status });
     }
-    const runningStatus = await updateQualityStatus(storage, {
-      state: 'running',
-      mode,
-      startedAt: new Date().toISOString(),
-      finishedAt: undefined,
-      processed: 0,
-      cursor: 0,
-      total: 0,
-      error: undefined,
-    });
-    const task = deps.triggerQuality(mode).catch(async (err: unknown) => {
+    const resuming = staleRunning;
+    const runningStatus = await updateQualityStatus(storage, resuming
+      ? {
+          state: 'running',
+          mode: status.mode || mode,
+          startedAt: new Date().toISOString(),
+          finishedAt: undefined,
+          total: status.total || 0,
+          error: undefined,
+        }
+      : {
+          state: 'running',
+          mode,
+          startedAt: new Date().toISOString(),
+          finishedAt: undefined,
+          processed: 0,
+          cursor: 0,
+          total: 0,
+          error: undefined,
+        });
+    const task = deps.triggerQuality(resuming ? (status.mode || mode) : mode).catch(async (err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
       await updateQualityStatus(storage, { state: 'error', error: message, finishedAt: new Date().toISOString() });
     });
@@ -1274,7 +1380,13 @@ export function createApp(deps: AppDeps): Hono {
     }
     if (hasCtx) c.executionCtx.waitUntil(task);
     else void task;
-    return c.json({ success: true, mode, status: runningStatus });
+    return c.json({
+      success: true,
+      mode: resuming ? (status.mode || mode) : mode,
+      resumed: resuming,
+      staleRecovered: resuming,
+      status: runningStatus,
+    });
   });
   // 报告精简版（dashboard 无需鉴权）
   app.get('/search-quota/summary', async (c) => {
@@ -1302,10 +1414,28 @@ export function createApp(deps: AppDeps): Hono {
         status: cred.status,
         obtainedAt: cred.obtainedAt,
         expiresAt: cred.expiresAt,
-        hasCredential: Object.keys(cred.credential).length > 0,
+        hasCredential: Object.values(cred.credential).some((value) => typeof value === 'string' && value.trim().length > 0),
       };
     }
     return c.json({ platforms: PLATFORM_NAMES, credentials: result });
+  });
+
+  // 凭证下发开关：关闭后聚合不再注入凭证，/token.json 也返回空。
+  // 服务端质量分级仍可使用已保存凭证做探测，不影响后台判定。
+  app.get('/admin/credential-distribution', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
+    const raw = await storage.get(KV_CREDENTIAL_DISTRIBUTION_ENABLED);
+    return c.json({ enabled: raw !== 'false' });
+  });
+
+  app.put('/admin/credential-distribution', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
+    let body: { enabled?: unknown };
+    try { body = await c.req.json(); } catch { return c.json({ error: 'Invalid JSON' }, 400); }
+    if (typeof body.enabled !== 'boolean') return c.json({ error: 'enabled must be boolean' }, 400);
+    await storage.put(KV_CREDENTIAL_DISTRIBUTION_ENABLED, body.enabled ? 'true' : 'false');
+    await refreshAfterCredentialChange(c);
+    return c.json({ success: true, enabled: body.enabled });
   });
 
   // 注销指定平台
@@ -1324,15 +1454,20 @@ export function createApp(deps: AppDeps): Hono {
     const platform = c.req.param('platform') as CloudPlatform;
     if (!PLATFORM_NAMES[platform]) return c.json({ error: 'Unknown platform' }, 400);
 
-    let body: { credential?: Record<string, string> };
+    let body: { credential?: Record<string, unknown> };
     try { body = await c.req.json(); } catch { return c.json({ error: 'Invalid JSON' }, 400); }
-    if (!body.credential || typeof body.credential !== 'object') {
+    if (!body.credential || typeof body.credential !== 'object' || Array.isArray(body.credential)) {
       return c.json({ error: 'credential object is required' }, 400);
+    }
+
+    const credential = normalizeCredentialInput(platform, body.credential);
+    if (Object.keys(credential).length === 0) {
+      return c.json({ error: 'credential must contain at least one non-empty string' }, 400);
     }
 
     const cred: CloudCredential = {
       platform,
-      credential: body.credential,
+      credential,
       obtainedAt: new Date().toISOString(),
       status: 'valid',
     };
@@ -1480,11 +1615,110 @@ export function createApp(deps: AppDeps): Hono {
     return c.json({ summary, assessments, policy });
   });
 
+  // Pan.init 初始化数据（Mogg/Wogg 的 ext.p123/quark/... 会直接请求这些 URL）
+  const credentialResponseHeaders = {
+    'Access-Control-Allow-Origin': '*',
+    'Cache-Control': 'no-cache',
+  };
+  const distributionEnabled = async (): Promise<boolean> => {
+    const raw = await storage.get(KV_CREDENTIAL_DISTRIBUTION_ENABLED);
+    return raw !== 'false';
+  };
+  const getPanInitCredential = async (platform: CloudPlatform) => {
+    const creds = await loadCredentials(storage);
+    const cred = creds.get(platform);
+    return isPanInitCredentialDistributable(platform, cred) ? cred : undefined;
+  };
+
+  app.get('/credential/quark', async (c) => {
+    if (!(await distributionEnabled())) return c.body('', 404, credentialResponseHeaders);
+    const cred = await getPanInitCredential('quark');
+    const cookie = cred?.credential.cookie?.trim();
+    if (!cookie) return c.body('', 404, credentialResponseHeaders);
+    return c.body(cookie, 200, credentialResponseHeaders);
+  });
+
+  app.get('/credential/uc', async (c) => {
+    if (!(await distributionEnabled())) return c.body('', 404, credentialResponseHeaders);
+    const cred = await getPanInitCredential('uc');
+    const cookie = cred?.credential.cookie?.trim();
+    if (!cookie) return c.body('', 404, credentialResponseHeaders);
+    return c.body(cookie, 200, credentialResponseHeaders);
+  });
+
+  app.get('/credential/baidu', async (c) => {
+    if (!(await distributionEnabled())) return c.body('', 404, credentialResponseHeaders);
+    const cred = await getPanInitCredential('baidu');
+    const cookie = cred?.credential.cookie?.trim();
+    if (!cookie) return c.body('', 404, credentialResponseHeaders);
+    return c.body(cookie, 200, credentialResponseHeaders);
+  });
+
+  app.get('/credential/tianyi', async (c) => {
+    if (!(await distributionEnabled())) return c.body('', 404, credentialResponseHeaders);
+    const cred = await getPanInitCredential('tianyi');
+    const username = cred?.credential.username?.trim();
+    const password = cred?.credential.password?.trim();
+    if (!username || !password) return c.body('', 404, credentialResponseHeaders);
+    return c.json({ username, password }, 200, credentialResponseHeaders);
+  });
+
+  app.get('/credential/p123', async (c) => {
+    if (!(await distributionEnabled())) return c.body('', 404, credentialResponseHeaders);
+    const cred = await getPanInitCredential('pan123');
+    const username = cred?.credential.username?.trim();
+    const password = cred?.credential.password?.trim();
+    if (!username || !password) return c.body('', 404, credentialResponseHeaders);
+    return c.json({ username, password }, 200, credentialResponseHeaders);
+  });
+
+  app.get('/credential/xunlei', async (c) => {
+    if (!(await distributionEnabled())) return c.body('', 404, credentialResponseHeaders);
+    const cred = await getPanInitCredential('thunder');
+    const username = cred?.credential.username?.trim();
+    const password = cred?.credential.password?.trim();
+    if (!username || !password) return c.body('', 404, credentialResponseHeaders);
+    return c.json({ username, password }, 200, credentialResponseHeaders);
+  });
+
+  // AList 远程 JSON 代理：抓取后把已保存凭证合并到对应 drive。
+  app.get('/credential/alist', async (c) => {
+    if (!(await distributionEnabled())) {
+      return c.json({ error: 'credential distribution disabled' }, 404, credentialResponseHeaders);
+    }
+    const source = c.req.query('src');
+    if (!source) return c.json({ error: 'src is required' }, 400, credentialResponseHeaders);
+    const target = validatePublicHttpUrl(source);
+    if (!target) return c.json({ error: 'invalid src url' }, 400, credentialResponseHeaders);
+
+    try {
+      const parsed = await fetchAListJson(target.toString());
+      if (Array.isArray(parsed.drives)) {
+        const creds = await loadCredentials(storage);
+        const merged = injectAListDriveCredentials(parsed.drives, creds);
+        if (merged.changed) parsed.drives = merged.drives;
+      }
+      return c.json(parsed, 200, {
+        'Access-Control-Allow-Origin': '*',
+        'Cache-Control': 'no-store',
+        'Content-Type': 'application/json; charset=utf-8',
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'fetch_failed';
+      const status = message === 'invalid_url' || message === 'invalid_redirect' ? 400 : 502;
+      return c.json({ error: message }, status, credentialResponseHeaders);
+    }
+  });
+
   // 自托管 token.json
   app.get('/credential/token.json', async (c) => {
+    const distributionRaw = await storage.get(KV_CREDENTIAL_DISTRIBUTION_ENABLED);
+    if (distributionRaw === 'false') {
+      return c.json({}, 200, { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-cache' });
+    }
     const creds = await loadCredentials(storage);
     if (creds.size === 0) {
-      return c.json({}, 200, { 'Access-Control-Allow-Origin': '*' });
+      return c.json({}, 200, { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-cache' });
     }
     const tokenJson = generateTokenJson(creds);
     return c.json(tokenJson, 200, {
@@ -1495,9 +1729,13 @@ export function createApp(deps: AppDeps): Hono {
 
   // 兼容直接请求根路径 /token.json 的 TVBox 客户端本地代理
   app.get('/token.json', async (c) => {
+    const distributionRaw = await storage.get(KV_CREDENTIAL_DISTRIBUTION_ENABLED);
+    if (distributionRaw === 'false') {
+      return c.json({}, 200, { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-cache' });
+    }
     const creds = await loadCredentials(storage);
     if (creds.size === 0) {
-      return c.json({}, 200, { 'Access-Control-Allow-Origin': '*' });
+      return c.json({}, 200, { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-cache' });
     }
     const tokenJson = generateTokenJson(creds);
     return c.json(tokenJson, 200, {

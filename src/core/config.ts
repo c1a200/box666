@@ -9,6 +9,12 @@ export const DEFAULT_FETCH_TIMEOUT_MS = 5000; // fetch 配置 JSON 超时
 export const DEFAULT_SPEED_TEST_CONCURRENCY = 18;   // 同时探测的站点数
 export const DEFAULT_SPEED_TEST_BUDGET_MS = 140000; // 单批测速总预算（约 2.3 分钟）
 
+// 质量分级探测调优：Node/Render 默认更保守，避免长任务影响客户端请求。
+export const DEFAULT_QUALITY_PROBE_CONCURRENCY = 6;
+export const DEFAULT_QUALITY_PROBE_TIMEOUT_MS = 3000;
+export const DEFAULT_QUALITY_PROBE_CHUNK_SIZE = 40;
+export const DEFAULT_QUALITY_PROBE_YIELD_MS = 25;
+
 // KV keys
 export const KV_MERGED_CONFIG = 'merged_config';
 export const KV_MERGED_CONFIG_FULL = 'merged_config_full'; // 黑名单过滤前的完整配置（供配置编辑器使用）
@@ -63,6 +69,7 @@ export const KV_EDGE_PROXIES = 'edge_proxies';
 export const KV_CLOUD_CREDENTIALS = 'cloud_credentials';
 export const KV_CREDENTIAL_POLICY = 'credential_policy';
 export const KV_CREDENTIAL_ENCRYPTION_KEY = 'credential_encryption_key';
+export const KV_CREDENTIAL_DISTRIBUTION_ENABLED = 'credential_distribution_enabled'; // 是否向前端下发已保存的网盘凭证（默认开启）
 
 // 搜索配额
 export const KV_SEARCH_QUOTA = 'search_quota';

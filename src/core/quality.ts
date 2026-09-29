@@ -19,10 +19,15 @@ import type {
   SiteQualityGrades,
 } from './types';
 import type { Storage } from '../storage/interface';
-import { loadCredentials } from './credential-store';
+import { isCredentialDistributable, isPanInitCredentialDistributable, loadCredentials } from './credential-store';
 import { getCredentialPlatformsForSite } from './credential-risk';
 import { batchSiteSpeedTest, isSiteProbeable, type SiteProbeResult } from './speedtest';
+import { canDistributeCredentialsToSite } from './credential-injector';
 import {
+  DEFAULT_QUALITY_PROBE_CHUNK_SIZE,
+  DEFAULT_QUALITY_PROBE_CONCURRENCY,
+  DEFAULT_QUALITY_PROBE_TIMEOUT_MS,
+  DEFAULT_QUALITY_PROBE_YIELD_MS,
   KV_SEARCH_QUALITY_CANDIDATES,
   KV_SEARCH_QUALITY_POOL,
   KV_SEARCH_QUALITY_SCHEDULE,
@@ -55,6 +60,11 @@ const MAX_SCHEDULE_TIMES = 12;
 const DEFAULT_FULL_REPEAT_DAYS = 7;
 const CANDIDATE_GRADES = new Set<SiteQualityGrade>(['excellent', 'good', 'usable', 'credential-ready', 'untestable']);
 const SERVER_PROBE_GRADES = new Set<SiteQualityGrade>(['excellent', 'good', 'usable']);
+
+// 仅这些平台的凭证可以安全地映射为 HTTP Cookie；token 型平台没有可靠的通用探测接口，
+// 继续保留 credential-ready，等客户端真实播放验证。
+const HTTP_COOKIE_PLATFORMS = new Set<CloudPlatform>(['quark', 'uc', 'baidu', 'bilibili', 'tianyi', 'pan115']);
+const CREDENTIAL_PROBE_TIMEOUT_MS = 4000;
 
 function isNodeRuntime(): boolean {
   return typeof process !== 'undefined' && !!process.env.PORT;
@@ -501,8 +511,54 @@ function candidateKeysFromPool(pool: SearchQualitySnapshot | null): Set<string> 
   for (const entry of pool.entries) {
     const grade = normalizeGrade(entry.grade);
     if (SERVER_PROBE_GRADES.has(grade)) keys.add(entry.key);
+    // credential-ready 中，只有 HTTP 可真实验证的源才进入日常候选池重测；
+    // JAR/客户端扩展源仍需客户端执行，不能由服务端反复无效探测。
+    else if (grade === 'credential-ready' && entry.probeKind === 'credential-http') keys.add(entry.key);
   }
   return keys;
+}
+
+function probeHeadersForSite(
+  site: TVBoxSite,
+  credentials: Map<CloudPlatform, CloudCredential>,
+): Record<string, string> | null {
+  const platforms = getCredentialPlatformsForSite(site);
+  if (platforms.length === 0) return null;
+  // 多平台源只要求任意一个平台可用即可；用户已登录夸克时，不应因为
+  // 同时声明 UC/天翼等未登录平台而完全放弃服务端真实探测。
+  const usablePlatforms = platforms.filter((platform) =>
+    HTTP_COOKIE_PLATFORMS.has(platform) && isCredentialDistributable(platform, credentials.get(platform))
+  );
+  if (usablePlatforms.length === 0) return null;
+  // 一次探测只能使用一个平台的 Cookie。混拼不同网盘的 Cookie 会让上游
+  // 把请求视为无有效会话，既不能证明凭证可用，也可能污染探测结果。
+  const selected = usablePlatforms[0];
+  const cookie = credentials.get(selected)?.credential.cookie || '';
+  if (!cookie) return null;
+  const headers: Record<string, string> = { Cookie: cookie };
+  try {
+    headers.Referer = site.api;
+    headers.Origin = new URL(site.api).origin;
+  } catch {
+    // 保留 Cookie，非标准 URL 仍可尝试请求。
+  }
+  return headers;
+}
+
+export async function batchCredentialAwareSpeedTest(
+  sites: TVBoxSite[],
+  credentials: Map<CloudPlatform, CloudCredential>,
+  timeoutMs = CREDENTIAL_PROBE_TIMEOUT_MS,
+  concurrency = DEFAULT_QUALITY_PROBE_CONCURRENCY,
+  budgetMs = 25000,
+): Promise<Map<string, SiteProbeResult>> {
+  const headers = new Map<string, Record<string, string>>();
+  for (const site of sites) {
+    if (!isSiteProbeable(site)) continue;
+    const h = probeHeadersForSite(site, credentials);
+    if (h) headers.set(site.key, h);
+  }
+  return batchSiteSpeedTest(sites, timeoutMs, false, concurrency, budgetMs, headers);
 }
 
 export function qualityTargetSites(sites: TVBoxSite[], pool: SearchQualitySnapshot | null, mode: SearchQualityRunMode): TVBoxSite[] {
@@ -547,18 +603,20 @@ export async function runQualityGrading(
     mode = 'full';
   }
 
+  const healthMap = options.healthMap ?? await loadHealthMap(storage);
+  const credentials = await loadCredentials(storage);
   let probeMap = options.probeMap;
   if (!probeMap) {
     const batchSize = Math.max(1, Math.floor(options.batchSize || DEFAULT_BATCH_SIZE));
     const collected = new Map<string, SiteProbeResult>();
     for (let offset = 0; offset < target.length; offset += batchSize) {
       const batch = target.slice(offset, offset + batchSize);
-      const partial = await batchSiteSpeedTest(
+      const partial = await batchCredentialAwareSpeedTest(
         batch,
-        options.timeoutMs ?? 3000,
-        options.deep ?? false,
-        options.concurrency ?? (isNodeRuntime() ? 16 : 6),
-        options.budgetMs ?? (isNodeRuntime() ? 120000 : 25000),
+        credentials,
+        options.timeoutMs ?? DEFAULT_QUALITY_PROBE_TIMEOUT_MS,
+        options.concurrency ?? DEFAULT_QUALITY_PROBE_CONCURRENCY,
+        options.budgetMs ?? 25000,
       );
       for (const [key, value] of partial) collected.set(key, value);
       if (options.onProgress) await options.onProgress(collected.size, target.length);
@@ -566,8 +624,6 @@ export async function runQualityGrading(
     probeMap = collected;
   }
 
-  const healthMap = options.healthMap ?? await loadHealthMap(storage);
-  const credentials = await loadCredentials(storage);
   const entries = buildQualityEntries(allSearchable, probeMap, previousEntries, healthMap, credentials);
   const snapshot = buildSnapshot(allSearchable.length, entries, allSearchable);
   await persistQualitySnapshot(storage, snapshot);
@@ -576,24 +632,31 @@ export async function runQualityGrading(
   return snapshot;
 }
 
-function isCredentialValid(credential: CloudCredential | undefined, now = Date.now()): boolean {
-  if (!credential || credential.status !== 'valid') return false;
-  if (!credential.expiresAt) return true;
-  const expiresAt = Date.parse(credential.expiresAt);
-  return Number.isFinite(expiresAt) && expiresAt > now;
+function hasNonEmptyCredentialValue(credential: CloudCredential | undefined): boolean {
+  if (!credential?.credential) return false;
+  return Object.values(credential.credential).some((value) => typeof value === 'string' && value.trim().length > 0);
 }
 
-function credentialStatusForPlatforms(
+
+
+function credentialStatusForSite(
+  site: TVBoxSite,
   platforms: CloudPlatform[],
   credentials: Map<CloudPlatform, CloudCredential>,
 ): SearchQualityEntry['credentialStatus'] {
   if (platforms.length === 0) return 'not-required';
-  const now = Date.now();
-  const configured = platforms.filter((platform) => credentials.has(platform));
-  const valid = platforms.filter((platform) => isCredentialValid(credentials.get(platform), now));
+  const configured = platforms.filter((platform) => hasNonEmptyCredentialValue(credentials.get(platform)));
+  const valid = platforms.filter((platform) => (
+    isCredentialDistributable(platform, credentials.get(platform))
+    && (platform === 'pan123' || platform === 'thunder' || platform === 'tianyi' || platform === 'quark' || platform === 'uc' || platform === 'baidu'
+      ? isPanInitCredentialDistributable(platform, credentials.get(platform))
+      : true)
+  ));
   if (configured.length === 0) return 'missing';
-  if (valid.length === platforms.length) return 'ready';
-  if (valid.length === 0 && configured.length === platforms.length) return 'invalid';
+  // 只有真实注入路径会让 ext 发生变化时才算 ready；仅保存了凭证但源不支持该平台
+  // 不能伪装成可下发。多平台源只需一个平台能注入。
+  if (valid.length > 0 && canDistributeCredentialsToSite(site, credentials)) return 'ready';
+  if (configured.length === platforms.length) return 'invalid';
   return 'partial';
 }
 
@@ -607,7 +670,7 @@ function buildQualityEntries(
   const now = new Date().toISOString();
   return searchable.map((site) => {
     const credentialPlatforms = [...new Set(getCredentialPlatformsForSite(site))];
-    const credentialStatus = credentialStatusForPlatforms(credentialPlatforms, credentials);
+    const credentialStatus = credentialStatusForSite(site, credentialPlatforms, credentials);
     if (!isSiteProbeable(site)) {
       return {
         key: site.key,
@@ -640,17 +703,42 @@ function buildQualityEntries(
       : previousEntry
         ? { key: site.key, speedMs: previousEntry.speedMs, result: previousEntry.result }
         : probe;
+    const hasCredentialProbe = !!probeHeadersForSite(site, credentials);
+    let grade: SiteQualityGrade;
+    let entryProbe: SiteProbeResult | undefined;
+    if (credentialPlatforms.length > 0 && !hasCredentialProbe) {
+      // 需要的平台无法全部映射为 HTTP Cookie（token-only、部分凭证或 JAR 专用）时，
+      // 绝不能使用未带凭证的普通 HTTP 结果提升为优/良/可用。
+      grade = credentialStatus === 'ready' ? 'credential-ready' : 'untestable';
+      entryProbe = undefined;
+    } else if (hasCredentialProbe && credentialStatus === 'ready') {
+      entryProbe = effectiveProbe;
+      if (!freshProbe && previousEntry) {
+        // 分块运行只探测当前批次。未覆盖的凭证源必须保留上一轮已测得等级，
+        // 否则每处理一个分片都会把其他源错误降级。
+        grade = previousEntry.grade;
+      } else if (freshProbe && probe!.result === 'ok') {
+        grade = gradeForProbe(probe, consecutiveFailures);
+      } else {
+        // 凭证探测失败不能永久把源判死：凭证过期、上游风控或服务端 IP
+        // 限制都会造成一次失败。回退到“凭证就绪”，由客户端最终播放验证。
+        grade = 'credential-ready';
+      }
+    } else {
+      entryProbe = effectiveProbe;
+      grade = gradeForProbe(effectiveProbe, consecutiveFailures);
+    }
     return {
       key: site.key,
       name: site.name || site.key,
-      grade: gradeForProbe(effectiveProbe, consecutiveFailures),
-      speedMs: effectiveProbe?.speedMs ?? null,
-      result: effectiveProbe?.result ?? 'not_probed',
-      probedAt: freshProbe ? now : previousEntry?.probedAt,
+      grade,
+      speedMs: entryProbe?.speedMs ?? null,
+      result: entryProbe?.result ?? 'not_probed',
+      probedAt: entryProbe ? (freshProbe ? now : previousEntry?.probedAt) : undefined,
       consecutiveFailures,
       credentialPlatforms,
       credentialStatus,
-      probeKind: credentialPlatforms.length > 0 ? 'credential-http' : 'http',
+      probeKind: hasCredentialProbe ? 'credential-http' : (credentialPlatforms.length > 0 ? 'client-jar' : 'http'),
     };
   });
 }
@@ -792,7 +880,13 @@ export async function runQualityGradingChunk(
   }
 
   const batch = target.slice(start, start + Math.max(1, batchSize));
-  const probeMap = await batchSiteSpeedTest(batch, 3000, false, 6, 25000);
+  const probeMap = await batchCredentialAwareSpeedTest(
+    batch,
+    credentials,
+    DEFAULT_QUALITY_PROBE_TIMEOUT_MS,
+    DEFAULT_QUALITY_PROBE_CONCURRENCY,
+    Math.max(10000, DEFAULT_QUALITY_PROBE_TIMEOUT_MS * DEFAULT_QUALITY_PROBE_CONCURRENCY),
+  );
   const healthMap = await loadHealthMap(storage);
   const entries = buildQualityEntries(allSearchable, probeMap, previousEntries, healthMap, credentials);
   const snapshot = buildSnapshot(allSearchable.length, entries, allSearchable);

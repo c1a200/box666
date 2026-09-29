@@ -5,13 +5,14 @@ import type { AppConfig, SourceEntry, SourcedConfig, MacCMSSourceEntry, SourceFe
 import { fetchConfigs } from './core/fetcher';
 import { mergeConfigs, cleanLocalRefs, cleanEmptyEntries } from './core/merger';
 import { batchSiteSpeedTest, appendSpeedToName, filterUnreachableSites, type SiteProbeResult } from './core/speedtest';
+import { isClientCredentialSite, getDirectPlatformFromApi } from './core/credential-risk';
 import { macCMSToTVBoxSites, processMacCMSForLocal } from './core/maccms';
 import { rewriteJarUrls } from './core/jar-proxy';
 import { mergeLivesToNative, separatedMergeLives, formatLiveGroupsAsTxt, filterLiveSourcesDetailed, type LiveSourceInput } from './core/live-merger';
 import { loadSpeedMap as loadChannelSpeedMap } from './core/channel-probe';
 import { liveSourcesToTVBoxLives } from './core/live-source';
 import { isBlockedLiveSource, partitionBlockedLiveSources } from './core/live-policy';
-import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_STARTUP_SITE_POOL, KV_SOURCE_URLS, KV_LAST_UPDATE, KV_MANUAL_SOURCES, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_MERGE_REPORT, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_PARSE_HEALTH_REPORT, KV_CHANNEL_MERGED_TREE, KV_AGG_LOGS, AGG_LOGS_MAX, KV_SITE_SNAPSHOT, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, BASE_URL_PLACEHOLDER, KV_SITE_HEALTH_MAP, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SOURCE_MAP, KV_SOURCE_URL_BLACKLIST } from './core/config';
+import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_STARTUP_SITE_POOL, KV_SOURCE_URLS, KV_LAST_UPDATE, KV_MANUAL_SOURCES, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_MERGE_REPORT, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_CREDENTIAL_DISTRIBUTION_ENABLED, KV_PARSE_HEALTH_REPORT, KV_CHANNEL_MERGED_TREE, KV_AGG_LOGS, AGG_LOGS_MAX, KV_SITE_SNAPSHOT, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, BASE_URL_PLACEHOLDER, KV_SITE_HEALTH_MAP, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SOURCE_MAP, KV_SOURCE_URL_BLACKLIST } from './core/config';
 import { loadBlacklist, applyBlacklist, pruneBlacklist, saveBlacklist, siteFingerprint } from './core/blacklist';
 import { transformSiteNames } from './core/cleaner';
 import { parseConfigJson, type FetchProxyConfig } from './core/fetcher';
@@ -19,12 +20,12 @@ import { scrapeSourceList, scrapeMacCMSSources, type ScrapeSourceConfig, type Sc
 import { loadSearchQuota, applySearchQuota, excludeJsUrlSites, probeAndPruneParses } from './core/search-quota';
 import { loadCredentials } from './core/credential-store';
 import { loadCredentialPolicy } from './core/credential-store';
-import { injectCredentials } from './core/credential-injector';
+import { generateTokenJson, injectCredentials } from './core/credential-injector';
 import { loadGroupOrder, applyGroupOrder } from './core/group-order';
-import { deduplicateSimilarNames } from './core/dedup';
+import { deduplicateClientCredentialSites, deduplicateSimilarNames } from './core/dedup';
 import { logger } from './core/logger';
 import { clearDirtyMarker } from './core/dirty-marker';
-import { loadQualityPool, runQualityGrading } from './core/quality';
+import { loadQualityPool, runQualityGrading, batchCredentialAwareSpeedTest } from './core/quality';
 import type { NameTransformConfig, EdgeProxyConfig } from './core/types';
 
 export async function runAggregation(storage: Storage, config: AppConfig): Promise<void> {
@@ -234,8 +235,19 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
   let merged = mergeResult.config;
   const { siteSourceMap, parseSourceMap, liveSourceMap } = mergeResult;
 
-  // 注入全局 token 接口地址（使用 Base URL 占位符）
-  merged.token = `${BASE_URL_PLACEHOLDER}/token.json`;
+  // 全局 token 接口必须和“凭证下发开关”保持一致：关闭或没有非空凭证时
+  // 不能把 token 字段留在根配置里，否则客户端仍会尝试拉取凭证。
+  const credentials = await loadCredentials(storage);
+  const credentialDistributionRaw = await storage.get(KV_CREDENTIAL_DISTRIBUTION_ENABLED);
+  const credentialDistributionEnabled = credentialDistributionRaw !== 'false';
+  const distributableCredentials = credentialDistributionEnabled
+    ? generateTokenJson(credentials)
+    : {};
+  if (Object.keys(distributableCredentials).length > 0) {
+    merged.token = `${BASE_URL_PLACEHOLDER}/token.json`;
+  } else {
+    delete merged.token;
+  }
 
   // Step 4.5: 黑名单过滤
   logger.info('aggregation', 'Step 4.5: Applying blacklist...');
@@ -303,9 +315,9 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
   // Step 5.7: 网盘凭证注入
   // 服务端没有凭证不代表客户端不可用：客户端可以自行登录网盘。
   // 因此这里只注入已有凭证，绝不删除未配置凭证的直连网盘源。
-  const credentials = await loadCredentials(storage);
-
-  if (credentials.size > 0 && merged.sites && merged.sites.length > 0) {
+  if (!credentialDistributionEnabled) {
+    logger.info('aggregation', 'Step 5.7: Credential distribution disabled, skipping injection');
+  } else if (credentials.size > 0 && merged.sites && merged.sites.length > 0) {
     logger.info('aggregation', 'Step 5.7: Injecting cloud credentials...');
     const credentialPolicy = await loadCredentialPolicy(storage);
     const jarBaseUrl = config.workerBaseUrl || config.localBaseUrl;
@@ -340,13 +352,47 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     logger.infoFields('aggregation', 'Step 6: site probe', { depth: probeDeep ? 'deep' : 'shallow' });
     siteProbeMap = await batchSiteSpeedTest(merged.sites, config.siteTimeoutMs, probeDeep, config.speedTestConcurrency, config.speedTestBudgetMs);
 
+    // 凭证源的普通 HTTP 探测结果只能作为参考，不能用来判定不可达；
+    // 同时，能通过 HTTP Cookie 验证的凭证源需要带凭证再补测一次。
+    const clientCredentialKeys = new Set(
+      merged.sites.filter((site) => isClientCredentialSite(site)).map((site) => site.key),
+    );
+    const credentialHeaders = new Map<string, Record<string, string>>();
+    for (const site of merged.sites) {
+      if (!isClientCredentialSite(site)) continue;
+      const directPlatform = getDirectPlatformFromApi(site.api);
+      if (!directPlatform) continue;
+      const credential = credentials.get(directPlatform);
+      const cookie = credential?.credential?.cookie;
+      if (!cookie) continue;
+      const headers: Record<string, string> = { Cookie: cookie };
+      try {
+        headers.Referer = site.api;
+        headers.Origin = new URL(site.api).origin;
+      } catch { /* non-standard API */ }
+      credentialHeaders.set(site.key, headers);
+    }
+    if (credentialHeaders.size > 0) {
+      const credentialProbeMap = await batchSiteSpeedTest(
+        merged.sites.filter((site) => credentialHeaders.has(site.key)),
+        config.siteTimeoutMs,
+        probeDeep,
+        config.speedTestConcurrency,
+        config.speedTestBudgetMs,
+        credentialHeaders,
+      );
+      for (const [key, probe] of credentialProbeMap) {
+        siteProbeMap.set(key, probe);
+      }
+    }
+
     // 提取纯 speedMs map 供后续 dedup 使用
     for (const [key, probe] of siteProbeMap) {
       siteSpeedMap.set(key, probe.speedMs);
     }
 
     if (siteProbeMap.size > 0) {
-      const { sites: filteredSites, filtered } = filterUnreachableSites(merged.sites, siteProbeMap);
+      const { sites: filteredSites, filtered } = filterUnreachableSites(merged.sites, siteProbeMap, clientCredentialKeys);
       merged.sites = filteredSites;
 
       if (!config.workerBaseUrl) {
@@ -364,8 +410,22 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     // “优 > 良 > 可用 > 未探测 > 不可用”排序并持久化，根配置只读该顺序。
     try {
       const healthMap = await loadSiteHealthMap(storage);
+      // 普通站点沿用 Step 6 的结果；客户端凭证源必须用统一凭证感知探测覆盖，
+      // 否则外部传入 probeMap 会让它们跳过带 Cookie 的真实补测。
+      const qualityProbeMap = new Map(siteProbeMap);
+      const credentialSites = preProbeSites.filter((site) => isClientCredentialSite(site));
+      if (credentialSites.length > 0) {
+        const credentialProbeMap = await batchCredentialAwareSpeedTest(
+          credentialSites,
+          credentials,
+          config.siteTimeoutMs,
+          config.speedTestConcurrency,
+          config.speedTestBudgetMs,
+        );
+        for (const [key, probe] of credentialProbeMap) qualityProbeMap.set(key, probe);
+      }
       const snapshot = await runQualityGrading(storage, preProbeSites, {
-        probeMap: siteProbeMap,
+        probeMap: qualityProbeMap,
         healthMap,
         markRun: false,
         timezone: config.qualityTimezone,
@@ -399,6 +459,17 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
         ? dedupCfg.similarDedupThreshold
         : 0.85;
     } catch { /* ignore */ }
+  }
+
+  if (merged.sites && merged.sites.length > 0) {
+    const beforeClientDedup = merged.sites.length;
+    merged.sites = deduplicateClientCredentialSites(merged.sites, siteSpeedMap);
+    if (merged.sites.length !== beforeClientDedup) {
+      logger.infoFields('aggregation', 'Step 6.2: client-credential-identity-dedup', {
+        before: beforeClientDedup,
+        after: merged.sites.length,
+      });
+    }
   }
 
   if (similarDedupEnabled && merged.sites && merged.sites.length > 0) {
