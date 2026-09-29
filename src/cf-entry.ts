@@ -49,19 +49,24 @@ const QUALITY_CHUNK_SIZE = 40;
 
 /** CF 单次执行一个分片；到期时自动开始新的一轮，running 时继续游标。 */
 async function runQualityChunkWithStatus(storage: KVStorage): Promise<void> {
-  const status = await loadQualityStatus(storage);
+  let status = await loadQualityStatus(storage);
   const due = await shouldRunQualityNow(storage);
   const sites = await loadQualityCandidates(storage);
   if (sites.length === 0) {
     console.log('[quality] No candidate sites; run aggregation first');
-    // 无候选也必须推进计划，否则每个 cron tick 都会重复进入空任务。
-    await finishQualityRun(storage, 0, 0, true);
+    // 不推进计划：候选站点要等一次聚合才会写入，提前推进会让本轮计划
+    // 被“空跑”消耗掉，用户要再等一整天。保持到期状态，下个 tick 重试。
+    await finishQualityRun(storage, 0, 0, false);
     return;
   }
   const resuming = status.state === 'running';
   if (!resuming && !due) return;
   const cursor = resuming ? (status.cursor || 0) : 0;
-  if (!resuming) await beginQualityRun(storage, sites.length, QUALITY_CHUNK_SIZE);
+  if (!resuming) {
+    // 新的一轮：重置游标和进度后再取回状态，避免沿用上一轮的 processed
+    // 把“刚开始”误报成“已接近完成”。
+    status = await beginQualityRun(storage, sites.length, QUALITY_CHUNK_SIZE);
+  }
   await updateQualityStatus(storage, { state: 'running', total: sites.length, cursor, batchSize: QUALITY_CHUNK_SIZE });
   const result = await runQualityGradingChunk(storage, sites, cursor, QUALITY_CHUNK_SIZE);
   const processed = Math.max(status.processed || 0, result.cursor);

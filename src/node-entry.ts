@@ -231,7 +231,9 @@ async function main() {
       const sites = await loadQualityCandidates(storage);
       if (sites.length === 0) {
         console.log('[quality] No candidate sites; run aggregation first');
-        await finishQualityRun(storage, 0, 0, true);
+        // 不推进计划：候选站点要等一次聚合才会写入，提前推进会让本轮计划
+        // 被“空跑”消耗掉，用户要再等一整天。保持到期状态，下个 tick 重试。
+        await finishQualityRun(storage, 0, 0, false);
         return;
       }
       await beginQualityRun(storage, sites.length, 0);
