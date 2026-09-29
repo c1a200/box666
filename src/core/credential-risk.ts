@@ -82,6 +82,7 @@ const API_TO_PLATFORMS: Record<string, CloudPlatform[]> = {
   'csp_BiliR': ['bilibili'],
   'csp_Wobg': ['aliyun', 'quark', 'uc', 'pan115', 'thunder', 'pikpak', 'tianyi', 'baidu', 'pan123'],
   'csp_Wogg': ['aliyun', 'quark', 'uc', 'pan115', 'thunder', 'pikpak', 'tianyi', 'baidu', 'pan123'],
+  'csp_PanSearch': ['quark', 'uc', 'tianyi', 'baidu', 'pan123', 'thunder'],
   'csp_Mogg': ['quark', 'aliyun', 'uc', 'tianyi', 'baidu', 'pan123', 'thunder'],
   'csp_Pan115': ['pan115'],
   'csp_P123': ['pan123'],
@@ -109,6 +110,7 @@ export const ALIST_PLATFORMS: CloudPlatform[] = [
 const API_PLATFORM_PATTERNS: Array<{ pattern: RegExp; platforms: CloudPlatform[]; tokenJson?: boolean }> = [
   { pattern: /^csp_Bili/i, platforms: ['bilibili'] },
   { pattern: /^csp_Wo[bg]g(?:Guard)?/i, platforms: ['aliyun', 'quark', 'uc', 'pan115', 'thunder', 'pikpak', 'tianyi', 'baidu', 'pan123'], tokenJson: true },
+  { pattern: /^csp_PanSearch(?:Guard)?/i, platforms: ['quark', 'uc', 'tianyi', 'baidu', 'pan123', 'thunder'] },
   { pattern: /^csp_Mogg/i, platforms: ['quark', 'aliyun', 'uc', 'tianyi', 'baidu', 'pan123', 'thunder'] },
   { pattern: /^csp_Pan115/i, platforms: ['pan115'] },
   { pattern: /^csp_AList/i, platforms: ALIST_PLATFORMS },

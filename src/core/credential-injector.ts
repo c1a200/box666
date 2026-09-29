@@ -437,11 +437,74 @@ export function hasPanInitCredential(creds: Map<CloudPlatform, CloudCredential>,
 }
 
 /**
+ * csp_PanSearch 的 ext.pan 指定实际检索的网盘。只注入该平台，
+ * 避免把夸克 Cookie 错误下发给 UC/百度等盘搜索源。
+ */
+function injectPanSearchCredential(
+  ext: any,
+  creds: Map<CloudPlatform, CloudCredential>,
+  baseUrl?: string,
+): any {
+  const parsed = parseExt(ext);
+  if (!parsed.injectable) return ext;
+  const pan = typeof parsed.obj.pan === 'string' ? parsed.obj.pan.trim().toLowerCase() : '';
+  const platformMap: Record<string, PanInitPlatform> = {
+    quark: 'quark',
+    '夸克': 'quark',
+    uc: 'uc',
+    tianyi: 'tianyi',
+    '天翼': 'tianyi',
+    baidu: 'baidu',
+    '百度': 'baidu',
+    p123: 'pan123',
+    pan123: 'pan123',
+    '123': 'pan123',
+    xunlei: 'thunder',
+    thunder: 'thunder',
+    '迅雷': 'thunder',
+  };
+  const platform = platformMap[pan];
+  if (!platform) return ext;
+  return injectPanInitUrls(ext, creds, baseUrl, [platform]).ext;
+}
+
+function canInjectPanSearchCredential(
+  ext: any,
+  creds: Map<CloudPlatform, CloudCredential>,
+): boolean {
+  const parsed = parseExt(ext);
+  if (!parsed.injectable) return false;
+  const pan = typeof parsed.obj.pan === 'string' ? parsed.obj.pan.trim().toLowerCase() : '';
+  const platformMap: Record<string, PanInitPlatform> = {
+    quark: 'quark',
+    '夸克': 'quark',
+    uc: 'uc',
+    tianyi: 'tianyi',
+    '天翼': 'tianyi',
+    baidu: 'baidu',
+    '百度': 'baidu',
+    p123: 'pan123',
+    pan123: 'pan123',
+    '123': 'pan123',
+    xunlei: 'thunder',
+    thunder: 'thunder',
+    '迅雷': 'thunder',
+  };
+  const platform = platformMap[pan];
+  return !!platform && hasPanInitCredential(creds, platform);
+}
+
+/**
  * Mogg/Wogg 的 Pan.init 会把 ext 中以下键当作 URL 拉取：
  * p123/xunlei/tianyi 返回 username+password JSON，其余返回原始 cookie 文本。
  * 因此不能把 cookie 直接塞进 ext，只能下发项目自托管初始化 URL。
  */
-function injectPanInitUrls(ext: any, creds: Map<CloudPlatform, CloudCredential>, baseUrl?: string): { ext: any; changed: boolean } {
+function injectPanInitUrls(
+  ext: any,
+  creds: Map<CloudPlatform, CloudCredential>,
+  baseUrl?: string,
+  allowedPlatforms?: PanInitPlatform[],
+): { ext: any; changed: boolean } {
   const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
   if (!normalizedBaseUrl) return { ext, changed: false };
 
@@ -466,7 +529,9 @@ function injectPanInitUrls(ext: any, creds: Map<CloudPlatform, CloudCredential>,
 
   const next = { ...parsed.obj };
   let changed = false;
+  const allowed = allowedPlatforms ? new Set(allowedPlatforms) : null;
   for (const { field, platform } of PAN_INIT_FIELDS) {
+    if (allowed && !allowed.has(platform)) continue;
     if (hasPanInitCredential(creds, platform)) {
       const url = `${normalizedBaseUrl}/credential/${field}`;
       if (next[field] !== url) {
@@ -550,6 +615,16 @@ const BUILTIN_RULES: InjectionRule[] = [
     skipTokenJsonReplacement: true,
     canInject: (_ext, creds) => getInjectablePanInitPlatforms(creds).length > 0,
     inject: (ext, creds, baseUrl?: string) => injectPanInitUrls(ext, creds, baseUrl || undefined).ext,
+  },
+
+  // csp_PanSearch(Guard): Pan 基类同样从 ext 中的平台键拉取 Pan.init 数据。
+  // 线上“夸搜/盘搜”使用此 API；缺失该规则时，前端保存的夸克凭证不会下发。
+  {
+    apiPattern: /^csp_PanSearch(?:Guard)?/i,
+    platforms: ['quark', 'uc', 'tianyi', 'baidu', 'pan123', 'thunder'],
+    skipTokenJsonReplacement: true,
+    canInject: (ext, creds) => canInjectPanSearchCredential(ext, creds),
+    inject: (ext, creds, baseUrl?: string) => injectPanSearchCredential(ext, creds, baseUrl || undefined),
   },
 
   // csp_Mogg: Pan.init 按 URL 读取各平台初始化数据。
