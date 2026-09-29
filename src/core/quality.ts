@@ -328,11 +328,20 @@ export async function loadHealthMap(storage: Storage): Promise<SiteHealthMap> {
   return {};
 }
 
+/**
+ * 收集参与搜索配额决策的完整可搜索池。
+ *
+ * 必须覆盖所有 searchable===1 的站点，包含 type=3 的远程扩展（csp_* 守卫）。
+ * 它们同样占用前端配置的 maxSearchable 名额，因此必须计入分级统计与排序；
+ * 否则前端看到的“可搜索源数量”会远小于实际值，推荐上限也会失真。
+ * 不可探测的 type=3 站点不会被 batchSiteSpeedTest 发起请求，只会落到
+ * unknown/usable，不会增加任何网络开销。
+ */
 function collectSearchableSites(sites: TVBoxSite[]): TVBoxSite[] {
   const seen = new Set<string>();
   const result: TVBoxSite[] = [];
   for (const site of sites) {
-    if (site.searchable !== 1 || site.type === 3) continue;
+    if (site.searchable !== 1) continue;
     if (!site.key || seen.has(site.key)) continue;
     seen.add(site.key);
     result.push(site);
