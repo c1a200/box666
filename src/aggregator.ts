@@ -1,7 +1,7 @@
 // 聚合流程编排
 
 import type { Storage } from './storage/interface';
-import type { AppConfig, SourceEntry, SourcedConfig, MacCMSSourceEntry, SourceFetchResult, SourceHealthRecord, AggregationLog, AggLogFailedSource, AggLogSiteChange, TVBoxSite, TVBoxLive } from './core/types';
+import type { AppConfig, SourceEntry, SourcedConfig, MacCMSSourceEntry, SourceFetchResult, SourceHealthRecord, AggregationLog, AggLogFailedSource, AggLogSiteChange, TVBoxSite, TVBoxLive, SiteHealthMap } from './core/types';
 import { fetchConfigs } from './core/fetcher';
 import { mergeConfigs, cleanLocalRefs, cleanEmptyEntries } from './core/merger';
 import { batchSiteSpeedTest, appendSpeedToName, filterUnreachableSites, type SiteProbeResult } from './core/speedtest';
@@ -606,9 +606,24 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
   // 这样 KV_SEARCH_QUOTA_REPORT 和最终根配置始终使用同一份 sites。
   if (merged.sites) {
     const quotaConfig = await loadSearchQuota(storage);
+
+    // 探测预算耗尽时，使用上次聚合保存的站点健康记录补全质量分级。
+    // 该记录属于当前部署自己的 KV，不会与另一套部署共享。
+    let siteHealthMap: SiteHealthMap = {};
+    const siteHealthRaw = await storage.get(KV_SITE_HEALTH_MAP);
+    if (siteHealthRaw) {
+      try {
+        const parsed = JSON.parse(siteHealthRaw);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          siteHealthMap = parsed as SiteHealthMap;
+        }
+      } catch {}
+    }
+
     const { sites: quotaSites, candidateSites, quotaReport } = applySearchQuota(merged.sites, quotaConfig, siteSourceMap, {
       speedMap: siteSpeedMap,
       probeMap: siteProbeMap,
+      healthMap: siteHealthMap,
       jsExcluded: quotaJsExcluded,
       totalSites: quotaTotalSites,
     });

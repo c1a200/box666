@@ -1,6 +1,6 @@
 // 搜索配额控制（复用站点测速结果）
 
-import type { TVBoxParse, TVBoxSite, SearchQuotaConfig, SearchQuotaReport, SiteQualityGrade, SiteQualityGrades } from './types';
+import type { TVBoxParse, TVBoxSite, SearchQuotaConfig, SearchQuotaReport, SiteHealthMap, SiteQualityGrade, SiteQualityGrades } from './types';
 import type { SiteProbeResult } from './speedtest';
 import type { Storage } from '../storage/interface';
 import { KV_SEARCH_QUOTA } from './config';
@@ -185,17 +185,34 @@ function createEmptyQualityGrades(): SiteQualityGrades {
 }
 
 /**
- * 基于本次验活结果、连续失败次数和测速延迟，对“未截断的可搜索候选池”分级。
+ * 基于本次验活结果、历史连续失败次数和测速延迟，对“未截断的可搜索候选池”分级。
+ * 探测预算耗尽时复用历史健康记录，避免把此前稳定可用的源误归为 unknown。
  * 不额外发请求；不可用源不进入 poolTotal，但会保留在 unusable 统计中。
  */
 function getSiteQualityGrade(
   site: TVBoxSite,
   probeMap?: Map<string, SiteProbeResult>,
+  healthMap?: SiteHealthMap,
 ): SiteQualityGrade {
   const probe = probeMap?.get(site.key);
-  if (!probe || probe.result === 'not_probed') return 'unknown';
-  if (probe.result !== 'ok') return 'unusable';
-  const failures = probe.consecutiveFailures ?? 0;
+  const health = healthMap?.[site.key];
+  const failures = probe?.consecutiveFailures ?? health?.consecutiveFailures ?? 0;
+  const hasPriorSuccess = !!health?.lastSuccessTime || !!probe?.lastSuccessTime;
+  const historicalHealthy = !!health && failures < 3
+    && (health.lastProbeResult === 'ok' || hasPriorSuccess);
+
+  // 本次没有完成探测：优先使用历史健康度，避免预算耗尽导致好源被降级。
+  if (!probe || probe.result === 'not_probed') {
+    if (failures >= 3) return 'unusable';
+    return historicalHealthy ? 'usable' : 'unknown';
+  }
+
+  // 单次失败不应立刻判定为不可用；已有成功历史且未连续失败 3 次时保守保留。
+  if (probe.result !== 'ok') {
+    if (failures >= 3 || !hasPriorSuccess) return 'unusable';
+    return 'usable';
+  }
+
   const speed = probe.speedMs;
   if (failures >= 3 || speed == null) return 'usable';
   if (speed <= QUALITY_EXCELLENT_MS) return 'excellent';
@@ -206,10 +223,11 @@ function getSiteQualityGrade(
 function buildQualityGrades(
   candidateSites: TVBoxSite[],
   probeMap?: Map<string, SiteProbeResult>,
+  healthMap?: SiteHealthMap,
 ): SiteQualityGrades {
   const grades = createEmptyQualityGrades();
   for (const site of candidateSites) {
-    const grade = getSiteQualityGrade(site, probeMap);
+    const grade = getSiteQualityGrade(site, probeMap, healthMap);
     grades[grade].count++;
     if (grade !== 'unusable') grades.poolTotal++;
   }
@@ -225,6 +243,7 @@ function buildQualityGrades(
 export interface SearchQuotaApplyOptions {
   speedMap?: Map<string, number | null>;
   probeMap?: Map<string, SiteProbeResult>;
+  healthMap?: SiteHealthMap;
   jsExcluded?: number;
   totalSites?: number;
 }
@@ -274,6 +293,8 @@ export function applySearchQuota(
     unusable: 4,
   };
   const hasProbe = !!options.probeMap && options.probeMap.size > 0;
+  const hasHealth = !!options.healthMap && Object.keys(options.healthMap).length > 0;
+  const hasQualityData = hasProbe || hasHealth;
   const hasSpeed = !!speedMap && speedMap.size > 0;
   const compareSpeed = (a: TVBoxSite, b: TVBoxSite): number => {
     if (!config.sortBySpeed || !speedMap) return 0;
@@ -288,10 +309,10 @@ export function applySearchQuota(
   };
 
   let speedSorted = false;
-  if (hasProbe) {
+  if (hasQualityData) {
     candidates = [...candidates].sort((a, b) => {
-      const gradeDiff = qualityRank[getSiteQualityGrade(a, options.probeMap)]
-        - qualityRank[getSiteQualityGrade(b, options.probeMap)];
+      const gradeDiff = qualityRank[getSiteQualityGrade(a, options.probeMap, options.healthMap)]
+        - qualityRank[getSiteQualityGrade(b, options.probeMap, options.healthMap)];
       return gradeDiff !== 0 ? gradeDiff : compareSpeed(a, b);
     });
     speedSorted = config.sortBySpeed && hasSpeed
@@ -345,7 +366,7 @@ export function applySearchQuota(
   // quickSearch 状态重新带回来。只要本次探测产生了质量数据，就始终按质量顺序
   // 输出；sortBySpeed 只决定同一质量等级内部是否再按速度排序。
   let orderedSites: TVBoxSite[];
-  if (hasProbe || (config.sortBySpeed && speedSorted)) {
+  if (hasQualityData || (config.sortBySpeed && speedSorted)) {
     const ordered = [...pinned, ...keptCandidates];
     const orderedKeys = new Set(ordered.map(site => site.key));
     const rest = sites.filter(site => !orderedKeys.has(site.key));
@@ -384,7 +405,7 @@ export function applySearchQuota(
   // 质量统计覆盖完整的未截断可搜索候选池（置顶源 + 普通候选源），
   // 不再只统计根地址启动池，便于前端按实际质量区间配置 maxSearchable。
   const allSearchableCandidates = [...pinnedSearchable, ...candidates];
-  const qualityGrades = buildQualityGrades(allSearchableCandidates, options.probeMap);
+  const qualityGrades = buildQualityGrades(allSearchableCandidates, options.probeMap, options.healthMap);
 
   const searchable = sites.filter(site => site.searchable === 1).length;
   const quickSearchable = sites.filter(site => site.searchable === 1 && site.quickSearch !== 0).length;
