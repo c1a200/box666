@@ -9,12 +9,14 @@ import {
   beginQualityRun,
   finishQualityRun,
   loadQualityCandidates,
+  collectSearchableSites,
   loadQualityStatus,
   runQualityGradingChunk,
   shouldRunQualityNow,
+  shouldRunFullQualityNow,
   updateQualityStatus,
 } from './core/quality';
-import type { AppConfig } from './core/types';
+import type { AppConfig, SearchQualityRunMode } from './core/types';
 
 interface CfEnv {
   TVBOX_KV: KVNamespace;
@@ -48,10 +50,12 @@ function buildConfig(env: CfEnv): AppConfig {
 const QUALITY_CHUNK_SIZE = 40;
 
 /** CF 单次执行一个分片；到期时自动开始新的一轮，running 时继续游标。 */
-async function runQualityChunkWithStatus(storage: KVStorage): Promise<void> {
+async function runQualityChunkWithStatus(storage: KVStorage, requestedMode?: SearchQualityRunMode): Promise<void> {
   let status = await loadQualityStatus(storage);
-  const due = await shouldRunQualityNow(storage);
-  const sites = await loadQualityCandidates(storage);
+  const fullDue = await shouldRunFullQualityNow(storage);
+  const candidateDue = await shouldRunQualityNow(storage);
+  const storedSites = await loadQualityCandidates(storage);
+  const sites = collectSearchableSites(storedSites);
   if (sites.length === 0) {
     console.log('[quality] No candidate sites; run aggregation first');
     // 不推进计划：候选站点要等一次聚合才会写入，提前推进会让本轮计划
@@ -60,22 +64,25 @@ async function runQualityChunkWithStatus(storage: KVStorage): Promise<void> {
     return;
   }
   const resuming = status.state === 'running';
-  if (!resuming && !due) return;
+  if (!resuming && !requestedMode && !fullDue && !candidateDue) return;
+  const mode: SearchQualityRunMode = requestedMode
+    || (resuming && status.mode ? status.mode : (fullDue ? 'full' : 'candidate'));
   const cursor = resuming ? (status.cursor || 0) : 0;
   if (!resuming) {
     // 新的一轮：重置游标和进度后再取回状态，避免沿用上一轮的 processed
     // 把“刚开始”误报成“已接近完成”。
-    status = await beginQualityRun(storage, sites.length, QUALITY_CHUNK_SIZE);
+    status = await beginQualityRun(storage, sites.length, QUALITY_CHUNK_SIZE, mode);
   }
-  await updateQualityStatus(storage, { state: 'running', total: sites.length, cursor, batchSize: QUALITY_CHUNK_SIZE });
-  const result = await runQualityGradingChunk(storage, sites, cursor, QUALITY_CHUNK_SIZE);
-  const processed = Math.max(status.processed || 0, result.cursor);
+  await updateQualityStatus(storage, { state: 'running', mode, cursor, batchSize: QUALITY_CHUNK_SIZE });
+  const result = await runQualityGradingChunk(storage, sites, cursor, QUALITY_CHUNK_SIZE, mode);
+  const targetTotal = result.targetTotal || sites.length;
+  const processed = result.done ? targetTotal : Math.max(status.processed || 0, result.cursor);
   if (result.done) {
-    await finishQualityRun(storage, processed, sites.length, false);
-    console.log('[quality] Completed: ' + processed + '/' + sites.length);
+    await finishQualityRun(storage, processed, targetTotal, false, result.mode);
+    console.log('[quality] Completed (' + result.mode + '): ' + processed + '/' + targetTotal);
   } else {
-    await updateQualityStatus(storage, { state: 'running', cursor: result.cursor, processed, total: sites.length, batchSize: QUALITY_CHUNK_SIZE });
-    console.log('[quality] Chunk done: ' + result.cursor + '/' + sites.length);
+    await updateQualityStatus(storage, { state: 'running', mode: result.mode, cursor: result.cursor, processed, total: targetTotal, batchSize: QUALITY_CHUNK_SIZE });
+    console.log('[quality] Chunk done (' + result.mode + '): ' + result.cursor + '/' + targetTotal);
   }
 }
 export default {
@@ -87,7 +94,7 @@ export default {
       storage,
       config,
       triggerRefresh: () => runAggregation(storage, config),
-      triggerQuality: () => runQualityChunkWithStatus(storage),
+      triggerQuality: (mode) => runQualityChunkWithStatus(storage, mode),
     });
 
     return app.fetch(request, env, ctx);
@@ -121,7 +128,9 @@ export default {
     // 聚合未到期时：到期或未完成的质量分级每次只跑一个分片，
     // 剩余时间用于少量直播测速，避免超过 Worker 时长限制。
     const qualityStatus = await loadQualityStatus(storage);
-    const qualityDue = await shouldRunQualityNow(storage);
+    const candidateDue = await shouldRunQualityNow(storage);
+    const fullDue = await shouldRunFullQualityNow(storage);
+    const qualityDue = candidateDue || fullDue;
     const qualityActive = qualityDue || qualityStatus.state === 'running';
 
     ctx.waitUntil(

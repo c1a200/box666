@@ -3,7 +3,7 @@
 import { Hono } from 'hono';
 import { MemoryCachedStorage } from './storage/cached';
 import type { Storage } from './storage/interface';
-import type { AppConfig, MacCMSSourceEntry, LiveSourceEntry, NameTransformConfig, EdgeProxyConfig } from './core/types';
+import type { AppConfig, MacCMSSourceEntry, LiveSourceEntry, NameTransformConfig, EdgeProxyConfig, SearchQualityRunMode } from './core/types';
 import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_STARTUP_SITE_POOL, KV_MANUAL_SOURCES, KV_LAST_UPDATE, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_RUNTIME_TXT, KV_LIVE_RUNTIME_TXT_VERSION, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, LIVE_PROXY_TTL, IMG_PROXY_TTL, KV_NAME_TRANSFORM, KV_CRON_INTERVAL, DEFAULT_CRON_INTERVAL, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_PARSE_HEALTH_REPORT, KV_AGG_LOGS, KV_BG_SETTINGS, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, KV_SMART_BASE_URL_ENABLED, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SITE_HEALTH_MAP, KV_CHANNEL_MERGED_TREE, KV_LIVE_TEXT_PREFIX } from './core/config';
 import { getRequestBaseUrl, applyBaseUrlPlaceholder, assertHostAllowed } from './core/base-url';
 import { logger } from './core/logger';
@@ -25,6 +25,7 @@ import {
   loadQualityStatus,
   saveQualitySchedule,
   updateQualityStatus,
+  excludedQualityKeys,
 } from './core/quality';
 import { loadCredentials, saveCredential, deleteCredential, loadCredentialPolicy, saveCredentialPolicy } from './core/credential-store';
 import { generateQR, pollQRStatus, passwordLogin, PLATFORM_NAMES, QR_PLATFORMS, PASSWORD_PLATFORMS } from './core/cloud-login';
@@ -45,7 +46,7 @@ export interface AppDeps {
   storage: Storage;
   config: AppConfig;
   triggerRefresh: () => Promise<void>;
-  triggerQuality?: () => Promise<void>;   // Node/Docker 入口启用全量质量分级
+  triggerQuality?: (mode: SearchQualityRunMode) => Promise<void>;   // Node/Docker 入口启用质量分级
   onCronIntervalChange?: (intervalMinutes: number) => void;
   enableChannelProbe?: boolean; // 仅 Node/Docker 入口启用
   enableBuilder?: boolean;      // 仅 Node/Docker 入口启用（配置构建器）
@@ -373,7 +374,7 @@ export function createApp(deps: AppDeps): Hono {
     if (qualityPool && Array.isArray(qualityPool.entries) && qualityPool.entries.length > 0) {
       const restored: TVBoxSite[] = [];
       for (const entry of qualityPool.entries) {
-        if (entry.grade === 'unusable') continue;
+        if (entry.grade === 'timeout' || entry.grade === 'unusable') continue;
         const site = siteByKey.get(entry.key);
         if (!site) continue;
         restored.push(site.searchable === 1 ? site : { ...site, searchable: 1 });
@@ -392,7 +393,7 @@ export function createApp(deps: AppDeps): Hono {
       if (!site || seenPinned.has(key)) continue;
       if (qualityPool && qualityPool.entries.length > 0) {
         const entry = qualityPool.entries.find((item) => item.key === key);
-        if (entry && entry.grade === 'unusable') continue;
+        if (entry && (entry.grade === 'timeout' || entry.grade === 'unusable')) continue;
       }
       seenPinned.add(key);
       pinnedSites.push(site.searchable === 1 ? site : { ...site, searchable: 1 });
@@ -426,6 +427,29 @@ export function createApp(deps: AppDeps): Hono {
 
     return JSON.stringify(parsed);
   }
+  // 完整配置仍要排除质量分级里的超时/不可用源，保证 /config-full.json
+  // 不会把客户端不可用的搜索源重新带回来。
+  async function filterExcludedQualitySites(cached: string): Promise<string> {
+    let pool;
+    try {
+      pool = await loadQualityPool(storage);
+    } catch {
+      return cached;
+    }
+    if (!pool || !Array.isArray(pool.entries) || pool.entries.length === 0) return cached;
+    const excluded = excludedQualityKeys(pool);
+    if (excluded.size === 0) return cached;
+    let parsed: TVBoxConfig;
+    try {
+      parsed = JSON.parse(cached) as TVBoxConfig;
+    } catch {
+      return cached;
+    }
+    if (!Array.isArray(parsed.sites)) return cached;
+    parsed.sites = parsed.sites.filter((site) => !excluded.has(site.key));
+    return JSON.stringify(parsed);
+  }
+
   function configBody(body: string, headers: Record<string, string>): Response {
     // 不手工压缩：Cloudflare 边缘可能在客户端未请求 gzip 时剥离
     // Content-Encoding，却保留压缩字节，导致 TVBox/影视仓 JSON 解析失败。
@@ -707,12 +731,14 @@ export function createApp(deps: AppDeps): Hono {
   });
 
   // 完整配置入口：不受轻量启动模式影响，始终返回最终聚合结果。
+  // 仍然排除质量分级中的“超时/不可用”源，避免客户端拿到不可用搜索源。
   app.get('/config-full.json', async (c) => {
     let cached = await storage.get(KV_MERGED_CONFIG);
     if (!cached) {
       return c.json({ error: 'No config available yet.' }, 503);
     }
     cached = await repairCfSeparatedLives(cached);
+    cached = await filterExcludedQualitySites(cached);
     const baseUrl = await resolveBaseUrl(c);
     if (baseUrl instanceof Response) return baseUrl;
     cached = applyBaseUrlPlaceholder(cached, baseUrl);
@@ -1121,12 +1147,13 @@ export function createApp(deps: AppDeps): Hono {
 
   app.put('/admin/quality-schedule', async (c) => {
     if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
-    let body: { enabled?: boolean; times?: unknown; repeatDays?: number; timezone?: string };
+    let body: { enabled?: boolean; times?: unknown; repeatDays?: number; fullRepeatDays?: number; timezone?: string };
     try { body = await c.req.json(); } catch { return c.json({ error: 'Invalid JSON' }, 400); }
     const schedule = await saveQualitySchedule(storage, {
       enabled: body.enabled,
       times: Array.isArray(body.times) ? (body.times as string[]) : undefined,
       repeatDays: typeof body.repeatDays === 'number' ? body.repeatDays : undefined,
+      fullRepeatDays: typeof body.fullRepeatDays === 'number' ? body.fullRepeatDays : undefined,
       timezone: typeof body.timezone === 'string' ? body.timezone : undefined,
     });
     return c.json({ success: true, ...schedule });
@@ -1173,6 +1200,10 @@ export function createApp(deps: AppDeps): Hono {
       parserLimit: parseLimit,
       candidatePool: snapshot?.total ?? null,
       usablePool: snapshot?.grades?.poolTotal ?? null,
+      testable: snapshot?.coverage?.testable ?? null,
+      probed: snapshot?.coverage?.probed ?? null,
+      notProbed: snapshot?.coverage?.notProbed ?? null,
+      untestable: snapshot?.coverage?.untestable ?? null,
     };
 
     // 推荐解析器上限：客户端启动时会串行初始化解析器，保留 3 个已足够；
@@ -1201,24 +1232,45 @@ export function createApp(deps: AppDeps): Hono {
     return c.json({ snapshot, schedule, status });
   });
 
-  // 立即执行一次全量质量分级（Node 全量执行；CF 执行一个分片并让后续 cron 续跑）
+  // 立即执行质量分级。请求只负责启动后台任务，完整结果通过状态接口轮询。
   app.post('/admin/quality/run', async (c) => {
     if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
     if (!deps.triggerQuality) {
       return c.json({ error: 'Quality grading is not available in this runtime' }, 501);
     }
+    const modeRaw = c.req.query('mode') || 'candidate';
+    if (modeRaw !== 'candidate' && modeRaw !== 'full') {
+      return c.json({ error: 'Invalid mode; expected candidate or full' }, 400);
+    }
+    const mode: SearchQualityRunMode = modeRaw;
     const status = await loadQualityStatus(storage);
     if (status.state === 'running') {
       return c.json({ success: true, alreadyRunning: true, status });
     }
-    await updateQualityStatus(storage, { state: 'running', startedAt: new Date().toISOString(), error: undefined });
-    void deps.triggerQuality().catch(async (err: unknown) => {
+    const runningStatus = await updateQualityStatus(storage, {
+      state: 'running',
+      mode,
+      startedAt: new Date().toISOString(),
+      finishedAt: undefined,
+      processed: 0,
+      cursor: 0,
+      total: 0,
+      error: undefined,
+    });
+    const task = deps.triggerQuality(mode).catch(async (err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
       await updateQualityStatus(storage, { state: 'error', error: message, finishedAt: new Date().toISOString() });
     });
-    return c.json({ success: true, status: await loadQualityStatus(storage) });
+    let hasCtx = false;
+    try {
+      if (c.executionCtx) hasCtx = true;
+    } catch {
+      // Hono throws when accessed outside a Worker runtime.
+    }
+    if (hasCtx) c.executionCtx.waitUntil(task);
+    else void task;
+    return c.json({ success: true, mode, status: runningStatus });
   });
-
   // 报告精简版（dashboard 无需鉴权）
   app.get('/search-quota/summary', async (c) => {
     const raw = await storage.get(KV_SEARCH_QUOTA_REPORT);

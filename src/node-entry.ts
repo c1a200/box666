@@ -24,8 +24,12 @@ import {
   beginQualityRun,
   finishQualityRun,
   loadQualityCandidates,
+  loadQualityPool,
+  qualityTargetSites,
+  collectSearchableSites,
   runQualityGrading,
   shouldRunQualityNow,
+  shouldRunFullQualityNow,
   updateQualityStatus,
 } from './core/quality';
 import {
@@ -41,7 +45,7 @@ import {
   CHANNEL_PROBE_CRON,
 } from './core/config';
 import type { Storage } from './storage/interface';
-import type { AppConfig } from './core/types';
+import type { AppConfig, SearchQualityRunMode } from './core/types';
 
 // 加载 .env（嵌入式/无文件系统环境下容错：nodejs-mobile 无 .env，依赖注入的环境变量）
 try {
@@ -221,30 +225,37 @@ async function main() {
   };
 
   let qualityRunning = false;
-  async function runQualityWithGuard(): Promise<void> {
+  async function runQualityWithGuard(requestedMode?: SearchQualityRunMode): Promise<void> {
     if (qualityRunning) {
       console.log('[quality] Already running, skipping');
       return;
     }
     qualityRunning = true;
     try {
-      const sites = await loadQualityCandidates(storage);
-      if (sites.length === 0) {
+      const fullDue = await shouldRunFullQualityNow(storage);
+      const mode: SearchQualityRunMode = requestedMode || (fullDue ? 'full' : 'candidate');
+      const storedSites = await loadQualityCandidates(storage);
+      const allSites = collectSearchableSites(storedSites);
+      if (allSites.length === 0) {
         console.log('[quality] No candidate sites; run aggregation first');
         // 不推进计划：候选站点要等一次聚合才会写入，提前推进会让本轮计划
         // 被“空跑”消耗掉，用户要再等一整天。保持到期状态，下个 tick 重试。
-        await finishQualityRun(storage, 0, 0, false);
+        await finishQualityRun(storage, 0, 0, false, mode);
         return;
       }
-      await beginQualityRun(storage, sites.length, 0);
-      const snapshot = await runQualityGrading(storage, sites, {
+      const pool = await loadQualityPool(storage);
+      const target = qualityTargetSites(allSites, pool, mode);
+      const targetTotal = target.length > 0 ? target.length : allSites.length;
+      await beginQualityRun(storage, targetTotal, 0, mode);
+      const snapshot = await runQualityGrading(storage, allSites, {
+        mode,
         markRun: false,
         onProgress: async (processed, total) => {
-          await updateQualityStatus(storage, { cursor: processed, processed, total, state: 'running' });
+          await updateQualityStatus(storage, { cursor: processed, processed, total, state: 'running', mode });
         },
       });
-      await finishQualityRun(storage, snapshot.graded, snapshot.total);
-      console.log('[quality] Completed: ' + snapshot.graded + '/' + snapshot.total + ' graded');
+      await finishQualityRun(storage, targetTotal, targetTotal, true, mode);
+      console.log('[quality] Completed (' + mode + '): ' + targetTotal + ' targets, ' + snapshot.graded + '/' + snapshot.total + ' graded');
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       console.error('[quality] Error:', message);
@@ -297,12 +308,15 @@ async function main() {
   });
   console.log(`[channel-probe-cron] Scheduled: ${CHANNEL_PROBE_CRON} (runs when enabled)`);
 
-  // 搜索源质量分级独立 cron（每分钟检查计划；到期后全量分批执行）
+  // 搜索源质量分级独立 cron（每分钟检查计划；到期后异步执行）
+  // 候选池重排与全量分级分别按各自周期判断，互不阻塞 HTTP 请求。
   cron.schedule('* * * * *', async () => {
     try {
-      if (!(await shouldRunQualityNow(storage))) return;
-      console.log('[quality-cron] Triggered at ' + new Date().toISOString());
-      await runQualityWithGuard();
+      const candidateDue = await shouldRunQualityNow(storage);
+      const fullDue = await shouldRunFullQualityNow(storage);
+      if (!candidateDue && !fullDue) return;
+      console.log('[quality-cron] Triggered (' + (fullDue ? 'full' : 'candidate') + ') at ' + new Date().toISOString());
+      void runQualityWithGuard(fullDue ? 'full' : 'candidate');
     } catch (err) {
       console.error('[quality-cron] Error:', err);
     }

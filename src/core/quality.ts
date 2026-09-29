@@ -4,7 +4,9 @@
 // 1. 质量分级独立于聚合运行，可对完整可搜索池分批执行并持久化。
 // 2. 根配置只读取已经排好序的快照池，按前端配置的 maxSearchable 取前 N，不临时测速。
 // 3. Render/CF 使用各自 KV；CF 通过 cursor 分片续跑，避免一次 cron 超时。
+// 4. 日常只重测候选池；候选池为空或到达全量周期时，再自动回退/执行全量分级。
 import type {
+  SearchQualityRunMode,
   SearchQualitySchedule,
   SearchQualitySnapshot,
   SearchQualityStatus,
@@ -14,7 +16,7 @@ import type {
   SiteQualityGrades,
 } from './types';
 import type { Storage } from '../storage/interface';
-import { batchSiteSpeedTest, type SiteProbeResult } from './speedtest';
+import { batchSiteSpeedTest, isSiteProbeable, type SiteProbeResult } from './speedtest';
 import {
   KV_SEARCH_QUALITY_CANDIDATES,
   KV_SEARCH_QUALITY_POOL,
@@ -27,10 +29,13 @@ import {
 export const QUALITY_THRESHOLDS = {
   excellent: 1000,
   good: 3000,
+  usable: 6000,
 } as const;
 
 const DEFAULT_BATCH_SIZE = 80;
 const MAX_SCHEDULE_TIMES = 12;
+const DEFAULT_FULL_REPEAT_DAYS = 7;
+const CANDIDATE_GRADES = new Set<SiteQualityGrade>(['excellent', 'good', 'usable']);
 
 function isNodeRuntime(): boolean {
   return typeof process !== 'undefined' && !!process.env.PORT;
@@ -41,11 +46,15 @@ export function defaultQualityConfig(now = new Date()): SearchQualitySchedule {
     enabled: true,
     times: ['04:30'],
     repeatDays: 1,
+    fullRepeatDays: DEFAULT_FULL_REPEAT_DAYS,
     timezone: 'Asia/Shanghai',
     lastRunAt: undefined,
     nextRunAt: undefined,
+    lastFullRunAt: undefined,
+    nextFullRunAt: undefined,
   };
   config.nextRunAt = computeNextQualityRun(config, now);
+  config.nextFullRunAt = computeNextFullQualityRun(config, now);
   return config;
 }
 
@@ -90,12 +99,6 @@ function addDays(parts: { year: number; month: number; day: number }, days: numb
   return { year: date.getUTCFullYear(), month: date.getUTCMonth() + 1, day: date.getUTCDate() };
 }
 
-/**
- * 将指定时区的本地时间转换为 UTC ISO。
- *
- * 中国标准时间固定 UTC+8，但为了兼容其他时区，先构造候选时间，再根据
- * Intl 输出的偏移迭代校正，避免引入额外依赖。
- */
 function zonedLocalToUtcIso(year: number, month: number, day: number, hour: number, minute: number, timezone: string): string {
   const intendedUtc = Date.UTC(year, month - 1, day, hour, minute, 0, 0);
   let guess = new Date(intendedUtc);
@@ -109,7 +112,7 @@ function zonedLocalToUtcIso(year: number, month: number, day: number, hour: numb
   return guess.toISOString();
 }
 
-/** 计算下一次执行时间（基于固定时区，按天/每 N 天）。 */
+/** 计算下一次候选池重排时间（基于固定时区，按天/每 N 天）。 */
 export function computeNextQualityRun(config: SearchQualitySchedule, now = new Date()): string | undefined {
   const times = (config.times || []).map((time: unknown) => normalizeTime(time)).filter((time): time is string => !!time).sort();
   if (!config.enabled || times.length === 0) return undefined;
@@ -119,7 +122,6 @@ export function computeNextQualityRun(config: SearchQualitySchedule, now = new D
   const local = zonedParts(now, timezone);
   const nowMinute = local.hour * 60 + local.minute;
 
-  // 同一天剩余的时间点优先。
   for (const time of times) {
     const [hour, minute] = time.split(':').map(Number);
     if (hour * 60 + minute > nowMinute) {
@@ -127,8 +129,6 @@ export function computeNextQualityRun(config: SearchQualitySchedule, now = new D
     }
   }
 
-  // 找到下一个允许执行的日期。repeatDays=1 表示每天；>1 表示从上次执行日
-  // 起每 N 天一次，避免跨天边界重复。
   const baseDate = config.lastRunAt ? parseDate(config.lastRunAt) : now;
   const base = baseDate ? zonedParts(baseDate, timezone) : local;
   const daysSinceBase = Math.floor((Date.UTC(local.year, local.month - 1, local.day)
@@ -138,6 +138,33 @@ export function computeNextQualityRun(config: SearchQualitySchedule, now = new D
     const remainder = daysSinceBase % repeatDays;
     offset = remainder === 0 ? repeatDays : repeatDays - remainder;
   }
+  const target = addDays(local, offset);
+  const [hour, minute] = times[0].split(':').map(Number);
+  return zonedLocalToUtcIso(target.year, target.month, target.day, hour, minute, timezone);
+}
+
+/** 计算下一次全量分级时间；默认每 7 天一次。 */
+export function computeNextFullQualityRun(config: SearchQualitySchedule, now = new Date()): string | undefined {
+  const times = (config.times || []).map((time: unknown) => normalizeTime(time)).filter((time): time is string => !!time).sort();
+  if (!config.enabled || times.length === 0) return undefined;
+  const timezone = config.timezone || 'Asia/Shanghai';
+  const fullRepeatDays = Math.max(1, Math.floor(config.fullRepeatDays || DEFAULT_FULL_REPEAT_DAYS));
+  const local = zonedParts(now, timezone);
+  const nowMinute = local.hour * 60 + local.minute;
+
+  for (const time of times) {
+    const [hour, minute] = time.split(':').map(Number);
+    if (hour * 60 + minute > nowMinute) {
+      return zonedLocalToUtcIso(local.year, local.month, local.day, hour, minute, timezone);
+    }
+  }
+
+  const baseDate = config.lastFullRunAt ? parseDate(config.lastFullRunAt) : now;
+  const base = baseDate ? zonedParts(baseDate, timezone) : local;
+  const daysSinceBase = Math.floor((Date.UTC(local.year, local.month - 1, local.day)
+    - Date.UTC(base.year, base.month - 1, base.day)) / 86400000);
+  const remainder = daysSinceBase % fullRepeatDays;
+  const offset = remainder === 0 ? fullRepeatDays : fullRepeatDays - remainder;
   const target = addDays(local, offset);
   const [hour, minute] = times[0].split(':').map(Number);
   return zonedLocalToUtcIso(target.year, target.month, target.day, hour, minute, timezone);
@@ -161,13 +188,15 @@ export async function loadQualitySchedule(storage: Storage): Promise<SearchQuali
       enabled: parsed.enabled !== false,
       times: normalizeScheduleTimes(parsed.times, fallback.times),
       repeatDays: Math.min(30, Math.max(1, Math.floor(parsed.repeatDays || 1))),
+      fullRepeatDays: Math.min(365, Math.max(1, Math.floor(parsed.fullRepeatDays || DEFAULT_FULL_REPEAT_DAYS))),
       timezone: typeof parsed.timezone === 'string' && parsed.timezone.trim() ? parsed.timezone.trim() : fallback.timezone,
       lastRunAt: parseDate(parsed.lastRunAt)?.toISOString(),
       nextRunAt: parseDate(parsed.nextRunAt)?.toISOString(),
+      lastFullRunAt: parseDate(parsed.lastFullRunAt)?.toISOString(),
+      nextFullRunAt: parseDate(parsed.nextFullRunAt)?.toISOString(),
     };
-    // 已保存的 nextRunAt 是权威值；读取时不要重算，否则到期任务会被
-    // 自动推到未来，定时入口永远看不到它已经到期。只有缺失时才补算。
     config.nextRunAt = config.nextRunAt || computeNextQualityRun(config);
+    config.nextFullRunAt = config.nextFullRunAt || computeNextFullQualityRun(config);
     return config;
   } catch {
     return fallback;
@@ -180,11 +209,15 @@ export async function saveQualitySchedule(storage: Storage, input: Partial<Searc
     enabled: input.enabled !== undefined ? input.enabled === true : current.enabled,
     times: normalizeScheduleTimes(input.times, current.times),
     repeatDays: Math.min(30, Math.max(1, Math.floor(input.repeatDays || current.repeatDays || 1))),
+    fullRepeatDays: Math.min(365, Math.max(1, Math.floor(input.fullRepeatDays || current.fullRepeatDays || DEFAULT_FULL_REPEAT_DAYS))),
     timezone: typeof input.timezone === 'string' && input.timezone.trim() ? input.timezone.trim() : current.timezone,
     lastRunAt: current.lastRunAt,
     nextRunAt: undefined,
+    lastFullRunAt: current.lastFullRunAt,
+    nextFullRunAt: undefined,
   };
   config.nextRunAt = computeNextQualityRun(config);
+  config.nextFullRunAt = computeNextFullQualityRun(config);
   await storage.put(KV_SEARCH_QUALITY_SCHEDULE, JSON.stringify(config));
   return config;
 }
@@ -219,10 +252,26 @@ export async function shouldRunQualityNow(storage: Storage, now = new Date()): P
   return next <= now.getTime();
 }
 
-export async function markQualityRun(storage: Storage, at = new Date()): Promise<SearchQualitySchedule> {
+export async function shouldRunFullQualityNow(storage: Storage, now = new Date()): Promise<boolean> {
+  const schedule = await loadQualitySchedule(storage);
+  if (!schedule.enabled || !schedule.nextFullRunAt) return false;
+  const next = new Date(schedule.nextFullRunAt).getTime();
+  if (!Number.isFinite(next)) return false;
+  return next <= now.getTime();
+}
+
+export async function markQualityRun(
+  storage: Storage,
+  at = new Date(),
+  mode: SearchQualityRunMode = 'candidate',
+): Promise<SearchQualitySchedule> {
   const schedule = await loadQualitySchedule(storage);
   schedule.lastRunAt = at.toISOString();
   schedule.nextRunAt = computeNextQualityRun(schedule, at);
+  if (mode === 'full') {
+    schedule.lastFullRunAt = at.toISOString();
+    schedule.nextFullRunAt = computeNextFullQualityRun(schedule, at);
+  }
   await storage.put(KV_SEARCH_QUALITY_SCHEDULE, JSON.stringify(schedule));
   return schedule;
 }
@@ -232,24 +281,34 @@ function createEmptyGrades(): SiteQualityGrades {
     excellent: { count: 0, cumulative: 0 },
     good: { count: 0, cumulative: 0 },
     usable: { count: 0, cumulative: 0 },
-    unknown: { count: 0, cumulative: 0 },
+    timeout: { count: 0, cumulative: 0 },
     unusable: { count: 0, cumulative: 0 },
     poolTotal: 0,
   };
 }
 
+function normalizeGrade(value: unknown): SiteQualityGrade {
+  if (value === 'unknown') return 'timeout';
+  if (value === 'excellent' || value === 'good' || value === 'usable' || value === 'timeout' || value === 'unusable') return value;
+  return 'timeout';
+}
+
 export function gradeForProbe(probe: SiteProbeResult | undefined, historicalFailures = 0): SiteQualityGrade {
   if (!probe || probe.result === 'not_probed') {
-    return historicalFailures >= 3 ? 'unusable' : 'unknown';
+    return historicalFailures >= 3 ? 'unusable' : 'timeout';
   }
-  if (probe.result !== 'ok') {
-    return historicalFailures >= 3 ? 'unusable' : 'unknown';
+  if (probe.result === 'error' || probe.result === 'empty') {
+    return 'unusable';
+  }
+  if (probe.result === 'timeout') {
+    return historicalFailures >= 3 ? 'unusable' : 'timeout';
   }
   const speed = probe.speedMs;
-  if (speed == null) return 'usable';
+  if (speed == null) return 'timeout';
   if (speed <= QUALITY_THRESHOLDS.excellent) return 'excellent';
   if (speed <= QUALITY_THRESHOLDS.good) return 'good';
-  return 'usable';
+  if (speed <= QUALITY_THRESHOLDS.usable) return 'usable';
+  return 'timeout';
 }
 
 function compareGrade(a: SiteQualityGrade, b: SiteQualityGrade): number {
@@ -257,7 +316,7 @@ function compareGrade(a: SiteQualityGrade, b: SiteQualityGrade): number {
     excellent: 0,
     good: 1,
     usable: 2,
-    unknown: 3,
+    timeout: 3,
     unusable: 4,
   };
   return rank[a] - rank[b];
@@ -277,11 +336,12 @@ function sortQualityEntries(entries: SearchQualitySnapshot['entries']): SearchQu
 function buildGrades(entries: SearchQualitySnapshot['entries']): SiteQualityGrades {
   const grades = createEmptyGrades();
   for (const entry of entries) {
-    grades[entry.grade].count++;
-    if (entry.grade !== 'unusable') grades.poolTotal++;
+    const grade = normalizeGrade(entry.grade);
+    grades[grade].count++;
+    if (CANDIDATE_GRADES.has(grade)) grades.poolTotal++;
   }
   let cumulative = 0;
-  for (const grade of ['excellent', 'good', 'usable', 'unknown'] as const) {
+  for (const grade of ['excellent', 'good', 'usable', 'timeout'] as const) {
     cumulative += grades[grade].count;
     grades[grade].cumulative = cumulative;
   }
@@ -290,17 +350,53 @@ function buildGrades(entries: SearchQualitySnapshot['entries']): SiteQualityGrad
 }
 
 export function recommendedSearchLimit(grades: SiteQualityGrades): number {
-  // 推荐值优先覆盖优质和良好源；如果这两级太少，再补足一部分可用源。
-  const preferred = grades.excellent.count + grades.good.count;
-  if (preferred > 0) return Math.max(20, Math.min(200, preferred));
-  return Math.max(10, Math.min(80, grades.usable.count));
+  // 推荐值直接来自实际可下发候选池，不额外发明固定阈值。
+  return Math.max(0, grades.poolTotal);
+}
+
+function normalizeSnapshot(raw: unknown): SearchQualitySnapshot | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const parsed = raw as Record<string, any>;
+  if (!Array.isArray(parsed.entries)) return null;
+  const entries = parsed.entries.map((entry: any) => ({
+    ...entry,
+    grade: normalizeGrade(entry.grade),
+    speedMs: typeof entry.speedMs === 'number' ? entry.speedMs : null,
+    result: entry.result === 'ok' || entry.result === 'empty' || entry.result === 'error' || entry.result === 'timeout' || entry.result === 'not_probed'
+      ? entry.result
+      : 'not_probed',
+    consecutiveFailures: typeof entry.consecutiveFailures === 'number' ? entry.consecutiveFailures : 0,
+  })) as SearchQualitySnapshot['entries'];
+  const sorted = sortQualityEntries(entries);
+  const grades = buildGrades(sorted);
+  const coverageRaw = parsed.coverage && typeof parsed.coverage === 'object' ? parsed.coverage : {};
+  return {
+    updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : new Date().toISOString(),
+    total: typeof parsed.total === 'number' ? parsed.total : sorted.length,
+    graded: sorted.filter((entry) => entry.result !== 'not_probed').length,
+    coverage: {
+      testable: typeof coverageRaw.testable === 'number' ? coverageRaw.testable : 0,
+      probed: typeof coverageRaw.probed === 'number' ? coverageRaw.probed : sorted.filter((entry) => entry.result !== 'not_probed').length,
+      notProbed: typeof coverageRaw.notProbed === 'number' ? coverageRaw.notProbed : 0,
+      untestable: typeof coverageRaw.untestable === 'number' ? coverageRaw.untestable : 0,
+    },
+    entries: sorted,
+    grades,
+    recommendedMaxSearchable: recommendedSearchLimit(grades),
+    recommendedMaxParses: typeof parsed.recommendedMaxParses === 'number' ? parsed.recommendedMaxParses : 3,
+    thresholds: {
+      excellentMaxMs: QUALITY_THRESHOLDS.excellent,
+      goodMaxMs: QUALITY_THRESHOLDS.good,
+      usableMaxMs: QUALITY_THRESHOLDS.usable,
+    },
+  };
 }
 
 export async function loadQualitySnapshot(storage: Storage): Promise<SearchQualitySnapshot | null> {
   const raw = await storage.get(KV_SEARCH_QUALITY_SNAPSHOT);
   if (!raw) return null;
   try {
-    return JSON.parse(raw) as SearchQualitySnapshot;
+    return normalizeSnapshot(JSON.parse(raw));
   } catch {
     return null;
   }
@@ -310,7 +406,7 @@ export async function loadQualityPool(storage: Storage): Promise<SearchQualitySn
   const raw = await storage.get(KV_SEARCH_QUALITY_POOL);
   if (!raw) return null;
   try {
-    return JSON.parse(raw) as SearchQualitySnapshot;
+    return normalizeSnapshot(JSON.parse(raw));
   } catch {
     return null;
   }
@@ -333,30 +429,49 @@ export async function loadHealthMap(storage: Storage): Promise<SiteHealthMap> {
  *
  * 必须覆盖所有 searchable===1 的站点，包含 type=3 的远程扩展（csp_* 守卫）。
  * 它们同样占用前端配置的 maxSearchable 名额，因此必须计入分级统计与排序；
- * 否则前端看到的“可搜索源数量”会远小于实际值，推荐上限也会失真。
  * 不可探测的 type=3 站点不会被 batchSiteSpeedTest 发起请求，只会落到
- * unknown/usable，不会增加任何网络开销。
+ * timeout，不占用候选池名额。
  */
-function collectSearchableSites(sites: TVBoxSite[]): TVBoxSite[] {
+export function collectSearchableSites(sites: TVBoxSite[]): TVBoxSite[] {
   const seen = new Set<string>();
   const result: TVBoxSite[] = [];
   for (const site of sites) {
-    if (site.searchable !== 1) continue;
-    if (!site.key || seen.has(site.key)) continue;
+    if (!site || site.searchable !== 1) continue;
+    if (seen.has(site.key)) continue;
     seen.add(site.key);
     result.push(site);
   }
   return result;
 }
 
+function candidateKeysFromPool(pool: SearchQualitySnapshot | null): Set<string> {
+  const keys = new Set<string>();
+  if (!pool || !Array.isArray(pool.entries)) return keys;
+  for (const entry of pool.entries) {
+    if (CANDIDATE_GRADES.has(normalizeGrade(entry.grade))) keys.add(entry.key);
+  }
+  return keys;
+}
+
+export function qualityTargetSites(sites: TVBoxSite[], pool: SearchQualitySnapshot | null, mode: SearchQualityRunMode): TVBoxSite[] {
+  const all = collectSearchableSites(sites);
+  if (mode === 'full') return all;
+  const keys = candidateKeysFromPool(pool);
+  if (keys.size === 0) return all;
+  return all.filter((site) => keys.has(site.key));
+}
+
 /**
- * 对完整搜索池执行一次质量分级并持久化。
- * 已完成的旧结果作为兜底；本轮未探测到的源保留上一轮分级，避免瞬时预算耗尽导致降级。
+ * 对可搜索池执行一次质量分级并持久化。
+ *
+ * candidate 模式只重测当前优/良/可用候选池；full 模式重测全部 searchable。
+ * 两种模式都保留 timeout/unusable 的历史统计，但它们不会进入候选池。
  */
 export async function runQualityGrading(
   storage: Storage,
   sites: TVBoxSite[],
   options: {
+    mode?: SearchQualityRunMode;
     batchSize?: number;
     timeoutMs?: number;
     concurrency?: number;
@@ -368,17 +483,23 @@ export async function runQualityGrading(
     onProgress?: (processed: number, total: number) => Promise<void> | void;
   } = {},
 ): Promise<SearchQualitySnapshot> {
-  const searchable = collectSearchableSites(sites);
+  const allSearchable = collectSearchableSites(sites);
   const previous = await loadQualityPool(storage);
   const previousEntries = new Map((previous?.entries || []).map((entry) => [entry.key, entry]));
+  const requestedMode = options.mode || 'full';
+  let target = qualityTargetSites(allSearchable, previous, requestedMode);
+  let mode = requestedMode;
+  if (target.length === 0) {
+    target = allSearchable;
+    mode = 'full';
+  }
 
   let probeMap = options.probeMap;
   if (!probeMap) {
-    // 没有现成探测结果时，分批覆盖整个可搜索池，而不是只测第一批。
     const batchSize = Math.max(1, Math.floor(options.batchSize || DEFAULT_BATCH_SIZE));
     const collected = new Map<string, SiteProbeResult>();
-    for (let offset = 0; offset < searchable.length; offset += batchSize) {
-      const batch = searchable.slice(offset, offset + batchSize);
+    for (let offset = 0; offset < target.length; offset += batchSize) {
+      const batch = target.slice(offset, offset + batchSize);
       const partial = await batchSiteSpeedTest(
         batch,
         options.timeoutMs ?? 3000,
@@ -387,17 +508,17 @@ export async function runQualityGrading(
         options.budgetMs ?? (isNodeRuntime() ? 120000 : 25000),
       );
       for (const [key, value] of partial) collected.set(key, value);
-      if (options.onProgress) await options.onProgress(collected.size, searchable.length);
+      if (options.onProgress) await options.onProgress(collected.size, target.length);
     }
     probeMap = collected;
   }
 
   const healthMap = options.healthMap ?? await loadHealthMap(storage);
-  const entries = buildQualityEntries(searchable, probeMap, previousEntries, healthMap);
-  const snapshot = buildSnapshot(searchable.length, entries);
+  const entries = buildQualityEntries(allSearchable, probeMap, previousEntries, healthMap);
+  const snapshot = buildSnapshot(allSearchable.length, entries, allSearchable);
   await persistQualitySnapshot(storage, snapshot);
-  await persistQualityCandidates(storage, searchable);
-  if (options.markRun !== false) await markQualityRun(storage);
+  await persistQualityCandidates(storage, allSearchable);
+  if (options.markRun !== false) await markQualityRun(storage, new Date(), mode);
   return snapshot;
 }
 
@@ -412,17 +533,11 @@ function buildQualityEntries(
     const probe = probeMap.get(site.key);
     const previousEntry = previousEntries.get(site.key);
     const freshProbe = !!probe && probe.result !== 'not_probed';
-    // 聚合路径会先调用 updateSiteHealth，并把已经累计后的失败次数写回
-    // probe.consecutiveFailures；这里必须优先采用该值，不能再次 +1。
-    const probeFailures = typeof probe?.consecutiveFailures === 'number'
-      ? probe.consecutiveFailures
-      : undefined;
+    const probeFailures = typeof probe?.consecutiveFailures === 'number' ? probe.consecutiveFailures : undefined;
     const previousFailures = probeFailures
       ?? healthMap[site.key]?.consecutiveFailures
       ?? previousEntry?.consecutiveFailures
       ?? 0;
-    // 独立定时分级没有预累计字段时，才基于历史值 +1。
-    // not_probed 表示预算耗尽，保留历史失败数，不能把它当成一次失败。
     const consecutiveFailures = freshProbe
       ? (probe!.result === 'ok'
           ? 0
@@ -445,21 +560,43 @@ function buildQualityEntries(
   });
 }
 
+function buildCoverage(sites: TVBoxSite[], entries: SearchQualitySnapshot['entries']) {
+  let testable = 0;
+  let untestable = 0;
+  for (const site of sites) {
+    if (isSiteProbeable(site)) testable++;
+    else untestable++;
+  }
+  const probed = entries.filter((entry) => entry.result !== 'not_probed').length;
+  return {
+    testable,
+    probed,
+    notProbed: Math.max(0, testable - probed),
+    untestable,
+  };
+}
+
 function buildSnapshot(
   total: number,
   entries: SearchQualitySnapshot['entries'],
+  sites: TVBoxSite[] = [],
 ): SearchQualitySnapshot {
   const sorted = sortQualityEntries(entries);
   const grades = buildGrades(sorted);
   return {
     updatedAt: new Date().toISOString(),
     total,
-    graded: entries.filter((entry) => entry.grade !== 'unknown').length,
+    graded: sorted.filter((entry) => entry.result !== 'not_probed').length,
+    coverage: buildCoverage(sites, sorted),
     entries: sorted,
     grades,
     recommendedMaxSearchable: recommendedSearchLimit(grades),
     recommendedMaxParses: 3,
-    thresholds: { excellentMaxMs: QUALITY_THRESHOLDS.excellent, goodMaxMs: QUALITY_THRESHOLDS.good },
+    thresholds: {
+      excellentMaxMs: QUALITY_THRESHOLDS.excellent,
+      goodMaxMs: QUALITY_THRESHOLDS.good,
+      usableMaxMs: QUALITY_THRESHOLDS.usable,
+    },
   };
 }
 
@@ -469,10 +606,6 @@ async function persistQualitySnapshot(storage: Storage, snapshot: SearchQualityS
   await storage.put(KV_SEARCH_QUALITY_POOL, serialized);
 }
 
-/**
- * 保存质量分级候选站点的完整对象快照。质量池本身只存 key/名称/分级，
- * 定时任务重测时需要完整站点（api/type/quickSearch 等），因此单独持久化。
- */
 export async function persistQualityCandidates(storage: Storage, sites: TVBoxSite[]): Promise<void> {
   const searchable = collectSearchableSites(sites);
   await storage.put(KV_SEARCH_QUALITY_CANDIDATES, JSON.stringify({
@@ -492,14 +625,15 @@ export async function loadQualityCandidates(storage: Storage): Promise<TVBoxSite
   }
 }
 
-/** 开始新一轮质量分级：重置游标并写入 running 状态。 */
 export async function beginQualityRun(
   storage: Storage,
   total = 0,
   batchSize = 0,
+  mode: SearchQualityRunMode = 'candidate',
 ): Promise<SearchQualityStatus> {
   return updateQualityStatus(storage, {
     state: 'running',
+    mode,
     startedAt: new Date().toISOString(),
     finishedAt: undefined,
     processed: 0,
@@ -510,57 +644,62 @@ export async function beginQualityRun(
   });
 }
 
-/** 结束质量分级：写入 done 状态并推进下一次计划时间。 */
 export async function finishQualityRun(
   storage: Storage,
   processed: number,
   total: number,
   markRun = true,
+  mode: SearchQualityRunMode = 'candidate',
 ): Promise<SearchQualityStatus> {
   const status = await updateQualityStatus(storage, {
     state: 'done',
+    mode,
     finishedAt: new Date().toISOString(),
     processed,
     total,
     cursor: total,
     error: undefined,
   });
-  if (markRun) await markQualityRun(storage);
+  if (markRun) await markQualityRun(storage, new Date(), mode);
   return status;
 }
 
-/**
- * CF 分片运行入口。每次 scheduled 调用只处理一个 batch，并把游标/中间结果
- * 持久化，下一次 cron 继续，避免 Worker CPU/子请求上限。
- */
 export async function runQualityGradingChunk(
   storage: Storage,
   sites: TVBoxSite[],
   cursor = 0,
   batchSize = 40,
-): Promise<{ done: boolean; cursor: number; processed: number; snapshot?: SearchQualitySnapshot }> {
-  const searchable = collectSearchableSites(sites);
-  const start = Math.max(0, Math.floor(cursor));
-  if (start >= searchable.length) {
-    const previous = await loadQualityPool(storage);
-    const entries = previous?.entries ?? [];
-    const snapshot = previous ?? buildSnapshot(0, entries);
-    await markQualityRun(storage);
-    return { done: true, cursor: searchable.length, processed: 0, snapshot };
-  }
-
-  const batch = searchable.slice(start, start + Math.max(1, batchSize));
-  const probeMap = await batchSiteSpeedTest(batch, 3000, false, 6, 25000);
+  requestedMode: SearchQualityRunMode = 'candidate',
+): Promise<{ done: boolean; cursor: number; processed: number; targetTotal: number; mode: SearchQualityRunMode; snapshot?: SearchQualitySnapshot }> {
+  const allSearchable = collectSearchableSites(sites);
   const previous = await loadQualityPool(storage);
   const previousEntries = new Map((previous?.entries || []).map((entry) => [entry.key, entry]));
+  let mode = requestedMode;
+  let target = qualityTargetSites(allSearchable, previous, requestedMode);
+  if (target.length === 0) {
+    mode = 'full';
+    target = allSearchable;
+  }
+  const start = Math.max(0, Math.floor(cursor));
+  if (start >= target.length) {
+    const entries = buildQualityEntries(allSearchable, new Map(), previousEntries, await loadHealthMap(storage));
+    const snapshot = buildSnapshot(allSearchable.length, entries, allSearchable);
+    await persistQualitySnapshot(storage, snapshot);
+    await persistQualityCandidates(storage, allSearchable);
+    await markQualityRun(storage, new Date(), mode);
+    return { done: true, cursor: target.length, processed: 0, targetTotal: target.length, mode, snapshot };
+  }
+
+  const batch = target.slice(start, start + Math.max(1, batchSize));
+  const probeMap = await batchSiteSpeedTest(batch, 3000, false, 6, 25000);
   const healthMap = await loadHealthMap(storage);
-  const entries = buildQualityEntries(searchable, probeMap, previousEntries, healthMap);
-  const snapshot = buildSnapshot(searchable.length, entries);
+  const entries = buildQualityEntries(allSearchable, probeMap, previousEntries, healthMap);
+  const snapshot = buildSnapshot(allSearchable.length, entries, allSearchable);
   await persistQualitySnapshot(storage, snapshot);
-  await persistQualityCandidates(storage, searchable);
-  const done = start + batch.length >= searchable.length;
-  if (done) await markQualityRun(storage);
-  return { done, cursor: start + batch.length, processed: batch.length, snapshot };
+  await persistQualityCandidates(storage, allSearchable);
+  const done = start + batch.length >= target.length;
+  if (done) await markQualityRun(storage, new Date(), mode);
+  return { done, cursor: start + batch.length, processed: batch.length, targetTotal: target.length, mode, snapshot };
 }
 
 /**
@@ -588,7 +727,18 @@ export function unusableKeys(pool: SearchQualitySnapshot | null): Set<string> {
   const keys = new Set<string>();
   if (!pool || !Array.isArray(pool.entries)) return keys;
   for (const entry of pool.entries) {
-    if (entry.grade === 'unusable') keys.add(entry.key);
+    if (normalizeGrade(entry.grade) === 'unusable') keys.add(entry.key);
+  }
+  return keys;
+}
+
+/** 不进入下发候选池的 key 集合（超时 + 不可用）。 */
+export function excludedQualityKeys(pool: SearchQualitySnapshot | null): Set<string> {
+  const keys = new Set<string>();
+  if (!pool || !Array.isArray(pool.entries)) return keys;
+  for (const entry of pool.entries) {
+    const grade = normalizeGrade(entry.grade);
+    if (grade === 'timeout' || grade === 'unusable') keys.add(entry.key);
   }
   return keys;
 }

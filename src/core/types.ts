@@ -281,7 +281,8 @@ export interface SearchQuotaReport {
 }
 
 // 站点质量分级（基于聚合阶段已有验活/测速结果，不额外发起请求）
-export type SiteQualityGrade = 'excellent' | 'good' | 'usable' | 'unknown' | 'unusable';
+// 候选池只下发 excellent / good / usable；timeout 与 unusable 永不进入客户端搜索源。
+export type SiteQualityGrade = 'excellent' | 'good' | 'usable' | 'timeout' | 'unusable';
 
 export interface SiteQualityGradeBucket {
   count: number;
@@ -289,12 +290,12 @@ export interface SiteQualityGradeBucket {
 }
 
 export interface SiteQualityGrades {
-  excellent: SiteQualityGradeBucket; // 验活通过且测速很快
-  good: SiteQualityGradeBucket;      // 验活通过且速度正常
-  usable: SiteQualityGradeBucket;    // 验活通过但速度偏慢/无测速数据
-  unknown: SiteQualityGradeBucket;   // 未完成探测，保守保留
-  unusable: SiteQualityGradeBucket;  // 空响应、超时或错误，不进入可搜索池
-  poolTotal: number;                 // 可搜索候选池总数（不含不可用）
+  excellent: SiteQualityGradeBucket; // 优：<=1000ms
+  good: SiteQualityGradeBucket;      // 良：1001-3000ms
+  usable: SiteQualityGradeBucket;    // 可用：3001-6000ms
+  timeout: SiteQualityGradeBucket;   // 超时：>6000ms、无结果或未完成探测
+  unusable: SiteQualityGradeBucket;  // 不可用：连续失败/明确错误
+  poolTotal: number;                 // 可下发候选池总数（仅优/良/可用）
 }
 // 搜索源质量分级快照
 export interface SearchQualityEntry {
@@ -310,12 +311,21 @@ export interface SearchQualityEntry {
 export interface SearchQualityThresholds {
   excellentMaxMs: number;
   goodMaxMs: number;
+  usableMaxMs: number;
+}
+
+export interface SearchQualityCoverage {
+  testable: number;      // 具备 HTTP 探测条件的源
+  probed: number;        // 已有有效探测结果的源（成功或失败）
+  notProbed: number;     // 具备条件但尚未探测/预算耗尽
+  untestable: number;    // 本地 JS 等无法通过 HTTP 直接探测的源
 }
 
 export interface SearchQualitySnapshot {
   updatedAt: string;
   total: number;
   graded: number;
+  coverage: SearchQualityCoverage;
   entries: SearchQualityEntry[];
   grades: SiteQualityGrades;
   recommendedMaxSearchable: number;
@@ -323,17 +333,23 @@ export interface SearchQualitySnapshot {
   thresholds: SearchQualityThresholds;
 }
 
+export type SearchQualityRunMode = 'candidate' | 'full';
+
 export interface SearchQualitySchedule {
   enabled: boolean;
   times: string[];
   repeatDays: number;
+  fullRepeatDays: number;       // 每隔多少天做一次全量分级，默认 7 天
   timezone: string;
   lastRunAt?: string;
   nextRunAt?: string;
+  lastFullRunAt?: string;
+  nextFullRunAt?: string;
 }
 
 export interface SearchQualityStatus {
   state: 'idle' | 'running' | 'done' | 'error';
+  mode?: SearchQualityRunMode;
   startedAt?: string;
   finishedAt?: string;
   processed?: number;

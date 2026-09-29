@@ -25,7 +25,7 @@ import { loadGroupOrder, applyGroupOrder } from './core/group-order';
 import { deduplicateSimilarNames } from './core/dedup';
 import { logger } from './core/logger';
 import { clearDirtyMarker } from './core/dirty-marker';
-import { runQualityGrading } from './core/quality';
+import { loadQualityPool, runQualityGrading } from './core/quality';
 import type { NameTransformConfig, EdgeProxyConfig } from './core/types';
 
 export async function runAggregation(storage: Storage, config: AppConfig): Promise<void> {
@@ -389,7 +389,7 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
         excellent: snapshot.grades.excellent.count,
         good: snapshot.grades.good.count,
         usable: snapshot.grades.usable.count,
-        unknown: snapshot.grades.unknown.count,
+        timeout: snapshot.grades.timeout.count,
         unusable: snapshot.grades.unusable.count,
       });
     } catch (err: unknown) {
@@ -640,11 +640,13 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     // 探测预算耗尽时，使用上次聚合保存的站点健康记录补全质量分级。
     // 该记录属于当前部署自己的 KV，不会与另一套部署共享。
     const siteHealthMap: SiteHealthMap = await loadSiteHealthMap(storage);
+    const qualityPool = await loadQualityPool(storage);
 
     const { sites: quotaSites, candidateSites, quotaReport } = applySearchQuota(merged.sites, quotaConfig, siteSourceMap, {
       speedMap: siteSpeedMap,
       probeMap: siteProbeMap,
       healthMap: siteHealthMap,
+      qualityPool,
       jsExcluded: quotaJsExcluded,
       totalSites: quotaTotalSites,
     });

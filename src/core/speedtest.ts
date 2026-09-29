@@ -203,6 +203,11 @@ export async function batchSiteSpeedTest(
   return probeMap;
 }
 
+/** 是否具备可执行的站点探测条件。type=3 的本地 JS 扩展没有可请求的 HTTP API。 */
+export function isSiteProbeable(site: TVBoxSite): boolean {
+  return getTestableUrl(site) !== null;
+}
+
 export function appendSpeedToName(sites: TVBoxSite[], speedMap: Map<string, SiteProbeResult>): TVBoxSite[] {
   return sites.map((site) => {
     const probe = speedMap.get(site.key);
@@ -249,7 +254,7 @@ export function filterUnreachableSites(
   return { sites: reachable, filtered: unreachable.length };
 }
 
-function getTestableUrl(site: TVBoxSite): string | null {
+export function getTestableUrl(site: TVBoxSite): string | null {
   const api = site.api || '';
 
   if (site.type === 1 || site.type === 0) {
