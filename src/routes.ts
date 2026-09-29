@@ -17,13 +17,22 @@ import { dashboardHtml } from './core/dashboard';
 import { configEditorHtml } from './core/config-editor';
 import { siteFingerprint, loadBlacklist, saveBlacklist, saveRegexRule, deleteRegexRule, updateRegexRule, validateRegexRule, testRegexAgainstSites, applyBlacklist } from './core/blacklist';
 import { loadSearchQuota, saveSearchQuota } from './core/search-quota';
+import {
+  loadQualityCandidates,
+  loadQualityPool,
+  loadQualitySchedule,
+  loadQualitySnapshot,
+  loadQualityStatus,
+  saveQualitySchedule,
+  updateQualityStatus,
+} from './core/quality';
 import { loadCredentials, saveCredential, deleteCredential, loadCredentialPolicy, saveCredentialPolicy } from './core/credential-store';
 import { generateQR, pollQRStatus, passwordLogin, PLATFORM_NAMES, QR_PLATFORMS, PASSWORD_PLATFORMS } from './core/cloud-login';
 import { assessAllSources } from './core/credential-risk';
 import { generateTokenJson } from './core/credential-injector';
 import { formatLiveGroupsAsTxt, filterLivesBySource, filterLivesBySourceDetailed, sortLiveGroupsForOutput } from './core/live-merger';
 import { containsBlockedLiveUrl, isBlockedLiveSource, isBlockedLiveUrl } from './core/live-policy';
-import type { TVBoxConfig, SearchQuotaConfig, CloudPlatform, CloudCredential, TVBoxLive, TVBoxLiveGroup } from './core/types';
+import type { TVBoxConfig, TVBoxSite, SearchQuotaConfig, CloudPlatform, CloudCredential, TVBoxLive, TVBoxLiveGroup } from './core/types';
 import { mountChannelProbeRoutes } from './routes/channel-probe-admin';
 import { loadSpeedMap as loadChannelSpeedMap } from './core/channel-probe';
 import { createLogViewerRouter } from './routes/log-viewer';
@@ -36,6 +45,7 @@ export interface AppDeps {
   storage: Storage;
   config: AppConfig;
   triggerRefresh: () => Promise<void>;
+  triggerQuality?: () => Promise<void>;   // Node/Docker 入口启用全量质量分级
   onCronIntervalChange?: (intervalMinutes: number) => void;
   enableChannelProbe?: boolean; // 仅 Node/Docker 入口启用
   enableBuilder?: boolean;      // 仅 Node/Docker 入口启用（配置构建器）
@@ -327,7 +337,6 @@ export function createApp(deps: AppDeps): Hono {
     } catch {
       return cached;
     }
-    if (quota.startupMode === 'full') return cached;
 
     let parsed: TVBoxConfig;
     try {
@@ -337,50 +346,67 @@ export function createApp(deps: AppDeps): Hono {
     }
 
     const pinnedKeys = new Set(quota.pinnedKeys || []);
-    const startupQuickLimit = quota.maxStartupQuickSearch ?? 0;
-    const configuredSiteLimit = quota.startupSiteLimit ?? 0;
-    const effectiveSiteLimit = configuredSiteLimit;
-    let quickSeen = 0;
-    let startupSeen = 0;
-    let sites = Array.isArray(parsed.sites) ? parsed.sites : [];
-    if (effectiveSiteLimit && effectiveSiteLimit > 0) {
-      // 只使用管理后台配置；优先读取未被配额截断的候选池，池中顺序
-      // 已经是“置顶源优先 + 其余按保存的测速结果排序”。
-      try {
-        const poolRaw = await storage.get(KV_STARTUP_SITE_POOL);
-        if (poolRaw) {
-          const pool = JSON.parse(poolRaw) as { sites?: typeof sites };
-          if (Array.isArray(pool.sites)) {
-            sites = pool.sites.filter((site) => site.type !== 3 || pinnedKeys.has(site.key));
-          }
-        }
-      } catch {
-        // 候选池损坏时回退到当前最终配置，保持旧行为。
-      }
+    const allSites = Array.isArray(parsed.sites) ? parsed.sites : [];
+
+    // 优先使用全量质量分级池：池内已按“优 > 良 > 可用 > 未探测 > 不可用”
+    // 且同级按速度排序。它覆盖过滤不可达之前的完整可搜索池，因此可以
+    // 恢复被旧配额截断的站点，并按前端配置的 maxSearchable 取前 N 个。
+    let qualityPool = null;
+    try {
+      qualityPool = await loadQualityPool(storage);
+    } catch {
+      qualityPool = null;
     }
 
-    // 轻量根配置只返回置顶源和少量启动快速源。不要把其余站点仅仅改成
-    // searchable=0 后继续放在 sites 中，因为不少客户端仍会初始化这些
-    // 站点 API，导致首屏等待几十秒。完整站点仍保留在 /config-full.json
-    // 和管理后台中；需要全量站点时把启动模式切到 full。
-    const keptSites = sites.filter((site) => {
-      if (pinnedKeys.has(site.key)) {
-        if (effectiveSiteLimit && effectiveSiteLimit > 0) startupSeen++;
-        return true;
+    // KV_MERGED_CONFIG 已经过 applySearchQuota，可能只保留前 N 个搜索源。
+    // 质量池需要恢复被旧上限截断的站点，因此先以完整候选快照兜底，再用当前
+    // 合并配置覆盖同 key 的最新对象（凭证、代理等字段可能刚刚更新）。
+    let candidateSites: TVBoxSite[] = [];
+    try {
+      candidateSites = await loadQualityCandidates(storage);
+    } catch {
+      candidateSites = [];
+    }
+    const siteByKey = new Map(candidateSites.map((site) => [site.key, site]));
+    for (const site of allSites) siteByKey.set(site.key, site);
+    let orderedSites: TVBoxSite[] = [];
+    if (qualityPool && Array.isArray(qualityPool.entries) && qualityPool.entries.length > 0) {
+      const restored: TVBoxSite[] = [];
+      for (const entry of qualityPool.entries) {
+        if (entry.grade === 'unusable') continue;
+        const site = siteByKey.get(entry.key);
+        if (!site) continue;
+        restored.push(site.searchable === 1 ? site : { ...site, searchable: 1 });
       }
-      if (site.type === 3) return false;
-      if (site.searchable !== 1 || site.quickSearch === 0) return false;
-      if (effectiveSiteLimit && effectiveSiteLimit > 0) {
-        // 后台启动源数量按最终启动源总数计算；置顶源即使超过 N 也不会被截断。
-        if (startupSeen >= effectiveSiteLimit) return false;
-        startupSeen++;
-      } else if (startupQuickLimit > 0 && quickSeen >= startupQuickLimit) {
-        return false;
+      orderedSites = restored;
+    } else {
+      // 质量池尚未生成时保持旧行为：只使用最终配置中仍可搜索的源。
+      orderedSites = allSites.filter((site) => site.searchable === 1);
+    }
+
+    // 置顶源永远排在最前，且不受 maxSearchable 截断。
+    const pinnedSites: TVBoxSite[] = [];
+    const seenPinned = new Set<string>();
+    for (const key of quota.pinnedKeys || []) {
+      const site = siteByKey.get(key);
+      if (!site || seenPinned.has(key)) continue;
+      if (qualityPool && qualityPool.entries.length > 0) {
+        const entry = qualityPool.entries.find((item) => item.key === key);
+        if (entry && entry.grade === 'unusable') continue;
       }
-      quickSeen++;
-      return true;
-    });
-    parsed.sites = keptSites;
+      seenPinned.add(key);
+      pinnedSites.push(site.searchable === 1 ? site : { ...site, searchable: 1 });
+    }
+
+    const pinnedKeySet = new Set(pinnedSites.map((site) => site.key));
+    const rest = orderedSites.filter((site) => !pinnedKeySet.has(site.key));
+
+    // type=3 远程扩展只在置顶时保留，避免客户端串行下载 JAR 拖慢首屏。
+    const eligibleRest = rest.filter((site) => site.type !== 3);
+    const limit = quota.maxSearchable ?? 0;
+    const limitedRest = limit > 0 ? eligibleRest.slice(0, Math.max(0, limit)) : eligibleRest;
+
+    parsed.sites = [...pinnedSites, ...limitedRest];
 
     // CF 分离模式在根配置中保留少量最快的直播入口；完整直播清单仍在
     // /live.json 和 /config-full.json 中，Render 的单个聚合入口不受影响。
@@ -394,7 +420,7 @@ export function createApp(deps: AppDeps): Hono {
 
     // 只有最终完全没有 type=3 源时才移除根 spider。type=3 站点可能
     // 不写自己的 jar 字段而依赖全局 spider，不能仅凭 jar/ext 字段判断。
-    if (!keptSites.some((site) => site.type === 3)) {
+    if (!parsed.sites.some((site) => site.type === 3)) {
       delete parsed.spider;
     }
 
@@ -1084,6 +1110,113 @@ export function createApp(deps: AppDeps): Hono {
       } catch {}
     }
     return c.json(report);
+  });
+
+  // ─── 搜索源质量分级调度 API ─────────────────────────────
+  app.get('/admin/quality-schedule', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
+    const schedule = await loadQualitySchedule(storage);
+    return c.json(schedule);
+  });
+
+  app.put('/admin/quality-schedule', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
+    let body: { enabled?: boolean; times?: unknown; repeatDays?: number; timezone?: string };
+    try { body = await c.req.json(); } catch { return c.json({ error: 'Invalid JSON' }, 400); }
+    const schedule = await saveQualitySchedule(storage, {
+      enabled: body.enabled,
+      times: Array.isArray(body.times) ? (body.times as string[]) : undefined,
+      repeatDays: typeof body.repeatDays === 'number' ? body.repeatDays : undefined,
+      timezone: typeof body.timezone === 'string' ? body.timezone : undefined,
+    });
+    return c.json({ success: true, ...schedule });
+  });
+
+  // 质量分级结果（质量池 + 统计 + 实际数量 + 推荐值）
+  app.get('/admin/quality-report', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
+    const [snapshot, schedule, status, quota, searchQuotaRaw, parseHealthRaw] = await Promise.all([
+      loadQualitySnapshot(storage),
+      loadQualitySchedule(storage),
+      loadQualityStatus(storage),
+      loadSearchQuota(storage),
+      storage.get(KV_SEARCH_QUOTA_REPORT),
+      storage.get(KV_PARSE_HEALTH_REPORT),
+    ]);
+
+    const parseReport = (() => {
+      if (!parseHealthRaw) return null;
+      try {
+        const parsed = JSON.parse(parseHealthRaw);
+        return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : null;
+      } catch {
+        return null;
+      }
+    })();
+    const quotaReport = (() => {
+      if (!searchQuotaRaw) return null;
+      try {
+        const parsed = JSON.parse(searchQuotaRaw);
+        return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : null;
+      } catch {
+        return null;
+      }
+    })();
+
+    const numberOrNull = (value: unknown): number | null =>
+      typeof value === 'number' && Number.isFinite(value) ? value : null;
+    const parseLimit = numberOrNull(parseReport?.parseLimit) ?? (quota.maxParses ?? 0);
+    const parsers = numberOrNull(parseReport?.parseKept);
+    const actual = {
+      searchable: numberOrNull(quotaReport?.searchable),
+      parsers,
+      parserLimit: parseLimit,
+      candidatePool: snapshot?.total ?? null,
+      usablePool: snapshot?.grades?.poolTotal ?? null,
+    };
+
+    // 推荐解析器上限：客户端启动时会串行初始化解析器，保留 3 个已足够；
+    // 健康解析器不足 3 个时按实际数量推荐，避免用户填一个永远取不满的值。
+    const recommendedMaxParses = parsers !== null && parsers > 0
+      ? Math.max(1, Math.min(3, parsers))
+      : (snapshot?.recommendedMaxParses ?? 3);
+
+    return c.json({
+      snapshot,
+      schedule,
+      status,
+      actual,
+      recommendedMaxSearchable: snapshot?.recommendedMaxSearchable ?? 0,
+      recommendedMaxParses,
+    });
+  });
+
+  app.get('/admin/quality-status', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
+    const [snapshot, schedule, status] = await Promise.all([
+      loadQualitySnapshot(storage),
+      loadQualitySchedule(storage),
+      loadQualityStatus(storage),
+    ]);
+    return c.json({ snapshot, schedule, status });
+  });
+
+  // 立即执行一次全量质量分级（Node 全量执行；CF 执行一个分片并让后续 cron 续跑）
+  app.post('/admin/quality/run', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
+    if (!deps.triggerQuality) {
+      return c.json({ error: 'Quality grading is not available in this runtime' }, 501);
+    }
+    const status = await loadQualityStatus(storage);
+    if (status.state === 'running') {
+      return c.json({ success: true, alreadyRunning: true, status });
+    }
+    await updateQualityStatus(storage, { state: 'running', startedAt: new Date().toISOString(), error: undefined });
+    void deps.triggerQuality().catch(async (err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      await updateQualityStatus(storage, { state: 'error', error: message, finishedAt: new Date().toISOString() });
+    });
+    return c.json({ success: true, status: await loadQualityStatus(storage) });
   });
 
   // 报告精简版（dashboard 无需鉴权）

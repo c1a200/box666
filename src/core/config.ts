@@ -66,6 +66,11 @@ export const KV_CREDENTIAL_ENCRYPTION_KEY = 'credential_encryption_key';
 
 // 搜索配额
 export const KV_SEARCH_QUOTA = 'search_quota';
+export const KV_SEARCH_QUALITY_POOL = 'search_quality_pool'; // 全量搜索源质量排序池（根配置动态取前 N）
+export const KV_SEARCH_QUALITY_CANDIDATES = 'search_quality_candidates'; // 质量分级候选站点快照（含完整站点对象，供定时重测）
+export const KV_SEARCH_QUALITY_SNAPSHOT = 'search_quality_snapshot'; // 最近一次质量分级快照
+export const KV_SEARCH_QUALITY_SCHEDULE = 'search_quality_schedule'; // 全量质量分级计划
+export const KV_SEARCH_QUALITY_STATUS = 'search_quality_status'; // 质量分级任务状态
 export const KV_SEARCH_QUOTA_REPORT = 'search_quota_report';
 export const KV_PARSE_HEALTH_REPORT = 'parse_health_report';
 

@@ -25,6 +25,7 @@ import { loadGroupOrder, applyGroupOrder } from './core/group-order';
 import { deduplicateSimilarNames } from './core/dedup';
 import { logger } from './core/logger';
 import { clearDirtyMarker } from './core/dirty-marker';
+import { runQualityGrading } from './core/quality';
 import type { NameTransformConfig, EdgeProxyConfig } from './core/types';
 
 export async function runAggregation(storage: Storage, config: AppConfig): Promise<void> {
@@ -343,6 +344,10 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
   let siteProbeMap: Map<string, SiteProbeResult> = new Map();
   let siteSpeedMap: Map<string, number | null> = new Map();
 
+  // 质量分级必须覆盖“过滤不可达之前”的完整可搜索池，否则一次探测失败
+  // 的源会直接消失，既无法进入 unusable 统计，也无法参与后续重排。
+  const preProbeSites: TVBoxSite[] = merged.sites ? [...merged.sites] : [];
+
   if (!speedTestEnabled) {
     logger.info('aggregation', 'Step 6: Speed test disabled, skipping');
   } else if (merged.sites && merged.sites.length > 0) {
@@ -365,7 +370,32 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
 
     // 更新站点健康状态 & 自动标记/屏蔽；同时把历史健康信息回填到本次探测结果，
     // 供质量分级使用，避免仅凭单次波动误判。
-    await updateSiteHealth(storage, siteProbeMap, merged);
+    // 必须把过滤前的完整站点列表交给健康更新，否则本轮失败后被过滤掉的源
+    // 永远无法累计 consecutiveFailures，也就无法在后续轮次进入 unusable。
+    await updateSiteHealth(storage, siteProbeMap, preProbeSites, merged);
+
+    // 复用本轮站点探测结果做质量分级，不额外发起网络请求。质量池按
+    // “优 > 良 > 可用 > 未探测 > 不可用”排序并持久化，根配置只读该顺序。
+    try {
+      const healthMap = await loadSiteHealthMap(storage);
+      const snapshot = await runQualityGrading(storage, preProbeSites, {
+        probeMap: siteProbeMap,
+        healthMap,
+        markRun: false,
+      });
+      logger.infoFields('aggregation', 'quality-grading', {
+        total: snapshot.total,
+        graded: snapshot.graded,
+        excellent: snapshot.grades.excellent.count,
+        good: snapshot.grades.good.count,
+        usable: snapshot.grades.usable.count,
+        unknown: snapshot.grades.unknown.count,
+        unusable: snapshot.grades.unusable.count,
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn('aggregation', 'Quality grading failed (non-fatal): ' + msg);
+    }
   } else {
     logger.info('aggregation', 'Step 6: No sites to test');
   }
@@ -609,16 +639,7 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
 
     // 探测预算耗尽时，使用上次聚合保存的站点健康记录补全质量分级。
     // 该记录属于当前部署自己的 KV，不会与另一套部署共享。
-    let siteHealthMap: SiteHealthMap = {};
-    const siteHealthRaw = await storage.get(KV_SITE_HEALTH_MAP);
-    if (siteHealthRaw) {
-      try {
-        const parsed = JSON.parse(siteHealthRaw);
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-          siteHealthMap = parsed as SiteHealthMap;
-        }
-      } catch {}
-    }
+    const siteHealthMap: SiteHealthMap = await loadSiteHealthMap(storage);
 
     const { sites: quotaSites, candidateSites, quotaReport } = applySearchQuota(merged.sites, quotaConfig, siteSourceMap, {
       speedMap: siteSpeedMap,
@@ -1007,15 +1028,38 @@ async function updateSourceHealth(storage: Storage, fetchResults: SourceFetchRes
   await storage.put(KV_SOURCE_HEALTH, JSON.stringify(newRecords));
 }
 
+async function loadSiteHealthMap(storage: Storage): Promise<SiteHealthMap> {
+  const raw = await storage.get(KV_SITE_HEALTH_MAP);
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as SiteHealthMap;
+    }
+  } catch {
+    // 健康记录损坏时按空表处理，避免影响聚合主流程。
+  }
+  return {};
+}
+
 async function updateSiteHealth(
   storage: Storage,
   probeMap: Map<string, SiteProbeResult>,
-  merged: { sites?: TVBoxSite[] },
+  allSites: TVBoxSite[],
+  output?: { sites?: TVBoxSite[] },
 ): Promise<void> {
   if (probeMap.size === 0) return;
 
   const raw = await storage.get(KV_SITE_HEALTH_MAP);
-  const healthMap: Record<string, { consecutiveFailures: number; lastProbeTime: string; lastProbeResult: string; lastSuccessTime?: string }> = raw ? JSON.parse(raw) : {};
+  let healthMap: Record<string, { consecutiveFailures: number; lastProbeTime: string; lastProbeResult: string; lastSuccessTime?: string }> = {};
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) healthMap = parsed;
+    } catch {
+      // 健康记录损坏时按空表处理，避免影响聚合主流程。
+    }
+  }
   const now = new Date().toISOString();
 
   for (const [key, probe] of probeMap) {
@@ -1039,27 +1083,30 @@ async function updateSiteHealth(
     }
   }
 
-  // 标记连续失败 >= 3 的站点
-  if (merged.sites) {
-    for (let i = 0; i < merged.sites.length; i++) {
-      const h = healthMap[merged.sites[i].key];
+  // 标记连续失败 >= 3 的站点。健康统计覆盖过滤前全量，但标记应写回
+  // 最终输出，确保被过滤后保留在配置中的源也能显示风险状态。
+  const markSites = output?.sites ?? allSites;
+  if (markSites.length > 0) {
+    for (let i = 0; i < markSites.length; i++) {
+      const h = healthMap[markSites[i].key];
       if (h && h.consecutiveFailures >= 3) {
-        const name = merged.sites[i].name || merged.sites[i].key;
+        const name = markSites[i].name || markSites[i].key;
         if (!name.includes('[⚠]')) {
-          merged.sites[i] = { ...merged.sites[i], name: `${name} [⚠]` };
+          markSites[i] = { ...markSites[i], name: `${name} [⚠]` };
         }
       }
     }
   }
 
-  // 自动清理：连续失败 >= 5 时加黑名单（需开关开启）
+  // 自动清理：连续失败 >= 5 时加黑名单（需开关开启）。清理必须覆盖
+  // 过滤前全量，否则本轮被过滤掉的源无法累计到自动清理阈值。
   const autoCleanRaw = await storage.get(KV_SITE_AUTO_CLEAN);
-  if (autoCleanRaw === 'true' && merged.sites) {
+  if (autoCleanRaw === 'true' && allSites.length > 0) {
     const blacklist = await loadBlacklist(storage);
     let cleaned = 0;
     const MAX_AUTO_CLEAN = 5;
 
-    for (const site of merged.sites) {
+    for (const site of allSites) {
       if (cleaned >= MAX_AUTO_CLEAN) break;
       const h = healthMap[site.key];
       if (h && h.consecutiveFailures >= 5) {

@@ -21,6 +21,14 @@ import { createApp } from './routes';
 import { runAggregation } from './aggregator';
 import { runChannelProbe, isProbeEnabled } from './core/channel-probe';
 import {
+  beginQualityRun,
+  finishQualityRun,
+  loadQualityCandidates,
+  runQualityGrading,
+  shouldRunQualityNow,
+  updateQualityStatus,
+} from './core/quality';
+import {
   DEFAULT_SPEED_TIMEOUT_MS,
   DEFAULT_SITE_TIMEOUT_MS,
   DEFAULT_FETCH_TIMEOUT_MS,
@@ -212,6 +220,38 @@ async function main() {
     refreshRunning = false;
   };
 
+  let qualityRunning = false;
+  async function runQualityWithGuard(): Promise<void> {
+    if (qualityRunning) {
+      console.log('[quality] Already running, skipping');
+      return;
+    }
+    qualityRunning = true;
+    try {
+      const sites = await loadQualityCandidates(storage);
+      if (sites.length === 0) {
+        console.log('[quality] No candidate sites; run aggregation first');
+        await finishQualityRun(storage, 0, 0, true);
+        return;
+      }
+      await beginQualityRun(storage, sites.length, 0);
+      const snapshot = await runQualityGrading(storage, sites, {
+        markRun: false,
+        onProgress: async (processed, total) => {
+          await updateQualityStatus(storage, { cursor: processed, processed, total, state: 'running' });
+        },
+      });
+      await finishQualityRun(storage, snapshot.graded, snapshot.total);
+      console.log('[quality] Completed: ' + snapshot.graded + '/' + snapshot.total + ' graded');
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error('[quality] Error:', message);
+      await updateQualityStatus(storage, { state: 'error', error: message, finishedAt: new Date().toISOString() });
+    } finally {
+      qualityRunning = false;
+    }
+  }
+
   // 动态 cron 管理
   let currentTask: cron.ScheduledTask | null = null;
   let currentSchedule = '';
@@ -254,6 +294,18 @@ async function main() {
     }
   });
   console.log(`[channel-probe-cron] Scheduled: ${CHANNEL_PROBE_CRON} (runs when enabled)`);
+
+  // 搜索源质量分级独立 cron（每分钟检查计划；到期后全量分批执行）
+  cron.schedule('* * * * *', async () => {
+    try {
+      if (!(await shouldRunQualityNow(storage))) return;
+      console.log('[quality-cron] Triggered at ' + new Date().toISOString());
+      await runQualityWithGuard();
+    } catch (err) {
+      console.error('[quality-cron] Error:', err);
+    }
+  });
+  console.log('[quality-cron] Scheduled: every minute (runs when due)');
 
   const startupAggregationEnabled = process.env.STARTUP_AGGREGATION_ENABLED !== 'false';
   const startupAggregationDelayMs = Math.max(
@@ -315,6 +367,7 @@ async function main() {
     storage,
     config,
     triggerRefresh: runWithGuard,
+    triggerQuality: runQualityWithGuard,
     enableChannelProbe: true,
     enableBuilder: true,
     isSyncing: () => refreshRunning,

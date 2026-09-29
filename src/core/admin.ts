@@ -570,41 +570,44 @@ ${sharedStyles}
         <label class="form-label" style="margin:0" data-i18n="maxParses">Max parsers</label>
         <input type="number" id="maxParsesInput" class="nt-input" style="width:90px" min="0" max="1000" value="0">
         <button class="btn btn-sm" id="searchQuotaSaveBtn" onclick="saveSearchQuota()" data-i18n="save">Save</button>
+        <button class="btn btn-sm" onclick="applyRecommendedQuota()" data-i18n="qualityUseRecommended">Use recommended</button>
         <span class="status-text" id="searchQuotaStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
-      </div>
-      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:8px">
-        <label style="display:flex;gap:6px;align-items:center;font-size:0.8rem;color:var(--text-secondary)">
-          <input type="checkbox" id="sortSearchBySpeedInput">
-          <span data-i18n="sortSearchBySpeed">Sort by speed</span>
-        </label>
-        <label style="display:flex;gap:6px;align-items:center;font-size:0.8rem;color:var(--text-secondary)">
-          <input type="checkbox" id="leanStartupInput">
-          <span data-i18n="leanStartup">Lean startup</span>
-        </label>
-        <label class="form-label" style="margin:0" data-i18n="startupMode">Startup mode</label>
-        <select id="startupModeInput" class="nt-input" style="width:110px">
-          <option value="lean" data-i18n="startupModeLean">Lean</option>
-          <option value="full" data-i18n="startupModeFull">Full</option>
-        </select>
-        <label style="display:flex;gap:6px;align-items:center;font-size:0.8rem;color:var(--text-secondary)">
-          <input type="checkbox" id="pruneDeadParsesInput">
-          <span data-i18n="pruneDeadParses">Prune dead parsers</span>
-        </label>
       </div>
       <!-- Internal safety values: hidden from normal use and kept for backward compatibility. -->
       <input type="hidden" id="maxQuickSearchInput" value="0">
       <input type="hidden" id="maxStartupQuickSearchInput" value="0">
       <input type="hidden" id="startupSiteLimitInput" value="0">
       <input type="hidden" id="autoSearchLimitInput">
-      <div id="searchQuotaStats" style="margin-top:8px;font-size:0.8rem;color:var(--text-secondary);line-height:1.5"></div>
+      <input type="hidden" id="sortSearchBySpeedInput">
+      <input type="hidden" id="leanStartupInput">
+      <input type="hidden" id="startupModeInput" value="lean">
+      <input type="hidden" id="pruneDeadParsesInput">
+      <div id="searchQuotaStats" style="margin-top:8px;font-size:0.8rem;color:var(--text-secondary);line-height:1.6"></div>
       <div style="margin-top:6px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="searchQuotaDesc">Limit searchable sources to reduce TVBox crashes. 0 = unlimited. JS URL sources are always excluded. Pinned sources are not truncated. Manage pinned sources in the Search tab.</div>
-      <div style="margin-top:4px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="startupOptimizationDesc">Quick-search and root-startup limits are applied automatically for client performance. The root address may return a trimmed startup config; /config-full.json still contains the full searchable set.</div>
-      <div style="margin-top:4px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="sortSearchBySpeedDesc">Uses existing site speed-test results to put faster sources first; no extra network requests. Pinned sources stay first.</div>
-      <div style="margin-top:4px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="leanStartupDesc">Removes non-searchable remote JAR/extension sites to shorten TVBox startup. Searchable and pinned sources are always kept.</div>
-      <div style="margin-top:4px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="startupModeDesc">Lean serves a trimmed config at the root address for faster startup. Full is still available at /config-full.json.</div>
-      <div style="margin-top:4px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="pruneDeadParsesDesc">Probes parser endpoints and removes confirmed failures/timeouts so clients do not wait for each dead parser during startup.</div>
+      <div style="margin-top:4px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="qualityGradeDesc">Quality grades: excellent 0-1000ms, good 1001-3000ms, usable >3000ms or unverified, unknown not yet probed, unusable removed after 3 consecutive failures. Sources are served in quality order (excellent > good > usable > unknown), so a larger limit always extends into lower grades instead of dropping good sources.</div>
     </div>
 
+    <div class="section">
+      <div class="section-title" data-i18n="qualitySchedule">Search Quality Grading</div>
+      <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+        <label style="display:flex;gap:6px;align-items:center;font-size:0.85rem;cursor:pointer">
+          <input type="checkbox" id="qualityEnabledInput">
+          <span data-i18n="qualityEnabled">Enable scheduled grading</span>
+        </label>
+        <label class="form-label" style="margin:0" data-i18n="qualityTimes">Times</label>
+        <input type="text" id="qualityTimesInput" class="nt-input" style="width:210px" placeholder="04:30, 16:30" data-i18n-placeholder="qualityTimesPh">
+        <label class="form-label" style="margin:0" data-i18n="qualityRepeatDays">Every N days</label>
+        <input type="number" id="qualityRepeatDaysInput" class="nt-input" style="width:80px" min="1" max="30" value="1">
+        <button class="btn btn-sm" onclick="saveQualitySchedule()" data-i18n="save">Save</button>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px">
+        <button class="btn btn-sm" id="qualityRunBtn" onclick="runQualityNow()" data-i18n="qualityRunNow">Run now</button>
+        <button class="btn btn-sm" onclick="refreshQualityReport()" data-i18n="qualityRefresh">Refresh</button>
+        <span class="status-text" id="qualityScheduleStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
+      </div>
+      <div style="margin-top:8px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="qualityScheduleDesc">Grading probes every searchable source in the background and stores the sorted result, so clients read the saved order and never pay the probing cost at startup. On Cloudflare each run is split into small batches across cron ticks.</div>
+      <div id="qualityDynamicStats" style="margin-top:10px;font-size:0.82rem;color:var(--text-secondary);line-height:1.7"></div>
+    </div>
     <div class="section">
       <div class="section-title" data-i18n="nameTransform">Name Transform</div>
       <div class="nt-grid">
@@ -813,6 +816,20 @@ const translations = {
     save:'Save', saving:'Saving...', saved:'Saved', saveFailed:'Save failed',
     noHealthData:'No data yet', healthFails:'Fails',
     healthLastOk:'Last OK',
+    qualitySchedule:'Search Quality Grading',
+    qualityEnabled:'Enable scheduled grading',
+    qualityTimes:'Times', qualityTimesPh:'e.g. 04:30, 16:30', qualityRepeatDays:'Every N days',
+    qualityRunNow:'Run now', qualityRefresh:'Refresh', qualityStatusLabel:'Status',
+    qualityScheduleDesc:'Grading probes every searchable source in the background and stores the sorted result. Clients read the saved order, so startup and search never pay the probing cost. On Cloudflare each run is split into small batches across cron ticks.',
+    qualityGradeDesc:'Quality grades: excellent <=1000ms, good 1001-3000ms, usable >3000ms; unknown has not been probed or temporarily failed fewer than 3 consecutive times; unusable after 3 consecutive failures. Sources are served in quality order: excellent > good > usable > unknown > unusable. Normally set only two values: searchable-source limit and parser limit. The page shows actual counts and recommended values; a larger searchable limit extends into lower grades without dropping better sources.',
+    qualityNoSnapshot:'No grading result yet. Run grading once to build the quality pool.',
+    qualityStateIdle:'idle', qualityStateRunning:'running', qualityStateDone:'done', qualityStateError:'error',
+    qualityLastRun:'Last run', qualityNextRun:'Next run', qualityNever:'never',
+    qualityGradesTitle:'Quality grades', qualityRecommended:'Recommended', qualityRecSearchable:'searchable limit', qualityRecParses:'parser limit', sqCumulative:'cumulative', qualityUseRecommended:'Use recommended', qualityRecommendedApplied:'Recommended values filled in; click Save in Search Quota.', qualityActualCounts:'Current actual counts', sqStatsUsablePool:'usable pool',
+    qualityTimesHint:'Comma-separated HH:MM, up to 12 per day. Every N days means the schedule repeats every N days from the last run.',
+    qualityRunningNote:'Grading is running in the background; you can keep using the page.',
+    qualityStarted:'Grading started', qualityAlreadyRunning:'Grading already running',
+    qualityScheduleSaved:'Schedule saved', qualityReportRefreshed:'Report refreshed',
     searchQuota:'Search Quota',
     maxSearchable:'Searchable sources', maxQuickSearch:'Quick-search sources', maxStartupQuickSearch:'Startup quick-search sources', startupSiteLimit:'Startup source count', maxParses:'Parser limit', autoSearchLimit:'Auto safe limit', searchQuotaDesc:'Only two values normally need changing: Searchable sources and Parser limit. Searchable sources = 0 keeps all quality-passing searchable sources. If set above 0, sources are kept in quality order: excellent > good > usable > unknown > unusable. Parser limit defaults to 3; 0 means unlimited; a positive value keeps that many parsers. Quick-search sources are the high-priority subset used for fast search. Startup quick-search and root-startup source limits are automatic deployment-specific performance caps; they need no manual input and do not remove sources from /config-full.json.', sortSearchBySpeed:'Sort by speed', sortSearchBySpeedDesc:'Uses existing site speed-test results to put faster sources first; no extra network requests. Pinned sources stay first.', leanStartup:'Lean startup', leanStartupDesc:'Removes remote JAR/extension sites from the root startup config to shorten TVBox startup; pinned sources are kept.', maxStartupQuickSearchDesc:'Automatic quick-search cap used by the root startup config. Full config remains available at /config-full.json.', startupOptimizationDesc:'Quick-search and root-startup limits are applied automatically for client performance. The root address may return a trimmed startup config; /config-full.json still contains the full searchable set.', startupMode:'Startup mode', startupModeLean:'Lean', startupModeFull:'Full', startupModeDesc:'Lean serves a trimmed config at the root address for faster startup. Full is still available at /config-full.json.', pruneDeadParses:'Prune dead parsers', pruneDeadParsesDesc:'Probes parser endpoints and removes confirmed failures/timeouts so clients do not wait for each dead parser during startup.',
     tabSearchQuota:'Search',
@@ -896,6 +913,20 @@ const translations = {
     save:'保存', saving:'保存中...', saved:'已保存', saveFailed:'保存失败',
     noHealthData:'暂无数据', healthFails:'失败',
     healthLastOk:'最后成功',
+    qualitySchedule:'搜索源质量分级',
+    qualityEnabled:'启用定时分级',
+    qualityTimes:'执行时间', qualityTimesPh:'例如 04:30, 16:30', qualityRepeatDays:'每 N 天',
+    qualityRunNow:'立即执行', qualityRefresh:'刷新', qualityStatusLabel:'状态',
+    qualityScheduleDesc:'后台对全部可搜索源进行探测分级并保存排序结果，应用端直接读取已保存的顺序，启动和搜索不再承担探测开销。Cloudflare 上会拆成多个小批次在定时任务中续跑。',
+    qualityGradeDesc:'质量分级：优 <=1000ms；良 1001-3000ms；可用 >3000ms；未探测 尚未测到或临时失败未满 3 次；不可用 连续失败 >=3 次。取源按 优 > 良 > 可用 > 未探测 > 不可用 顺序。日常只需填写两个值：可搜索源上限和解析器上限；页面会显示实际数量和推荐值，调大可搜索源上限只会扩展到下一级，不会丢掉更优质的源。',
+    qualityNoSnapshot:'尚无分级结果，先执行一次分级以建立质量池。',
+    qualityStateIdle:'空闲', qualityStateRunning:'运行中', qualityStateDone:'已完成', qualityStateError:'错误',
+    qualityLastRun:'上次执行', qualityNextRun:'下次执行', qualityNever:'从未',
+    qualityGradesTitle:'质量分级', qualityRecommended:'推荐值', qualityRecSearchable:'可搜索源上限', qualityRecParses:'解析器上限', sqCumulative:'累计', qualityUseRecommended:'使用推荐值', qualityRecommendedApplied:'已填入推荐值，请点击搜索配额中的保存。', qualityActualCounts:'当前实际数量', sqStatsUsablePool:'可用池',
+    qualityTimesHint:'用英文逗号分隔的 HH:MM 时间点，每天最多 12 个。每 N 天表示从上一次执行日起每隔 N 天执行一次。',
+    qualityRunningNote:'分级正在后台运行，可继续使用本页面。',
+    qualityStarted:'分级已开始', qualityAlreadyRunning:'分级已在运行',
+    qualityScheduleSaved:'计划已保存', qualityReportRefreshed:'报告已刷新',
     searchQuota:'搜索配额',
     maxSearchable:'可搜索源上限', maxQuickSearch:'快速搜索源上限', maxStartupQuickSearch:'启动快速源上限', startupSiteLimit:'启动源数量', maxParses:'解析器上限', autoSearchLimit:'自动安全配额', searchQuotaDesc:'日常只需要填写两个值：可搜索源上限和解析器上限。可搜索源上限填 0 表示保留全部通过质量筛选的搜索源；填写大于 0 时，按“优 > 良 > 可用 > 未探测 > 不可用”的质量顺序保留。解析器上限默认推荐 3；填 0 表示不限制；填写大于 0 时按该值保留。快速搜索源是高优先快速搜索子集；启动快速源和启动源数量由系统按部署自动限制，无需手动填写，也不会从 /config-full.json 删除源。', sortSearchBySpeed:'按测速速度排序', sortSearchBySpeedDesc:'复用现有站点测速结果，将较快的源排在前面；不会额外发起测速请求。置顶源始终最前。', leanStartup:'轻量启动', leanStartupDesc:'根配置启动阶段去掉远程 JAR/扩展站点，缩短影视仓/TVBox 启动时间；置顶源仍保留。', maxStartupQuickSearchDesc:'系统自动用于根地址启动配置的快速搜索上限；完整配置仍可通过 /config-full.json 获取。', startupOptimizationDesc:'快速搜索源和根地址启动源由系统自动限制，用于兼顾启动速度；根地址可能返回裁剪后的启动配置，/config-full.json 仍保留完整搜索源。', startupMode:'启动模式', startupModeLean:'轻量', startupModeFull:'完整', startupModeDesc:'轻量模式在根地址返回裁剪后的启动配置以加快启动；完整配置仍可通过 /config-full.json 获取。', pruneDeadParses:'剔除失效解析器', pruneDeadParsesDesc:'主动探测解析器地址并剔除确认超时或失效的项，避免客户端启动时逐个等待死解析器。',
     tabSearchQuota:'搜索',
@@ -1904,15 +1935,15 @@ async function loadSearchQuota() {
     $('startupSiteLimitInput').value = 0;
     $('maxParsesInput').value = d.maxParses ?? 0;
     $('autoSearchLimitInput').checked = false;
-    $('sortSearchBySpeedInput').checked = d.sortBySpeed === true;
-    $('leanStartupInput').checked = d.leanStartup !== false;
-    $('startupModeInput').value = d.startupMode === 'full' ? 'full' : 'lean';
-    $('pruneDeadParsesInput').checked = d.pruneDeadParses !== false;
+    $('sortSearchBySpeedInput').checked = true;
+    $('leanStartupInput').checked = true;
+    $('startupModeInput').value = 'lean';
+    $('pruneDeadParsesInput').checked = true;
     sqPinnedKeys = new Set(d.pinnedKeys || []);
     loadSearchQuotaReport();
+    loadQualityReport();
   } catch {}
 }
-
 async function saveSearchQuota() {
   const status = $('searchQuotaStatus');
   status.textContent = '';
@@ -1924,10 +1955,10 @@ async function saveSearchQuota() {
     startupSiteLimit: 0,
     maxParses: parseInt($('maxParsesInput').value) || 0,
     autoLimit: false,
-    sortBySpeed: $('sortSearchBySpeedInput').checked,
-    leanStartup: $('leanStartupInput').checked,
-    startupMode: $('startupModeInput').value,
-    pruneDeadParses: $('pruneDeadParsesInput').checked,
+    sortBySpeed: true,
+    leanStartup: true,
+    startupMode: 'lean',
+    pruneDeadParses: true,
     pinnedKeys: [...sqPinnedKeys],
   };
   try {
@@ -1991,6 +2022,161 @@ async function loadSearchQuotaReport() {
   } catch {}
 }
 
+// --- Search Quality Grading ---
+function fmtLocalTime(iso) {
+  if (!iso) return t('qualityNever');
+  const d = new Date(iso);
+  if (!isFinite(d.getTime())) return t('qualityNever');
+  return d.toLocaleString('zh-CN', { year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12:false });
+}
+
+function qualityStateLabel(state) {
+  if (state === 'running') return t('qualityStateRunning');
+  if (state === 'done') return t('qualityStateDone');
+  if (state === 'error') return t('qualityStateError');
+  return t('qualityStateIdle');
+}
+
+let qualityScheduleCache = null;
+let qualityReportCache = null;
+
+async function loadQualityReport() {
+  try {
+    const res = await auth.authFetch('/admin/quality-report');
+    if (!res.ok) return;
+    const d = await res.json();
+    qualityReportCache = d;
+    qualityScheduleCache = d.schedule || null;
+    renderQualitySchedule(d.schedule);
+    renderQualityStats(d);
+  } catch {}
+}
+
+function refreshQualityReport() {
+  const el = $('qualityScheduleStatus');
+  loadQualityReport().then(function () {
+    if (el) { el.textContent = t('qualityReportRefreshed'); el.className = 'status-text success'; setTimeout(function(){ el.textContent = ''; }, 3000); }
+  });
+}
+
+function renderQualitySchedule(schedule) {
+  if (!schedule) return;
+  $('qualityEnabledInput').checked = schedule.enabled !== false;
+  $('qualityTimesInput').value = (schedule.times || []).join(', ');
+  $('qualityRepeatDaysInput').value = schedule.repeatDays || 1;
+}
+
+function applyRecommendedQuota() {
+  const d = qualityReportCache;
+  if (!d) return;
+  const maxSearch = d.recommendedMaxSearchable ?? d.snapshot?.recommendedMaxSearchable ?? 0;
+  const maxParses = d.recommendedMaxParses ?? d.snapshot?.recommendedMaxParses ?? 3;
+  const searchInput = $('maxSearchableInput');
+  const parseInput = $('maxParsesInput');
+  if (searchInput) searchInput.value = String(maxSearch);
+  if (parseInput) parseInput.value = String(maxParses);
+  const status = $('qualityScheduleStatus');
+  if (status) {
+    status.textContent = t('qualityRecommendedApplied');
+    status.className = 'status-text success';
+    setTimeout(function () { status.textContent = ''; }, 5000);
+  }
+}
+
+async function saveQualitySchedule() {
+  const status = $('qualityScheduleStatus');
+  if (status) status.textContent = '';
+  const times = $('qualityTimesInput').value.split(',').map(function (v) { return v.trim(); }).filter(function (v) { return v.length > 0; });
+  const data = {
+    enabled: $('qualityEnabledInput').checked,
+    times: times,
+    repeatDays: parseInt($('qualityRepeatDaysInput').value) || 1,
+    timezone: 'Asia/Shanghai',
+  };
+  try {
+    const res = await auth.authFetch('/admin/quality-schedule', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (res.ok) {
+      const d = await res.json();
+      renderQualitySchedule(d);
+      if (status) { status.textContent = t('qualityScheduleSaved'); status.className = 'status-text success'; }
+      loadQualityReport();
+    } else if (status) {
+      status.textContent = t('saveFailed'); status.className = 'status-text error';
+    }
+  } catch {
+    if (status) { status.textContent = t('networkError'); status.className = 'status-text error'; }
+  }
+  setTimeout(function () { if (status) status.textContent = ''; }, 3000);
+}
+
+async function runQualityNow() {
+  const status = $('qualityScheduleStatus');
+  const btn = $('qualityRunBtn');
+  if (btn) btn.disabled = true;
+  if (status) { status.textContent = t('running'); status.className = 'status-text'; }
+  try {
+    const res = await auth.authFetch('/admin/quality/run', { method: 'POST' });
+    if (res.ok) {
+      const d = await res.json();
+      if (status) { status.textContent = d.alreadyRunning ? t('qualityAlreadyRunning') : t('qualityStarted'); status.className = 'status-text success'; }
+      setTimeout(loadQualityReport, 1500);
+    } else if (status) {
+      status.textContent = t('saveFailed'); status.className = 'status-text error';
+    }
+  } catch {
+    if (status) { status.textContent = t('networkError'); status.className = 'status-text error'; }
+  }
+  if (btn) btn.disabled = false;
+  setTimeout(function () { if (status) status.textContent = ''; }, 6000);
+}
+
+function renderQualityStats(d) {
+  const box = $('qualityDynamicStats');
+  if (!box) return;
+  const snap = d.snapshot;
+  const sched = d.schedule;
+  const st = d.status || { state: 'idle' };
+  let html = '';
+  const stateColor = st.state === 'running' ? 'var(--accent)' : (st.state === 'error' ? 'var(--red)' : 'var(--text-secondary)');
+  html += '<div>' + t('qualityStatusLabel') + ': <span style="color:' + stateColor + '">' + qualityStateLabel(st.state) + '</span>';
+  if (st.state === 'running' && typeof st.cursor === 'number' && typeof st.total === 'number' && st.total > 0) {
+    const pct = Math.min(100, Math.round((st.cursor / st.total) * 100));
+    html += ' · ' + st.cursor + ' / ' + st.total + ' (' + pct + '%)';
+  }
+  if (st.error) html += ' · ' + escHtml(st.error);
+  html += '</div>';
+  if (sched) {
+    html += '<div>' + t('qualityLastRun') + ': ' + fmtLocalTime(sched.lastRunAt) + ' · ' + t('qualityNextRun') + ': ' + fmtLocalTime(sched.nextRunAt) + (sched.enabled === false ? ' · ' + t('qualityStateIdle') : '') + '</div>';
+  }
+  const actual = d.actual || {};
+  const countText = function (value) { return typeof value === 'number' && isFinite(value) ? String(value) : '-'; };
+  const parserLimitText = typeof actual.parserLimit === 'number' && actual.parserLimit > 0
+    ? String(actual.parserLimit)
+    : t('sqStatsUnlimited');
+  html += '<div><strong>' + t('qualityActualCounts') + '</strong>: ' + t('sqStatsSearchable') + ' ' + countText(actual.searchable)
+    + ' · ' + t('sqStatsParsers') + ' ' + t('sqStatsKept') + ' ' + countText(actual.parsers) + ' (' + t('sqStatsLimit') + ' ' + parserLimitText + ')'
+    + ' · ' + t('sqStatsPool') + ' ' + countText(actual.candidatePool) + ' / ' + t('sqStatsUsablePool') + ' ' + countText(actual.usablePool) + '</div>';
+
+  if (!snap || !snap.grades) {
+    html += '<div>' + t('qualityNoSnapshot') + '</div>';
+    box.innerHTML = html;
+    return;
+  }
+  const g = snap.grades;
+  const th = snap.thresholds || { excellentMaxMs: 1000, goodMaxMs: 3000 };
+  html += '<div style="margin-top:4px"><strong>' + t('qualityGradesTitle') + '</strong></div>';
+  html += '<div>' + t('sqExcellent') + ': ' + g.excellent.count + ' (' + th.excellentMaxMs + 'ms, ' + t('sqCumulative') + ' ' + g.excellent.cumulative + ') · ' + t('sqGood') + ': ' + g.good.count + ' (' + th.excellentMaxMs + '-' + th.goodMaxMs + 'ms, ' + t('sqCumulative') + ' ' + g.good.cumulative + ') · ' + t('sqUsable') + ': ' + g.usable.count + ' (>' + th.goodMaxMs + 'ms, ' + t('sqCumulative') + ' ' + g.usable.cumulative + ') · ' + t('sqUnknown') + ': ' + g.unknown.count + ' (' + t('sqCumulative') + ' ' + g.unknown.cumulative + ') · ' + t('sqUnusable') + ': ' + g.unusable.count + '</div>';
+  html += '<div>' + t('sqPoolTotal') + ': ' + g.poolTotal + ' · ' + t('sqQuality') + ' ' + snap.graded + '/' + snap.total + ' · ' + fmtLocalTime(snap.updatedAt) + '</div>';
+  const recSearch = d.recommendedMaxSearchable ?? snap.recommendedMaxSearchable ?? 0;
+  const recParse = d.recommendedMaxParses ?? snap.recommendedMaxParses ?? 3;
+  html += '<div>' + t('qualityRecommended') + ': ' + t('qualityRecSearchable') + ' ' + recSearch + ' · ' + t('qualityRecParses') + ' ' + recParse + '</div>';
+  html += '<div style="margin-top:2px">' + t('qualityTimesHint') + '</div>';
+  box.innerHTML = html;
+}
 let sqAllSites = [];
 
 function renderSearchSources() {

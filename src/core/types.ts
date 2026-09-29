@@ -296,6 +296,52 @@ export interface SiteQualityGrades {
   unusable: SiteQualityGradeBucket;  // 空响应、超时或错误，不进入可搜索池
   poolTotal: number;                 // 可搜索候选池总数（不含不可用）
 }
+// 搜索源质量分级快照
+export interface SearchQualityEntry {
+  key: string;
+  name: string;
+  grade: SiteQualityGrade;
+  speedMs: number | null;
+  result: 'ok' | 'empty' | 'error' | 'timeout' | 'not_probed';
+  probedAt?: string;
+  consecutiveFailures: number;
+}
+
+export interface SearchQualityThresholds {
+  excellentMaxMs: number;
+  goodMaxMs: number;
+}
+
+export interface SearchQualitySnapshot {
+  updatedAt: string;
+  total: number;
+  graded: number;
+  entries: SearchQualityEntry[];
+  grades: SiteQualityGrades;
+  recommendedMaxSearchable: number;
+  recommendedMaxParses: number;
+  thresholds: SearchQualityThresholds;
+}
+
+export interface SearchQualitySchedule {
+  enabled: boolean;
+  times: string[];
+  repeatDays: number;
+  timezone: string;
+  lastRunAt?: string;
+  nextRunAt?: string;
+}
+
+export interface SearchQualityStatus {
+  state: 'idle' | 'running' | 'done' | 'error';
+  startedAt?: string;
+  finishedAt?: string;
+  processed?: number;
+  total?: number;
+  cursor?: number;
+  batchSize?: number;
+  error?: string;
+}
 // ═══ 聚合日志 ══════════════════════════════════════════
 
 export interface AggLogFailedSource {
