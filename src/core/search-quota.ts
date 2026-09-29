@@ -11,8 +11,9 @@ function isNodeRuntime(): boolean {
 }
 
 function defaultSearchLimit(): number {
-  // Render/Node 的并发资源高于免费 Worker；有 PORT 即视为 Render/Docker。
-  return isNodeRuntime() ? 50 : 40;
+  // 默认不限制搜索源数量，避免自动配额把质量良好但本次测速未覆盖的源截断。
+  // 用户仍可在后台显式设置上限；只有 autoLimit 开启且上限为 0 时才使用安全值。
+  return 0;
 }
 
 function defaultQuickSearchLimit(): number {
@@ -37,7 +38,7 @@ function createDefaultSearchQuota(): SearchQuotaConfig {
     maxQuickSearch: defaultQuickSearchLimit(),
     maxStartupQuickSearch: defaultStartupQuickSearchLimit(),
     maxParses: defaultParseLimit(),
-    autoLimit: true,
+    autoLimit: false,
     pinnedKeys: [],
     sortBySpeed: true,
     leanStartup: true,
@@ -63,23 +64,26 @@ export async function loadSearchQuota(storage: Storage): Promise<SearchQuotaConf
       const fallback = createDefaultSearchQuota();
       const hasNewLimitFields = typeof parsed.autoLimit === 'boolean' || typeof parsed.maxQuickSearch === 'number';
       const quotaVersion = parsed.quotaSchemaVersion ?? 1;
-      // v5 起已包含自动配额字段；只有更早版本才重置为安全默认值。
+      // v5 起已包含自动配额字段；旧版配置迁移为默认不限制，避免误截断。
       const isLegacyQuota = !hasNewLimitFields || quotaVersion < 5;
       const oldStartupDefault = isNodeRuntime() ? 8 : 6;
       const parsedStartupLimit = normalizeLimit(parsed.maxStartupQuickSearch);
       const migrateStartupLimit = quotaVersion < QUOTA_SCHEMA_VERSION && parsedStartupLimit === oldStartupDefault;
-      // 旧版配置一律迁移到安全上限；只有用户在新版后台明确关闭后，才保留 0 = 不限制。
-      const autoLimit = isLegacyQuota ? true : parsed.autoLimit === true;
+      // 只有用户在新版后台明确开启自动安全配额时，0 才表示使用安全值。
+      const autoLimit = isLegacyQuota ? false : parsed.autoLimit === true;
       const parsedMaxParses = normalizeLimit(parsed.maxParses);
+      const parsedQuickSearchLimit = normalizeLimit(parsed.maxQuickSearch);
       const effectiveMaxSearchable = isLegacyQuota
         ? fallback.maxSearchable
-        : (autoLimit && maxSearchable === 0 ? fallback.maxSearchable : maxSearchable);
+        : (autoLimit && maxSearchable === 0 ? (isNodeRuntime() ? 50 : 40) : maxSearchable);
       return {
         maxSearchable: effectiveMaxSearchable,
-        maxQuickSearch: autoLimit
-          ? (normalizeLimit(parsed.maxQuickSearch) || fallback.maxQuickSearch)
-          : normalizeLimit(parsed.maxQuickSearch),
-        // schema 6 起，旧版过紧的 8/6 上限自动迁移到新的安全上限；之后用户明确设置的值仍保留。
+        // 旧配置缺少快速搜索字段时仍使用有界默认值；新版配置中的 0 仍表示用户明确不限制。
+        maxQuickSearch: isLegacyQuota
+          ? fallback.maxQuickSearch
+          : autoLimit
+            ? (parsedQuickSearchLimit || fallback.maxQuickSearch)
+            : parsedQuickSearchLimit,
         maxStartupQuickSearch: (isLegacyQuota || migrateStartupLimit || parsedStartupLimit === 0)
           ? fallback.maxStartupQuickSearch
           : parsedStartupLimit,
@@ -280,8 +284,10 @@ export function applySearchQuota(
     }
   }
 
-  const pinnedSearchable = pinned.filter(site => site.searchable === 1);
-  let candidates = sites.filter(site => site.searchable === 1 && !pinnedKeySet.has(site.key));
+  // 已确认或历史连续失败的 unusable 源不进入搜索池，置顶也不能绕过健康门槛。
+  const isUsableForSearch = (site: TVBoxSite): boolean => getSiteQualityGrade(site, options.probeMap, options.healthMap) !== 'unusable';
+  const pinnedSearchable = pinned.filter(site => site.searchable === 1 && isUsableForSearch(site));
+  let candidates = sites.filter(site => site.searchable === 1 && !pinnedKeySet.has(site.key) && isUsableForSearch(site));
 
   // 质量分级始终优先参与保留决策；sortBySpeed 只控制同质量级别内是否按速度排序。
   // 这样即使关闭速度排序，快但连续失败/响应无效的源也不会挤掉稍慢但稳定可用的好源。
