@@ -600,6 +600,7 @@ ${sharedStyles}
         <input type="number" id="qualityRepeatDaysInput" class="nt-input" style="width:80px" min="1" max="30" value="1">
         <label class="form-label" style="margin:0" data-i18n="qualityFullRepeatDays">全量分级周期（天）</label>
         <input type="number" id="qualityFullRepeatDaysInput" class="nt-input" style="width:80px" min="1" max="365" value="7">
+        <span style="font-size:0.8rem;color:var(--text-secondary)" data-i18n="qualityTimezoneBeijing">时区：北京时间（UTC+8）</span>
         <button class="btn btn-sm" onclick="saveQualitySchedule()" data-i18n="save">保存</button>
       </div>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px">
@@ -821,7 +822,7 @@ const translations = {
     healthLastOk:'Last OK',
     qualitySchedule:'Search Quality Grading',
     qualityEnabled:'Enable scheduled grading',
-    qualityTimes:'Times', qualityTimesPh:'e.g. 04:30, 16:30', qualityRepeatDays:'Candidate pool refresh (days)', qualityFullRepeatDays:'Full grading interval (days)',
+    qualityTimes:'Times (Beijing time)', qualityTimesPh:'e.g. 04:30, 16:30', qualityTimezoneBeijing:'Timezone: Beijing time (UTC+8)', qualityRepeatDays:'Candidate pool refresh (days)', qualityFullRepeatDays:'Full grading interval (days)',
     qualityRunCandidate:'Force candidate pool grading/refresh', qualityRunFull:'Force full grading', qualityRunNow:'Run now', qualityRefresh:'Refresh', qualityStatusLabel:'Status', qualityStatusMode:'mode',
     qualityScheduleDesc:'Grading runs asynchronously in the background and returns immediately, so the page and other requests are never blocked. Daily runs only re-test the candidate pool (excellent/good/usable); when the full-grading interval is reached or the candidate pool is empty, a full grading run happens automatically. On Cloudflare each run is split into small batches across cron ticks; on Node/Render a run completes in one background pass without blocking requests.',
     qualityGradeDesc:'Quality grades (probed in the background, no impact on client startup): excellent <=1000ms, good 1001-3000ms, usable 3001-6000ms, timeout >6000ms or no result, unusable for confirmed failures. Only excellent/good/usable are served to clients; timeout and unusable never enter the candidate pool. Normally set only two values: searchable-source limit and parser limit. The page shows actual counts, grade breakdown and recommended values.',
@@ -829,7 +830,7 @@ const translations = {
     qualityStateIdle:'idle', qualityStateRunning:'running', qualityStateDone:'done', qualityStateError:'error',
     qualityLastRun:'Last run', qualityNextRun:'Next run', qualityLastFullRun:'Last full run', qualityNextFullRun:'Next full run', qualityNever:'never',
     qualityGradesTitle:'Quality grades', qualityRecommended:'Recommended', qualityRecSearchable:'searchable limit', qualityRecParses:'parser limit', sqCumulative:'cumulative', qualityUseRecommended:'Use recommended', qualityRecommendedApplied:'Recommended values filled in; click Save in Search Quota.', qualityActualCounts:'Current actual counts', sqStatsUsablePool:'usable pool',
-    qualityTimesHint:'Comma-separated HH:MM, up to 12 per day. Candidate pool refresh means re-testing excellent/good/usable sources every N days; full grading interval means re-grading every searchable source every N days.',
+    qualityTimesHint:'Beijing time (Asia/Shanghai, UTC+8). Comma-separated HH:MM, up to 12 per day. Candidate pool refresh means re-testing excellent/good/usable sources every N days; full grading interval means re-grading every searchable source every N days.',
     qualityRunningNote:'Grading is running in the background; you can keep using the page.',
     qualityStarted:'Grading started', qualityAlreadyRunning:'Grading already running', qualityModeCandidate:'candidate pool grading/refresh', qualityModeFull:'full grading', qualityCoverage:'coverage', qualityTestable:'testable', qualityProbed:'probed', qualityNotProbed:'not probed', qualityUntestable:'untestable', qualityRunCandidateStarted:'Candidate pool grading started (background)', qualityRunFullStarted:'Full grading started (background)',
     qualityScheduleSaved:'Schedule saved', qualityReportRefreshed:'Report refreshed',
@@ -918,7 +919,7 @@ const translations = {
     healthLastOk:'最后成功',
     qualitySchedule:'搜索源质量分级',
     qualityEnabled:'启用定时分级',
-    qualityTimes:'执行时间', qualityTimesPh:'例如 04:30, 16:30', qualityRepeatDays:'候选池重排周期（天）', qualityFullRepeatDays:'全量分级周期（天）',
+    qualityTimes:'执行时间（北京时间）', qualityTimesPh:'例如 04:30, 16:30', qualityTimezoneBeijing:'时区：北京时间（UTC+8）', qualityRepeatDays:'候选池重排周期（天）', qualityFullRepeatDays:'全量分级周期（天）',
     qualityRunCandidate:'强制候选池分级/重排', qualityRunFull:'强制全量分级', qualityRunNow:'立即执行', qualityRefresh:'刷新', qualityStatusLabel:'状态', qualityStatusMode:'模式',
     qualityScheduleDesc:'分级在后台异步执行，点击后立即返回，不会阻塞网页或其他请求。日常只重测候选池（优/良/可用）；到达全量周期或候选池为空时自动全量分级。Cloudflare 每次只跑一个分片，由后续 cron 续跑；Node/Render 一次跑完但不阻塞请求。',
     qualityGradeDesc:'质量分级（后台测速，不影响应用端启动速度）：优 ≤1000ms；良 1001-3000ms；可用 3001-6000ms；超时 >6000ms 或无结果；不可用为明确失败。只有优/良/可用会下发给应用端，超时和不可用不进入候选池。日常只需填写两个值：可搜索源上限和解析器上限；页面会显示实际数量、分级统计和推荐值。',
@@ -926,7 +927,7 @@ const translations = {
     qualityStateIdle:'空闲', qualityStateRunning:'运行中', qualityStateDone:'已完成', qualityStateError:'错误',
     qualityLastRun:'上次执行', qualityNextRun:'下次执行', qualityLastFullRun:'上次全量', qualityNextFullRun:'下次全量', qualityNever:'从未',
     qualityGradesTitle:'质量分级', qualityRecommended:'推荐值', qualityRecSearchable:'可搜索源上限', qualityRecParses:'解析器上限', sqCumulative:'累计', qualityUseRecommended:'使用推荐值', qualityRecommendedApplied:'已填入推荐值，请点击搜索配额中的保存。', qualityActualCounts:'当前实际数量', sqStatsUsablePool:'可用池',
-    qualityTimesHint:'用英文逗号分隔的 HH:MM 时间点，每天最多 12 个。候选池重排周期表示每隔 N 天重测一次优/良/可用候选源；全量分级周期表示每隔 N 天对所有可搜索源做一次完整分级。',
+    qualityTimesHint:'按北京时间（Asia/Shanghai，UTC+8）执行。用英文逗号分隔的 HH:MM 时间点，每天最多 12 个。候选池重排周期表示每隔 N 天重测一次优/良/可用候选源；全量分级周期表示每隔 N 天对所有可搜索源做一次完整分级。',
     qualityRunningNote:'分级正在后台运行，可继续使用本页面。',
     qualityStarted:'分级已开始', qualityAlreadyRunning:'分级已在运行', qualityModeCandidate:'候选池分级/重排', qualityModeFull:'全量分级', qualityCoverage:'覆盖率', qualityTestable:'可测试', qualityProbed:'已探测', qualityNotProbed:'未探测', qualityUntestable:'不可测试', qualityRunCandidateStarted:'候选池分级已开始（后台运行）', qualityRunFullStarted:'全量分级已开始（后台运行）',
     qualityScheduleSaved:'计划已保存', qualityReportRefreshed:'报告已刷新',
@@ -2030,7 +2031,7 @@ function fmtLocalTime(iso) {
   if (!iso) return t('qualityNever');
   const d = new Date(iso);
   if (!isFinite(d.getTime())) return t('qualityNever');
-  return d.toLocaleString('zh-CN', { year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12:false });
+  return d.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12:false });
 }
 
 function qualityStateLabel(state) {

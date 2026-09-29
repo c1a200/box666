@@ -26,6 +26,8 @@ import {
   KV_SITE_HEALTH_MAP,
 } from './config';
 
+export const QUALITY_TIMEZONE = 'Asia/Shanghai';
+
 export const QUALITY_THRESHOLDS = {
   excellent: 1000,
   good: 3000,
@@ -47,7 +49,7 @@ export function defaultQualityConfig(now = new Date()): SearchQualitySchedule {
     times: ['04:30'],
     repeatDays: 1,
     fullRepeatDays: DEFAULT_FULL_REPEAT_DAYS,
-    timezone: 'Asia/Shanghai',
+    timezone: QUALITY_TIMEZONE,
     lastRunAt: undefined,
     nextRunAt: undefined,
     lastFullRunAt: undefined,
@@ -117,7 +119,7 @@ export function computeNextQualityRun(config: SearchQualitySchedule, now = new D
   const times = (config.times || []).map((time: unknown) => normalizeTime(time)).filter((time): time is string => !!time).sort();
   if (!config.enabled || times.length === 0) return undefined;
 
-  const timezone = config.timezone || 'Asia/Shanghai';
+  const timezone = QUALITY_TIMEZONE;
   const repeatDays = Math.max(1, Math.floor(config.repeatDays || 1));
   const local = zonedParts(now, timezone);
   const nowMinute = local.hour * 60 + local.minute;
@@ -147,7 +149,7 @@ export function computeNextQualityRun(config: SearchQualitySchedule, now = new D
 export function computeNextFullQualityRun(config: SearchQualitySchedule, now = new Date()): string | undefined {
   const times = (config.times || []).map((time: unknown) => normalizeTime(time)).filter((time): time is string => !!time).sort();
   if (!config.enabled || times.length === 0) return undefined;
-  const timezone = config.timezone || 'Asia/Shanghai';
+  const timezone = QUALITY_TIMEZONE;
   const fullRepeatDays = Math.max(1, Math.floor(config.fullRepeatDays || DEFAULT_FULL_REPEAT_DAYS));
   const local = zonedParts(now, timezone);
   const nowMinute = local.hour * 60 + local.minute;
@@ -189,14 +191,15 @@ export async function loadQualitySchedule(storage: Storage): Promise<SearchQuali
       times: normalizeScheduleTimes(parsed.times, fallback.times),
       repeatDays: Math.min(30, Math.max(1, Math.floor(parsed.repeatDays || 1))),
       fullRepeatDays: Math.min(365, Math.max(1, Math.floor(parsed.fullRepeatDays || DEFAULT_FULL_REPEAT_DAYS))),
-      timezone: typeof parsed.timezone === 'string' && parsed.timezone.trim() ? parsed.timezone.trim() : fallback.timezone,
+      timezone: QUALITY_TIMEZONE,
       lastRunAt: parseDate(parsed.lastRunAt)?.toISOString(),
       nextRunAt: parseDate(parsed.nextRunAt)?.toISOString(),
       lastFullRunAt: parseDate(parsed.lastFullRunAt)?.toISOString(),
       nextFullRunAt: parseDate(parsed.nextFullRunAt)?.toISOString(),
     };
-    config.nextRunAt = config.nextRunAt || computeNextQualityRun(config);
-    config.nextFullRunAt = config.nextFullRunAt || computeNextFullQualityRun(config);
+    const timezoneChanged = typeof parsed.timezone === 'string' && parsed.timezone.trim() !== '' && parsed.timezone.trim() !== QUALITY_TIMEZONE;
+    if (timezoneChanged || !config.nextRunAt) config.nextRunAt = computeNextQualityRun(config);
+    if (timezoneChanged || !config.nextFullRunAt) config.nextFullRunAt = computeNextFullQualityRun(config);
     return config;
   } catch {
     return fallback;
@@ -210,7 +213,7 @@ export async function saveQualitySchedule(storage: Storage, input: Partial<Searc
     times: normalizeScheduleTimes(input.times, current.times),
     repeatDays: Math.min(30, Math.max(1, Math.floor(input.repeatDays || current.repeatDays || 1))),
     fullRepeatDays: Math.min(365, Math.max(1, Math.floor(input.fullRepeatDays || current.fullRepeatDays || DEFAULT_FULL_REPEAT_DAYS))),
-    timezone: typeof input.timezone === 'string' && input.timezone.trim() ? input.timezone.trim() : current.timezone,
+    timezone: QUALITY_TIMEZONE,
     lastRunAt: current.lastRunAt,
     nextRunAt: undefined,
     lastFullRunAt: current.lastFullRunAt,
