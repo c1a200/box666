@@ -90,6 +90,11 @@ export function isClientCredentialApi(api: string): boolean {
   return getPlatformsFromApi(api) !== null;
 }
 
+/** 返回源所需的网盘平台；不发起任何网络请求。 */
+export function getCredentialPlatformsForSite(site: TVBoxSite): CloudPlatform[] {
+  return assessSourceRisk(site).neededPlatforms;
+}
+
 function isTokenJsonApi(api: string): boolean {
   return API_PLATFORM_PATTERNS.some((item) => item.tokenJson && item.pattern.test(api));
 }

@@ -6,6 +6,9 @@
 // 3. Render/CF 使用各自 KV；CF 通过 cursor 分片续跑，避免一次 cron 超时。
 // 4. 日常只重测候选池；候选池为空或到达全量周期时，再自动回退/执行全量分级。
 import type {
+  CloudCredential,
+  CloudPlatform,
+  SearchQualityEntry,
   SearchQualityRunMode,
   SearchQualitySchedule,
   SearchQualitySnapshot,
@@ -16,6 +19,8 @@ import type {
   SiteQualityGrades,
 } from './types';
 import type { Storage } from '../storage/interface';
+import { loadCredentials } from './credential-store';
+import { getCredentialPlatformsForSite } from './credential-risk';
 import { batchSiteSpeedTest, isSiteProbeable, type SiteProbeResult } from './speedtest';
 import {
   KV_SEARCH_QUALITY_CANDIDATES,
@@ -48,7 +53,7 @@ export const QUALITY_THRESHOLDS = {
 const DEFAULT_BATCH_SIZE = 80;
 const MAX_SCHEDULE_TIMES = 12;
 const DEFAULT_FULL_REPEAT_DAYS = 7;
-const CANDIDATE_GRADES = new Set<SiteQualityGrade>(['excellent', 'good', 'usable', 'untestable']);
+const CANDIDATE_GRADES = new Set<SiteQualityGrade>(['excellent', 'good', 'usable', 'credential-ready', 'untestable']);
 const SERVER_PROBE_GRADES = new Set<SiteQualityGrade>(['excellent', 'good', 'usable']);
 
 function isNodeRuntime(): boolean {
@@ -301,6 +306,7 @@ function createEmptyGrades(): SiteQualityGrades {
     excellent: { count: 0, cumulative: 0 },
     good: { count: 0, cumulative: 0 },
     usable: { count: 0, cumulative: 0 },
+    credentialReady: { count: 0, cumulative: 0 },
     untestable: { count: 0, cumulative: 0 },
     timeout: { count: 0, cumulative: 0 },
     unusable: { count: 0, cumulative: 0 },
@@ -310,7 +316,7 @@ function createEmptyGrades(): SiteQualityGrades {
 
 function normalizeGrade(value: unknown): SiteQualityGrade {
   if (value === 'unknown') return 'timeout';
-  if (value === 'excellent' || value === 'good' || value === 'usable' || value === 'untestable' || value === 'timeout' || value === 'unusable') return value;
+  if (value === 'excellent' || value === 'good' || value === 'usable' || value === 'credential-ready' || value === 'untestable' || value === 'timeout' || value === 'unusable') return value;
   return 'timeout';
 }
 
@@ -337,9 +343,10 @@ function compareGrade(a: SiteQualityGrade, b: SiteQualityGrade): number {
     excellent: 0,
     good: 1,
     usable: 2,
-    untestable: 3,
-    timeout: 4,
-    unusable: 5,
+    'credential-ready': 3,
+    untestable: 4,
+    timeout: 5,
+    unusable: 6,
   };
   return rank[a] - rank[b];
 }
@@ -359,13 +366,14 @@ function buildGrades(entries: SearchQualitySnapshot['entries']): SiteQualityGrad
   const grades = createEmptyGrades();
   for (const entry of entries) {
     const grade = normalizeGrade(entry.grade);
-    grades[grade].count++;
+    if (grade === 'credential-ready') grades.credentialReady.count++;
+    else grades[grade].count++;
     if (CANDIDATE_GRADES.has(grade)) grades.poolTotal++;
   }
   let cumulative = 0;
-  for (const grade of ['excellent', 'good', 'usable', 'untestable', 'timeout'] as const) {
-    cumulative += grades[grade].count;
-    grades[grade].cumulative = cumulative;
+  for (const bucket of ['excellent', 'good', 'usable', 'credentialReady', 'untestable', 'timeout'] as const) {
+    cumulative += grades[bucket].count;
+    grades[bucket].cumulative = cumulative;
   }
   grades.unusable.cumulative = grades.unusable.count;
   return grades;
@@ -388,6 +396,18 @@ function normalizeSnapshot(raw: unknown): SearchQualitySnapshot | null {
       ? entry.result
       : 'not_probed',
     consecutiveFailures: typeof entry.consecutiveFailures === 'number' ? entry.consecutiveFailures : 0,
+    credentialPlatforms: Array.isArray(entry.credentialPlatforms)
+      ? entry.credentialPlatforms.filter((platform: unknown): platform is CloudPlatform => typeof platform === 'string')
+      : [],
+    credentialStatus: entry.credentialStatus === 'ready'
+      || entry.credentialStatus === 'partial'
+      || entry.credentialStatus === 'missing'
+      || entry.credentialStatus === 'invalid'
+      ? entry.credentialStatus
+      : 'not-required',
+    probeKind: entry.probeKind === 'client-jar' || entry.probeKind === 'credential-http' || entry.probeKind === 'http'
+      ? entry.probeKind
+      : 'http',
   })) as SearchQualitySnapshot['entries'];
   const sorted = sortQualityEntries(entries);
   const grades = buildGrades(sorted);
@@ -401,6 +421,15 @@ function normalizeSnapshot(raw: unknown): SearchQualitySnapshot | null {
       probed: typeof coverageRaw.probed === 'number' ? coverageRaw.probed : sorted.filter((entry) => entry.result !== 'not_probed').length,
       notProbed: typeof coverageRaw.notProbed === 'number' ? coverageRaw.notProbed : 0,
       untestable: typeof coverageRaw.untestable === 'number' ? coverageRaw.untestable : 0,
+      credentialReady: typeof coverageRaw.credentialReady === 'number'
+        ? coverageRaw.credentialReady
+        : sorted.filter((entry) => entry.credentialStatus === 'ready').length,
+      credentialPartial: typeof coverageRaw.credentialPartial === 'number'
+        ? coverageRaw.credentialPartial
+        : sorted.filter((entry) => entry.credentialStatus === 'partial' || entry.credentialStatus === 'invalid').length,
+      credentialMissing: typeof coverageRaw.credentialMissing === 'number'
+        ? coverageRaw.credentialMissing
+        : sorted.filter((entry) => entry.credentialStatus === 'missing').length,
     },
     entries: sorted,
     grades,
@@ -538,7 +567,8 @@ export async function runQualityGrading(
   }
 
   const healthMap = options.healthMap ?? await loadHealthMap(storage);
-  const entries = buildQualityEntries(allSearchable, probeMap, previousEntries, healthMap);
+  const credentials = await loadCredentials(storage);
+  const entries = buildQualityEntries(allSearchable, probeMap, previousEntries, healthMap, credentials);
   const snapshot = buildSnapshot(allSearchable.length, entries, allSearchable);
   await persistQualitySnapshot(storage, snapshot);
   await persistQualityCandidates(storage, allSearchable);
@@ -546,23 +576,50 @@ export async function runQualityGrading(
   return snapshot;
 }
 
+function isCredentialValid(credential: CloudCredential | undefined, now = Date.now()): boolean {
+  if (!credential || credential.status !== 'valid') return false;
+  if (!credential.expiresAt) return true;
+  const expiresAt = Date.parse(credential.expiresAt);
+  return Number.isFinite(expiresAt) && expiresAt > now;
+}
+
+function credentialStatusForPlatforms(
+  platforms: CloudPlatform[],
+  credentials: Map<CloudPlatform, CloudCredential>,
+): SearchQualityEntry['credentialStatus'] {
+  if (platforms.length === 0) return 'not-required';
+  const now = Date.now();
+  const configured = platforms.filter((platform) => credentials.has(platform));
+  const valid = platforms.filter((platform) => isCredentialValid(credentials.get(platform), now));
+  if (configured.length === 0) return 'missing';
+  if (valid.length === platforms.length) return 'ready';
+  if (valid.length === 0 && configured.length === platforms.length) return 'invalid';
+  return 'partial';
+}
+
 function buildQualityEntries(
   searchable: TVBoxSite[],
   probeMap: Map<string, SiteProbeResult>,
   previousEntries: Map<string, SearchQualitySnapshot['entries'][number]>,
   healthMap: SiteHealthMap,
+  credentials: Map<CloudPlatform, CloudCredential>,
 ): SearchQualitySnapshot['entries'] {
   const now = new Date().toISOString();
   return searchable.map((site) => {
+    const credentialPlatforms = [...new Set(getCredentialPlatformsForSite(site))];
+    const credentialStatus = credentialStatusForPlatforms(credentialPlatforms, credentials);
     if (!isSiteProbeable(site)) {
       return {
         key: site.key,
         name: site.name || site.key,
-        grade: 'untestable',
+        grade: credentialStatus === 'ready' ? 'credential-ready' : 'untestable',
         speedMs: null,
         result: 'not_probed',
         probedAt: undefined,
         consecutiveFailures: 0,
+        credentialPlatforms,
+        credentialStatus,
+        probeKind: 'client-jar',
       };
     }
     const probe = probeMap.get(site.key);
@@ -591,6 +648,9 @@ function buildQualityEntries(
       result: effectiveProbe?.result ?? 'not_probed',
       probedAt: freshProbe ? now : previousEntry?.probedAt,
       consecutiveFailures,
+      credentialPlatforms,
+      credentialStatus,
+      probeKind: credentialPlatforms.length > 0 ? 'credential-http' : 'http',
     };
   });
 }
@@ -608,6 +668,9 @@ function buildCoverage(sites: TVBoxSite[], entries: SearchQualitySnapshot['entri
     probed,
     notProbed: Math.max(0, testable - probed),
     untestable,
+    credentialReady: entries.filter((entry) => entry.credentialStatus === 'ready').length,
+    credentialPartial: entries.filter((entry) => entry.credentialStatus === 'partial' || entry.credentialStatus === 'invalid').length,
+    credentialMissing: entries.filter((entry) => entry.credentialStatus === 'missing').length,
   };
 }
 
@@ -711,6 +774,7 @@ export async function runQualityGradingChunk(
   const allSearchable = collectSearchableSites(sites);
   const previous = await loadQualityPool(storage);
   const previousEntries = new Map((previous?.entries || []).map((entry) => [entry.key, entry]));
+  const credentials = await loadCredentials(storage);
   let mode = requestedMode;
   let target = qualityTargetSites(allSearchable, previous, requestedMode);
   if (target.length === 0) {
@@ -719,7 +783,7 @@ export async function runQualityGradingChunk(
   }
   const start = Math.max(0, Math.floor(cursor));
   if (start >= target.length) {
-    const entries = buildQualityEntries(allSearchable, new Map(), previousEntries, await loadHealthMap(storage));
+    const entries = buildQualityEntries(allSearchable, new Map(), previousEntries, await loadHealthMap(storage), credentials);
     const snapshot = buildSnapshot(allSearchable.length, entries, allSearchable);
     await persistQualitySnapshot(storage, snapshot);
     await persistQualityCandidates(storage, allSearchable);
@@ -730,7 +794,7 @@ export async function runQualityGradingChunk(
   const batch = target.slice(start, start + Math.max(1, batchSize));
   const probeMap = await batchSiteSpeedTest(batch, 3000, false, 6, 25000);
   const healthMap = await loadHealthMap(storage);
-  const entries = buildQualityEntries(allSearchable, probeMap, previousEntries, healthMap);
+  const entries = buildQualityEntries(allSearchable, probeMap, previousEntries, healthMap, credentials);
   const snapshot = buildSnapshot(allSearchable.length, entries, allSearchable);
   await persistQualitySnapshot(storage, snapshot);
   await persistQualityCandidates(storage, allSearchable);

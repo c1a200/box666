@@ -164,6 +164,7 @@ function createEmptyQualityGrades(): SiteQualityGrades {
     excellent: { count: 0, cumulative: 0 },
     good: { count: 0, cumulative: 0 },
     usable: { count: 0, cumulative: 0 },
+    credentialReady: { count: 0, cumulative: 0 },
     untestable: { count: 0, cumulative: 0 },
     timeout: { count: 0, cumulative: 0 },
     unusable: { count: 0, cumulative: 0 },
@@ -216,14 +217,15 @@ function buildQualityGrades(
   const grades = createEmptyQualityGrades();
   for (const site of candidateSites) {
     const grade = getSiteQualityGrade(site, probeMap, healthMap);
-    grades[grade].count++;
+    if (grade === 'credential-ready') grades.credentialReady.count++;
+    else grades[grade].count++;
     if (grade !== 'timeout' && grade !== 'unusable') grades.poolTotal++;
   }
 
   let cumulative = 0;
-  for (const grade of ['excellent', 'good', 'usable', 'untestable', 'timeout'] as const) {
-    cumulative += grades[grade].count;
-    grades[grade].cumulative = cumulative;
+  for (const bucket of ['excellent', 'good', 'usable', 'credentialReady', 'untestable', 'timeout'] as const) {
+    cumulative += grades[bucket].count;
+    grades[bucket].cumulative = cumulative;
   }
   grades.unusable.cumulative = grades.unusable.count;
   return grades;
@@ -288,7 +290,7 @@ export function applySearchQuota(
   // 优/良/可用/客户端不可探测源进入客户端候选池；超时与不可用均不可绕过，置顶也不能例外。
   const isUsableForSearch = (site: TVBoxSite): boolean => {
     const grade = gradeForSite(site);
-    return grade === 'excellent' || grade === 'good' || grade === 'usable' || grade === 'untestable';
+    return grade === 'excellent' || grade === 'good' || grade === 'usable' || grade === 'credential-ready' || grade === 'untestable';
   };
   const pinnedSearchable = pinned.filter(site => site.searchable === 1 && isUsableForSearch(site));
   let candidates = sites.filter(site => site.searchable === 1 && !pinnedKeySet.has(site.key) && isUsableForSearch(site));
@@ -299,9 +301,10 @@ export function applySearchQuota(
     excellent: 0,
     good: 1,
     usable: 2,
-    untestable: 3,
-    timeout: 4,
-    unusable: 5,
+    'credential-ready': 3,
+    untestable: 4,
+    timeout: 5,
+    unusable: 6,
   };
   const hasPool = qualityEntries.size > 0;
   const hasProbe = !!options.probeMap && options.probeMap.size > 0;

@@ -282,8 +282,8 @@ export interface SearchQuotaReport {
 }
 
 // 站点质量分级（基于聚合阶段已有验活/测速结果，不额外发起请求）
-// 候选池下发 excellent / good / usable / untestable；timeout 与 unusable 永不进入客户端搜索源。
-export type SiteQualityGrade = 'excellent' | 'good' | 'usable' | 'untestable' | 'timeout' | 'unusable';
+// 候选池下发 excellent / good / usable / credential-ready / untestable；timeout 与 unusable 永不进入客户端搜索源。
+export type SiteQualityGrade = 'excellent' | 'good' | 'usable' | 'credential-ready' | 'untestable' | 'timeout' | 'unusable';
 
 export interface SiteQualityGradeBucket {
   count: number;
@@ -294,10 +294,11 @@ export interface SiteQualityGrades {
   excellent: SiteQualityGradeBucket; // 优：<=1000ms
   good: SiteQualityGradeBucket;      // 良：1001-3000ms
   usable: SiteQualityGradeBucket;    // 可用：3001-6000ms
+  credentialReady: SiteQualityGradeBucket; // 凭证就绪：服务端不可直探，但已配置所需平台凭证
   untestable: SiteQualityGradeBucket; // 无法由服务端直接探测（如客户端 JAR/网盘登录源）
   timeout: SiteQualityGradeBucket;   // 超时：>6000ms、无结果或未完成探测
   unusable: SiteQualityGradeBucket;  // 不可用：连续失败/明确错误
-  poolTotal: number;                 // 可下发候选池总数（优/良/可用/客户端可验证候选）
+  poolTotal: number;                 // 可下发候选池总数（优/良/可用/凭证就绪/客户端可验证候选）
 }
 // 搜索源质量分级快照
 export interface SearchQualityEntry {
@@ -308,6 +309,9 @@ export interface SearchQualityEntry {
   result: 'ok' | 'empty' | 'error' | 'timeout' | 'not_probed';
   probedAt?: string;
   consecutiveFailures: number;
+  credentialPlatforms: CloudPlatform[];
+  credentialStatus: 'not-required' | 'ready' | 'partial' | 'missing' | 'invalid';
+  probeKind: 'http' | 'client-jar' | 'credential-http';
 }
 
 export interface SearchQualityThresholds {
@@ -321,6 +325,9 @@ export interface SearchQualityCoverage {
   probed: number;        // 已有有效探测结果的源（成功或失败）
   notProbed: number;     // 具备条件但尚未探测/预算耗尽
   untestable: number;    // 服务端无法直接探测、需由客户端登录/JAR 执行的源
+  credentialReady: number;   // 所需平台凭证均已就绪
+  credentialPartial: number; // 已配置部分凭证或凭证无效
+  credentialMissing: number; // 未配置所需平台凭证
 }
 
 export interface SearchQualitySnapshot {

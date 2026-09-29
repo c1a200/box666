@@ -1206,6 +1206,9 @@ export function createApp(deps: AppDeps): Hono {
       probed: snapshot?.coverage?.probed ?? null,
       notProbed: snapshot?.coverage?.notProbed ?? null,
       untestable: snapshot?.coverage?.untestable ?? null,
+      credentialReady: snapshot?.coverage?.credentialReady ?? null,
+      credentialPartial: snapshot?.coverage?.credentialPartial ?? null,
+      credentialMissing: snapshot?.coverage?.credentialMissing ?? null,
     };
 
     // 推荐解析器上限：客户端启动时会串行初始化解析器，保留 3 个已足够；
