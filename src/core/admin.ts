@@ -564,22 +564,15 @@ ${sharedStyles}
 
     <div class="section">
       <div class="section-title" data-i18n="searchQuota">Search Quota</div>
-      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
         <label class="form-label" style="margin:0" data-i18n="maxSearchable">Max searchable</label>
-        <input type="number" id="maxSearchableInput" class="nt-input" style="width:80px" min="0" max="1000" value="0">
-
-        <label class="form-label" style="margin:0" data-i18n="maxQuickSearch">Max quick search</label>
-        <input type="number" id="maxQuickSearchInput" class="nt-input" style="width:80px" min="0" max="1000" value="0">
-        <label class="form-label" style="margin:0" data-i18n="maxStartupQuickSearch">Startup quick search</label>
-        <input type="number" id="maxStartupQuickSearchInput" class="nt-input" style="width:80px" min="0" max="1000" value="0">
-        <label class="form-label" style="margin:0" data-i18n="startupSiteLimit">Startup site count</label>
-        <input type="number" id="startupSiteLimitInput" class="nt-input" style="width:80px" min="0" max="1000" value="0">
+        <input type="number" id="maxSearchableInput" class="nt-input" style="width:90px" min="0" max="1000" value="0">
         <label class="form-label" style="margin:0" data-i18n="maxParses">Max parsers</label>
-        <input type="number" id="maxParsesInput" class="nt-input" style="width:80px" min="0" max="1000" value="0">
-        <label style="display:flex;gap:6px;align-items:center;font-size:0.8rem;color:var(--text-secondary)">
-          <input type="checkbox" id="autoSearchLimitInput">
-          <span data-i18n="autoSearchLimit">Auto safe limit</span>
-        </label>
+        <input type="number" id="maxParsesInput" class="nt-input" style="width:90px" min="0" max="1000" value="0">
+        <button class="btn btn-sm" id="searchQuotaSaveBtn" onclick="saveSearchQuota()" data-i18n="save">Save</button>
+        <span class="status-text" id="searchQuotaStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
+      </div>
+      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:8px">
         <label style="display:flex;gap:6px;align-items:center;font-size:0.8rem;color:var(--text-secondary)">
           <input type="checkbox" id="sortSearchBySpeedInput">
           <span data-i18n="sortSearchBySpeed">Sort by speed</span>
@@ -593,15 +586,19 @@ ${sharedStyles}
           <option value="lean" data-i18n="startupModeLean">Lean</option>
           <option value="full" data-i18n="startupModeFull">Full</option>
         </select>
-        <button class="btn btn-sm" id="searchQuotaSaveBtn" onclick="saveSearchQuota()" data-i18n="save">Save</button>
         <label style="display:flex;gap:6px;align-items:center;font-size:0.8rem;color:var(--text-secondary)">
           <input type="checkbox" id="pruneDeadParsesInput">
           <span data-i18n="pruneDeadParses">Prune dead parsers</span>
         </label>
-        <span class="status-text" id="searchQuotaStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
       </div>
+      <!-- Internal safety values: hidden from normal use and kept for backward compatibility. -->
+      <input type="hidden" id="maxQuickSearchInput" value="0">
+      <input type="hidden" id="maxStartupQuickSearchInput" value="0">
+      <input type="hidden" id="startupSiteLimitInput" value="0">
+      <input type="hidden" id="autoSearchLimitInput">
+      <div id="searchQuotaStats" style="margin-top:8px;font-size:0.8rem;color:var(--text-secondary);line-height:1.5"></div>
       <div style="margin-top:6px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="searchQuotaDesc">Limit searchable sources to reduce TVBox crashes. 0 = unlimited. JS URL sources are always excluded. Pinned sources are not truncated. Manage pinned sources in the Search tab.</div>
-      <div style="margin-top:4px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="startupSiteLimitDesc">Number of fastest searchable sources returned in the root startup config. 0 uses Startup quick search. This value is configured only in the admin panel.</div>
+      <div style="margin-top:4px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="startupOptimizationDesc">Quick-search and root-startup limits are applied automatically for client performance. The root address may return a trimmed startup config; /config-full.json still contains the full searchable set.</div>
       <div style="margin-top:4px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="sortSearchBySpeedDesc">Uses existing site speed-test results to put faster sources first; no extra network requests. Pinned sources stay first.</div>
       <div style="margin-top:4px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="leanStartupDesc">Removes non-searchable remote JAR/extension sites to shorten TVBox startup. Searchable and pinned sources are always kept.</div>
       <div style="margin-top:4px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="startupModeDesc">Lean serves a trimmed config at the root address for faster startup. Full is still available at /config-full.json.</div>
@@ -817,9 +814,10 @@ const translations = {
     noHealthData:'No data yet', healthFails:'Fails',
     healthLastOk:'Last OK',
     searchQuota:'Search Quota',
-    maxSearchable:'Max searchable', maxQuickSearch:'Max quick search', maxStartupQuickSearch:'Startup quick search', startupSiteLimit:'Startup site count', maxParses:'Max parsers', autoSearchLimit:'Auto safe limit', searchQuotaDesc:'Max searchable is unlimited by default, so unprobed but potentially good sources are not dropped. Set a limit to truncate by quality order: excellent > good > usable > unknown > unusable. Quick-search and startup limits stay bounded for startup speed. JS URL sources are always excluded and pinned sources are not truncated.', sortSearchBySpeed:'Sort by speed', sortSearchBySpeedDesc:'Uses existing site speed-test results to put faster sources first; no extra network requests. Pinned sources stay first.', leanStartup:'Lean startup', leanStartupDesc:'Removes remote JAR/extension sites from the root startup config to shorten TVBox startup; pinned sources are kept.', maxStartupQuickSearchDesc:'Lean mode keeps only this many fast-search sources at the root address; 0 uses the safe default. Full config remains available at /config-full.json.', startupSiteLimitDesc:'Number of fastest searchable sources returned in the root startup config. 0 uses Startup quick search. This value is configured only in the admin panel.', startupMode:'Startup mode', startupModeLean:'Lean', startupModeFull:'Full', startupModeDesc:'Lean serves a trimmed config at the root address for faster startup. Full is still available at /config-full.json.', pruneDeadParses:'Prune dead parsers', pruneDeadParsesDesc:'Probes parser endpoints and removes confirmed failures/timeouts so clients do not wait for each dead parser during startup.',
+    maxSearchable:'Searchable sources', maxQuickSearch:'Quick-search sources', maxStartupQuickSearch:'Startup quick-search sources', startupSiteLimit:'Startup source count', maxParses:'Parser limit', autoSearchLimit:'Auto safe limit', searchQuotaDesc:'Only two values normally need changing: Searchable sources and Parser limit. Searchable sources = 0 keeps all quality-passing searchable sources. If set above 0, sources are kept in quality order: excellent > good > usable > unknown > unusable. Parser limit defaults to 3; 0 means unlimited; a positive value keeps that many parsers. Quick-search sources are the high-priority subset used for fast search. Startup quick-search and root-startup source limits are automatic deployment-specific performance caps; they need no manual input and do not remove sources from /config-full.json.', sortSearchBySpeed:'Sort by speed', sortSearchBySpeedDesc:'Uses existing site speed-test results to put faster sources first; no extra network requests. Pinned sources stay first.', leanStartup:'Lean startup', leanStartupDesc:'Removes remote JAR/extension sites from the root startup config to shorten TVBox startup; pinned sources are kept.', maxStartupQuickSearchDesc:'Automatic quick-search cap used by the root startup config. Full config remains available at /config-full.json.', startupOptimizationDesc:'Quick-search and root-startup limits are applied automatically for client performance. The root address may return a trimmed startup config; /config-full.json still contains the full searchable set.', startupMode:'Startup mode', startupModeLean:'Lean', startupModeFull:'Full', startupModeDesc:'Lean serves a trimmed config at the root address for faster startup. Full is still available at /config-full.json.', pruneDeadParses:'Prune dead parsers', pruneDeadParsesDesc:'Probes parser endpoints and removes confirmed failures/timeouts so clients do not wait for each dead parser during startup.',
     tabSearchQuota:'Search',
     sqSelected:'Active Search Sources', sqQuality:'Quality grades', sqExcellent:'Excellent', sqGood:'Good', sqUsable:'Usable', sqUnknown:'Unknown', sqUnusable:'Unusable', sqPoolTotal:'Candidate pool', sqNoData:'Run aggregation to see results',
+    sqStatsCurrent:'Current actual counts', sqStatsSearchable:'searchable', sqStatsQuick:'quick-search', sqStatsQuickLimit:'auto cap', sqStatsPool:'candidate pool', sqStatsParsers:'Parsers', sqStatsKept:'kept', sqStatsProbed:'probed', sqStatsRemoved:'removed', sqStatsLimit:'limit', sqStatsUnlimited:'unlimited', sqStatsQuality:'Quality grades', sqStatsNoData:'Run aggregation to show quality grades and parser counts.',
     sqKey:'Key', sqName:'Name', sqSource:'Source', sqReason:'Reason', sqAction:'Action',
     sqPin:'Pin', sqUnpin:'Unpin',
     sqPinned:'Pinned', sqPinnedDesc:'Drag to reorder. Top sources are searched first in TVBox.', sqOtherSources:'Other Sources',
@@ -899,9 +897,10 @@ const translations = {
     noHealthData:'暂无数据', healthFails:'失败',
     healthLastOk:'最后成功',
     searchQuota:'搜索配额',
-    maxSearchable:'可搜索源上限', maxQuickSearch:'快速搜索源上限', maxStartupQuickSearch:'启动快速源上限', startupSiteLimit:'启动源数量', maxParses:'解析器上限', autoSearchLimit:'自动安全配额', searchQuotaDesc:'普通搜索源默认不限制，避免因本次未探测而误删潜在好源；如需截断，会按“优 > 良 > 可用 > 未探测 > 不可用”的质量顺序保留。快速搜索和启动源仍保留有界上限，兼顾启动速度。JS URL 源始终排除，置顶源不会被截断。', sortSearchBySpeed:'按测速速度排序', sortSearchBySpeedDesc:'复用现有站点测速结果，将较快的源排在前面；不会额外发起测速请求。置顶源始终最前。', leanStartup:'轻量启动', leanStartupDesc:'根配置启动阶段去掉远程 JAR/扩展站点，缩短影视仓/TVBox 启动时间；置顶源仍保留。', maxStartupQuickSearchDesc:'轻量模式在根地址只保留这么多快速搜索源；填 0 使用安全默认值。完整配置仍可通过 /config-full.json 获取。', startupSiteLimitDesc:'根地址启动配置返回的最快可搜索源数量；填 0 使用“启动快速源上限”。该值只在后台配置。', startupMode:'启动模式', startupModeLean:'轻量', startupModeFull:'完整', startupModeDesc:'轻量模式在根地址返回裁剪后的启动配置以加快启动；完整配置仍可通过 /config-full.json 获取。', pruneDeadParses:'剔除失效解析器', pruneDeadParsesDesc:'主动探测解析器地址并剔除确认超时或失效的项，避免客户端启动时逐个等待死解析器。',
+    maxSearchable:'可搜索源上限', maxQuickSearch:'快速搜索源上限', maxStartupQuickSearch:'启动快速源上限', startupSiteLimit:'启动源数量', maxParses:'解析器上限', autoSearchLimit:'自动安全配额', searchQuotaDesc:'日常只需要填写两个值：可搜索源上限和解析器上限。可搜索源上限填 0 表示保留全部通过质量筛选的搜索源；填写大于 0 时，按“优 > 良 > 可用 > 未探测 > 不可用”的质量顺序保留。解析器上限默认推荐 3；填 0 表示不限制；填写大于 0 时按该值保留。快速搜索源是高优先快速搜索子集；启动快速源和启动源数量由系统按部署自动限制，无需手动填写，也不会从 /config-full.json 删除源。', sortSearchBySpeed:'按测速速度排序', sortSearchBySpeedDesc:'复用现有站点测速结果，将较快的源排在前面；不会额外发起测速请求。置顶源始终最前。', leanStartup:'轻量启动', leanStartupDesc:'根配置启动阶段去掉远程 JAR/扩展站点，缩短影视仓/TVBox 启动时间；置顶源仍保留。', maxStartupQuickSearchDesc:'系统自动用于根地址启动配置的快速搜索上限；完整配置仍可通过 /config-full.json 获取。', startupOptimizationDesc:'快速搜索源和根地址启动源由系统自动限制，用于兼顾启动速度；根地址可能返回裁剪后的启动配置，/config-full.json 仍保留完整搜索源。', startupMode:'启动模式', startupModeLean:'轻量', startupModeFull:'完整', startupModeDesc:'轻量模式在根地址返回裁剪后的启动配置以加快启动；完整配置仍可通过 /config-full.json 获取。', pruneDeadParses:'剔除失效解析器', pruneDeadParsesDesc:'主动探测解析器地址并剔除确认超时或失效的项，避免客户端启动时逐个等待死解析器。',
     tabSearchQuota:'搜索',
     sqSelected:'活跃搜索源', sqQuality:'质量分级', sqExcellent:'优', sqGood:'良', sqUsable:'可用', sqUnknown:'未探测', sqUnusable:'不可用', sqPoolTotal:'候选池', sqNoData:'执行聚合后查看结果',
+    sqStatsCurrent:'当前实际数量', sqStatsSearchable:'可搜索源', sqStatsQuick:'快速搜索', sqStatsQuickLimit:'自动上限', sqStatsPool:'候选池', sqStatsParsers:'解析器', sqStatsKept:'最终保留', sqStatsProbed:'探测', sqStatsRemoved:'剔除', sqStatsLimit:'上限', sqStatsUnlimited:'不限制', sqStatsQuality:'质量分级', sqStatsNoData:'执行聚合后显示质量分级和解析器数量。',
     sqKey:'Key', sqName:'名称', sqSource:'来源', sqReason:'原因', sqAction:'操作',
     sqPin:'置顶', sqUnpin:'取消置顶',
     sqPinned:'置顶源', sqPinnedDesc:'上下移动排序，排在前面的源在 TVBox 搜索时优先执行', sqOtherSources:'其他源',
@@ -1898,11 +1897,13 @@ async function loadSearchQuota() {
     if (!res.ok) return;
     const d = await res.json();
     $('maxSearchableInput').value = d.maxSearchable ?? 0;
-    $('maxQuickSearchInput').value = d.maxQuickSearch ?? 0;
-    $('maxStartupQuickSearchInput').value = d.maxStartupQuickSearch ?? 0;
-    $('startupSiteLimitInput').value = d.startupSiteLimit ?? 0;
+    // Legacy startup/quick-search limits are internal safety caps now. Keep
+    // hidden fields at zero so stale values cannot reappear in the UI.
+    $('maxQuickSearchInput').value = 0;
+    $('maxStartupQuickSearchInput').value = 0;
+    $('startupSiteLimitInput').value = 0;
     $('maxParsesInput').value = d.maxParses ?? 0;
-    $('autoSearchLimitInput').checked = d.autoLimit === true;
+    $('autoSearchLimitInput').checked = false;
     $('sortSearchBySpeedInput').checked = d.sortBySpeed === true;
     $('leanStartupInput').checked = d.leanStartup !== false;
     $('startupModeInput').value = d.startupMode === 'full' ? 'full' : 'lean';
@@ -1917,11 +1918,12 @@ async function saveSearchQuota() {
   status.textContent = '';
   const data = {
     maxSearchable: parseInt($('maxSearchableInput').value) || 0,
-    maxQuickSearch: parseInt($('maxQuickSearchInput').value) || 0,
-    maxStartupQuickSearch: parseInt($('maxStartupQuickSearchInput').value) || 0,
-    startupSiteLimit: parseInt($('startupSiteLimitInput').value) || 0,
+    // These are automatic internal safety caps, not user-facing settings.
+    maxQuickSearch: 0,
+    maxStartupQuickSearch: 0,
+    startupSiteLimit: 0,
     maxParses: parseInt($('maxParsesInput').value) || 0,
-    autoLimit: $('autoSearchLimitInput').checked,
+    autoLimit: false,
     sortBySpeed: $('sortSearchBySpeedInput').checked,
     leanStartup: $('leanStartupInput').checked,
     startupMode: $('startupModeInput').value,
@@ -1962,9 +1964,21 @@ async function loadSearchQuotaReport() {
 
     const q = d.qualityGrades;
     if (q) {
-      $('sqQualityGrades').textContent = t('sqQuality') + ': ' + t('sqExcellent') + ' ' + q.excellent.count + ' (' + q.excellent.cumulative + ') / ' + t('sqGood') + ' ' + q.good.count + ' (' + q.good.cumulative + ') / ' + t('sqUsable') + ' ' + q.usable.count + ' (' + q.usable.cumulative + ') / ' + t('sqUnknown') + ' ' + q.unknown.count + ' (' + q.unknown.cumulative + ') / ' + t('sqUnusable') + ' ' + q.unusable.count + ' · ' + t('sqPoolTotal') + ': ' + q.poolTotal;
+      const qualityText = t('sqQuality') + ': ' + t('sqExcellent') + ' ' + q.excellent.count + ' (' + q.excellent.cumulative + ') / ' + t('sqGood') + ' ' + q.good.count + ' (' + q.good.cumulative + ') / ' + t('sqUsable') + ' ' + q.usable.count + ' (' + q.usable.cumulative + ') / ' + t('sqUnknown') + ' ' + q.unknown.count + ' (' + q.unknown.cumulative + ') / ' + t('sqUnusable') + ' ' + q.unusable.count + ' · ' + t('sqPoolTotal') + ': ' + q.poolTotal;
+      $('sqQualityGrades').textContent = qualityText;
+      const stats = $('searchQuotaStats');
+      if (stats) {
+        const quickCount = typeof d.quickSearchable === 'number' ? d.quickSearchable : 0;
+        const quickLimit = typeof d.maxQuickSearch === 'number' && d.maxQuickSearch > 0 ? ' (' + t('sqStatsQuickLimit') + ' ' + d.maxQuickSearch + ')' : '';
+        const parserText = typeof d.parseKept === 'number'
+          ? t('sqStatsParsers') + ': ' + t('sqStatsKept') + ' ' + d.parseKept + (typeof d.parseProbed === 'number' ? ', ' + t('sqStatsProbed') + ' ' + d.parseProbed : '') + (typeof d.parseRemoved === 'number' && d.parseRemoved > 0 ? ', ' + t('sqStatsRemoved') + ' ' + d.parseRemoved : '') + (typeof d.parseLimit === 'number' && d.parseLimit > 0 ? ', ' + t('sqStatsLimit') + ' ' + d.parseLimit : ', ' + t('sqStatsUnlimited'))
+          : t('sqStatsParsers') + ': ' + t('sqStatsNoData');
+        stats.textContent = t('sqStatsCurrent') + ': ' + t('sqStatsSearchable') + ' ' + d.searchable + ' · ' + t('sqStatsPool') + ' ' + q.poolTotal + ' · ' + t('sqStatsQuick') + ' ' + quickCount + quickLimit + '. ' + parserText + '. ' + t('sqStatsQuality') + ': ' + t('sqExcellent') + ' ' + q.excellent.count + ', ' + t('sqGood') + ' ' + q.good.count + ', ' + t('sqUsable') + ' ' + q.usable.count + ', ' + t('sqUnknown') + ' ' + q.unknown.count + ', ' + t('sqUnusable') + ' ' + q.unusable.count + '.';
+      }
     } else {
       $('sqQualityGrades').textContent = '';
+      const stats = $('searchQuotaStats');
+      if (stats) stats.textContent = t('sqStatsNoData');
     }
 
     // 加载站点列表

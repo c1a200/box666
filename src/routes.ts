@@ -1001,19 +1001,12 @@ export function createApp(deps: AppDeps): Hono {
     if (typeof body.maxSearchable === 'number' && Number.isFinite(body.maxSearchable)) {
       current.maxSearchable = Math.max(0, Math.floor(body.maxSearchable));
     }
-    if (typeof body.maxQuickSearch === 'number' && Number.isFinite(body.maxQuickSearch)) {
-      current.maxQuickSearch = Math.max(0, Math.floor(body.maxQuickSearch));
-    }
-    if (typeof body.maxStartupQuickSearch === 'number' && Number.isFinite(body.maxStartupQuickSearch)) {
-      current.maxStartupQuickSearch = Math.max(0, Math.floor(body.maxStartupQuickSearch));
-    }
-    if (typeof body.startupSiteLimit === 'number' && Number.isFinite(body.startupSiteLimit)) {
-      current.startupSiteLimit = Math.min(1000, Math.max(0, Math.floor(body.startupSiteLimit)));
-    }
+    // maxQuickSearch / maxStartupQuickSearch / startupSiteLimit are automatic
+    // deployment-specific guards since schema 8; ignore stale client values.
     if (typeof body.maxParses === 'number' && Number.isFinite(body.maxParses)) {
       current.maxParses = Math.max(0, Math.floor(body.maxParses));
     }
-    if (typeof body.autoLimit === 'boolean') current.autoLimit = body.autoLimit;
+    // autoLimit is retired in schema 8; the two user-facing caps are explicit.
     if (typeof body.sortBySpeed === 'boolean') current.sortBySpeed = body.sortBySpeed;
     if (typeof body.leanStartup === 'boolean') current.leanStartup = body.leanStartup;
     if (body.startupMode === 'lean' || body.startupMode === 'full') current.startupMode = body.startupMode;

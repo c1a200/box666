@@ -4,7 +4,7 @@ import type { TVBoxParse, TVBoxSite, SearchQuotaConfig, SearchQuotaReport, SiteH
 import type { SiteProbeResult } from './speedtest';
 import type { Storage } from '../storage/interface';
 import { KV_SEARCH_QUOTA } from './config';
-const QUOTA_SCHEMA_VERSION = 7;
+const QUOTA_SCHEMA_VERSION = 8;
 
 function isNodeRuntime(): boolean {
   return typeof process !== 'undefined' && !!process.env.PORT;
@@ -12,7 +12,7 @@ function isNodeRuntime(): boolean {
 
 function defaultSearchLimit(): number {
   // 默认不限制搜索源数量，避免自动配额把质量良好但本次测速未覆盖的源截断。
-  // 用户仍可在后台显式设置上限；只有 autoLimit 开启且上限为 0 时才使用安全值。
+  // 用户仍可在后台显式设置上限；schema 8 后 autoLimit 已退役。
   return 0;
 }
 
@@ -60,47 +60,27 @@ export async function loadSearchQuota(storage: Storage): Promise<SearchQuotaConf
   if (raw) {
     try {
       const parsed = JSON.parse(raw) as Partial<SearchQuotaConfig>;
-      const maxSearchable = normalizeLimit(parsed.maxSearchable);
       const fallback = createDefaultSearchQuota();
-      const hasNewLimitFields = typeof parsed.autoLimit === 'boolean' || typeof parsed.maxQuickSearch === 'number';
       const quotaVersion = parsed.quotaSchemaVersion ?? 1;
-      // v5 起已包含自动配额字段；旧版配置迁移为默认不限制，避免误截断。
-      const isLegacyQuota = !hasNewLimitFields || quotaVersion < 5;
-      const oldStartupDefault = isNodeRuntime() ? 8 : 6;
-      const parsedStartupLimit = normalizeLimit(parsed.maxStartupQuickSearch);
-      const migrateStartupLimit = quotaVersion < QUOTA_SCHEMA_VERSION && parsedStartupLimit === oldStartupDefault;
-      // 只有用户在新版后台明确开启自动安全配额时，0 才表示使用安全值。
-      const autoLimit = isLegacyQuota ? false : parsed.autoLimit === true;
-      const parsedMaxParses = normalizeLimit(parsed.maxParses);
-      const parsedQuickSearchLimit = normalizeLimit(parsed.maxQuickSearch);
-      const effectiveMaxSearchable = isLegacyQuota
-        ? fallback.maxSearchable
-        : (autoLimit && maxSearchable === 0 ? (isNodeRuntime() ? 50 : 40) : maxSearchable);
+      const legacy = quotaVersion < QUOTA_SCHEMA_VERSION;
+
+      // User-facing settings: searchable source cap and parser cap.
+      // Everything else is an automatic performance guard.
       return {
-        maxSearchable: effectiveMaxSearchable,
-        // 旧配置缺少快速搜索字段时仍使用有界默认值；新版配置中的 0 仍表示用户明确不限制。
-        maxQuickSearch: isLegacyQuota
-          ? fallback.maxQuickSearch
-          : autoLimit
-            ? (parsedQuickSearchLimit || fallback.maxQuickSearch)
-            : parsedQuickSearchLimit,
-        maxStartupQuickSearch: (isLegacyQuota || migrateStartupLimit || parsedStartupLimit === 0)
-          ? fallback.maxStartupQuickSearch
-          : parsedStartupLimit,
-        startupSiteLimit: normalizeLimit(parsed.startupSiteLimit),
-        // schema 升级必须采用新的安全上限，不能继承旧版本 maxParses=10。
-        maxParses: isLegacyQuota
+        maxSearchable: normalizeLimit(parsed.maxSearchable),
+        maxQuickSearch: fallback.maxQuickSearch,
+        maxStartupQuickSearch: fallback.maxStartupQuickSearch,
+        // Legacy startup-site values are intentionally ignored after schema 8:
+        // the root startup config is always derived from the automatic quick cap.
+        startupSiteLimit: 0,
+        maxParses: legacy
           ? fallback.maxParses
-          : autoLimit
-            ? (parsedMaxParses || fallback.maxParses)
-            : parsedMaxParses,
-        autoLimit,
+          : normalizeLimit(parsed.maxParses),
+        autoLimit: false,
         pinnedKeys: Array.isArray(parsed.pinnedKeys)
           ? parsed.pinnedKeys.filter((key): key is string => typeof key === 'string')
           : [],
-        // 旧配置没有 sortBySpeed 字段时默认开启，已有明确设置仍原样保留。
         sortBySpeed: parsed.sortBySpeed !== false,
-        // 旧配置没有该字段时默认开启轻量启动；用户明确关闭后保留关闭状态。
         leanStartup: parsed.leanStartup !== false,
         startupMode: parsed.startupMode === 'full' ? 'full' : 'lean',
         pruneDeadParses: parsed.pruneDeadParses !== false,
@@ -113,15 +93,16 @@ export async function loadSearchQuota(storage: Storage): Promise<SearchQuotaConf
 
 /** 保存搜索配额配置。 */
 export async function saveSearchQuota(storage: Storage, config: SearchQuotaConfig): Promise<void> {
-  const maxSearchable = normalizeLimit(config.maxSearchable);
-  const autoLimit = config.autoLimit === true;
+  const fallback = createDefaultSearchQuota();
   await storage.put(KV_SEARCH_QUOTA, JSON.stringify({
-    maxSearchable,
-    maxQuickSearch: normalizeLimit(config.maxQuickSearch),
-    maxStartupQuickSearch: normalizeLimit(config.maxStartupQuickSearch),
-    startupSiteLimit: normalizeLimit(config.startupSiteLimit),
+    maxSearchable: normalizeLimit(config.maxSearchable),
+    // Automatic startup/quick-search guards are deployment-specific and are
+    // never taken from stale form values.
+    maxQuickSearch: fallback.maxQuickSearch,
+    maxStartupQuickSearch: fallback.maxStartupQuickSearch,
+    startupSiteLimit: 0,
     maxParses: normalizeLimit(config.maxParses),
-    autoLimit,
+    autoLimit: false,
     pinnedKeys: Array.isArray(config.pinnedKeys) ? config.pinnedKeys : [],
     sortBySpeed: config.sortBySpeed === true,
     leanStartup: config.leanStartup !== false,
@@ -357,7 +338,7 @@ export function applySearchQuota(
   const allowedSearchableKeys = new Set<string>([...pinnedKeySet, ...keptCandidateKeys]);
 
   // 快速搜索独立限制：不会删除站点，只把 quickSearch 置 0。
-  // Render 默认 40、CF 默认 30，足以覆盖常用源并显著缩短首屏等待。
+  // Render 默认 32、CF 默认 20，足以覆盖常用源并显著缩短首屏等待。
   const quickCandidates = [
     ...pinned.filter(site => site.searchable === 1 && site.quickSearch !== 0),
     ...keptCandidates.filter(site => site.searchable === 1 && site.quickSearch !== 0),
