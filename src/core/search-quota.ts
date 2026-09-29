@@ -285,8 +285,8 @@ export function applySearchQuota(
   }
 
   // 保存未受 maxSearchable / maxQuickSearch 截断影响的启动候选池。
-  // 置顶源始终在最前；其余源沿用上面的测速顺序。根地址 ?sites=N
-  // 只在单次请求中从这个池取前 N 个，不会改写最终配置。
+  // 置顶源始终在最前；其余源沿用上面的测速顺序。根地址只从
+  // 这个池按后台配置取前 N 个，不会改写最终配置。
   const startupCandidateSites = [
     ...pinnedSearchable.filter(site => site.type !== 3 && site.quickSearch !== 0),
     ...candidates.filter(site => site.type !== 3 && site.searchable === 1 && site.quickSearch !== 0),

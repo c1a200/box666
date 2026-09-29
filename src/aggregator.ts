@@ -615,8 +615,8 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     merged.sites = quotaSites;
 
     // 保存动态根配置候选池：已做健康/去重/归一化并按测速排序，但未按
-    // maxSearchable / maxQuickSearch 截断。根地址的 ?sites=N 只读这份池，
-    // 单次请求临时取前 N 个，不会反向修改最终配置或另一套部署的 KV。
+    // maxSearchable / maxQuickSearch 截断。根地址只读这份池，并按后台
+    // 启动源数量取前 N 个，不会反向修改最终配置或另一套部署的 KV。
     await storage.put(KV_STARTUP_SITE_POOL, JSON.stringify({
       updatedAt: new Date().toISOString(),
       sites: candidateSites,

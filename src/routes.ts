@@ -317,23 +317,10 @@ export function createApp(deps: AppDeps): Hono {
     return repaired;
   }
   /**
-   * 解析根地址的动态启动源数量兼容参数。
-   * 管理后台的 startupSiteLimit 优先；?sites=N / ?search=N / ?startup=N
-   * 仅作为旧链接的临时回退，非法值按未传处理。
-   */
-  function parseStartupSiteLimit(c: { req: { query: (name: string) => string | undefined } }): number | undefined {
-    const raw = c.req.query('sites') || c.req.query('search') || c.req.query('startup');
-    if (!raw || !/^\d+$/.test(raw)) return undefined;
-    const value = Number(raw);
-    if (!Number.isSafeInteger(value) || value < 1) return undefined;
-    return Math.min(value, 1000);
-  }
-
-  /**
    * 客户端启动配置裁剪。完整聚合结果始终保存在 KV_MERGED_CONFIG，
    * 根地址默认只返回启动必需项，避免影视仓串行初始化大量远程 JAR/解析器。
    */
-  async function buildStartupConfig(cached: string, dynamicSiteLimit?: number): Promise<string> {
+  async function buildStartupConfig(cached: string): Promise<string> {
     let quota: SearchQuotaConfig;
     try {
       quota = await loadSearchQuota(storage);
@@ -352,13 +339,13 @@ export function createApp(deps: AppDeps): Hono {
     const pinnedKeys = new Set(quota.pinnedKeys || []);
     const startupQuickLimit = quota.maxStartupQuickSearch ?? 0;
     const configuredSiteLimit = quota.startupSiteLimit ?? 0;
-    const effectiveSiteLimit = configuredSiteLimit > 0 ? configuredSiteLimit : dynamicSiteLimit;
+    const effectiveSiteLimit = configuredSiteLimit;
     let quickSeen = 0;
     let startupSeen = 0;
     let sites = Array.isArray(parsed.sites) ? parsed.sites : [];
     if (effectiveSiteLimit && effectiveSiteLimit > 0) {
-      // 管理后台配置优先；URL 参数仅作为旧链接回退。优先读取未被配额
-      // 截断的候选池，池中顺序已经是“置顶源优先 + 其余按保存的测速结果排序”。
+      // 只使用管理后台配置；优先读取未被配额截断的候选池，池中顺序
+      // 已经是“置顶源优先 + 其余按保存的测速结果排序”。
       try {
         const poolRaw = await storage.get(KV_STARTUP_SITE_POOL);
         if (poolRaw) {
@@ -435,7 +422,7 @@ export function createApp(deps: AppDeps): Hono {
     }
 
     cached = await repairCfSeparatedLives(cached);
-    cached = await buildStartupConfig(cached, parseStartupSiteLimit(c));
+    cached = await buildStartupConfig(cached);
     const baseUrl = await resolveBaseUrl(c);
     if (baseUrl instanceof Response) return baseUrl;
     cached = applyBaseUrlPlaceholder(cached, baseUrl);
