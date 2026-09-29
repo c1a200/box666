@@ -301,7 +301,7 @@ ${sharedStyles}
     <!-- Aggregation status bar -->
     <div class="agg-bar">
       <span class="status-text" id="aggStatus" data-i18n="loadingStatus">Loading...</span>
-      <button class="btn btn-sm" id="refreshBtn" onclick="triggerRefresh()" data-i18n="refresh">Refresh</button>
+      <button class="btn btn-sm" id="refreshBtn" onclick="triggerRefresh()" data-i18n="aggregateNow">Aggregate now</button>
     </div>
   </header>
 
@@ -429,15 +429,15 @@ ${sharedStyles}
           <input type="checkbox" id="channelProbeCheck" onchange="toggleChannelProbe()">
           <span data-i18n="channelProbeEnable">Enable scheduled channel speed test (every 12h)</span>
         </label>
-        <button class="btn btn-sm" id="channelProbeTriggerBtn" onclick="triggerChannelProbe()" data-i18n="channelProbeTrigger">Run Now</button>
-        <button class="btn btn-sm" onclick="loadChannelProbe()" data-i18n="refresh">Refresh</button>
+        <button class="btn btn-sm" id="channelProbeTriggerBtn" onclick="triggerChannelProbe()" data-i18n="channelProbeTrigger">Probe now</button>
+        <button class="btn btn-sm" onclick="loadChannelProbe()" data-i18n="channelProbeRefresh">Refresh probe status</button>
       </div>
       <div id="channelProbeStatus" style="font-size:0.85rem;color:var(--text-secondary);line-height:1.6"></div>
     </div>
 
-    <!-- Live Disable Toggle -->
+    <!-- Live Output Strategy -->
     <div class="section">
-      <div class="section-title" data-i18n="liveToggleTitle">Live Feature Toggle</div>
+      <div class="section-title" data-i18n="liveStrategyTitle">Live Output Strategy</div>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
           <input type="checkbox" id="liveDisabledCheck" onchange="saveLiveDisabled()">
@@ -445,31 +445,23 @@ ${sharedStyles}
         </label>
         <span class="status-text" id="liveDisabledStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
       </div>
-    </div>
-
-    <!-- Ignore Aggregated Lives Toggle -->
-    <div class="section">
-      <div class="section-title" data-i18n="ignoreAggregatedLivesTitle">Ignore Aggregated Live Sources</div>
-      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+      <div id="liveStrategyOptions" style="display:flex;flex-direction:column;gap:12px;margin-top:12px">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;flex-wrap:wrap">
           <input type="checkbox" id="ignoreAggregatedLivesCheck" onchange="saveIgnoreAggregatedLives()">
           <span data-i18n="ignoreAggregatedLivesLabel">Ignore live sources inside subscription configs (only use manually added live sources)</span>
+          <span class="status-text" id="ignoreAggregatedLivesStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
         </label>
-        <span class="status-text" id="ignoreAggregatedLivesStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
+        <div>
+          <div class="form-label" style="margin-bottom:6px" data-i18n="liveMergeModeTitle">Live merge mode</div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <button id="liveMergeSeparated" class="btn btn-sm active" onclick="setLiveMergeMode('separated')" data-i18n="liveMergeSeparated">Separated (group by source)</button>
+            <button id="liveMergeMerged" class="btn btn-sm" onclick="setLiveMergeMode('merged')" data-i18n="liveMergeMerged">Merged (deduplicate channels)</button>
+            <span class="status-text" id="liveMergeModeStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
+          </div>
+          <div style="font-size:0.75rem;color:var(--text-secondary);margin-top:4px" data-i18n="liveMergeModeDesc">Separated keeps every source as its own group; merged combines channels by name and removes duplicates.</div>
+        </div>
       </div>
-    </div>
-
-    <!-- Live Merge Mode -->
-    <div class="section">
-      <div class="section-title">直播合并模式</div>
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <button id="liveMergeSeparated" class="btn btn-sm active" onclick="setLiveMergeMode('separated')">📂 分离模式（按源分类）</button>
-        <button id="liveMergeMerged" class="btn btn-sm" onclick="setLiveMergeMode('merged')">🔀 合并模式（去重混合）</button>
-        <span class="status-text" id="liveMergeModeStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
-      </div>
-      <div style="font-size:0.75rem;color:var(--text-secondary);margin-top:4px">
-        分离模式：每个直播源独立展示，用「源名」前缀区分。合并模式：所有源的频道按名称去重合并为统一列表。
-      </div>
+      <div id="liveStrategyHint" style="margin-top:8px;font-size:0.8rem;color:var(--text-secondary)"></div>
     </div>
   </div>
 
@@ -517,7 +509,7 @@ ${sharedStyles}
   <div class="tab-panel" id="panelSettings">
     <!-- Cron Interval -->
     <div class="section">
-      <div class="section-title" data-i18n="cronInterval">Aggregation Schedule</div>
+      <div class="section-title" data-i18n="cronInterval">Source Aggregation Schedule</div>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
         <select id="cronSelect" class="nt-input" style="width:auto;min-width:160px">
           <option value="60" data-i18n-text="cronEvery1h">Every 1 hour</option>
@@ -532,7 +524,7 @@ ${sharedStyles}
     </div>
 
     <div class="section">
-      <div class="section-title" data-i18n="speedTestToggle">Site Speed Test</div>
+      <div class="section-title" data-i18n="speedTestToggle">Media Site Speed Test</div>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
           <input type="checkbox" id="speedTestCheck" onchange="saveSpeedTest()" checked>
@@ -570,7 +562,7 @@ ${sharedStyles}
         <label class="form-label" style="margin:0" data-i18n="maxParses">解析器上限</label>
         <input type="number" id="maxParsesInput" class="nt-input" style="width:90px" min="0" max="1000" value="0">
         <button class="btn btn-sm" id="searchQuotaSaveBtn" onclick="saveSearchQuota()" data-i18n="save">保存</button>
-        <button class="btn btn-sm" onclick="applyRecommendedQuota()" data-i18n="qualityUseRecommended">使用推荐值</button>
+        <button class="btn btn-sm" onclick="applyRecommendedQuota()" data-i18n="qualityUseRecommended">填入推荐值</button>
         <span class="status-text" id="searchQuotaStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
       </div>
       <!-- Internal safety values: hidden from normal use and kept for backward compatibility. -->
@@ -604,9 +596,9 @@ ${sharedStyles}
         <button class="btn btn-sm" onclick="saveQualitySchedule()" data-i18n="save">保存</button>
       </div>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px">
-        <button class="btn btn-sm" id="qualityRunCandidateBtn" onclick="runQualityNow('candidate')" data-i18n="qualityRunCandidate">强制候选池分级/重排</button>
-        <button class="btn btn-sm" id="qualityRunFullBtn" onclick="runQualityNow('full')" data-i18n="qualityRunFull">强制全量分级</button>
-        <button class="btn btn-sm" onclick="refreshQualityReport()" data-i18n="qualityRefresh">刷新</button>
+        <button class="btn btn-sm" id="qualityRunCandidateBtn" onclick="runQualityNow('candidate')" data-i18n="qualityRunCandidate">重测候选池</button>
+        <button class="btn btn-sm" id="qualityRunFullBtn" onclick="runQualityNow('full')" data-i18n="qualityRunFull">全量重测</button>
+        <button class="btn btn-sm" onclick="refreshQualityReport()" data-i18n="qualityRefresh">刷新分级状态</button>
         <span class="status-text" id="qualityScheduleStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
       </div>
       <div style="margin-top:8px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="qualityScheduleDesc">分级在后台异步执行，点击后立即返回，不会阻塞网页或其他请求。日常只重测候选池（优/良/可用），到达全量周期或候选池为空时自动全量分级。Cloudflare 每次只跑一个分片，由后续 cron 续跑；Node/Render 一次跑完但不阻塞请求。</div>
@@ -714,7 +706,7 @@ ${sharedStyles}
 
     <!-- 站点验活 -->
     <div class="section">
-      <div class="section-title" data-i18n="siteProbeTitle">Site Probe &amp; Auto Clean</div>
+      <div class="section-title" data-i18n="siteProbeTitle">Site Content Probe &amp; Auto Clean</div>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
         <label class="form-label" style="margin:0" data-i18n="probeDepthLabel">Probe depth:</label>
         <select id="probeDepthSelect" class="nt-input" style="width:auto;min-width:140px" onchange="saveProbeDepth()">
@@ -785,7 +777,7 @@ const translations = {
     liveNamePh:'Name (e.g. iptv365)', liveUrlPh:'m3u/txt URL',
     add:'Add', adding:'Adding...', batchImport:'Batch Import',
     submitBatch:'Submit Batch',
-    refresh:'Refresh', running:'Running...', remove:'Remove', test:'Test',
+    refresh:'Refresh', aggregateNow:'Aggregate now', aggregateNowRunning:'Aggregating...', running:'Running...', remove:'Remove', test:'Test',
     loadingStatus:'Loading...',
     lastUpdate:'Last update: ', neverUpdated:'Never updated — click Refresh',
     failedLoadStatus:'Failed to load status',
@@ -811,8 +803,8 @@ const translations = {
     ntPromoReplace:'Promo Replacement (empty = delete)', ntExtraPatterns:'Extra Clean Patterns (one regex per line)',
     ntPrefixPh:'e.g. 【RioTV】', ntSuffixPh:'e.g.  · Curated',
     ntPromoReplacePh:'e.g. Premium', ntExtraPatternsPh:'e.g. sponsor[：:]\\\\S+',
-    cronInterval:'Aggregation Schedule',
-    speedTestToggle:'Site Speed Test', speedTestLabel:'Enable site speed test and unreachable filtering', speedTestDesc:'When disabled, all sites are kept without testing reachability',
+    cronInterval:'Source Aggregation Schedule',
+    speedTestToggle:'Media Site Speed Test', speedTestLabel:'Enable speed testing and remove unreachable media sites during aggregation', speedTestDesc:'This tests media-site API endpoints during aggregation. It is separate from search-quality grading and site-content probing.',
     edgeProxies:'Edge Function Proxies', edgeProxiesDesc:'Configure edge function URLs for proxy fallback (fetch retry + image CDN). Local Docker mode only.',
     refreshing:'Refreshing...', loading:'Loading...',
     cronEvery1h:'Every 1 hour', cronEvery3h:'Every 3 hours', cronEvery6h:'Every 6 hours',
@@ -823,13 +815,13 @@ const translations = {
     qualitySchedule:'Search Quality Grading',
     qualityEnabled:'Enable scheduled grading',
     qualityTimes:'Times', qualityTimesPh:'e.g. 04:30, 16:30', qualityRepeatDays:'Candidate pool refresh (days)', qualityFullRepeatDays:'Full grading interval (days)',
-    qualityRunCandidate:'Force candidate pool grading/refresh', qualityRunFull:'Force full grading', qualityRunNow:'Run now', qualityRefresh:'Refresh', qualityStatusLabel:'Status', qualityStatusMode:'mode',
+    qualityRunCandidate:'Retest candidate pool', qualityRunFull:'Full re-grade', qualityRunNow:'Run now', qualityRefresh:'Refresh grading status', qualityStatusLabel:'Status', qualityStatusMode:'mode',
     qualityScheduleDesc:'Grading runs asynchronously in the background and returns immediately, so the page and other requests are never blocked. Daily runs only re-test the candidate pool (excellent/good/usable); when the full-grading interval is reached or the candidate pool is empty, a full grading run happens automatically. On Cloudflare each run is split into small batches across cron ticks; on Node/Render a run completes in one background pass without blocking requests.',
     qualityGradeDesc:'Quality grades (probed in the background, no impact on client startup): excellent <=1000ms, good 1001-3000ms, usable 3001-6000ms, timeout >6000ms or no result, unusable for confirmed failures. Only excellent/good/usable are served to clients; timeout and unusable never enter the candidate pool. Normally set only two values: searchable-source limit and parser limit. The page shows actual counts, grade breakdown and recommended values.',
     qualityNoSnapshot:'No grading result yet. Run grading once to build the quality pool.',
     qualityStateIdle:'idle', qualityStateRunning:'running', qualityStateDone:'done', qualityStateError:'error',
     qualityLastRun:'Last run', qualityNextRun:'Next run', qualityLastFullRun:'Last full run', qualityNextFullRun:'Next full run', qualityNever:'never',
-    qualityGradesTitle:'Quality grades', qualityRecommended:'Recommended', qualityRecSearchable:'searchable limit', qualityRecParses:'parser limit', sqCumulative:'cumulative', qualityUseRecommended:'Use recommended', qualityRecommendedApplied:'Recommended values filled in; click Save in Search Quota.', qualityActualCounts:'Current actual counts', sqStatsUsablePool:'usable pool',
+    qualityGradesTitle:'Quality grades', qualityRecommended:'Recommended', qualityRecSearchable:'searchable limit', qualityRecParses:'parser limit', sqCumulative:'cumulative', qualityUseRecommended:'Fill recommended values', qualityRecommendedApplied:'Recommended values filled in; click Save in Search Quota.', qualityActualCounts:'Current actual counts', sqStatsUsablePool:'usable pool',
     qualityTimesHint:'Uses the timezone configured by QUALITY_TIMEZONE (default Asia/Shanghai, UTC+8). Comma-separated HH:MM, up to 12 per day. Candidate pool refresh means re-testing excellent/good/usable sources every N days; full grading interval means re-grading every searchable source every N days.',
     qualityRunningNote:'Grading is running in the background; you can keep using the page.',
     qualityStarted:'Grading started', qualityAlreadyRunning:'Grading already running', qualityModeCandidate:'candidate pool grading/refresh', qualityModeFull:'full grading', qualityCoverage:'coverage', qualityTestable:'testable', qualityProbed:'probed', qualityNotProbed:'not probed', qualityUntestable:'untestable', qualityRunCandidateStarted:'Candidate pool grading started (background)', qualityRunFullStarted:'Full grading started (background)',
@@ -845,16 +837,18 @@ const translations = {
     sqHttp:'http', sqMainJar:'main jar', sqIndepJar:'indep jar', sqLeanRemoved:'lean-removed',
     channelProbeTitle:'Channel Speed Probe (Node/Docker)',
     channelProbeEnable:'Enable scheduled channel speed test (every 12h)',
-    channelProbeTrigger:'Run Now',
+    channelProbeTrigger:'Probe now', channelProbeRefresh:'Refresh probe status',
     channelProbeIdle:'Idle', channelProbeRunning:'Running', channelProbeDone:'Completed', channelProbeError:'Error',
     channelProbeState:'State', channelProbeProgress:'Progress', channelProbeCoverage:'Coverage',
     channelProbeChannels:'Channels', channelProbeDuration:'Duration', channelProbeFinished:'Finished at',
     channelProbeStarted:'Probe started', channelProbeDisabledFirst:'Enable probe first', channelProbeAlreadyRunning:'Already running',
     channelProbeCfOnly:'Only Node/Docker supports channel probing',
-    liveToggleTitle:'Live Feature Toggle', liveToggleLabel:'Disable live aggregation (skip live merge, output empty lives)',
+    liveStrategyTitle:'Live Output Strategy', liveToggleTitle:'Live Feature Toggle', liveToggleLabel:'Disable live aggregation (skip live merge, output empty lives)',
+    liveStrategyDisabledHint:'Live aggregation is disabled. The options below are inactive until it is enabled again.',
     ignoreAggregatedLivesTitle:'Ignore Aggregated Lives', ignoreAggregatedLivesLabel:'Ignore live sources inside subscription configs (only use manually added live sources)',
+    liveMergeModeTitle:'Live merge mode', liveMergeSeparated:'Separated (group by source)', liveMergeMerged:'Merged (deduplicate channels)', liveMergeModeDesc:'Separated keeps every source as its own group; merged combines channels by name and removes duplicates.',
     smartBaseUrlTitle:'Smart Base URL', smartBaseUrlLabel:'Auto-detect client host for JAR/image URLs (LAN only, set DMZ=0 to allow public)',
-    siteProbeTitle:'Site Probe & Auto Clean', probeDepthLabel:'Probe depth:',
+    siteProbeTitle:'Site Content Probe & Auto Clean', probeDepthLabel:'Probe depth:',
     probeDeep:'Deep (validate content)', probeShallow:'Shallow (HTTP only)',
     autoCleanLabel:'Auto-blacklist after 5 consecutive failures (max 5/run)',
     siteProbeDesc:'Deep mode checks type0/type1 content validity. Failed sites get [⚠] marker after 3 failures.',
@@ -882,7 +876,7 @@ const translations = {
     liveNamePh:'名称（如 iptv365）', liveUrlPh:'m3u/txt 地址',
     add:'添加', adding:'添加中...', batchImport:'批量导入',
     submitBatch:'提交批量',
-    refresh:'刷新', running:'运行中...', remove:'删除', test:'测试',
+    refresh:'刷新', aggregateNow:'立即聚合', aggregateNowRunning:'聚合中...', running:'运行中...', remove:'删除', test:'测试',
     loadingStatus:'加载中...',
     lastUpdate:'上次更新: ', neverUpdated:'从未更新 — 点击刷新',
     failedLoadStatus:'获取状态失败',
@@ -908,8 +902,8 @@ const translations = {
     ntPromoReplace:'推广替换文字（留空则删除）', ntExtraPatterns:'额外清洗正则（每行一条）',
     ntPrefixPh:'如 【RioTV】', ntSuffixPh:'如  · 精选',
     ntPromoReplacePh:'如 精选推荐', ntExtraPatternsPh:'如 sponsor[：:]\\\\S+',
-    cronInterval:'聚合频率',
-    speedTestToggle:'站点测速', speedTestLabel:'启用站点测速与不可达剔除', speedTestDesc:'关闭后保留所有站点，不进行可达性检测',
+    cronInterval:'源聚合计划',
+    speedTestToggle:'影视站点测速', speedTestLabel:'聚合时测速并剔除不可达的影视站点', speedTestDesc:'这里测试的是影视站点 API；与下方的搜索源质量分级、站点内容验活不是同一项任务。',
     edgeProxies:'边缘函数代理', edgeProxiesDesc:'配置边缘函数 URL，用于本地 Docker 模式的请求代理回退和图片 CDN 加速',
     refreshing:'刷新中...', loading:'加载中...',
     cronEvery1h:'每 1 小时', cronEvery3h:'每 3 小时', cronEvery6h:'每 6 小时',
@@ -920,13 +914,13 @@ const translations = {
     qualitySchedule:'搜索源质量分级',
     qualityEnabled:'启用定时分级',
     qualityTimes:'执行时间', qualityTimesPh:'例如 04:30, 16:30', qualityRepeatDays:'候选池重排周期（天）', qualityFullRepeatDays:'全量分级周期（天）',
-    qualityRunCandidate:'强制候选池分级/重排', qualityRunFull:'强制全量分级', qualityRunNow:'立即执行', qualityRefresh:'刷新', qualityStatusLabel:'状态', qualityStatusMode:'模式',
+    qualityRunCandidate:'重测候选池', qualityRunFull:'全量重测', qualityRunNow:'立即执行', qualityRefresh:'刷新分级状态', qualityStatusLabel:'状态', qualityStatusMode:'模式',
     qualityScheduleDesc:'分级在后台异步执行，点击后立即返回，不会阻塞网页或其他请求。日常只重测候选池（优/良/可用）；到达全量周期或候选池为空时自动全量分级。Cloudflare 每次只跑一个分片，由后续 cron 续跑；Node/Render 一次跑完但不阻塞请求。',
     qualityGradeDesc:'质量分级（后台测速，不影响应用端启动速度）：优 ≤1000ms；良 1001-3000ms；可用 3001-6000ms；超时 >6000ms 或无结果；不可用为明确失败。只有优/良/可用会下发给应用端，超时和不可用不进入候选池。日常只需填写两个值：可搜索源上限和解析器上限；页面会显示实际数量、分级统计和推荐值。',
     qualityNoSnapshot:'尚无分级结果，先执行一次分级以建立质量池。',
     qualityStateIdle:'空闲', qualityStateRunning:'运行中', qualityStateDone:'已完成', qualityStateError:'错误',
     qualityLastRun:'上次执行', qualityNextRun:'下次执行', qualityLastFullRun:'上次全量', qualityNextFullRun:'下次全量', qualityNever:'从未',
-    qualityGradesTitle:'质量分级', qualityRecommended:'推荐值', qualityRecSearchable:'可搜索源上限', qualityRecParses:'解析器上限', sqCumulative:'累计', qualityUseRecommended:'使用推荐值', qualityRecommendedApplied:'已填入推荐值，请点击搜索配额中的保存。', qualityActualCounts:'当前实际数量', sqStatsUsablePool:'可用池',
+    qualityGradesTitle:'质量分级', qualityRecommended:'推荐值', qualityRecSearchable:'可搜索源上限', qualityRecParses:'解析器上限', sqCumulative:'累计', qualityUseRecommended:'填入推荐值', qualityRecommendedApplied:'已填入推荐值，请点击搜索配额中的保存。', qualityActualCounts:'当前实际数量', sqStatsUsablePool:'可用池',
     qualityTimesHint:'按 QUALITY_TIMEZONE 配置的时区执行（默认 Asia/Shanghai，北京时间 UTC+8）。用英文逗号分隔的 HH:MM 时间点，每天最多 12 个。候选池重排周期表示每隔 N 天重测一次优/良/可用候选源；全量分级周期表示每隔 N 天对所有可搜索源做一次完整分级。',
     qualityRunningNote:'分级正在后台运行，可继续使用本页面。',
     qualityStarted:'分级已开始', qualityAlreadyRunning:'分级已在运行', qualityModeCandidate:'候选池分级/重排', qualityModeFull:'全量分级', qualityCoverage:'覆盖率', qualityTestable:'可测试', qualityProbed:'已探测', qualityNotProbed:'未探测', qualityUntestable:'不可测试', qualityRunCandidateStarted:'候选池分级已开始（后台运行）', qualityRunFullStarted:'全量分级已开始（后台运行）',
@@ -942,16 +936,18 @@ const translations = {
     sqHttp:'HTTP', sqMainJar:'主 JAR', sqIndepJar:'独立 JAR', sqLeanRemoved:'轻量剔除',
     channelProbeTitle:'频道级测速（仅 Node/Docker）',
     channelProbeEnable:'启用定时频道测速（每 12 小时）',
-    channelProbeTrigger:'立即执行',
+    channelProbeTrigger:'立即测速', channelProbeRefresh:'刷新测速状态',
     channelProbeIdle:'空闲', channelProbeRunning:'运行中', channelProbeDone:'已完成', channelProbeError:'失败',
     channelProbeState:'状态', channelProbeProgress:'进度', channelProbeCoverage:'覆盖率',
     channelProbeChannels:'频道数', channelProbeDuration:'耗时', channelProbeFinished:'完成时间',
     channelProbeStarted:'测速已启动', channelProbeDisabledFirst:'请先启用测速', channelProbeAlreadyRunning:'已在运行',
     channelProbeCfOnly:'仅 Node/Docker 支持频道级测速',
-    liveToggleTitle:'直播功能', liveToggleLabel:'禁用直播聚合（跳过直播合并，输出空 lives）',
+    liveStrategyTitle:'直播输出策略', liveToggleTitle:'直播功能', liveToggleLabel:'禁用直播聚合（跳过直播合并，输出空 lives）',
+    liveStrategyDisabledHint:'直播聚合已禁用；重新启用前，下面的忽略直播源和合并模式选项不会生效。',
     ignoreAggregatedLivesTitle:'忽略配置中的直播源', ignoreAggregatedLivesLabel:'忽略第三方订阅配置自带的直播源（仅保留手动添加的直播源）',
+    liveMergeModeTitle:'直播合并模式', liveMergeSeparated:'分离模式（按源分类）', liveMergeMerged:'合并模式（去重混合）', liveMergeModeDesc:'分离模式：每个直播源独立展示，用源名前缀区分。合并模式：所有源的频道按名称去重合并为统一列表。',
     smartBaseUrlTitle:'智能地址响应', smartBaseUrlLabel:'根据客户端访问地址自动生成资源链接（仅局域网，设置 DMZ=0 允许公网）',
-    siteProbeTitle:'站点验活与自动清理', probeDepthLabel:'验活深度：',
+    siteProbeTitle:'站点内容验活与自动清理', probeDepthLabel:'验活深度：',
     probeDeep:'深度（验证内容有效性）', probeShallow:'浅层（仅 HTTP 可达）',
     autoCleanLabel:'连续失败 5 次自动屏蔽（每次最多 5 个）',
     siteProbeDesc:'深度模式会检查 type0/type1 站点是否返回有效内容。连续失败 3 次的站点会被标记 [⚠]。',
@@ -969,6 +965,7 @@ function doToggleLang() {
   localStorage.setItem('lang', next);
   applyLang(translations, next);
   loadAll();
+  updateLiveStrategyState();
 }
 
 // --- Auth ---
@@ -2369,7 +2366,7 @@ async function togglePin(key) {
 // --- Refresh ---
 async function triggerRefresh() {
   const btn = $('refreshBtn');
-  btn.textContent = t('running');
+  btn.textContent = t('aggregateNowRunning');
   btn.className = 'btn btn-sm loading';
 
   try {
@@ -2386,7 +2383,7 @@ async function triggerRefresh() {
   }
 
   setTimeout(() => {
-    btn.textContent = t('refresh');
+    btn.textContent = t('aggregateNow');
     btn.className = 'btn btn-sm';
   }, 3000);
 }
@@ -2847,13 +2844,33 @@ async function loadLiveDisabled() {
     const r = await auth.authFetch('/admin/live-disabled');
     const d = await r.json();
     $('liveDisabledCheck').checked = d.disabled;
+    updateLiveStrategyState();
   } catch {}
+}
+function updateLiveStrategyState() {
+  const disabled = !!$('liveDisabledCheck')?.checked;
+  const options = $('liveStrategyOptions');
+  if (options) {
+    options.querySelectorAll('input, button').forEach((el) => { el.disabled = disabled; });
+  }
+  const hint = $('liveStrategyHint');
+  if (hint) hint.textContent = disabled ? t('liveStrategyDisabledHint') : '';
 }
 async function saveLiveDisabled() {
   const disabled = $('liveDisabledCheck').checked;
-  await auth.authFetch('/admin/live-disabled', { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({disabled}) });
-  $('liveDisabledStatus').textContent = '✓';
-  setTimeout(() => $('liveDisabledStatus').textContent = '', 2000);
+  const status = $('liveDisabledStatus');
+  try {
+    const res = await auth.authFetch('/admin/live-disabled', { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({disabled}) });
+    if (!res.ok) throw new Error('save failed');
+    updateLiveStrategyState();
+    status.textContent = '✓';
+    setTimeout(() => status.textContent = '', 2000);
+  } catch {
+    await loadLiveDisabled();
+    status.textContent = t('saveFailed');
+    status.className = 'status-text error';
+    setTimeout(() => { status.textContent = ''; status.className = 'status-text'; }, 3000);
+  }
 }
 
 // ─── 忽略第三方直播源 ───────
@@ -2879,6 +2896,7 @@ async function loadLiveMergeMode() {
     const mode = d.mode || 'separated';
     $('liveMergeSeparated').classList.toggle('active', mode === 'separated');
     $('liveMergeMerged').classList.toggle('active', mode === 'merged');
+    updateLiveStrategyState();
   } catch {}
 }
 async function setLiveMergeMode(mode) {
