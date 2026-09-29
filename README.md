@@ -267,6 +267,7 @@ KV 超时或不可用不会阻塞 Render 服务。
 | `SPEED_TIMEOUT_MS` | 源延迟阈值 | `5000` |
 | `FETCH_TIMEOUT_MS` | fetch 配置超时 | `5000` |
 | `SPEED_TEST_CONCURRENCY` | 站点测速并发数 | `18` |
+| `QUALITY_TIMEZONE` | 搜索源质量分级调度时区（IANA 名称） | `Asia/Shanghai` |
 | `SPEED_TEST_BUDGET_MS` | 单批站点测速预算 | `140000` |
 | `AGGREGATION_TIMEOUT_MS` | 聚合等待上限；超时后后台继续且不重复启动 | `420000` |
 | `STARTUP_AGGREGATION_ENABLED` | Render/Node 启动时是否自动聚合 | `true` |

@@ -28,6 +28,17 @@ import {
 
 export const QUALITY_TIMEZONE = 'Asia/Shanghai';
 
+export function normalizeQualityTimezone(value?: string): string {
+  const raw = (value || '').trim();
+  if (!raw) return QUALITY_TIMEZONE;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: raw }).format(new Date());
+    return raw;
+  } catch {
+    return QUALITY_TIMEZONE;
+  }
+}
+
 export const QUALITY_THRESHOLDS = {
   excellent: 1000,
   good: 3000,
@@ -43,20 +54,20 @@ function isNodeRuntime(): boolean {
   return typeof process !== 'undefined' && !!process.env.PORT;
 }
 
-export function defaultQualityConfig(now = new Date()): SearchQualitySchedule {
+export function defaultQualityConfig(now = new Date(), timezone = QUALITY_TIMEZONE): SearchQualitySchedule {
   const config: SearchQualitySchedule = {
     enabled: true,
     times: ['04:30'],
     repeatDays: 1,
     fullRepeatDays: DEFAULT_FULL_REPEAT_DAYS,
-    timezone: QUALITY_TIMEZONE,
+    timezone: normalizeQualityTimezone(timezone),
     lastRunAt: undefined,
     nextRunAt: undefined,
     lastFullRunAt: undefined,
     nextFullRunAt: undefined,
   };
-  config.nextRunAt = computeNextQualityRun(config, now);
-  config.nextFullRunAt = computeNextFullQualityRun(config, now);
+  config.nextRunAt = computeNextQualityRun(config, now, config.timezone);
+  config.nextFullRunAt = computeNextFullQualityRun(config, now, config.timezone);
   return config;
 }
 
@@ -115,11 +126,11 @@ function zonedLocalToUtcIso(year: number, month: number, day: number, hour: numb
 }
 
 /** 计算下一次候选池重排时间（基于固定时区，按天/每 N 天）。 */
-export function computeNextQualityRun(config: SearchQualitySchedule, now = new Date()): string | undefined {
+export function computeNextQualityRun(config: SearchQualitySchedule, now = new Date(), timezone = config.timezone || QUALITY_TIMEZONE): string | undefined {
   const times = (config.times || []).map((time: unknown) => normalizeTime(time)).filter((time): time is string => !!time).sort();
   if (!config.enabled || times.length === 0) return undefined;
 
-  const timezone = QUALITY_TIMEZONE;
+  timezone = normalizeQualityTimezone(timezone);
   const repeatDays = Math.max(1, Math.floor(config.repeatDays || 1));
   const local = zonedParts(now, timezone);
   const nowMinute = local.hour * 60 + local.minute;
@@ -146,10 +157,10 @@ export function computeNextQualityRun(config: SearchQualitySchedule, now = new D
 }
 
 /** 计算下一次全量分级时间；默认每 7 天一次。 */
-export function computeNextFullQualityRun(config: SearchQualitySchedule, now = new Date()): string | undefined {
+export function computeNextFullQualityRun(config: SearchQualitySchedule, now = new Date(), timezone = config.timezone || QUALITY_TIMEZONE): string | undefined {
   const times = (config.times || []).map((time: unknown) => normalizeTime(time)).filter((time): time is string => !!time).sort();
   if (!config.enabled || times.length === 0) return undefined;
-  const timezone = QUALITY_TIMEZONE;
+  timezone = normalizeQualityTimezone(timezone);
   const fullRepeatDays = Math.max(1, Math.floor(config.fullRepeatDays || DEFAULT_FULL_REPEAT_DAYS));
   const local = zonedParts(now, timezone);
   const nowMinute = local.hour * 60 + local.minute;
@@ -180,8 +191,9 @@ function normalizeScheduleTimes(value: unknown, fallback: string[]): string[] {
   return times.length > 0 ? times.slice(0, MAX_SCHEDULE_TIMES) : fallback;
 }
 
-export async function loadQualitySchedule(storage: Storage): Promise<SearchQualitySchedule> {
-  const fallback = defaultQualityConfig();
+export async function loadQualitySchedule(storage: Storage, timezone = QUALITY_TIMEZONE): Promise<SearchQualitySchedule> {
+  const effectiveTimezone = normalizeQualityTimezone(timezone);
+  const fallback = defaultQualityConfig(new Date(), effectiveTimezone);
   const raw = await storage.get(KV_SEARCH_QUALITY_SCHEDULE);
   if (!raw) return fallback;
   try {
@@ -191,36 +203,38 @@ export async function loadQualitySchedule(storage: Storage): Promise<SearchQuali
       times: normalizeScheduleTimes(parsed.times, fallback.times),
       repeatDays: Math.min(30, Math.max(1, Math.floor(parsed.repeatDays || 1))),
       fullRepeatDays: Math.min(365, Math.max(1, Math.floor(parsed.fullRepeatDays || DEFAULT_FULL_REPEAT_DAYS))),
-      timezone: QUALITY_TIMEZONE,
+      timezone: effectiveTimezone,
       lastRunAt: parseDate(parsed.lastRunAt)?.toISOString(),
       nextRunAt: parseDate(parsed.nextRunAt)?.toISOString(),
       lastFullRunAt: parseDate(parsed.lastFullRunAt)?.toISOString(),
       nextFullRunAt: parseDate(parsed.nextFullRunAt)?.toISOString(),
     };
-    const timezoneChanged = typeof parsed.timezone === 'string' && parsed.timezone.trim() !== '' && parsed.timezone.trim() !== QUALITY_TIMEZONE;
-    if (timezoneChanged || !config.nextRunAt) config.nextRunAt = computeNextQualityRun(config);
-    if (timezoneChanged || !config.nextFullRunAt) config.nextFullRunAt = computeNextFullQualityRun(config);
+    const timezoneChanged = typeof parsed.timezone !== 'string' || parsed.timezone.trim() !== effectiveTimezone;
+    if (timezoneChanged || !config.nextRunAt) config.nextRunAt = computeNextQualityRun(config, new Date(), effectiveTimezone);
+    if (timezoneChanged || !config.nextFullRunAt) config.nextFullRunAt = computeNextFullQualityRun(config, new Date(), effectiveTimezone);
+    if (timezoneChanged) await storage.put(KV_SEARCH_QUALITY_SCHEDULE, JSON.stringify(config));
     return config;
   } catch {
     return fallback;
   }
 }
 
-export async function saveQualitySchedule(storage: Storage, input: Partial<SearchQualitySchedule>): Promise<SearchQualitySchedule> {
-  const current = await loadQualitySchedule(storage);
+export async function saveQualitySchedule(storage: Storage, input: Partial<SearchQualitySchedule>, timezone = QUALITY_TIMEZONE): Promise<SearchQualitySchedule> {
+  const effectiveTimezone = normalizeQualityTimezone(timezone);
+  const current = await loadQualitySchedule(storage, effectiveTimezone);
   const config: SearchQualitySchedule = {
     enabled: input.enabled !== undefined ? input.enabled === true : current.enabled,
     times: normalizeScheduleTimes(input.times, current.times),
     repeatDays: Math.min(30, Math.max(1, Math.floor(input.repeatDays || current.repeatDays || 1))),
     fullRepeatDays: Math.min(365, Math.max(1, Math.floor(input.fullRepeatDays || current.fullRepeatDays || DEFAULT_FULL_REPEAT_DAYS))),
-    timezone: QUALITY_TIMEZONE,
+    timezone: effectiveTimezone,
     lastRunAt: current.lastRunAt,
     nextRunAt: undefined,
     lastFullRunAt: current.lastFullRunAt,
     nextFullRunAt: undefined,
   };
-  config.nextRunAt = computeNextQualityRun(config);
-  config.nextFullRunAt = computeNextFullQualityRun(config);
+  config.nextRunAt = computeNextQualityRun(config, new Date(), effectiveTimezone);
+  config.nextFullRunAt = computeNextFullQualityRun(config, new Date(), effectiveTimezone);
   await storage.put(KV_SEARCH_QUALITY_SCHEDULE, JSON.stringify(config));
   return config;
 }
@@ -247,16 +261,16 @@ export async function updateQualityStatus(
   return next;
 }
 
-export async function shouldRunQualityNow(storage: Storage, now = new Date()): Promise<boolean> {
-  const schedule = await loadQualitySchedule(storage);
+export async function shouldRunQualityNow(storage: Storage, now = new Date(), timezone = QUALITY_TIMEZONE): Promise<boolean> {
+  const schedule = await loadQualitySchedule(storage, timezone);
   if (!schedule.enabled || !schedule.nextRunAt) return false;
   const next = new Date(schedule.nextRunAt).getTime();
   if (!Number.isFinite(next)) return false;
   return next <= now.getTime();
 }
 
-export async function shouldRunFullQualityNow(storage: Storage, now = new Date()): Promise<boolean> {
-  const schedule = await loadQualitySchedule(storage);
+export async function shouldRunFullQualityNow(storage: Storage, now = new Date(), timezone = QUALITY_TIMEZONE): Promise<boolean> {
+  const schedule = await loadQualitySchedule(storage, timezone);
   if (!schedule.enabled || !schedule.nextFullRunAt) return false;
   const next = new Date(schedule.nextFullRunAt).getTime();
   if (!Number.isFinite(next)) return false;
@@ -267,13 +281,15 @@ export async function markQualityRun(
   storage: Storage,
   at = new Date(),
   mode: SearchQualityRunMode = 'candidate',
+  timezone = QUALITY_TIMEZONE,
 ): Promise<SearchQualitySchedule> {
-  const schedule = await loadQualitySchedule(storage);
+  const effectiveTimezone = normalizeQualityTimezone(timezone);
+  const schedule = await loadQualitySchedule(storage, effectiveTimezone);
   schedule.lastRunAt = at.toISOString();
-  schedule.nextRunAt = computeNextQualityRun(schedule, at);
+  schedule.nextRunAt = computeNextQualityRun(schedule, at, effectiveTimezone);
   if (mode === 'full') {
     schedule.lastFullRunAt = at.toISOString();
-    schedule.nextFullRunAt = computeNextFullQualityRun(schedule, at);
+    schedule.nextFullRunAt = computeNextFullQualityRun(schedule, at, effectiveTimezone);
   }
   await storage.put(KV_SEARCH_QUALITY_SCHEDULE, JSON.stringify(schedule));
   return schedule;
@@ -483,6 +499,7 @@ export async function runQualityGrading(
     probeMap?: Map<string, SiteProbeResult>;
     healthMap?: SiteHealthMap;
     markRun?: boolean;
+    timezone?: string;
     onProgress?: (processed: number, total: number) => Promise<void> | void;
   } = {},
 ): Promise<SearchQualitySnapshot> {
@@ -521,7 +538,7 @@ export async function runQualityGrading(
   const snapshot = buildSnapshot(allSearchable.length, entries, allSearchable);
   await persistQualitySnapshot(storage, snapshot);
   await persistQualityCandidates(storage, allSearchable);
-  if (options.markRun !== false) await markQualityRun(storage, new Date(), mode);
+  if (options.markRun !== false) await markQualityRun(storage, new Date(), mode, options.timezone);
   return snapshot;
 }
 
@@ -653,6 +670,7 @@ export async function finishQualityRun(
   total: number,
   markRun = true,
   mode: SearchQualityRunMode = 'candidate',
+  timezone = QUALITY_TIMEZONE,
 ): Promise<SearchQualityStatus> {
   const status = await updateQualityStatus(storage, {
     state: 'done',
@@ -663,7 +681,7 @@ export async function finishQualityRun(
     cursor: total,
     error: undefined,
   });
-  if (markRun) await markQualityRun(storage, new Date(), mode);
+  if (markRun) await markQualityRun(storage, new Date(), mode, timezone);
   return status;
 }
 
@@ -673,6 +691,7 @@ export async function runQualityGradingChunk(
   cursor = 0,
   batchSize = 40,
   requestedMode: SearchQualityRunMode = 'candidate',
+  timezone = QUALITY_TIMEZONE,
 ): Promise<{ done: boolean; cursor: number; processed: number; targetTotal: number; mode: SearchQualityRunMode; snapshot?: SearchQualitySnapshot }> {
   const allSearchable = collectSearchableSites(sites);
   const previous = await loadQualityPool(storage);
@@ -689,7 +708,7 @@ export async function runQualityGradingChunk(
     const snapshot = buildSnapshot(allSearchable.length, entries, allSearchable);
     await persistQualitySnapshot(storage, snapshot);
     await persistQualityCandidates(storage, allSearchable);
-    await markQualityRun(storage, new Date(), mode);
+    await markQualityRun(storage, new Date(), mode, timezone);
     return { done: true, cursor: target.length, processed: 0, targetTotal: target.length, mode, snapshot };
   }
 
@@ -701,7 +720,7 @@ export async function runQualityGradingChunk(
   await persistQualitySnapshot(storage, snapshot);
   await persistQualityCandidates(storage, allSearchable);
   const done = start + batch.length >= target.length;
-  if (done) await markQualityRun(storage, new Date(), mode);
+  if (done) await markQualityRun(storage, new Date(), mode, timezone);
   return { done, cursor: start + batch.length, processed: batch.length, targetTotal: target.length, mode, snapshot };
 }
 

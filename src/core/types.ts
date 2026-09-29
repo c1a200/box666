@@ -192,6 +192,7 @@ export interface AppConfig {
   speedTestConcurrency?: number;
   speedTestBudgetMs?: number;
   cronSchedule?: string;
+  qualityTimezone?: string; // 质量分级调度时区（IANA 名称，默认 Asia/Shanghai）
   workerBaseUrl?: string;  // CF 版设置，如 "https://tvbox.example.com"；本地不设置
   localBaseUrl?: string;   // Node.js 版设置，如 "http://192.168.1.100:5678"；用于 JAR 代理
   dockerMissingBaseUrl?: boolean;  // Docker 环境未配置 BASE_URL 时为 true

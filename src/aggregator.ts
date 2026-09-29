@@ -382,6 +382,7 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
         probeMap: siteProbeMap,
         healthMap,
         markRun: false,
+        timezone: config.qualityTimezone,
       });
       logger.infoFields('aggregation', 'quality-grading', {
         total: snapshot.total,

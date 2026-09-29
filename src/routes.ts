@@ -1141,7 +1141,7 @@ export function createApp(deps: AppDeps): Hono {
   // ─── 搜索源质量分级调度 API ─────────────────────────────
   app.get('/admin/quality-schedule', async (c) => {
     if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
-    const schedule = await loadQualitySchedule(storage);
+    const schedule = await loadQualitySchedule(storage, config.qualityTimezone);
     return c.json(schedule);
   });
 
@@ -1154,8 +1154,7 @@ export function createApp(deps: AppDeps): Hono {
       times: Array.isArray(body.times) ? (body.times as string[]) : undefined,
       repeatDays: typeof body.repeatDays === 'number' ? body.repeatDays : undefined,
       fullRepeatDays: typeof body.fullRepeatDays === 'number' ? body.fullRepeatDays : undefined,
-      timezone: typeof body.timezone === 'string' ? body.timezone : undefined,
-    });
+    }, config.qualityTimezone);
     return c.json({ success: true, ...schedule });
   });
 
@@ -1164,7 +1163,7 @@ export function createApp(deps: AppDeps): Hono {
     if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
     const [snapshot, schedule, status, quota, searchQuotaRaw, parseHealthRaw] = await Promise.all([
       loadQualitySnapshot(storage),
-      loadQualitySchedule(storage),
+      loadQualitySchedule(storage, config.qualityTimezone),
       loadQualityStatus(storage),
       loadSearchQuota(storage),
       storage.get(KV_SEARCH_QUOTA_REPORT),
@@ -1226,7 +1225,7 @@ export function createApp(deps: AppDeps): Hono {
     if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
     const [snapshot, schedule, status] = await Promise.all([
       loadQualitySnapshot(storage),
-      loadQualitySchedule(storage),
+      loadQualitySchedule(storage, config.qualityTimezone),
       loadQualityStatus(storage),
     ]);
     return c.json({ snapshot, schedule, status });

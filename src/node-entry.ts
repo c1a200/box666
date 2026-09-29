@@ -140,6 +140,7 @@ async function buildConfig(port: number): Promise<AppConfig> {
     speedTestConcurrency: parseInt(process.env.SPEED_TEST_CONCURRENCY || '') || DEFAULT_SPEED_TEST_CONCURRENCY,
     speedTestBudgetMs: parseInt(process.env.SPEED_TEST_BUDGET_MS || '') || DEFAULT_SPEED_TEST_BUDGET_MS,
     cronSchedule: process.env.CRON_SCHEDULE || '0 5 * * *',
+    qualityTimezone: process.env.QUALITY_TIMEZONE || 'Asia/Shanghai',
     localBaseUrl: baseUrl.replace(/\/$/, ''),
     bilibiliQrProxyBaseUrl: process.env.BILIBILI_QR_PROXY_BASE_URL,
     bilibiliQrProxyToken: process.env.BILIBILI_QR_PROXY_TOKEN,
@@ -232,7 +233,7 @@ async function main() {
     }
     qualityRunning = true;
     try {
-      const fullDue = await shouldRunFullQualityNow(storage);
+      const fullDue = await shouldRunFullQualityNow(storage, new Date(), config.qualityTimezone);
       const mode: SearchQualityRunMode = requestedMode || (fullDue ? 'full' : 'candidate');
       const storedSites = await loadQualityCandidates(storage);
       const allSites = collectSearchableSites(storedSites);
@@ -240,7 +241,7 @@ async function main() {
         console.log('[quality] No candidate sites; run aggregation first');
         // 不推进计划：候选站点要等一次聚合才会写入，提前推进会让本轮计划
         // 被“空跑”消耗掉，用户要再等一整天。保持到期状态，下个 tick 重试。
-        await finishQualityRun(storage, 0, 0, false, mode);
+        await finishQualityRun(storage, 0, 0, false, mode, config.qualityTimezone);
         return;
       }
       const pool = await loadQualityPool(storage);
@@ -250,11 +251,12 @@ async function main() {
       const snapshot = await runQualityGrading(storage, allSites, {
         mode,
         markRun: false,
+        timezone: config.qualityTimezone,
         onProgress: async (processed, total) => {
           await updateQualityStatus(storage, { cursor: processed, processed, total, state: 'running', mode });
         },
       });
-      await finishQualityRun(storage, targetTotal, targetTotal, true, mode);
+      await finishQualityRun(storage, targetTotal, targetTotal, true, mode, config.qualityTimezone);
       console.log('[quality] Completed (' + mode + '): ' + targetTotal + ' targets, ' + snapshot.graded + '/' + snapshot.total + ' graded');
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
@@ -312,8 +314,8 @@ async function main() {
   // 候选池重排与全量分级分别按各自周期判断，互不阻塞 HTTP 请求。
   cron.schedule('* * * * *', async () => {
     try {
-      const candidateDue = await shouldRunQualityNow(storage);
-      const fullDue = await shouldRunFullQualityNow(storage);
+      const candidateDue = await shouldRunQualityNow(storage, new Date(), config.qualityTimezone);
+      const fullDue = await shouldRunFullQualityNow(storage, new Date(), config.qualityTimezone);
       if (!candidateDue && !fullDue) return;
       console.log('[quality-cron] Triggered (' + (fullDue ? 'full' : 'candidate') + ') at ' + new Date().toISOString());
       void runQualityWithGuard(fullDue ? 'full' : 'candidate');

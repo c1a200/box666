@@ -28,6 +28,7 @@ interface CfEnv {
   SPEED_TEST_CONCURRENCY?: string;
   SPEED_TEST_BUDGET_MS?: string;
   WORKER_BASE_URL?: string;
+  QUALITY_TIMEZONE?: string;
   BILIBILI_QR_PROXY_BASE_URL?: string;
   BILIBILI_QR_PROXY_TOKEN?: string;
 }
@@ -42,6 +43,7 @@ function buildConfig(env: CfEnv): AppConfig {
     speedTestConcurrency: parseInt(env.SPEED_TEST_CONCURRENCY || '') || DEFAULT_SPEED_TEST_CONCURRENCY,
     speedTestBudgetMs: parseInt(env.SPEED_TEST_BUDGET_MS || '') || DEFAULT_SPEED_TEST_BUDGET_MS,
     workerBaseUrl: env.WORKER_BASE_URL || undefined,
+    qualityTimezone: env.QUALITY_TIMEZONE || 'Asia/Shanghai',
     bilibiliQrProxyBaseUrl: env.BILIBILI_QR_PROXY_BASE_URL || undefined,
     bilibiliQrProxyToken: env.BILIBILI_QR_PROXY_TOKEN || undefined,
   };
@@ -50,17 +52,17 @@ function buildConfig(env: CfEnv): AppConfig {
 const QUALITY_CHUNK_SIZE = 40;
 
 /** CF 单次执行一个分片；到期时自动开始新的一轮，running 时继续游标。 */
-async function runQualityChunkWithStatus(storage: KVStorage, requestedMode?: SearchQualityRunMode): Promise<void> {
+async function runQualityChunkWithStatus(storage: KVStorage, requestedMode?: SearchQualityRunMode, timezone = 'Asia/Shanghai'): Promise<void> {
   let status = await loadQualityStatus(storage);
-  const fullDue = await shouldRunFullQualityNow(storage);
-  const candidateDue = await shouldRunQualityNow(storage);
+  const fullDue = await shouldRunFullQualityNow(storage, new Date(), timezone);
+  const candidateDue = await shouldRunQualityNow(storage, new Date(), timezone);
   const storedSites = await loadQualityCandidates(storage);
   const sites = collectSearchableSites(storedSites);
   if (sites.length === 0) {
     console.log('[quality] No candidate sites; run aggregation first');
     // 不推进计划：候选站点要等一次聚合才会写入，提前推进会让本轮计划
     // 被“空跑”消耗掉，用户要再等一整天。保持到期状态，下个 tick 重试。
-    await finishQualityRun(storage, 0, 0, false);
+    await finishQualityRun(storage, 0, 0, false, 'candidate', timezone);
     return;
   }
   const resuming = status.state === 'running';
@@ -74,11 +76,11 @@ async function runQualityChunkWithStatus(storage: KVStorage, requestedMode?: Sea
     status = await beginQualityRun(storage, sites.length, QUALITY_CHUNK_SIZE, mode);
   }
   await updateQualityStatus(storage, { state: 'running', mode, cursor, batchSize: QUALITY_CHUNK_SIZE });
-  const result = await runQualityGradingChunk(storage, sites, cursor, QUALITY_CHUNK_SIZE, mode);
+  const result = await runQualityGradingChunk(storage, sites, cursor, QUALITY_CHUNK_SIZE, mode, timezone);
   const targetTotal = result.targetTotal || sites.length;
   const processed = result.done ? targetTotal : Math.max(status.processed || 0, result.cursor);
   if (result.done) {
-    await finishQualityRun(storage, processed, targetTotal, false, result.mode);
+    await finishQualityRun(storage, processed, targetTotal, false, result.mode, timezone);
     console.log('[quality] Completed (' + result.mode + '): ' + processed + '/' + targetTotal);
   } else {
     await updateQualityStatus(storage, { state: 'running', mode: result.mode, cursor: result.cursor, processed, total: targetTotal, batchSize: QUALITY_CHUNK_SIZE });
@@ -94,7 +96,7 @@ export default {
       storage,
       config,
       triggerRefresh: () => runAggregation(storage, config),
-      triggerQuality: (mode) => runQualityChunkWithStatus(storage, mode),
+      triggerQuality: (mode) => runQualityChunkWithStatus(storage, mode, config.qualityTimezone),
     });
 
     return app.fetch(request, env, ctx);
@@ -128,8 +130,8 @@ export default {
     // 聚合未到期时：到期或未完成的质量分级每次只跑一个分片，
     // 剩余时间用于少量直播测速，避免超过 Worker 时长限制。
     const qualityStatus = await loadQualityStatus(storage);
-    const candidateDue = await shouldRunQualityNow(storage);
-    const fullDue = await shouldRunFullQualityNow(storage);
+    const candidateDue = await shouldRunQualityNow(storage, new Date(), config.qualityTimezone);
+    const fullDue = await shouldRunFullQualityNow(storage, new Date(), config.qualityTimezone);
     const qualityDue = candidateDue || fullDue;
     const qualityActive = qualityDue || qualityStatus.state === 'running';
 
@@ -137,7 +139,7 @@ export default {
       (async () => {
         if (qualityActive) {
           console.log('[scheduled] Running search quality chunk (due=' + qualityDue + ', state=' + qualityStatus.state + ')');
-          await runQualityChunkWithStatus(storage);
+          await runQualityChunkWithStatus(storage, undefined, config.qualityTimezone);
         }
         // 免费 Worker：非聚合周期只做一小批直播测速。
         await probeLiveUrlsBounded(storage, {
