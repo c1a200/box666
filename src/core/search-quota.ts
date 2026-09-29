@@ -1,6 +1,6 @@
 // 搜索配额控制（复用站点测速结果）
 
-import type { TVBoxParse, TVBoxSite, SearchQuotaConfig, SearchQuotaReport, SiteQualityGrades } from './types';
+import type { TVBoxParse, TVBoxSite, SearchQuotaConfig, SearchQuotaReport, SiteQualityGrade, SiteQualityGrades } from './types';
 import type { SiteProbeResult } from './speedtest';
 import type { Storage } from '../storage/interface';
 import { KV_SEARCH_QUOTA } from './config';
@@ -186,36 +186,32 @@ function createEmptyQualityGrades(): SiteQualityGrades {
 
 /**
  * 基于本次验活结果、连续失败次数和测速延迟，对“未截断的可搜索候选池”分级。
- * 不额外发请求；不可用源不进入池，仅用于后台提示。
+ * 不额外发请求；不可用源不进入 poolTotal，但会保留在 unusable 统计中。
  */
+function getSiteQualityGrade(
+  site: TVBoxSite,
+  probeMap?: Map<string, SiteProbeResult>,
+): SiteQualityGrade {
+  const probe = probeMap?.get(site.key);
+  if (!probe || probe.result === 'not_probed') return 'unknown';
+  if (probe.result !== 'ok') return 'unusable';
+  const failures = probe.consecutiveFailures ?? 0;
+  const speed = probe.speedMs;
+  if (failures >= 3 || speed == null) return 'usable';
+  if (speed <= QUALITY_EXCELLENT_MS) return 'excellent';
+  if (speed <= QUALITY_GOOD_MS) return 'good';
+  return 'usable';
+}
+
 function buildQualityGrades(
   candidateSites: TVBoxSite[],
   probeMap?: Map<string, SiteProbeResult>,
 ): SiteQualityGrades {
   const grades = createEmptyQualityGrades();
   for (const site of candidateSites) {
-    const probe = probeMap?.get(site.key);
-    if (!probe || probe.result === 'not_probed') {
-      grades.unknown.count++;
-      grades.poolTotal++;
-      continue;
-    }
-    if (probe.result !== 'ok') {
-      grades.unusable.count++;
-      continue;
-    }
-    const failures = probe.consecutiveFailures ?? 0;
-    const speed = probe.speedMs;
-    if (failures >= 3 || speed == null) {
-      grades.usable.count++;
-    } else if (speed <= QUALITY_EXCELLENT_MS) {
-      grades.excellent.count++;
-    } else if (speed <= QUALITY_GOOD_MS) {
-      grades.good.count++;
-    } else {
-      grades.usable.count++;
-    }
-    grades.poolTotal++;
+    const grade = getSiteQualityGrade(site, probeMap);
+    grades[grade].count++;
+    if (grade !== 'unusable') grades.poolTotal++;
   }
 
   let cumulative = 0;
@@ -268,20 +264,42 @@ export function applySearchQuota(
   const pinnedSearchable = pinned.filter(site => site.searchable === 1);
   let candidates = sites.filter(site => site.searchable === 1 && !pinnedKeySet.has(site.key));
 
-  // 复用已有测速结果排序；没有测速数据的源排在最后，并保持原有相对顺序。
+  // 质量分级始终优先参与保留决策；sortBySpeed 只控制同质量级别内是否按速度排序。
+  // 这样即使关闭速度排序，快但连续失败/响应无效的源也不会挤掉稍慢但稳定可用的好源。
+  const qualityRank: Record<SiteQualityGrade, number> = {
+    excellent: 0,
+    good: 1,
+    usable: 2,
+    unknown: 3,
+    unusable: 4,
+  };
+  const hasProbe = !!options.probeMap && options.probeMap.size > 0;
+  const hasSpeed = !!speedMap && speedMap.size > 0;
+  const compareSpeed = (a: TVBoxSite, b: TVBoxSite): number => {
+    if (!config.sortBySpeed || !speedMap) return 0;
+    const aSpeed = speedMap.get(a.key);
+    const bSpeed = speedMap.get(b.key);
+    const aValid = typeof aSpeed === 'number' && Number.isFinite(aSpeed);
+    const bValid = typeof bSpeed === 'number' && Number.isFinite(bSpeed);
+    if (aValid && bValid) return (aSpeed as number) - (bSpeed as number);
+    if (aValid) return -1;
+    if (bValid) return 1;
+    return 0;
+  };
+
   let speedSorted = false;
-  if (config.sortBySpeed && speedMap && speedMap.size > 0) {
+  if (hasProbe) {
     candidates = [...candidates].sort((a, b) => {
-      const aSpeed = speedMap.get(a.key);
-      const bSpeed = speedMap.get(b.key);
-      const aValid = typeof aSpeed === 'number' && Number.isFinite(aSpeed);
-      const bValid = typeof bSpeed === 'number' && Number.isFinite(bSpeed);
-      if (aValid && bValid) return (aSpeed as number) - (bSpeed as number);
-      if (aValid) return -1;
-      if (bValid) return 1;
-      return 0;
+      const gradeDiff = qualityRank[getSiteQualityGrade(a, options.probeMap)]
+        - qualityRank[getSiteQualityGrade(b, options.probeMap)];
+      return gradeDiff !== 0 ? gradeDiff : compareSpeed(a, b);
     });
-    speedSorted = candidates.some(site => typeof speedMap.get(site.key) === 'number');
+    speedSorted = config.sortBySpeed && hasSpeed
+      && candidates.some(site => typeof speedMap!.get(site.key) === 'number');
+  } else if (config.sortBySpeed && hasSpeed) {
+    // 没有探测结果时保持旧行为：仍可仅按测速结果排序。
+    candidates = [...candidates].sort(compareSpeed);
+    speedSorted = candidates.some(site => typeof speedMap!.get(site.key) === 'number');
   }
 
   // 保存未受 maxSearchable / maxQuickSearch 截断影响的启动候选池。
@@ -324,9 +342,10 @@ export function applySearchQuota(
   );
 
   // 先完成排序，再按最终顺序一次性应用所有配额，避免旧数组对象把已截断的
-  // quickSearch 状态重新带回来。
+  // quickSearch 状态重新带回来。只要本次探测产生了质量数据，就始终按质量顺序
+  // 输出；sortBySpeed 只决定同一质量等级内部是否再按速度排序。
   let orderedSites: TVBoxSite[];
-  if (config.sortBySpeed && speedSorted) {
+  if (hasProbe || (config.sortBySpeed && speedSorted)) {
     const ordered = [...pinned, ...keptCandidates];
     const orderedKeys = new Set(ordered.map(site => site.key));
     const rest = sites.filter(site => !orderedKeys.has(site.key));
@@ -362,7 +381,10 @@ export function applySearchQuota(
   // 来源标识：只给最终仍可搜索的源加标识。
   sites = sites.map(site => withSourceLabel(site, siteSourceMap));
   const labeledCandidates = startupCandidateSites.map(site => withSourceLabel(site, siteSourceMap));
-  const qualityGrades = buildQualityGrades(startupCandidateSites, options.probeMap);
+  // 质量统计覆盖完整的未截断可搜索候选池（置顶源 + 普通候选源），
+  // 不再只统计根地址启动池，便于前端按实际质量区间配置 maxSearchable。
+  const allSearchableCandidates = [...pinnedSearchable, ...candidates];
+  const qualityGrades = buildQualityGrades(allSearchableCandidates, options.probeMap);
 
   const searchable = sites.filter(site => site.searchable === 1).length;
   const quickSearchable = sites.filter(site => site.searchable === 1 && site.quickSearch !== 0).length;
