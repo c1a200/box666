@@ -338,8 +338,27 @@ export async function prepareQuarkCookie(cookie: string, timeoutMs = 2400): Prom
 
 // ─── 凭证 CRUD ──────────────────────────────────────────
 
-export async function loadCredentials(storage: Storage): Promise<Map<CloudPlatform, CloudCredential>> {
-  const map = new Map<CloudPlatform, CloudCredential>();
+/**
+ * Credential responses are fetched once per Pan.init-capable source. The same
+ * deployment can receive several identical requests while a client starts up.
+ * Keep a short in-process cache of the decrypted map and coalesce concurrent
+ * reads so KV + AES-GCM work is not repeated for every source.
+ *
+ * Save/delete operations invalidate the cache immediately, and the short TTL
+ * bounds staleness in the unlikely case another process writes the same KV.
+ */
+const CREDENTIAL_CACHE_TTL_MS = 30_000;
+type CredentialMap = Map<CloudPlatform, CloudCredential>;
+const credentialCache = new WeakMap<Storage, { value: CredentialMap; expiresAt: number }>();
+const credentialLoads = new WeakMap<Storage, Promise<CredentialMap>>();
+
+function invalidateCredentialCache(storage: Storage): void {
+  credentialCache.delete(storage);
+  credentialLoads.delete(storage);
+}
+
+async function loadCredentialsUncached(storage: Storage): Promise<CredentialMap> {
+  const map: CredentialMap = new Map();
   const raw = await storage.get(KV_CLOUD_CREDENTIALS);
   if (!raw) return map;
 
@@ -356,6 +375,27 @@ export async function loadCredentials(storage: Storage): Promise<Map<CloudPlatfo
   }
 
   return map;
+}
+
+export async function loadCredentials(storage: Storage): Promise<CredentialMap> {
+  const now = Date.now();
+  const cached = credentialCache.get(storage);
+  if (cached && cached.expiresAt > now) return cached.value;
+
+  const inFlight = credentialLoads.get(storage);
+  if (inFlight) return inFlight;
+
+  const promise = loadCredentialsUncached(storage)
+    .then((value) => {
+      credentialCache.set(storage, { value, expiresAt: Date.now() + CREDENTIAL_CACHE_TTL_MS });
+      return value;
+    })
+    .finally(() => {
+      if (credentialLoads.get(storage) === promise) credentialLoads.delete(storage);
+    });
+
+  credentialLoads.set(storage, promise);
+  return promise;
 }
 
 export async function saveCredential(storage: Storage, credential: CloudCredential): Promise<void> {
@@ -377,27 +417,31 @@ export async function saveCredential(storage: Storage, credential: CloudCredenti
   const sanitized = sanitizeCloudCredential(nextCredential);
   if (!sanitized) throw new Error('credential must contain at least one non-empty string');
   const existing = await loadCredentials(storage);
-  existing.set(sanitized.platform, sanitized);
+  invalidateCredentialCache(storage);
+  const nextCredentials = new Map(existing);
+  nextCredentials.set(sanitized.platform, sanitized);
 
   const key = await getOrCreateEncryptionKey(storage);
-  const json = JSON.stringify([...existing.values()]);
+  const json = JSON.stringify([...nextCredentials.values()]);
   const encrypted = await encrypt(key, json);
   await storage.put(KV_CLOUD_CREDENTIALS, encrypted);
 }
 
 export async function deleteCredential(storage: Storage, platform: CloudPlatform): Promise<void> {
   const existing = await loadCredentials(storage);
+  invalidateCredentialCache(storage);
   if (!existing.has(platform)) return;
 
-  existing.delete(platform);
+  const nextCredentials = new Map(existing);
+  nextCredentials.delete(platform);
   const key = await getOrCreateEncryptionKey(storage);
 
-  if (existing.size === 0) {
+  if (nextCredentials.size === 0) {
     await storage.put(KV_CLOUD_CREDENTIALS, '');
     return;
   }
 
-  const json = JSON.stringify([...existing.values()]);
+  const json = JSON.stringify([...nextCredentials.values()]);
   const encrypted = await encrypt(key, json);
   await storage.put(KV_CLOUD_CREDENTIALS, encrypted);
 }

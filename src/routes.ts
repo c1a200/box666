@@ -1816,11 +1816,13 @@ export function createApp(deps: AppDeps): Hono {
   });
 
   // Pan.init 初始化数据（Mogg/Wogg 的 ext.p123/quark/... 会直接请求这些 URL）
+  // Credential URLs are content-versioned (`?v=<credentialRevision>`). A short
+  // private cache lets a client reuse the same platform response across many
+  // sources without making the next startup re-fetch the same cookie. A changed
+  // credential produces a new URL, so stale entries cannot be selected.
   const credentialResponseHeaders = {
     'Access-Control-Allow-Origin': '*',
-    'Cache-Control': 'no-store, no-cache, must-revalidate',
-    'Pragma': 'no-cache',
-    'Expires': '0',
+    'Cache-Control': 'private, max-age=300, immutable',
   };
   const distributionEnabled = async (): Promise<boolean> => {
     const raw = await storage.get(KV_CREDENTIAL_DISTRIBUTION_ENABLED);
