@@ -19,6 +19,7 @@ import * as fs from 'fs';
 import * as dns from 'dns';
 import { createApp } from './routes';
 import { runAggregation } from './aggregator';
+import { collectJarEntriesForSites, prefetchJarBinaries } from './core/jar-proxy';
 import { runChannelProbe, isProbeEnabled } from './core/channel-probe';
 import {
   beginQualityRun,
@@ -70,6 +71,31 @@ if (proxyUrl) {
 }
 
 // ─── 存储初始化（SQLite → JSON 降级）───────────────────
+
+function createJarBinaryWriter(): (key: string, bytes: Uint8Array) => Promise<void> {
+  const jarDir = path.resolve(process.env.DATA_DIR || path.join(process.cwd(), 'data'), 'jars');
+  return async (key: string, bytes: Uint8Array): Promise<void> => {
+    await fs.promises.mkdir(jarDir, { recursive: true });
+    const dest = path.join(jarDir, key + '.jar');
+    const tmp = dest + '.tmp';
+    await fs.promises.writeFile(tmp, Buffer.from(bytes));
+    await fs.promises.rename(tmp, dest);
+  };
+}
+
+async function warmCachedJarBinaries(storage: Storage): Promise<void> {
+  try {
+    const cached = await storage.get(KV_MERGED_CONFIG);
+    if (!cached) return;
+    const parsed = JSON.parse(cached) as { sites?: any[]; spider?: string };
+    const entries = collectJarEntriesForSites(parsed.sites || [], parsed.spider);
+    if (entries.length === 0) return;
+    console.log('[jar-proxy] Startup warm: ' + entries.length + ' cached type=3 JARs');
+    await prefetchJarBinaries(storage, entries, { writeBinary: createJarBinaryWriter() });
+  } catch (error: unknown) {
+    console.warn('[jar-proxy] Startup warm failed:', error instanceof Error ? error.message : String(error));
+  }
+}
 
 function createStorage(): Storage {
   const dataDir = path.resolve(process.env.DATA_DIR || path.join(process.cwd(), 'data'));
@@ -198,7 +224,9 @@ async function main() {
 
     // 超时只解除本次等待，底层聚合仍继续执行；必须等它真正结束后才能释放互斥，
     // 否则超时后的下一次 cron/手动刷新会再启动一轮，形成并发聚合。
-    const aggregation = runAggregation(storage, config);
+    const aggregation = runAggregation(storage, config, {
+      writeBinary: createJarBinaryWriter(),
+    });
     let timedOut = false;
     const timeout = new Promise<never>((_, reject) => {
       const timer = setTimeout(() => {
@@ -466,7 +494,8 @@ async function main() {
     console.log(`  TVBox 填入地址: http://${displayHost}:${info.port}/`);
     console.log('');
 
-    // 启动聚合策略：无缓存时尽早初始化；已有较新缓存时延后，避免与 TVBox 首次加载争抢资源。
+    // 先预热已缓存配置中的 JAR，随后再按策略启动聚合；预热不阻塞 HTTP 服务。
+    void warmCachedJarBinaries(storage);
     void scheduleStartupAggregation();
   });
 }

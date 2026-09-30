@@ -10,7 +10,7 @@ import { logger } from './core/logger';
 import { loadGroupOrder, saveGroupOrder } from './core/group-order';
 import { validateMacCMS } from './core/maccms';
 import { applyLegacyWoggCompatibility } from './core/cf-compat';
-import { lookupJarUrl, isMd5Key, base64ToUint8Array, rewriteJarUrls, normalizeJarRequestKey } from './core/jar-proxy';
+import { lookupJarUrl, isMd5Key, base64ToUint8Array, rewriteJarUrls, normalizeJarRequestKey, loadJarReadyKeys, markJarReady, getJarKeyForSite } from './core/jar-proxy';
 import { BASE_URL_PLACEHOLDER } from './core/config';
 import { lookupLiveSource, listLiveProxyEntries, removeLiveProxyEntry } from './core/live-source';
 import { adminHtml } from './core/admin';
@@ -677,15 +677,30 @@ export function createApp(deps: AppDeps): Hono {
     const pinnedKeySet = new Set(pinnedSites.map((site) => site.key));
     const rest = orderedSites.filter((site) => !pinnedKeySet.has(site.key));
 
-    // 非置顶的普通 type=3 远程扩展仍会被剔除，避免客户端串行下载 JAR 拖慢首屏；
-    // 但已知网盘/客户端凭证 API 需要下发给客户端登录后使用，必须保留。
-    const eligibleRest = rest.filter(
-      (site) => site.type !== 3 || isClientCredentialSite(site),
-    );
+    // 轻量启动要等远程 JAR 已落到本部署缓存后再下发，避免客户端逐个等待
+    // 慢速上游；完整启动模式不做这层裁剪。客户端凭证型 type=3 源始终保留，
+    // 因为它们在客户端登录后可直接使用。/config-full.json 始终保留完整配置。
+    const leanStartup = quota.startupMode !== 'full' && quota.leanStartup !== false;
+    let eligibleRest = rest;
+    let jarReadyKeys = new Set<string>();
+    if (leanStartup) {
+      jarReadyKeys = await loadJarReadyKeys(storage);
+      eligibleRest = rest.filter((site) => {
+        if (site.type !== 3 || isClientCredentialSite(site)) return true;
+        const key = getJarKeyForSite(site, parsed.spider);
+        // 直连 CDN JAR 无需等待本部署预取；只有实际代理 JAR 才要求 ready。
+        return !key || jarReadyKeys.has(key);
+      });
+    }
+
+    // 置顶是用户显式选择，轻量启动时也保留；普通候选才按模式门控。
     const limit = quota.maxSearchable ?? 0;
     const limitedRest = limit > 0 ? eligibleRest.slice(0, Math.max(0, limit)) : eligibleRest;
 
     parsed.sites = [...pinnedSites, ...limitedRest];
+    console.log('[startup] mode=' + (leanStartup ? 'lean' : 'full')
+      + ' jar-ready=' + jarReadyKeys.size
+      + ' type3-kept=' + parsed.sites.filter((site) => site.type === 3).length);
 
     // CF 分离模式在根配置中保留少量最快的直播入口；完整直播清单仍在
     // /live.json 和 /config-full.json 中，Render 的单个聚合入口不受影响。
@@ -2049,7 +2064,10 @@ export function createApp(deps: AppDeps): Hono {
       const cache = (caches as any).default as Cache;
       const cacheKey = new Request(c.req.url);
       const cached = await cache.match(cacheKey);
-      if (cached) return cached;
+      if (cached) {
+        c.executionCtx.waitUntil(markJarReady(storage, key));
+        return cached;
+      }
 
       const ttl = isMd5Key(key) ? 86400 : 21600; // MD5 key → 24h, URL hash → 6h
       const binaryHeaders = {
@@ -2063,7 +2081,10 @@ export function createApp(deps: AppDeps): Hono {
       if (binBase64) {
         const binary = base64ToUint8Array(binBase64);
         const response = new Response(binary, { headers: binaryHeaders });
-        c.executionCtx.waitUntil(cache.put(cacheKey, response.clone()));
+        c.executionCtx.waitUntil(Promise.all([
+          cache.put(cacheKey, response.clone()),
+          markJarReady(storage, key),
+        ]).then(() => undefined));
         return response;
       }
 
@@ -2084,7 +2105,10 @@ export function createApp(deps: AppDeps): Hono {
 
         if (resp.ok) {
           const response = new Response(resp.body, { headers: binaryHeaders });
-          c.executionCtx.waitUntil(cache.put(cacheKey, response.clone()));
+          c.executionCtx.waitUntil(Promise.all([
+            cache.put(cacheKey, response.clone()),
+            markJarReady(storage, key),
+          ]).then(() => undefined));
           return response;
         }
 
@@ -2132,11 +2156,6 @@ export function createApp(deps: AppDeps): Hono {
       const rawKey = c.req.param('key');
       const key = normalizeJarRequestKey(rawKey);
 
-      const originalUrl = await lookupJarUrl(key, storage);
-      if (!originalUrl) {
-        return c.json({ error: 'Unknown JAR key' }, 404);
-      }
-
       const cachePath = pathMod.join(jarCacheDir, `${key}.jar`);
       const ttl = isMd5Key(key) ? 86400_000 : 21600_000;
       const cacheHeaders = {
@@ -2145,14 +2164,23 @@ export function createApp(deps: AppDeps): Hono {
         'Access-Control-Allow-Origin': '*',
       };
 
-      // 命中缓存：同步读文件后返回；文件较小，通常远快于重新请求上游。
+      // 文件缓存命中无需先查远端映射。启动预热/上一次请求写入后，这里直接
+      // 返回本地字节，并异步补齐就绪索引。
       if (fs.existsSync(cachePath)) {
         const stat = fs.statSync(cachePath);
         const data = fs.readFileSync(cachePath);
+        void markJarReady(storage, key).catch(() => {});
         if (Date.now() - stat.mtimeMs >= ttl) {
-          refreshJarInBackground(key, originalUrl, cachePath);
+          void lookupJarUrl(key, storage).then((originalUrl) => {
+            if (originalUrl) refreshJarInBackground(key, originalUrl, cachePath);
+          });
         }
         return new Response(data, { headers: cacheHeaders });
+      }
+
+      const originalUrl = await lookupJarUrl(key, storage);
+      if (!originalUrl) {
+        return c.json({ error: 'Unknown JAR key' }, 404);
       }
 
       try {
@@ -2178,6 +2206,7 @@ export function createApp(deps: AppDeps): Hono {
               const targetPath = pathMod.join(jarCacheDir, key + '.jar');
               fs.writeFileSync(tmpPath, buffer);
               fs.renameSync(tmpPath, targetPath);
+              await markJarReady(storage, key);
               console.log('[jar-proxy] Cached ' + key + '.jar (' + (buffer.length / 1024).toFixed(1) + ' KB)');
             } catch (error: unknown) {
               console.log('[jar-proxy] Cache write error for ' + key + ': ' + (error instanceof Error ? error.message : error));
@@ -2192,6 +2221,7 @@ export function createApp(deps: AppDeps): Hono {
       // 上游暂时失败时，过期文件仍可作为可用兜底。
       if (fs.existsSync(cachePath)) {
         const data = fs.readFileSync(cachePath);
+        void markJarReady(storage, key).catch(() => {});
         return new Response(data, { headers: cacheHeaders });
       }
 

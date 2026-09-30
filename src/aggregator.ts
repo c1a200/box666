@@ -8,7 +8,7 @@ import { applyLegacyWoggCompatibility } from './core/cf-compat';
 import { batchSiteSpeedTest, appendSpeedToName, filterUnreachableSites, type SiteProbeResult } from './core/speedtest';
 import { isClientCredentialSite, getDirectPlatformFromApi } from './core/credential-risk';
 import { macCMSToTVBoxSites, processMacCMSForLocal } from './core/maccms';
-import { rewriteJarUrls } from './core/jar-proxy';
+import { rewriteJarUrls, prefetchJarBinaries, type JarEntry } from './core/jar-proxy';
 import { mergeLivesToNative, separatedMergeLives, formatLiveGroupsAsTxt, filterLiveSourcesDetailed, type LiveSourceInput } from './core/live-merger';
 import { loadSpeedMap as loadChannelSpeedMap } from './core/channel-probe';
 import { liveSourcesToTVBoxLives } from './core/live-source';
@@ -29,12 +29,21 @@ import { clearDirtyMarker } from './core/dirty-marker';
 import { loadQualityPool, runQualityGrading, batchCredentialAwareSpeedTest } from './core/quality';
 import type { NameTransformConfig, EdgeProxyConfig } from './core/types';
 
-export async function runAggregation(storage: Storage, config: AppConfig): Promise<void> {
+export interface AggregationRunOptions {
+  waitUntil?: (task: Promise<void>) => void;
+  writeBinary?: (key: string, bytes: Uint8Array) => Promise<void>;
+}
+
+export async function runAggregation(
+  storage: Storage,
+  config: AppConfig,
+  options: AggregationRunOptions = {},
+): Promise<void> {
   const startTime = Date.now();
   logger.info('aggregation', 'Starting...');
 
   try {
-    await _runAggregation(storage, config, startTime);
+    await _runAggregation(storage, config, startTime, options);
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error);
     const stack = error instanceof Error ? error.stack : '';
@@ -65,7 +74,7 @@ export async function runAggregation(storage: Storage, config: AppConfig): Promi
   }
 }
 
-async function _runAggregation(storage: Storage, config: AppConfig, startTime: number): Promise<void> {
+async function _runAggregation(storage: Storage, config: AppConfig, startTime: number, options: AggregationRunOptions): Promise<void> {
 
   // ── 日志收集用局部变量 ──
   let logFetchResults: SourceFetchResult[] = [];
@@ -824,9 +833,32 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
 
   // Step 7: JAR URL 改写（统一用占位符，请求时替换为实际 base URL）
   logger.infoFields('aggregation', 'Step 7: rewriting JAR URLs', { placeholder: BASE_URL_PLACEHOLDER });
+  let jarEntries: JarEntry[] = [];
   merged = await rewriteJarUrls(merged, BASE_URL_PLACEHOLDER, storage, {
-    prewarmBinaries: !!config.workerBaseUrl,
+    onJarEntries: (entries) => {
+      jarEntries = entries;
+    },
   });
+
+  // JAR 预取只依赖已经写入的 jar:key -> 原始 URL 映射，不等待聚合主流程。
+  // Node 使用文件缓存，Cloudflare 使用 KV 二进制缓存；就绪索引完成前，
+  // 根配置不会下发普通远程 type=3 源。
+  if (jarEntries.length > 0) {
+    const prefetchTask = prefetchJarBinaries(storage, jarEntries, {
+      writeBinary: options.writeBinary,
+    });
+    if (options.waitUntil) {
+      options.waitUntil(prefetchTask);
+    } else {
+      void prefetchTask.catch((error: unknown) => {
+        logger.warn('aggregation', 'JAR prefetch failed: ' + (error instanceof Error ? error.message : String(error)));
+      });
+    }
+    logger.infoFields('aggregation', 'jar-prefetch-scheduled', {
+      count: jarEntries.length,
+      platform: config.workerBaseUrl ? 'cf' : 'node',
+    });
+  }
 
   // Step 7.5: 注入图片代理前缀（统一用占位符或边缘代理）
   const edgeRaw = await storage.get(KV_EDGE_PROXIES);

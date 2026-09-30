@@ -95,7 +95,9 @@ export default {
     const app = createApp({
       storage,
       config,
-      triggerRefresh: () => runAggregation(storage, config),
+      triggerRefresh: () => runAggregation(storage, config, {
+        waitUntil: (task) => ctx.waitUntil(task),
+      }),
       triggerQuality: (mode) => runQualityChunkWithStatus(storage, mode, config.qualityTimezone),
     });
 
@@ -123,7 +125,9 @@ export default {
 
     if (aggregationDue) {
       console.log('[scheduled] Running aggregation (interval: ' + intervalMinutes + 'min)');
-      ctx.waitUntil(runAggregation(storage, config));
+      ctx.waitUntil(runAggregation(storage, config, {
+        waitUntil: (task) => ctx.waitUntil(task),
+      }));
       return;
     }
 
