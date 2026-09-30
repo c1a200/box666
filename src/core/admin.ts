@@ -806,7 +806,7 @@ const translations = {
     submitBatch:'Submit Batch',
     refresh:'Refresh', aggregateNow:'Aggregate now', aggregateNowRunning:'Aggregating...', running:'Running...', remove:'Remove', test:'Test',
     loadingStatus:'Loading...',
-    lastUpdate:'Last update: ', neverUpdated:'Never updated — click Refresh',
+    lastUpdate:'Last update: ', neverUpdated:'No successful update yet', updateFailed:'Recent aggregation failed: ',
     failedLoadStatus:'Failed to load status',
     noSources:'No sources configured. Add one above.',
     noMacCMS:'No MacCMS sources. Add one above.',
@@ -910,7 +910,7 @@ const translations = {
     submitBatch:'提交批量',
     refresh:'刷新', aggregateNow:'立即聚合', aggregateNowRunning:'聚合中...', running:'运行中...', remove:'删除', test:'测试',
     loadingStatus:'加载中...',
-    lastUpdate:'上次更新: ', neverUpdated:'从未更新 — 点击刷新',
+    lastUpdate:'上次更新: ', neverUpdated:'暂无成功更新时间', updateFailed:'最近聚合失败：',
     failedLoadStatus:'获取状态失败',
     noSources:'暂无源。请在上方添加。',
     noMacCMS:'暂无 MacCMS 源。请在上方添加。',
@@ -1070,17 +1070,18 @@ async function loadStatus() {
   try {
     const res = await fetch('/status-data');
     const d = await res.json();
-    if (d.lastUpdate && d.lastUpdate !== 'never') {
-      const date = new Date(d.lastUpdate);
-      const fmt = date.toLocaleString('zh-CN', {
+    const stats = d.sites + ' sites, ' + d.parses + ' parses, ' + d.lives + ' lives' + (d.liveSourceCount ? ', ' + d.liveSourceCount + ' live sources' : '') + (d.dirty ? ' | pending refresh' : '');
+    const dateValue = d.lastUpdate && d.lastUpdate !== 'never' ? new Date(d.lastUpdate) : null;
+    if (dateValue && !Number.isNaN(dateValue.getTime())) {
+      const fmt = dateValue.toLocaleString('zh-CN', {
         year:'numeric', month:'2-digit', day:'2-digit',
         hour:'2-digit', minute:'2-digit', second:'2-digit',
         hour12: false
       });
-      $('aggStatus').textContent = t('lastUpdate') + fmt + ' | ' + d.sites + ' sites, ' + d.parses + ' parses, ' + d.lives + ' lives' + (d.liveSourceCount ? ', ' + d.liveSourceCount + ' live sources' : '') + (d.dirty ? ' | pending refresh' : '');
+      $('aggStatus').textContent = t('lastUpdate') + fmt + ' | ' + stats;
       $('aggStatus').className = 'status-text';
     } else {
-      $('aggStatus').textContent = t('neverUpdated');
+      $('aggStatus').textContent = t('neverUpdated') + ' | ' + stats + (d.lastUpdateError ? ' | ' + t('updateFailed') + d.lastUpdateError : '');
       $('aggStatus').className = 'status-text error';
     }
   } catch {

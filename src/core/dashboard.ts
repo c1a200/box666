@@ -471,7 +471,7 @@ const translations = {
     headerLabel:'System Monitor', connecting:'Connecting...', sites:'Sites', lives:'Lives',
     parses:'Parses', sources:'Sources', lastAggregation:'Last Aggregation',
     configUrlLabel:'TVBox Config URL', liveConfigUrlLabel:'Live-Only Config URL',
-    copy:'Copy', copied:'Copied!', copyFailed:'Failed', neverRefresh:'Never',
+    copy:'Copy', copied:'Copied!', copyFailed:'Failed', neverRefresh:'No successful update yet', updateFailed:'Recent aggregation failed: ',
     fetchError:'Failed to fetch status', noData:'No data',
     sourceHealth:'Source Health', healthDetails:'Details', healthName:'Name',
     healthStatus:'Status', healthFails:'Fails', healthLastOk:'Last OK',
@@ -487,7 +487,7 @@ const translations = {
     headerLabel:'系统监控', connecting:'连接中...', sites:'站点', lives:'直播',
     parses:'解析', sources:'源', lastAggregation:'上次聚合',
     configUrlLabel:'TVBox 配置地址', liveConfigUrlLabel:'直播配置地址',
-    copy:'复制', copied:'已复制!', copyFailed:'失败', neverRefresh:'从未更新',
+    copy:'复制', copied:'已复制!', copyFailed:'失败', neverRefresh:'暂无成功更新时间', updateFailed:'最近聚合失败：',
     fetchError:'获取状态失败', noData:'无数据',
     sourceHealth:'源健康状态', healthDetails:'详情', healthName:'名称',
     healthStatus:'状态', healthFails:'失败', healthLastOk:'最后成功',
@@ -528,11 +528,11 @@ async function loadStatus() {
     const txt = $('statusText');
     const time = $('updateTime');
 
-    if (d.lastUpdate && d.lastUpdate !== 'never') {
-      const date = new Date(d.lastUpdate);
+    const dateValue = d.lastUpdate && d.lastUpdate !== 'never' ? new Date(d.lastUpdate) : null;
+    if (dateValue && !Number.isNaN(dateValue.getTime())) {
       const now = new Date();
-      const diffH = (now - date) / 3.6e6;
-      const fmt = date.toLocaleString('zh-CN', {
+      const diffH = (now - dateValue) / 3.6e6;
+      const fmt = dateValue.toLocaleString('zh-CN', {
         year:'numeric', month:'2-digit', day:'2-digit',
         hour:'2-digit', minute:'2-digit', second:'2-digit',
         hour12: false
@@ -544,12 +544,11 @@ async function loadStatus() {
       dot.className = 'status-dot';
       txt.textContent = 'Online · ' + d.sites + ' ' + t('sites').toLowerCase();
     } else {
-      time.textContent = t('neverRefresh');
+      time.textContent = t('neverRefresh') + (d.lastUpdateError ? ' · ' + t('updateFailed') + d.lastUpdateError : '');
       time.className = 'update-time never';
       dot.className = 'status-dot offline';
       txt.textContent = t('noData');
     }
-
     // Render warnings
     const banner = $('warningBanner');
     const warnings = d.warnings || [];

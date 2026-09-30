@@ -21,6 +21,7 @@ export const KV_MERGED_CONFIG_FULL = 'merged_config_full'; // 黑名单过滤前
 export const KV_STARTUP_SITE_POOL = 'startup_site_pool'; // 根配置动态裁剪用的完整候选池（已按测速排序，不受 maxSearchable 截断）
 export const KV_SOURCE_URLS = 'source_urls';
 export const KV_LAST_UPDATE = 'last_update';
+export const KV_LAST_UPDATE_ERROR = 'last_update_error';
 export const KV_MANUAL_SOURCES = 'manual_sources';
 export const KV_MACCMS_SOURCES = 'maccms_sources';
 export const KV_LIVE_SOURCES = 'live_sources';

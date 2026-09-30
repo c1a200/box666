@@ -113,11 +113,11 @@ export default {
     const intervalMinutes = intervalRaw ? parseInt(intervalRaw) : DEFAULT_CRON_INTERVAL;
     const lastUpdateRaw = await storage.get(KV_LAST_UPDATE);
     let aggregationDue = true;
-    if (lastUpdateRaw && !lastUpdateRaw.startsWith('ERROR')) {
-      const lastUpdate = new Date(lastUpdateRaw).getTime();
+    if (lastUpdateRaw) {
+      const lastUpdate = Date.parse(lastUpdateRaw);
       const elapsed = Date.now() - lastUpdate;
       const intervalMs = intervalMinutes * 60 * 1000;
-      aggregationDue = !(Number.isFinite(lastUpdate) && elapsed < intervalMs);
+      aggregationDue = !(Number.isFinite(lastUpdate) && elapsed >= 0 && elapsed < intervalMs);
       if (!aggregationDue) {
         console.log('[scheduled] Aggregation not due: ' + Math.round(elapsed / 60000) + 'min since last update, interval is ' + intervalMinutes + 'min');
       }

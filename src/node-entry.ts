@@ -426,9 +426,7 @@ async function main() {
       console.warn('[aggregation] Failed to inspect startup cache:', err);
     }
 
-    const parsedLastUpdate = lastUpdate && !lastUpdate.startsWith('ERROR')
-      ? Date.parse(lastUpdate)
-      : Number.NaN;
+    const parsedLastUpdate = lastUpdate ? Date.parse(lastUpdate) : Number.NaN;
     const cacheAgeMs = Number.isFinite(parsedLastUpdate) ? Date.now() - parsedLastUpdate : null;
     const hasFreshCache = Boolean(cachedConfig)
       && (lastUpdate === null || (cacheAgeMs !== null && cacheAgeMs >= 0 && cacheAgeMs <= startupAggregationMaxAgeMs));
