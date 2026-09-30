@@ -1,6 +1,7 @@
 import type { TVBoxConfig, TVBoxSite } from './types';
 
 const DEPRECATED_WOGG_GUARD_JAR_MD5 = '2cc088afa757ba8bafffcfbab4b73ccc';
+const HARDENED_WOGG_FISHGUARD_JAR_MD5 = '835b242eab0da4d3402724dd4705a9e8';
 const WOGG_JAR_MD5 = 'b63a0eb8852bb7ab06500c424ccc3dae';
 const WOGG_API = 'csp_Wogg';
 const WOGG_JAR_URL =
@@ -32,11 +33,23 @@ function parseExt(ext: TVBoxSite['ext']): { value: ExtRecord; wasString: boolean
   return null;
 }
 
+function normalizeExtSite(value: unknown): string | null {
+  if (typeof value === 'string') {
+    const site = value.trim();
+    return site || null;
+  }
+  if (!Array.isArray(value)) return null;
+  const sites = value
+    .filter((item): item is string => typeof item === 'string')
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return sites.length > 0 ? sites.join(',') : null;
+}
+
 function getExtSite(site: TVBoxSite): string | null {
   const parsed = parseExt(site.ext);
   if (!parsed) return null;
-  const value = parsed.value.site;
-  return typeof value === 'string' && value.trim() ? value : null;
+  return normalizeExtSite(parsed.value.site);
 }
 
 function getJarMd5(site: TVBoxSite): string | null {
@@ -59,22 +72,27 @@ function isLegacyWoggGuard(site: TVBoxSite): boolean {
   return md5 === DEPRECATED_WOGG_GUARD_JAR_MD5 || !site.jar?.trim();
 }
 
+function isHardenedWoggVariant(site: TVBoxSite): boolean {
+  return site.key === 'Wogg' && hasJarMd5(site, HARDENED_WOGG_FISHGUARD_JAR_MD5);
+}
+
 function hasWoggApi(site: TVBoxSite): boolean {
   return !!site.api && site.api.toLowerCase() === WOGG_API.toLowerCase();
 }
 
 /**
- * Migrate the legacy WoGGGuard entry to the sibling csp_Wogg spider, which
- * implements Pan.init and therefore consumes the project's /credential/*
- * endpoints. This migration is deployment-agnostic: Render and Cloudflare use
- * separate KV/config data, but both need the same compatibility repair.
+ * Migrate legacy WoGGGuard and the hardened FishGuard Wogg variant to the
+ * sibling csp_Wogg spider, which implements Pan.init and therefore consumes
+ * the project's /credential/* endpoints. The hardened variant is matched by
+ * key+JAR fingerprint only, so other sources sharing that JAR are untouched.
  */
 export function applyLegacyWoggCompatibility(config: TVBoxConfig): boolean {
   const sites = config.sites;
   if (!Array.isArray(sites)) return false;
 
-  const targets = sites.filter(isLegacyWoggGuard);
-  if (targets.length === 0) return false;
+  const legacyTargets = sites.filter(isLegacyWoggGuard);
+  const hardenedTargets = sites.filter(isHardenedWoggVariant);
+  if (legacyTargets.length === 0 && hardenedTargets.length === 0) return false;
 
   const woggDonor =
     sites.find((site) =>
@@ -97,13 +115,16 @@ export function applyLegacyWoggCompatibility(config: TVBoxConfig): boolean {
   const donorJar = hasJarMd5(woggDonor, WOGG_JAR_MD5) ? woggDonor.jar! : WOGG_JAR_URL;
   let changed = false;
 
-  for (const target of targets) {
+  for (const target of [...legacyTargets, ...hardenedTargets]) {
     const targetExt = parseExt(target.ext);
     if (!targetExt) continue;
 
     const nextExt: ExtRecord = { ...targetExt.value };
-    if (typeof nextExt.site !== 'string' || !nextExt.site.trim()) {
+    const targetSite = normalizeExtSite(nextExt.site);
+    if (!targetSite) {
       nextExt.site = donorSite;
+    } else if (targetSite !== nextExt.site) {
+      nextExt.site = targetSite;
     }
 
     target.api = WOGG_API;
