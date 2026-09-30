@@ -55,30 +55,47 @@ function initAuth(tokenInputId, errorId, overlayId, contentId, verifyUrl, onSucc
 
   function getToken() { return token; }
 
+  const requestTimeoutMs = 20000;
+
   function authFetch(url, opts) {
-    opts = opts || {};
+    opts = Object.assign({}, opts || {});
     opts.headers = Object.assign({}, opts.headers, { 'Authorization': 'Bearer ' + token });
+    if (!opts.signal && typeof AbortController !== 'undefined') {
+      const controller = new AbortController();
+      opts.signal = controller.signal;
+      const timer = setTimeout(() => controller.abort(), requestTimeoutMs);
+      return fetch(url, opts).finally(() => clearTimeout(timer));
+    }
     return fetch(url, opts);
   }
 
-  function doLogin() {
-    token = tokenInput.value.trim();
-    if (!token) return;
-    fetch(verifyUrl, {
-      headers: { 'Authorization': 'Bearer ' + token }
+  function verifyAndEnter(candidate, remember) {
+    return fetch(verifyUrl, {
+      headers: { 'Authorization': 'Bearer ' + candidate },
+      signal: typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(requestTimeoutMs) : undefined
     }).then(r => {
-      if (r.ok) {
-        overlay.style.display = 'none';
-        content.style.display = 'block';
-        sessionStorage.setItem('admin_token', token);
-        onSuccess();
-      } else {
-        errorEl.style.display = 'block';
-        tokenInput.value = '';
-        tokenInput.focus();
-      }
+      if (!r.ok) throw new Error('unauthorized');
+      token = candidate;
+      if (remember) sessionStorage.setItem('admin_token', token);
+      // Reveal the shell before tab data starts loading, so slow endpoints
+      // can never leave a blank authenticated page.
+      overlay.style.display = 'none';
+      content.style.display = 'block';
+      document.body.style.opacity = '1';
+      Promise.resolve().then(() => onSuccess()).catch(() => {});
     }).catch(() => {
+      if (remember) sessionStorage.removeItem('admin_token');
+      throw new Error('login failed');
+    });
+  }
+
+  function doLogin() {
+    const candidate = tokenInput.value.trim();
+    if (!candidate) return;
+    verifyAndEnter(candidate, true).catch(() => {
       errorEl.style.display = 'block';
+      tokenInput.value = '';
+      tokenInput.focus();
     });
   }
 
@@ -87,15 +104,9 @@ function initAuth(tokenInputId, errorId, overlayId, contentId, verifyUrl, onSucc
   // Auto-login from session
   const saved = sessionStorage.getItem('admin_token');
   if (saved) {
-    token = saved;
-    fetch(verifyUrl, {
-      headers: { 'Authorization': 'Bearer ' + token }
-    }).then(r => {
-      if (r.ok) {
-        overlay.style.display = 'none';
-        content.style.display = 'block';
-        onSuccess();
-      }
+    verifyAndEnter(saved, false).catch(() => {
+      sessionStorage.removeItem('admin_token');
+      tokenInput.focus();
     });
   }
 

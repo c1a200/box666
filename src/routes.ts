@@ -3121,8 +3121,54 @@ export function createApp(deps: AppDeps): Hono {
     const logs = raw ? JSON.parse(raw) : [];
     const limitStr = c.req.query('limit');
     const limit = limitStr ? Math.min(parseInt(limitStr) || 20, 50) : 20;
+    const compact = c.req.query('compact') === '1' || c.req.query('compact') === 'true';
     const sliced = logs.slice(-limit).reverse();
-    return c.json({ total: logs.length, logs: sliced });
+    if (!compact) {
+      return c.json({ total: logs.length, logs: sliced });
+    }
+    // Keep the admin log view small enough for high-latency deployments while
+    // preserving exact totals so the UI can show "+N more".
+    const maxItems = 10;
+    const maxErrorLength = 240;
+    const compactLogs = sliced.map((log: Record<string, unknown>) => {
+      const addedSites = Array.isArray(log.addedSites) ? log.addedSites : [];
+      const removedSites = Array.isArray(log.removedSites) ? log.removedSites : [];
+      const failedSources = Array.isArray(log.failedSources) ? log.failedSources : [];
+      const errorMessage = typeof log.errorMessage === 'string'
+        ? log.errorMessage.slice(0, maxErrorLength)
+        : undefined;
+      return {
+        id: log.id,
+        startTime: log.startTime,
+        endTime: log.endTime,
+        durationMs: log.durationMs,
+        success: log.success,
+        errorMessage,
+        totalSources: log.totalSources,
+        okSources: log.okSources,
+        finalSiteCount: log.finalSiteCount,
+        finalParseCount: log.finalParseCount,
+        finalLiveCount: log.finalLiveCount,
+        blacklistRemovedSites: log.blacklistRemovedSites,
+        blacklistRemovedParses: log.blacklistRemovedParses,
+        blacklistRemovedLives: log.blacklistRemovedLives,
+        addedSites: addedSites.slice(0, maxItems).map((site: Record<string, unknown>) => ({ key: site.key, name: site.name })),
+        addedSiteCount: addedSites.length,
+        addedTruncated: addedSites.length > maxItems,
+        removedSites: removedSites.slice(0, maxItems).map((site: Record<string, unknown>) => ({ key: site.key, name: site.name })),
+        removedSiteCount: removedSites.length,
+        removedTruncated: removedSites.length > maxItems,
+        failedSources: failedSources.slice(0, maxItems).map((source: Record<string, unknown>) => ({
+          url: source.url,
+          name: source.name,
+          status: source.status,
+          errorMessage: typeof source.errorMessage === 'string' ? source.errorMessage.slice(0, maxErrorLength) : undefined,
+        })),
+        failedSourceCount: failedSources.length,
+        failedTruncated: failedSources.length > maxItems,
+      };
+    });
+    return c.json({ total: logs.length, logs: compactLogs });
   });
 
   app.delete('/admin/agg-logs', async (c) => {

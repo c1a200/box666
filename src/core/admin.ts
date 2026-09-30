@@ -310,7 +310,7 @@ ${sharedStyles}
     <div class="tab active" data-tab="sources" onclick="switchTab('sources')"><span data-i18n="tabSources">Sources</span> <span class="badge" id="badgeSources">0</span></div>
     <div class="tab" data-tab="maccms" onclick="switchTab('maccms')"><span data-i18n="tabMacCMS">MacCMS</span> <span class="badge" id="badgeMacCMS">0</span></div>
     <div class="tab" data-tab="live" onclick="switchTab('live')"><span data-i18n="tabLive">Live</span> <span class="badge" id="badgeLive">0</span></div>
-    <div class="tab" data-tab="searchQuota" onclick="switchTab('searchQuota')" id="tabSearchQuota" style="display:none"><span data-i18n="tabSearchQuota">Search</span> <span class="badge" id="badgeSearchQuota">0</span></div>
+    <div class="tab" data-tab="searchQuota" onclick="switchTab('searchQuota')" id="tabSearchQuota"><span data-i18n="tabSearchQuota">Search</span> <span class="badge" id="badgeSearchQuota">0</span></div>
     <div class="tab" data-tab="cloud" onclick="switchTab('cloud')"><span data-i18n="tabCloud">Cloud</span></div>
     <div class="tab" data-tab="settings" onclick="switchTab('settings')"><span data-i18n="tabSettings">Settings</span></div>
     <div class="tab" data-tab="aggLogs" onclick="switchTab('aggLogs')"><span data-i18n="tabAggLogs">Logs</span></div>
@@ -1008,13 +1008,40 @@ function doToggleLang() {
 // --- Auth ---
 const auth = initAuth('loginInput', 'loginError', 'loginOverlay', 'mainContent', '/admin/sources', loadAll);
 
-// --- Tab switching ---
+// --- Tab switching / lazy loading ---
+const tabLoaders = {
+  sources: async () => { await loadSourceHealth(); await Promise.all([loadSources(), loadStatus()]); },
+  maccms: () => loadMacCMS(),
+  live: () => Promise.all([loadLives(), loadLiveDisabled(), loadLiveMergeMode(), loadIgnoreAggregatedLives(), loadChannelProbe()]),
+  searchQuota: () => Promise.all([loadSearchQuota(), loadQualityReport()]),
+  cloud: () => Promise.all([loadCredentialDistribution(), loadCloudCredentials()]),
+  settings: () => Promise.all([loadNameTransform(), loadBgSettings(), loadCronInterval(), loadSpeedTest(), loadEdgeProxies(), loadDedupConfig(), loadGroupOrder(), loadStorageDiagnostics(), loadSmartBaseUrl(), loadProbeDepth(), loadAutoClean()]),
+  aggLogs: () => loadAggLogs(),
+};
+const loadedTabs = new Set();
+const loadingTabs = new Map();
+
+async function ensureTabLoaded(tab) {
+  if (loadedTabs.has(tab)) return;
+  if (loadingTabs.has(tab)) return loadingTabs.get(tab);
+  const loader = tabLoaders[tab];
+  if (!loader) return;
+  const promise = Promise.resolve()
+    .then(loader)
+    .then(() => { loadedTabs.add(tab); })
+    .catch(err => console.warn('[admin] failed to load tab:', tab, err))
+    .finally(() => { loadingTabs.delete(tab); });
+  loadingTabs.set(tab, promise);
+  return promise;
+}
+
 function switchTab(tab) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
   document.querySelectorAll('.tab-panel').forEach(p => {
     const id = 'panel' + tab.charAt(0).toUpperCase() + tab.slice(1);
     p.classList.toggle('active', p.id === id);
   });
+  ensureTabLoaded(tab);
 }
 
 // --- Source health ---
@@ -1032,25 +1059,11 @@ async function loadSourceHealth() {
 }
 
 // --- Load data ---
-async function loadAll() {
-  await loadSourceHealth();
-  loadSources();
-  loadMacCMS();
-  loadLives();
-  loadStatus();
-  loadNameTransform();
-  loadCronInterval();
-  loadSpeedTest();
-  loadEdgeProxies();
-  loadSearchQuota();
-  loadCredentialDistribution();
-  loadCloudCredentials();
-  loadChannelProbe();
-  loadDedupConfig();
-  loadGroupOrder();
-  loadBgSettings();
-  loadAggLogs();
-  loadStorageDiagnostics();
+function loadAll() {
+  // Render the admin shell immediately; all other tabs are fetched on first access.
+  loadedTabs.clear();
+  loadingTabs.clear();
+  return ensureTabLoaded('sources');
 }
 
 async function loadStatus() {
@@ -2014,7 +2027,6 @@ async function loadSearchQuota() {
     $('pruneDeadParsesInput').checked = true;
     sqPinnedKeys = new Set(d.pinnedKeys || []);
     loadSearchQuotaReport();
-    loadQualityReport();
   } catch {}
 }
 async function saveSearchQuota() {
@@ -2838,7 +2850,7 @@ loadVersion();
 // ─── 聚合日志 ──────────────────────────────────────────────
 async function loadAggLogs() {
   try {
-    const res = await auth.authFetch('/admin/agg-logs?limit=50');
+    const res = await auth.authFetch('/admin/agg-logs?limit=20&compact=1');
     const data = await res.json();
     const logs = data.logs || [];
     if (logs.length === 0) {
@@ -2859,14 +2871,20 @@ async function loadAggLogs() {
       html += 'Sources: ' + log.okSources + '/' + log.totalSources + ' OK';
       html += ' &middot; Sites: ' + log.finalSiteCount + ' &middot; Parses: ' + log.finalParseCount + ' &middot; Lives: ' + log.finalLiveCount;
       html += '</div>';
-      if (log.addedSites && log.addedSites.length > 0) {
-        html += '<div style="font-size:0.8rem;color:var(--green);margin-top:2px">+ ' + log.addedSites.map(s => s.name || s.key).join(', ') + '</div>';
+      const addedCount = log.addedSiteCount != null ? log.addedSiteCount : (log.addedSites ? log.addedSites.length : 0);
+      const removedCount = log.removedSiteCount != null ? log.removedSiteCount : (log.removedSites ? log.removedSites.length : 0);
+      const failedCount = log.failedSourceCount != null ? log.failedSourceCount : (log.failedSources ? log.failedSources.length : 0);
+      if (addedCount > 0) {
+        const shown = (log.addedSites || []).map(s => s.name || s.key).join(', ');
+        html += '<div style="font-size:0.8rem;color:var(--green);margin-top:2px">+ ' + esc(shown) + (log.addedTruncated ? ' … +' + (addedCount - (log.addedSites || []).length) + ' more' : '') + '</div>';
       }
-      if (log.removedSites && log.removedSites.length > 0) {
-        html += '<div style="font-size:0.8rem;color:var(--red);margin-top:2px">- ' + log.removedSites.map(s => s.name || s.key).join(', ') + '</div>';
+      if (removedCount > 0) {
+        const shown = (log.removedSites || []).map(s => s.name || s.key).join(', ');
+        html += '<div style="font-size:0.8rem;color:var(--red);margin-top:2px">- ' + esc(shown) + (log.removedTruncated ? ' … +' + (removedCount - (log.removedSites || []).length) + ' more' : '') + '</div>';
       }
-      if (log.failedSources && log.failedSources.length > 0) {
-        html += '<div style="font-size:0.75rem;color:var(--amber);margin-top:2px">Failed: ' + log.failedSources.map(s => s.name).join(', ') + '</div>';
+      if (failedCount > 0) {
+        const shown = (log.failedSources || []).map(s => s.name).join(', ');
+        html += '<div style="font-size:0.75rem;color:var(--amber);margin-top:2px">Failed: ' + esc(shown) + (log.failedTruncated ? ' … +' + (failedCount - (log.failedSources || []).length) + ' more' : '') + '</div>';
       }
       if (log.errorMessage) {
         html += '<div style="font-size:0.75rem;color:var(--red);margin-top:2px">Error: ' + esc(log.errorMessage) + '</div>';
@@ -3066,14 +3084,7 @@ async function saveAutoClean() {
   setTimeout(() => $('autoCleanStatus').textContent = '', 2000);
 }
 
-// ─── Init new settings ───────
-loadLiveDisabled();
-loadLiveMergeMode();
-loadSmartBaseUrl();
-loadProbeDepth();
-loadAutoClean();
-loadIgnoreAggregatedLives();
-
+// ─── Init shell (data loads on tab activation) ───────
 applyTheme(getTheme());
 initThemeDropdown();
 loadBgFromServer();
