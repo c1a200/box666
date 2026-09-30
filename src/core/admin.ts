@@ -834,7 +834,7 @@ const translations = {
     speedTestToggle:'Media Site Speed Test', speedTestLabel:'Enable speed testing and remove unreachable media sites during aggregation', speedTestDesc:'This tests media-site API endpoints during aggregation. It is separate from search-quality grading and site-content probing.',
     edgeProxies:'Edge Function Proxies', edgeProxiesDesc:'Configure edge function URLs for proxy fallback (fetch retry + image CDN). Local Docker mode only.',
     storageStatus:'Storage Status', storageStatusDesc:'Shows remote persistence health. Render local SQLite is only a cache; critical settings count as saved only after the remote KV write succeeds.',
-    storageMode:'Mode', storageRemoteConfigured:'Remote KV configured', storageNamespace:'Namespace (masked)', storageRemoteTimeout:'Remote timeout', storageLastRead:'Last remote read', storageLastWrite:'Last remote write', storagePendingWrites:'Pending writes', storageCoolingDown:'Remote cooling down', storageLastError:'Last remote error', yes:'Yes', no:'No',
+    storageMode:'Mode', storageRemoteConfigured:'Remote KV configured', storageNamespace:'Namespace (masked)', storageRemoteTimeout:'Remote timeout', storageLastRead:'Last remote read', storageLastWrite:'Last remote write', storagePendingWrites:'Pending writes', storageCoolingDown:'Remote cooling down', storageLastError:'Last remote error', storageSkippedLocalWrites:'Local-only writes skipped', storageLastSkippedKey:'Last local-only key', yes:'Yes', no:'No',
     refreshing:'Refreshing...', loading:'Loading...',
     cronEvery1h:'Every 1 hour', cronEvery3h:'Every 3 hours', cronEvery6h:'Every 6 hours',
     cronEvery12h:'Every 12 hours', cronEveryDay:'Once a day',
@@ -938,7 +938,7 @@ const translations = {
     speedTestToggle:'影视站点测速', speedTestLabel:'聚合时测速并剔除不可达的影视站点', speedTestDesc:'这里测试的是影视站点 API；与下方的搜索源质量分级、站点内容验活不是同一项任务。',
     edgeProxies:'边缘函数代理', edgeProxiesDesc:'配置边缘函数 URL，用于本地 Docker 模式的请求代理回退和图片 CDN 加速',
     storageStatus:'存储状态', storageStatusDesc:'显示远端持久化状态。Render 的本地 SQLite 只作为缓存，关键配置必须成功写入远端 KV 才算保存。',
-    storageMode:'模式', storageRemoteConfigured:'已配置远端 KV', storageNamespace:'命名空间（已脱敏）', storageRemoteTimeout:'远端超时', storageLastRead:'最近远端读取', storageLastWrite:'最近远端写入', storagePendingWrites:'待同步写入', storageCoolingDown:'远端冷却中', storageLastError:'最近远端错误', yes:'是', no:'否',
+    storageMode:'模式', storageRemoteConfigured:'已配置远端 KV', storageNamespace:'命名空间（已脱敏）', storageRemoteTimeout:'远端超时', storageLastRead:'最近远端读取', storageLastWrite:'最近远端写入', storagePendingWrites:'待同步写入', storageCoolingDown:'远端冷却中', storageLastError:'最近远端错误', storageSkippedLocalWrites:'已跳过本地缓存写入', storageLastSkippedKey:'最近跳过键', yes:'是', no:'否',
     refreshing:'刷新中...', loading:'加载中...',
     cronEvery1h:'每 1 小时', cronEvery3h:'每 3 小时', cronEvery6h:'每 6 小时',
     cronEvery12h:'每 12 小时', cronEveryDay:'每天一次',
@@ -1744,6 +1744,8 @@ async function loadStorageDiagnostics() {
     lines.push(t('storageLastWrite') + ': ' + fmtStorageTime(d.lastRemoteWriteAt));
     lines.push(t('storagePendingWrites') + ': ' + String(d.pendingWrites ?? 0));
     lines.push(t('storageCoolingDown') + ': ' + (d.remoteCoolingDown ? t('yes') : t('no')));
+    if (d.skippedLocalOnlyWrites !== undefined) lines.push(t('storageSkippedLocalWrites') + ': ' + String(d.skippedLocalOnlyWrites));
+    if (d.lastSkippedLocalOnlyKey) lines.push(t('storageLastSkippedKey') + ': ' + String(d.lastSkippedLocalOnlyKey));
     if (d.lastRemoteError) lines.push(t('storageLastError') + ': ' + String(d.lastRemoteError));
     box.textContent = lines.join('\n');
     box.className = d.lastRemoteError || d.remoteCoolingDown ? 'status-text error' : '';

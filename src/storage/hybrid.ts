@@ -1,15 +1,16 @@
 // 本地优先 + 远程持久化存储。
 //
 // Render 等 Node 环境的本地 SQLite 只作为缓存，不能被视为持久化存储；
-// 用户配置类 key 必须等远程 KV 写入成功后才向前端返回成功。高频、可重建的任务
-// 状态仍采用后台合并同步，避免聚合进度写入拖慢请求或压垮远端 KV。
+// 用户配置类 key 必须等远程 KV 写入成功后才向前端返回成功。远端 KV 只保存
+// 用户配置和最终可下发结果，任务进度、探测缓存和可重建索引都留在本地，避免
+// 定时测速/JAR 预热把 Cloudflare 免费额度耗尽。
 
 import type { Storage } from './interface';
 
 const REMOTE_RETRY_COOLDOWN_MS = 60_000;
 
-// 这些 key 保存用户配置或持久化运行参数。写入失败时必须让管理接口感知，
-// 否则 Render 重启/重新部署后会像“配置消失”一样回到空值。
+// 用户配置或持久化运行参数：写入失败时必须让管理接口感知，否则 Render
+// 重启/重新部署后会像“配置消失”一样回到空值。
 export const CRITICAL_STORAGE_KEYS = new Set<string>([
   'manual_sources',
   'source_urls',
@@ -39,6 +40,76 @@ export const CRITICAL_STORAGE_KEYS = new Set<string>([
   'search_quality_schedule',
 ]);
 
+// 最终下发/恢复所需的派生结果。它们数量有界，变化频率低，允许后台同步；
+// 远端额度不足时只会影响缓存重建，不会静默丢失用户配置。
+export const DURABLE_STORAGE_KEYS = new Set<string>([
+  'merged_config',
+  'merged_config_full',
+  'startup_site_pool',
+  'last_update',
+  'live_merged_data',
+  'live_merged_txt',
+  'live_merged_txt_version',
+  'live_proxy_manifest',
+  'search_quality_pool',
+  'search_quality_snapshot',
+  'search_quality_candidates',
+]);
+
+// 这些前缀属于最终结果/派生内容，而不是任务进度。
+export const DURABLE_STORAGE_PREFIXES = [
+  'inline_config_',
+  'jar:',
+  'live_txt:',
+] as const;
+
+// 明确排除：这些 key 高频、可重建，必须只写本地。
+export const LOCAL_ONLY_STORAGE_KEYS = new Set<string>([
+  'jar_ready_index',
+  'source_health',
+  'site_health_map',
+  'site_snapshot',
+  'builder_source_map',
+  'agg_logs',
+  'dirty_marker',
+  'parse_health_report',
+  'search_quota_report',
+  'channel_probe_status',
+  'channel_speed_map',
+  'channel_merged_tree',
+  'live_merge_report',
+  'live_source_cache',
+  'live_runtime_txt',
+  'live_runtime_txt_version',
+  'live_runtime_empty_at',
+  'search_quality_status',
+]);
+
+export const LOCAL_ONLY_STORAGE_PREFIXES = [
+  'jar_bin:',
+] as const;
+
+function hasPrefix(key: string, prefixes: readonly string[]): boolean {
+  return prefixes.some((prefix) => key.startsWith(prefix));
+}
+
+export function isCriticalStorageKey(key: string): boolean {
+  return CRITICAL_STORAGE_KEYS.has(key);
+}
+
+export function isLocalOnlyStorageKey(key: string): boolean {
+  return LOCAL_ONLY_STORAGE_KEYS.has(key) || hasPrefix(key, LOCAL_ONLY_STORAGE_PREFIXES);
+}
+
+export function isDurableStorageKey(key: string): boolean {
+  return DURABLE_STORAGE_KEYS.has(key) || hasPrefix(key, DURABLE_STORAGE_PREFIXES);
+}
+
+export function shouldSyncToRemote(key: string): boolean {
+  if (isLocalOnlyStorageKey(key)) return false;
+  return isCriticalStorageKey(key) || isDurableStorageKey(key);
+}
+
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -64,6 +135,9 @@ export class HybridStorage implements Storage {
   private lastRemoteWriteAt: string | undefined;
   private lastRemoteError: string | undefined;
   private lastRemoteErrorAt: string | undefined;
+  private skippedLocalOnlyWrites = 0;
+  private lastSkippedLocalOnlyKey: string | undefined;
+  private lastSkippedLocalOnlyAt: string | undefined;
 
   constructor(local: Storage, remote: Storage) {
     this.local = local;
@@ -142,6 +216,10 @@ export class HybridStorage implements Storage {
     const localValue = await this.local.get(key);
     if (localValue !== null) return localValue;
 
+    // 可重建缓存不能在重启后从远端恢复旧索引，否则会误判本地 JAR
+    // 仍然存在，实际读取文件时又回退到慢速上游。
+    if (isLocalOnlyStorageKey(key)) return null;
+
     if (this.isRemoteCoolingDown()) return null;
 
     try {
@@ -161,7 +239,14 @@ export class HybridStorage implements Storage {
   async put(key: string, value: string): Promise<void> {
     await this.local.put(key, value);
 
-    if (CRITICAL_STORAGE_KEYS.has(key)) {
+    if (isLocalOnlyStorageKey(key)) {
+      this.skippedLocalOnlyWrites++;
+      this.lastSkippedLocalOnlyKey = key;
+      this.lastSkippedLocalOnlyAt = new Date().toISOString();
+      return;
+    }
+
+    if (isCriticalStorageKey(key)) {
       // 关键配置必须同步写远端并确认成功；否则管理端不能误报“已保存”。
       // 先记录 pending，防止后台旧值同步完成后删除新值。
       this.pendingWrites.set(key, value);
@@ -177,7 +262,9 @@ export class HybridStorage implements Storage {
       }
     }
 
-    // 可重建状态/进度采用尽力而为的合并后台同步，不阻塞应用请求。
+    if (!isDurableStorageKey(key)) return;
+
+    // 最终派生结果采用尽力而为的合并后台同步，不阻塞应用请求。
     this.pendingWrites.set(key, value);
     void this.flushRemoteWrites();
   }
@@ -208,6 +295,12 @@ export class HybridStorage implements Storage {
       pendingKeys: [...this.pendingWrites.keys()],
       remoteCoolingDown: this.isRemoteCoolingDown(),
       criticalKeys: [...CRITICAL_STORAGE_KEYS],
+      durableKeys: [...DURABLE_STORAGE_KEYS],
+      localOnlyKeys: [...LOCAL_ONLY_STORAGE_KEYS],
+      localOnlyPrefixes: [...LOCAL_ONLY_STORAGE_PREFIXES],
+      skippedLocalOnlyWrites: this.skippedLocalOnlyWrites,
+      lastSkippedLocalOnlyKey: this.lastSkippedLocalOnlyKey,
+      lastSkippedLocalOnlyAt: this.lastSkippedLocalOnlyAt,
     };
   }
 }
