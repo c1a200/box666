@@ -727,10 +727,26 @@ export function createApp(deps: AppDeps): Hono {
     return JSON.stringify(parsed);
   }
 
+  function repairCfCompatibilityResponse(body: string): string {
+    if (!config.workerBaseUrl) return body;
+
+    let parsed: TVBoxConfig;
+    try {
+      parsed = JSON.parse(body) as TVBoxConfig;
+    } catch {
+      return body;
+    }
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.sites)) return body;
+
+    if (!applyCloudflareCompatibility(parsed)) return body;
+    return JSON.stringify(parsed);
+  }
+
   function configBody(body: string, headers: Record<string, string>): Response {
     // 不手工压缩：Cloudflare 边缘可能在客户端未请求 gzip 时剥离
     // Content-Encoding，却保留压缩字节，导致 TVBox/影视仓 JSON 解析失败。
     // 始终保持原始 JSON，由平台按 Accept-Encoding 正常协商压缩。
+    body = repairCfCompatibilityResponse(body);
     return new Response(body, {
       status: 200,
       headers: { ...headers, Vary: 'Accept-Encoding' },
