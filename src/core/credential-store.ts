@@ -339,6 +339,7 @@ export async function saveCredential(storage: Storage, credential: CloudCredenti
         nextCredential = {
           ...credential,
           credential: { ...credential.credential, cookie: prepared },
+          obtainedAt: new Date().toISOString(),
         };
       }
     }

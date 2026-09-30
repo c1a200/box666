@@ -317,6 +317,110 @@ export function createApp(deps: AppDeps): Hono {
     return JSON.stringify(parsed);
   }
 
+  const CREDENTIAL_URL_REFRESH_FIELDS: Array<{ field: string; platform: CloudPlatform }> = [
+    { field: 'p123', platform: 'pan123' },
+    { field: 'xunlei', platform: 'thunder' },
+    { field: 'quark', platform: 'quark' },
+    { field: 'uc', platform: 'uc' },
+    { field: 'tianyi', platform: 'tianyi' },
+    { field: 'baidu', platform: 'baidu' },
+  ];
+
+  /**
+   * 刷新响应中已经存在的 /credential/* 地址。聚合结果可能长期保存在 KV 中，
+   * 而客户端 JAR 会按 URL 缓存 Pan.init 返回的 Cookie；凭证更新后，旧的无版本
+   * 地址会让客户端继续使用旧 Cookie。这里只刷新本项目自己的凭证地址。
+   */
+  function refreshCredentialUrlsForResponse(
+    raw: string,
+    credentials: Awaited<ReturnType<typeof loadCredentials>>,
+    baseUrl: string,
+  ): string {
+    const normalizedBaseUrl = baseUrl.trim().replace(/\/+$/, '');
+    if (!raw || !normalizedBaseUrl) return raw;
+
+    let base: URL;
+    try {
+      base = new URL(normalizedBaseUrl);
+    } catch {
+      return raw;
+    }
+
+    let parsed: any;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return raw;
+    }
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.sites)) return raw;
+
+    let changed = false;
+    for (const site of parsed.sites) {
+      if (!site || typeof site !== 'object' || site.ext === undefined || site.ext === null) continue;
+
+      let ext: Record<string, any>;
+      let stringifyExt = false;
+      if (typeof site.ext === 'object' && !Array.isArray(site.ext)) {
+        ext = site.ext as Record<string, any>;
+      } else if (typeof site.ext === 'string' && site.ext.trim()) {
+        try {
+          const decoded = JSON.parse(site.ext);
+          if (!decoded || typeof decoded !== 'object' || Array.isArray(decoded)) continue;
+          ext = decoded as Record<string, any>;
+          stringifyExt = true;
+        } catch {
+          continue;
+        }
+      } else {
+        continue;
+      }
+
+      let extChanged = false;
+      for (const { field, platform } of CREDENTIAL_URL_REFRESH_FIELDS) {
+        const credential = credentials.get(platform);
+        if (!isPanInitCredentialDistributable(platform, credential)) continue;
+
+        const value = ext[field];
+        if (typeof value !== 'string' || !value.trim()) continue;
+
+        let url: URL;
+        try {
+          url = new URL(value.trim());
+        } catch {
+          continue;
+        }
+        if (url.origin !== base.origin) continue;
+
+        const basePath = base.pathname.replace(/\/+$/, '');
+        const expectedPath = `${basePath}/credential/${field}`;
+        if (url.pathname.replace(/\/+$/, '') !== expectedPath) continue;
+
+        const revision = Math.floor(Date.parse(credential?.obtainedAt || '') / 1000);
+        if (!Number.isFinite(revision) || revision <= 0) continue;
+        const version = String(revision);
+        if (url.searchParams.get('v') === version) continue;
+
+        url.searchParams.set('v', version);
+        ext[field] = url.toString();
+        extChanged = true;
+      }
+
+      if (extChanged) {
+        if (stringifyExt) site.ext = JSON.stringify(ext);
+        changed = true;
+      }
+    }
+
+    return changed ? JSON.stringify(parsed) : raw;
+  }
+
+  async function refreshCredentialUrlsForResponseBody(raw: string, baseUrl: string): Promise<string> {
+    if ((await storage.get(KV_CREDENTIAL_DISTRIBUTION_ENABLED)) === 'false') return raw;
+    const credentials = await loadCredentials(storage);
+    if (credentials.size === 0) return raw;
+    return refreshCredentialUrlsForResponse(raw, credentials, baseUrl);
+  }
+
   async function reinjectCredentialsIntoOutputs(): Promise<void> {
     const enabled = (await storage.get(KV_CREDENTIAL_DISTRIBUTION_ENABLED)) !== 'false';
     if (!enabled) {
@@ -648,6 +752,7 @@ export function createApp(deps: AppDeps): Hono {
     const baseUrl = await resolveBaseUrl(c);
     if (baseUrl instanceof Response) return baseUrl;
     cached = applyBaseUrlPlaceholder(cached, baseUrl);
+    cached = await refreshCredentialUrlsForResponseBody(cached, baseUrl);
 
     return configBody(cached, {
       'Content-Type': 'application/json; charset=utf-8',
@@ -894,6 +999,7 @@ export function createApp(deps: AppDeps): Hono {
     const baseUrl = await resolveBaseUrl(c);
     if (baseUrl instanceof Response) return baseUrl;
     cached = applyBaseUrlPlaceholder(cached, baseUrl);
+    cached = await refreshCredentialUrlsForResponseBody(cached, baseUrl);
     return configBody(cached, {
       'Content-Type': 'application/json; charset=utf-8',
       'Cache-Control': 'no-store, no-cache, must-revalidate',
@@ -914,6 +1020,7 @@ export function createApp(deps: AppDeps): Hono {
     const baseUrl = await resolveBaseUrl(c);
     if (baseUrl instanceof Response) return baseUrl;
     cached = applyBaseUrlPlaceholder(cached, baseUrl);
+    cached = await refreshCredentialUrlsForResponseBody(cached, baseUrl);
     return configBody(cached, {
       'Content-Type': 'application/json; charset=utf-8',
       'Cache-Control': 'no-store, no-cache, must-revalidate',
