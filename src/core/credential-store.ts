@@ -218,6 +218,89 @@ function sanitizeCloudCredential(credential: CloudCredential): CloudCredential |
   if (Object.keys(normalized.credential).length === 0) return null;
   return normalized;
 }
+function parseCookiePairs(cookie: string): Map<string, string> {
+  const pairs = new Map<string, string>();
+  for (const part of cookie.split(';')) {
+    const item = part.trim();
+    if (!item) continue;
+    const eq = item.indexOf('=');
+    if (eq <= 0) continue;
+    const name = item.slice(0, eq).trim();
+    const value = item.slice(eq + 1).trim();
+    if (name && value) pairs.set(name, value);
+  }
+  return pairs;
+}
+
+function cookiePairsToString(pairs: Map<string, string>): string {
+  return [...pairs.entries()].map(([name, value]) => name + '=' + value).join('; ');
+}
+
+function setCookieValues(headers: Headers): string[] {
+  const getSetCookie = (headers as any).getSetCookie;
+  if (typeof getSetCookie === 'function') {
+    const values = getSetCookie.call(headers);
+    if (Array.isArray(values) && values.length > 0) return values;
+  }
+  const raw = headers.get('set-cookie') || '';
+  return raw ? raw.split(/,(?=\s*[^;,]+=)/g).map((value) => value.trim()).filter(Boolean) : [];
+}
+
+/** Normalize a Quark cookie without changing the cookie set. */
+export function normalizeQuarkCookie(cookie: string): string {
+  return cookiePairsToString(parseCookiePairs(cookie));
+}
+
+/** Merge the two session cookies Quark may return on API requests. */
+export function mergeQuarkCookie(cookie: string, setCookies: string[]): string {
+  const pairs = parseCookiePairs(cookie);
+  for (const setCookie of setCookies) {
+    const first = setCookie.split(';', 1)[0]?.trim();
+    if (!first) continue;
+    const eq = first.indexOf('=');
+    if (eq <= 0) continue;
+    const name = first.slice(0, eq).trim();
+    const value = first.slice(eq + 1).trim();
+    if (!/^__(?:pus|puus)$/i.test(name) || !value) continue;
+    const existing = [...pairs.keys()].find((key) => key.toLowerCase() === name.toLowerCase());
+    pairs.set(existing || name, value);
+  }
+  return cookiePairsToString(pairs);
+}
+
+/**
+ * Complete a Quark login cookie.
+ *
+ * The QR flow normally returns __pus first. Quark adds __puus on the first
+ * drive-pc request; some bundled JARs expect it during Pan.init, so fetch and
+ * persist it before a credential URL is handed to a client.
+ */
+export async function prepareQuarkCookie(cookie: string, timeoutMs = 2400): Promise<string> {
+  const normalized = normalizeQuarkCookie(cookie);
+  if (!normalized || /(?:^|;\s*)__puus=/i.test(normalized)) return normalized;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch('https://drive-pc.quark.cn/1/clouddrive/config?pr=ucpro&fr=pc', {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) quark-cloud-drive/3.2.0 Chrome/100.0.4896.160',
+        'Referer': 'https://pan.quark.cn/',
+        'Accept': 'application/json, text/plain, */*',
+        'Cookie': normalized,
+      },
+      signal: controller.signal,
+    });
+    if (!response.ok) return normalized;
+    return mergeQuarkCookie(normalized, setCookieValues(response.headers));
+  } catch {
+    // Credential distribution must still work if the refresh is temporarily unavailable.
+    return normalized;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 
 // ─── 凭证 CRUD ──────────────────────────────────────────
 
@@ -242,7 +325,21 @@ export async function loadCredentials(storage: Storage): Promise<Map<CloudPlatfo
 }
 
 export async function saveCredential(storage: Storage, credential: CloudCredential): Promise<void> {
-  const sanitized = sanitizeCloudCredential(credential);
+  let nextCredential = credential;
+  if (credential.platform === 'quark') {
+    const cookie = credential.credential.cookie?.trim();
+    if (cookie) {
+      const prepared = await prepareQuarkCookie(cookie);
+      if (prepared !== cookie) {
+        nextCredential = {
+          ...credential,
+          credential: { ...credential.credential, cookie: prepared },
+        };
+      }
+    }
+  }
+
+  const sanitized = sanitizeCloudCredential(nextCredential);
   if (!sanitized) throw new Error('credential must contain at least one non-empty string');
   const existing = await loadCredentials(storage);
   existing.set(sanitized.platform, sanitized);

@@ -27,7 +27,7 @@ import {
   updateQualityStatus,
   excludedQualityKeys,
 } from './core/quality';
-import { isPanInitCredentialDistributable, loadCredentials, saveCredential, deleteCredential, loadCredentialPolicy, saveCredentialPolicy, normalizeCredentialInput } from './core/credential-store';
+import { isPanInitCredentialDistributable, loadCredentials, saveCredential, deleteCredential, loadCredentialPolicy, saveCredentialPolicy, normalizeCredentialInput, prepareQuarkCookie } from './core/credential-store';
 import { generateQR, pollQRStatus, passwordLogin, PLATFORM_NAMES, QR_PLATFORMS, PASSWORD_PLATFORMS } from './core/cloud-login';
 import { assessAllSources, isClientCredentialSite } from './core/credential-risk';
 import { generateTokenJson, injectAListDriveCredentials, injectCredentials } from './core/credential-injector';
@@ -1694,7 +1694,9 @@ export function createApp(deps: AppDeps): Hono {
   // Pan.init 初始化数据（Mogg/Wogg 的 ext.p123/quark/... 会直接请求这些 URL）
   const credentialResponseHeaders = {
     'Access-Control-Allow-Origin': '*',
-    'Cache-Control': 'no-cache',
+    'Cache-Control': 'no-store, no-cache, must-revalidate',
+    'Pragma': 'no-cache',
+    'Expires': '0',
   };
   const distributionEnabled = async (): Promise<boolean> => {
     const raw = await storage.get(KV_CREDENTIAL_DISTRIBUTION_ENABLED);
@@ -1710,8 +1712,16 @@ export function createApp(deps: AppDeps): Hono {
     if (!(await distributionEnabled())) return c.body('', 404, credentialResponseHeaders);
     const cred = await getPanInitCredential('quark');
     const cookie = cred?.credential.cookie?.trim();
-    if (!cookie) return c.body('', 404, credentialResponseHeaders);
-    return c.body(cookie, 200, credentialResponseHeaders);
+    if (!cookie || !cred) return c.body('', 404, credentialResponseHeaders);
+
+    const prepared = await prepareQuarkCookie(cookie, 1500);
+    if (prepared !== cookie) {
+      await saveCredential(storage, {
+        ...cred,
+        credential: { ...cred.credential, cookie: prepared },
+      });
+    }
+    return c.body(prepared, 200, credentialResponseHeaders);
   });
 
   app.get('/credential/uc', async (c) => {

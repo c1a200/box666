@@ -1,8 +1,14 @@
 import type { Storage } from './interface';
 
+interface CacheEntry {
+  value: string | null;
+  mtime: number;
+  promise?: Promise<string | null>;
+}
+
 export class MemoryCachedStorage implements Storage {
   private delegate: Storage;
-  private cache = new Map<string, { value: string | null; mtime: number }>();
+  private cache = new Map<string, CacheEntry>();
   private ttlMs: number;
 
   constructor(delegate: Storage, ttlMs = 15000) {
@@ -16,9 +22,27 @@ export class MemoryCachedStorage implements Storage {
     if (entry && (now - entry.mtime < this.ttlMs)) {
       return entry.value;
     }
-    const val = await this.delegate.get(key);
-    this.cache.set(key, { value: val, mtime: now });
-    return val;
+
+    // 同一个 Worker 实例内的并发请求（如 Pan.init 同时初始化多个平台）
+    // 共享一次底层 KV 读取，避免重复等待网络和拖垮 5 秒初始化窗口。
+    if (entry?.promise) return entry.promise;
+
+    const promise = this.delegate.get(key)
+      .then((val) => {
+        this.cache.set(key, { value: val, mtime: Date.now() });
+        return val;
+      })
+      .catch((err) => {
+        if (entry) {
+          this.cache.set(key, { value: entry.value, mtime: entry.mtime });
+        } else {
+          this.cache.delete(key);
+        }
+        throw err;
+      });
+
+    this.cache.set(key, { value: entry?.value ?? null, mtime: entry?.mtime ?? 0, promise });
+    return promise;
   }
 
   async put(key: string, value: string): Promise<void> {
