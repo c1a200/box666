@@ -1198,6 +1198,8 @@ export function createApp(deps: AppDeps): Hono {
 
   // ─── Admin 页面 ────────────────────────────────────────
   app.get('/admin', (c) => {
+    c.header('Cache-Control', 'no-store, no-cache, must-revalidate');
+    c.header('Pragma', 'no-cache');
     return c.html(adminHtml);
   });
 
@@ -1463,7 +1465,7 @@ export function createApp(deps: AppDeps): Hono {
   app.get('/admin/search-quota/report', async (c) => {
     if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
     const raw = await storage.get(KV_SEARCH_QUOTA_REPORT);
-    if (!raw) return c.json({ error: 'No report yet. Run aggregation first.' }, 404);
+    if (!raw) return c.json({ status: 'empty', searchable: null, message: 'No report yet. Run aggregation first.' });
     const report = JSON.parse(raw) as Record<string, unknown>;
     const parseRaw = await storage.get(KV_PARSE_HEALTH_REPORT);
     if (parseRaw) {
