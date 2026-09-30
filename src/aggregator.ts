@@ -4,7 +4,7 @@ import type { Storage } from './storage/interface';
 import type { AppConfig, SourceEntry, SourcedConfig, MacCMSSourceEntry, SourceFetchResult, SourceHealthRecord, AggregationLog, AggLogFailedSource, AggLogSiteChange, TVBoxSite, TVBoxLive, SiteHealthMap } from './core/types';
 import { fetchConfigs } from './core/fetcher';
 import { mergeConfigs, cleanLocalRefs, cleanEmptyEntries } from './core/merger';
-import { applyCloudflareCompatibility } from './core/cf-compat';
+import { applyLegacyWoggCompatibility } from './core/cf-compat';
 import { batchSiteSpeedTest, appendSpeedToName, filterUnreachableSites, type SiteProbeResult } from './core/speedtest';
 import { isClientCredentialSite, getDirectPlatformFromApi } from './core/credential-risk';
 import { macCMSToTVBoxSites, processMacCMSForLocal } from './core/maccms';
@@ -236,10 +236,11 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
   let merged = mergeResult.config;
   const { siteSourceMap, parseSourceMap, liveSourceMap } = mergeResult;
 
-  // CF-only compatibility: the deprecated WoGGGuard shell does not honor the
-  // project's Pan.init credential protocol. Render keeps its own source data.
-  if (config.workerBaseUrl && applyCloudflareCompatibility(merged)) {
-    logger.infoFields('aggregation', 'cf-woggguard-migrated', { key: '玩偶' });
+  // Deployment-agnostic compatibility: the deprecated WoGGGuard shell does
+  // not honor the project's Pan.init credential protocol. Each deployment keeps
+  // its own KV/config data; only this legacy entry is repaired in place.
+  if (applyLegacyWoggCompatibility(merged)) {
+    logger.infoFields('aggregation', 'legacy-woggguard-migrated', { key: '玩偶' });
   }
 
   // 全局 token 接口必须和“凭证下发开关”保持一致：关闭或没有非空凭证时
@@ -337,6 +338,9 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
       highRisk: injReport.skippedHighRisk, unaudited: injReport.skippedUnaudited,
       noRule: injReport.skippedNoRule, noCredential: injReport.skippedNoCredential,
     });
+    if (applyLegacyWoggCompatibility(merged)) {
+      logger.infoFields('aggregation', 'legacy-woggguard-migrated-after-credentials', { key: '玩偶' });
+    }
   } else {
     logger.info('aggregation', 'Step 5.7: No cloud credentials configured, skipping injection');
   }
@@ -368,6 +372,9 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
         noRule: fullReport.skippedNoRule,
         noCredential: fullReport.skippedNoCredential,
       });
+      if (applyLegacyWoggCompatibility(fullConfigSnapshot)) {
+        logger.infoFields('aggregation', 'legacy-woggguard-migrated-full-after-credentials', { key: '玩偶' });
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.warn('aggregation', 'Full config credential injection failed (non-fatal): ' + msg);

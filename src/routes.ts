@@ -9,7 +9,7 @@ import { getRequestBaseUrl, applyBaseUrlPlaceholder, assertHostAllowed } from '.
 import { logger } from './core/logger';
 import { loadGroupOrder, saveGroupOrder } from './core/group-order';
 import { validateMacCMS } from './core/maccms';
-import { applyCloudflareCompatibility } from './core/cf-compat';
+import { applyLegacyWoggCompatibility } from './core/cf-compat';
 import { lookupJarUrl, isMd5Key, base64ToUint8Array, rewriteJarUrls, normalizeJarRequestKey } from './core/jar-proxy';
 import { BASE_URL_PLACEHOLDER } from './core/config';
 import { lookupLiveSource, listLiveProxyEntries, removeLiveProxyEntry } from './core/live-source';
@@ -313,9 +313,10 @@ export function createApp(deps: AppDeps): Hono {
       return raw;
     }
     if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.sites)) return raw;
-    if (config.workerBaseUrl) applyCloudflareCompatibility(parsed);
+    applyLegacyWoggCompatibility(parsed);
     const { sites } = injectCredentials(parsed.sites, credentials, policy, baseUrl);
     parsed.sites = sites;
+    applyLegacyWoggCompatibility(parsed);
     return JSON.stringify(parsed);
   }
 
@@ -727,8 +728,7 @@ export function createApp(deps: AppDeps): Hono {
     return JSON.stringify(parsed);
   }
 
-  function repairCfCompatibilityResponse(body: string): string {
-    if (!config.workerBaseUrl) return body;
+  function repairWoggCompatibilityResponse(body: string): string {
 
     let parsed: TVBoxConfig;
     try {
@@ -738,7 +738,7 @@ export function createApp(deps: AppDeps): Hono {
     }
     if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.sites)) return body;
 
-    if (!applyCloudflareCompatibility(parsed)) return body;
+    if (!applyLegacyWoggCompatibility(parsed)) return body;
     return JSON.stringify(parsed);
   }
 
@@ -746,7 +746,7 @@ export function createApp(deps: AppDeps): Hono {
     // 不手工压缩：Cloudflare 边缘可能在客户端未请求 gzip 时剥离
     // Content-Encoding，却保留压缩字节，导致 TVBox/影视仓 JSON 解析失败。
     // 始终保持原始 JSON，由平台按 Accept-Encoding 正常协商压缩。
-    body = repairCfCompatibilityResponse(body);
+    body = repairWoggCompatibilityResponse(body);
     return new Response(body, {
       status: 200,
       headers: { ...headers, Vary: 'Accept-Encoding' },
@@ -2962,7 +2962,7 @@ export function createApp(deps: AppDeps): Hono {
       } catch { /* ignore parse error */ }
     }
 
-    if (config.workerBaseUrl) applyCloudflareCompatibility(result);
+    applyLegacyWoggCompatibility(result);
 
     // 重新应用 JAR proxy rewrite（与 aggregator Step 7 一致）
     result = await rewriteJarUrls(result, BASE_URL_PLACEHOLDER, storage);
