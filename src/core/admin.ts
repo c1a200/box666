@@ -520,6 +520,16 @@ ${sharedStyles}
 
   <!-- Settings Tab -->
   <div class="tab-panel" id="panelSettings">
+    <!-- Storage Diagnostics -->
+    <div class="section">
+      <div class="section-title" data-i18n="storageStatus">存储状态</div>
+      <div id="storageDiagnostics" style="white-space:pre-wrap;font-family:var(--mono);font-size:0.78rem;line-height:1.6;color:var(--text-secondary);min-height:1.6em">加载中...</div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
+        <button class="btn btn-sm" onclick="loadStorageDiagnostics()" data-i18n="refresh">刷新</button>
+      </div>
+      <div style="margin-top:6px;font-size:0.78rem;color:var(--text-dim);line-height:1.5" data-i18n="storageStatusDesc">显示远端持久化状态。Render 的本地 SQLite 只作为缓存，关键配置必须成功写入远端 KV 才算保存。</div>
+    </div>
+
     <!-- Cron Interval -->
     <div class="section">
       <div class="section-title" data-i18n="cronInterval">Source Aggregation Schedule</div>
@@ -574,6 +584,10 @@ ${sharedStyles}
         <input type="number" id="maxSearchableInput" class="nt-input" style="width:90px" min="0" max="1000" value="0">
         <label class="form-label" style="margin:0" data-i18n="maxParses">解析器上限</label>
         <input type="number" id="maxParsesInput" class="nt-input" style="width:90px" min="0" max="1000" value="0">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:0.85rem">
+          <input type="checkbox" id="retainCredentialSourcesInput">
+          <span data-i18n="retainCredentialSources">保留凭证/JAR 源</span>
+        </label>
         <button class="btn btn-sm" id="searchQuotaSaveBtn" onclick="saveSearchQuota()" data-i18n="save">保存</button>
         <button class="btn btn-sm" onclick="applyRecommendedQuota()" data-i18n="qualityUseRecommended">填入推荐值</button>
         <span class="status-text" id="searchQuotaStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
@@ -819,6 +833,8 @@ const translations = {
     cronInterval:'Source Aggregation Schedule',
     speedTestToggle:'Media Site Speed Test', speedTestLabel:'Enable speed testing and remove unreachable media sites during aggregation', speedTestDesc:'This tests media-site API endpoints during aggregation. It is separate from search-quality grading and site-content probing.',
     edgeProxies:'Edge Function Proxies', edgeProxiesDesc:'Configure edge function URLs for proxy fallback (fetch retry + image CDN). Local Docker mode only.',
+    storageStatus:'Storage Status', storageStatusDesc:'Shows remote persistence health. Render local SQLite is only a cache; critical settings count as saved only after the remote KV write succeeds.',
+    storageMode:'Mode', storageRemoteConfigured:'Remote KV configured', storageNamespace:'Namespace (masked)', storageRemoteTimeout:'Remote timeout', storageLastRead:'Last remote read', storageLastWrite:'Last remote write', storagePendingWrites:'Pending writes', storageCoolingDown:'Remote cooling down', storageLastError:'Last remote error', yes:'Yes', no:'No',
     refreshing:'Refreshing...', loading:'Loading...',
     cronEvery1h:'Every 1 hour', cronEvery3h:'Every 3 hours', cronEvery6h:'Every 6 hours',
     cronEvery12h:'Every 12 hours', cronEveryDay:'Once a day',
@@ -840,7 +856,7 @@ const translations = {
     qualityStarted:'Grading started', qualityAlreadyRunning:'Grading already running', qualityModeCandidate:'candidate pool grading/refresh', qualityModeFull:'full grading', qualityCoverage:'coverage', qualityTestable:'testable', qualityProbed:'probed', qualityNotProbed:'not probed', qualityUntestable:'untestable', qualityCredentialReady:'credential-ready', qualityCredentialPartial:'credential partial/invalid', qualityCredentialMissing:'credential missing', qualityRunCandidateStarted:'Candidate pool grading started (background)', qualityRunFullStarted:'Full grading started (background)',
     qualityScheduleSaved:'Schedule saved', qualityReportRefreshed:'Report refreshed',
     searchQuota:'Client Search Quota',
-    maxSearchable:'Searchable sources', maxQuickSearch:'Quick-search sources', maxStartupQuickSearch:'Startup quick-search sources', startupSiteLimit:'Startup source count', maxParses:'Parser limit', autoSearchLimit:'Auto safe limit', searchQuotaDesc:'This only controls what is served to clients: searchable-source limit and parser limit. Searchable sources = 0 serves every searchable source that passed quality filtering; above 0 keeps them in quality order excellent > good > usable > credential-ready > untestable. Timeout and unusable sources are never served. Untestable means client-login/JAR sources that the server cannot probe; they are kept for clients that can log in. Parser limit defaults to 3; 0 means unlimited. Quick-search, startup quick-search and root-startup limits are automatic deployment-specific caps and need no manual input.', sortSearchBySpeed:'Sort by speed', sortSearchBySpeedDesc:'Uses existing site speed-test results to put faster sources first; no extra network requests. Pinned sources stay first.', leanStartup:'Lean startup', leanStartupDesc:'Removes remote JAR/extension sites from the root startup config to shorten TVBox startup; pinned sources are kept.', maxStartupQuickSearchDesc:'Automatic quick-search cap used by the root startup config. Full config remains available at /config-full.json.', startupOptimizationDesc:'Quick-search and root-startup limits are applied automatically for client performance. The root address may return a trimmed startup config; /config-full.json still contains the full searchable set.', startupMode:'Startup mode', startupModeLean:'Lean', startupModeFull:'Full', startupModeDesc:'Lean serves a trimmed config at the root address for faster startup. Full is still available at /config-full.json.', pruneDeadParses:'Prune dead parsers', pruneDeadParsesDesc:'Probes parser endpoints and removes confirmed failures/timeouts so clients do not wait for each dead parser during startup.',
+    maxSearchable:'Searchable sources', maxQuickSearch:'Quick-search sources', maxStartupQuickSearch:'Startup quick-search sources', startupSiteLimit:'Startup source count', maxParses:'Parser limit', retainCredentialSources:'Retain credential/JAR sources', autoSearchLimit:'Auto safe limit', searchQuotaDesc:'This only controls what is served to clients: searchable-source limit and parser limit. Searchable sources = 0 serves every searchable source that passed quality filtering; above 0 keeps them in quality order excellent > good > usable > credential-ready > untestable. Timeout and unusable sources are never served. Untestable means client-login/JAR sources that the server cannot probe; they are kept for clients that can log in. Parser limit defaults to 3; 0 means unlimited. When "Retain credential/JAR sources" is checked, the searchable-source limit applies only to testable excellent/good/usable sources; credential-ready and client-login/JAR sources are retained in addition and do not consume the limit. Quick-search, startup quick-search and root-startup limits are automatic deployment-specific caps and need no manual input.', sortSearchBySpeed:'Sort by speed', sortSearchBySpeedDesc:'Uses existing site speed-test results to put faster sources first; no extra network requests. Pinned sources stay first.', leanStartup:'Lean startup', leanStartupDesc:'Removes remote JAR/extension sites from the root startup config to shorten TVBox startup; pinned sources are kept.', maxStartupQuickSearchDesc:'Automatic quick-search cap used by the root startup config. Full config remains available at /config-full.json.', startupOptimizationDesc:'Quick-search and root-startup limits are applied automatically for client performance. The root address may return a trimmed startup config; /config-full.json still contains the full searchable set.', startupMode:'Startup mode', startupModeLean:'Lean', startupModeFull:'Full', startupModeDesc:'Lean serves a trimmed config at the root address for faster startup. Full is still available at /config-full.json.', pruneDeadParses:'Prune dead parsers', pruneDeadParsesDesc:'Probes parser endpoints and removes confirmed failures/timeouts so clients do not wait for each dead parser during startup.',
     tabSearchQuota:'Search',
     sqSelected:'Active Search Sources', sqQuality:'Quality grades', sqExcellent:'Excellent', sqGood:'Good', sqUsable:'Usable', sqCredentialReady:'Credential-ready', sqUntestable:'Client-login/JAR', sqTimeout:'Timeout', sqUnusable:'Unusable', sqPoolTotal:'Candidate pool', sqNoData:'Run aggregation to see results',
     sqStatsCurrent:'Current actual counts', sqStatsSearchable:'searchable', sqStatsQuick:'quick-search', sqStatsQuickLimit:'auto cap', sqStatsPool:'candidate pool', sqStatsParsers:'Parsers', sqStatsKept:'kept', sqStatsProbed:'probed', sqStatsRemoved:'removed', sqStatsLimit:'limit', sqStatsUnlimited:'unlimited', sqStatsQuality:'Quality grades', sqStatsNoData:'Run aggregation to show quality grades and parser counts.',
@@ -921,6 +937,8 @@ const translations = {
     cronInterval:'源聚合计划',
     speedTestToggle:'影视站点测速', speedTestLabel:'聚合时测速并剔除不可达的影视站点', speedTestDesc:'这里测试的是影视站点 API；与下方的搜索源质量分级、站点内容验活不是同一项任务。',
     edgeProxies:'边缘函数代理', edgeProxiesDesc:'配置边缘函数 URL，用于本地 Docker 模式的请求代理回退和图片 CDN 加速',
+    storageStatus:'存储状态', storageStatusDesc:'显示远端持久化状态。Render 的本地 SQLite 只作为缓存，关键配置必须成功写入远端 KV 才算保存。',
+    storageMode:'模式', storageRemoteConfigured:'已配置远端 KV', storageNamespace:'命名空间（已脱敏）', storageRemoteTimeout:'远端超时', storageLastRead:'最近远端读取', storageLastWrite:'最近远端写入', storagePendingWrites:'待同步写入', storageCoolingDown:'远端冷却中', storageLastError:'最近远端错误', yes:'是', no:'否',
     refreshing:'刷新中...', loading:'加载中...',
     cronEvery1h:'每 1 小时', cronEvery3h:'每 3 小时', cronEvery6h:'每 6 小时',
     cronEvery12h:'每 12 小时', cronEveryDay:'每天一次',
@@ -942,7 +960,7 @@ const translations = {
     qualityStarted:'分级已开始', qualityAlreadyRunning:'分级已在运行', qualityModeCandidate:'候选池分级/重排', qualityModeFull:'全量分级', qualityCoverage:'覆盖率', qualityTestable:'可测试', qualityProbed:'已探测', qualityNotProbed:'未探测', qualityUntestable:'不可测试', qualityCredentialReady:'凭证就绪', qualityCredentialPartial:'凭证部分有效/无效', qualityCredentialMissing:'凭证缺失', qualityRunCandidateStarted:'候选池分级已开始（后台运行）', qualityRunFullStarted:'全量分级已开始（后台运行）',
     qualityScheduleSaved:'计划已保存', qualityReportRefreshed:'报告已刷新',
     searchQuota:'应用端搜索配额',
-    maxSearchable:'可搜索源上限', maxQuickSearch:'快速搜索源上限', maxStartupQuickSearch:'启动快速源上限', startupSiteLimit:'启动源数量', maxParses:'解析器上限', autoSearchLimit:'自动安全配额', searchQuotaDesc:'这里只影响下发到应用端的数量：可搜索源上限和解析器上限。可搜索源上限填 0 表示下发全部通过质量筛选的搜索源；填写大于 0 时，按“优 > 良 > 可用 > 凭证就绪 > 客户端登录/JAR”的质量顺序保留，超时和不可用不会下发。客户端登录/JAR 表示服务端无法直接验证、但客户端可用自身登录凭证使用，并非不可用。解析器上限默认推荐 3；填 0 表示不限制。快速搜索源、启动快速源和启动源数量由系统按部署自动限制，无需手动填写。', sortSearchBySpeed:'按测速速度排序', sortSearchBySpeedDesc:'复用现有站点测速结果，将较快的源排在前面；不会额外发起测速请求。置顶源始终最前。', leanStartup:'轻量启动', leanStartupDesc:'根配置启动阶段去掉远程 JAR/扩展站点，缩短影视仓/TVBox 启动时间；置顶源仍保留。', maxStartupQuickSearchDesc:'系统自动用于根地址启动配置的快速搜索上限；完整配置仍可通过 /config-full.json 获取。', startupOptimizationDesc:'快速搜索源和根地址启动源由系统自动限制，用于兼顾启动速度；根地址可能返回裁剪后的启动配置，/config-full.json 仍保留完整搜索源。', startupMode:'启动模式', startupModeLean:'轻量', startupModeFull:'完整', startupModeDesc:'轻量模式在根地址返回裁剪后的启动配置以加快启动；完整配置仍可通过 /config-full.json 获取。', pruneDeadParses:'剔除失效解析器', pruneDeadParsesDesc:'主动探测解析器地址并剔除确认超时或失效的项，避免客户端启动时逐个等待死解析器。',
+    maxSearchable:'可搜索源上限', maxQuickSearch:'快速搜索源上限', maxStartupQuickSearch:'启动快速源上限', startupSiteLimit:'启动源数量', maxParses:'解析器上限', retainCredentialSources:'保留凭证/JAR 源', autoSearchLimit:'自动安全配额', searchQuotaDesc:'这里只影响下发到应用端的数量：可搜索源上限和解析器上限。可搜索源上限填 0 表示下发全部通过质量筛选的搜索源；填写大于 0 时，按“优 > 良 > 可用 > 凭证就绪 > 客户端登录/JAR”的质量顺序保留，超时和不可用不会下发。客户端登录/JAR 表示服务端无法直接验证、但客户端可用自身登录凭证使用，并非不可用。解析器上限默认推荐 3；填 0 表示不限制。勾选“保留凭证/JAR 源”后，可搜索源上限只限制优/良/可用等可测速源；凭证就绪和客户端登录/JAR 源会额外保留，不挤占可搜索源上限。快速搜索源、启动快速源和启动源数量由系统按部署自动限制，无需手动填写。', sortSearchBySpeed:'按测速速度排序', sortSearchBySpeedDesc:'复用现有站点测速结果，将较快的源排在前面；不会额外发起测速请求。置顶源始终最前。', leanStartup:'轻量启动', leanStartupDesc:'根配置启动阶段去掉远程 JAR/扩展站点，缩短影视仓/TVBox 启动时间；置顶源仍保留。', maxStartupQuickSearchDesc:'系统自动用于根地址启动配置的快速搜索上限；完整配置仍可通过 /config-full.json 获取。', startupOptimizationDesc:'快速搜索源和根地址启动源由系统自动限制，用于兼顾启动速度；根地址可能返回裁剪后的启动配置，/config-full.json 仍保留完整搜索源。', startupMode:'启动模式', startupModeLean:'轻量', startupModeFull:'完整', startupModeDesc:'轻量模式在根地址返回裁剪后的启动配置以加快启动；完整配置仍可通过 /config-full.json 获取。', pruneDeadParses:'剔除失效解析器', pruneDeadParsesDesc:'主动探测解析器地址并剔除确认超时或失效的项，避免客户端启动时逐个等待死解析器。',
     tabSearchQuota:'搜索',
     sqSelected:'活跃搜索源', sqQuality:'质量分级', sqExcellent:'优', sqGood:'良', sqUsable:'可用', sqCredentialReady:'凭证就绪', sqUntestable:'客户端登录/JAR', sqTimeout:'超时', sqUnusable:'不可用', sqPoolTotal:'候选池', sqNoData:'执行聚合后查看结果',
     sqStatsCurrent:'当前实际数量', sqStatsSearchable:'可搜索源', sqStatsQuick:'快速搜索', sqStatsQuickLimit:'自动上限', sqStatsPool:'候选池', sqStatsParsers:'解析器', sqStatsKept:'最终保留', sqStatsProbed:'探测', sqStatsRemoved:'剔除', sqStatsLimit:'上限', sqStatsUnlimited:'不限制', sqStatsQuality:'质量分级', sqStatsNoData:'执行聚合后显示质量分级和解析器数量。',
@@ -1032,6 +1050,7 @@ async function loadAll() {
   loadGroupOrder();
   loadBgSettings();
   loadAggLogs();
+  loadStorageDiagnostics();
 }
 
 async function loadStatus() {
@@ -1703,6 +1722,36 @@ async function exportLives() {
   btn.className = 'btn btn-sm';
 }
 
+// --- Storage Diagnostics ---
+function fmtStorageTime(value) {
+  if (!value) return '-';
+  try { return new Date(value).toLocaleString(); } catch { return String(value); }
+}
+async function loadStorageDiagnostics() {
+  const box = $('storageDiagnostics');
+  if (!box) return;
+  box.textContent = t('loading');
+  try {
+    const res = await auth.authFetch('/admin/storage-diagnostics');
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || t('failedLoadStatus'));
+    const lines = [];
+    lines.push(t('storageMode') + ': ' + (d.mode || 'direct'));
+    lines.push(t('storageRemoteConfigured') + ': ' + (d.remoteConfigured ? t('yes') : t('no')));
+    if (d.namespace) lines.push(t('storageNamespace') + ': ' + String(d.namespace));
+    if (d.remoteTimeoutMs) lines.push(t('storageRemoteTimeout') + ': ' + String(d.remoteTimeoutMs) + ' ms');
+    lines.push(t('storageLastRead') + ': ' + fmtStorageTime(d.lastRemoteReadAt));
+    lines.push(t('storageLastWrite') + ': ' + fmtStorageTime(d.lastRemoteWriteAt));
+    lines.push(t('storagePendingWrites') + ': ' + String(d.pendingWrites ?? 0));
+    lines.push(t('storageCoolingDown') + ': ' + (d.remoteCoolingDown ? t('yes') : t('no')));
+    if (d.lastRemoteError) lines.push(t('storageLastError') + ': ' + String(d.lastRemoteError));
+    box.textContent = lines.join('\n');
+    box.className = d.lastRemoteError || d.remoteCoolingDown ? 'status-text error' : '';
+  } catch (err) {
+    box.textContent = (err && err.message) ? err.message : t('failedLoadStatus');
+    box.className = 'status-text error';
+  }
+}
 // --- Name Transform ---
 async function loadNameTransform() {
   try {
@@ -1955,6 +2004,7 @@ async function loadSearchQuota() {
     $('maxStartupQuickSearchInput').value = 0;
     $('startupSiteLimitInput').value = 0;
     $('maxParsesInput').value = d.maxParses ?? 0;
+    $('retainCredentialSourcesInput').checked = d.retainCredentialSources === true;
     $('autoSearchLimitInput').checked = false;
     $('sortSearchBySpeedInput').checked = true;
     $('leanStartupInput').checked = true;
@@ -1975,6 +2025,7 @@ async function saveSearchQuota() {
     maxStartupQuickSearch: 0,
     startupSiteLimit: 0,
     maxParses: parseInt($('maxParsesInput').value) || 0,
+    retainCredentialSources: $('retainCredentialSourcesInput').checked,
     autoLimit: false,
     sortBySpeed: true,
     leanStartup: true,

@@ -253,6 +253,7 @@ export interface SearchQuotaConfig {
   startupMode?: 'lean' | 'full';// 客户端根配置模式：lean=快速启动，full=完整功能
   pruneDeadParses?: boolean;    // 聚合时探测并剔除确认失效的解析器
   maxParses?: number;           // 健康解析器上限，0 = 不限制
+  retainCredentialSources?: boolean; // 额外保留凭证就绪与客户端登录/JAR 源，不占用可测速源上限
   quotaSchemaVersion?: number;  // 自动配额迁移版本
 }
 // 搜索配额报告

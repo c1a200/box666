@@ -3,4 +3,5 @@
 export interface Storage {
   get(key: string): Promise<string | null>;
   put(key: string, value: string): Promise<void>;
+  getDiagnostics?(): Record<string, unknown> | Promise<Record<string, unknown>>;
 }

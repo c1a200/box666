@@ -62,4 +62,11 @@ export class CloudflareKVStorage implements Storage {
       throw err;
     }
   }
+
+  getDiagnostics(): Record<string, unknown> {
+    return {
+      namespaceId: this.namespaceId,
+      timeoutMs: this.timeoutMs,
+    };
+  }
 }

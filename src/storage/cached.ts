@@ -50,6 +50,10 @@ export class MemoryCachedStorage implements Storage {
     this.cache.set(key, { value, mtime: Date.now() });
   }
 
+  getDiagnostics(): Record<string, unknown> | Promise<Record<string, unknown>> {
+    return this.delegate.getDiagnostics?.() ?? { mode: 'direct', remoteConfigured: false };
+  }
+
   // Helper to clear cache (e.g. after sync completion)
   clear(): void {
     this.cache.clear();

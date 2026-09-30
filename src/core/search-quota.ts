@@ -2,6 +2,7 @@
 
 import type { TVBoxParse, TVBoxSite, SearchQuotaConfig, SearchQuotaReport, SiteHealthMap, SiteQualityGrade, SiteQualityGrades, SearchQualitySnapshot } from './types';
 import { isSiteProbeable, type SiteProbeResult } from './speedtest';
+import { isClientCredentialSite } from './credential-risk';
 import type { Storage } from '../storage/interface';
 import { KV_SEARCH_QUOTA } from './config';
 const QUOTA_SCHEMA_VERSION = 8;
@@ -38,6 +39,7 @@ function createDefaultSearchQuota(): SearchQuotaConfig {
     maxQuickSearch: defaultQuickSearchLimit(),
     maxStartupQuickSearch: defaultStartupQuickSearchLimit(),
     maxParses: defaultParseLimit(),
+    retainCredentialSources: false,
     autoLimit: false,
     pinnedKeys: [],
     sortBySpeed: true,
@@ -76,6 +78,7 @@ export async function loadSearchQuota(storage: Storage): Promise<SearchQuotaConf
         maxParses: legacy
           ? fallback.maxParses
           : normalizeLimit(parsed.maxParses),
+        retainCredentialSources: parsed.retainCredentialSources === true,
         autoLimit: false,
         pinnedKeys: Array.isArray(parsed.pinnedKeys)
           ? parsed.pinnedKeys.filter((key): key is string => typeof key === 'string')
@@ -102,6 +105,7 @@ export async function saveSearchQuota(storage: Storage, config: SearchQuotaConfi
     maxStartupQuickSearch: fallback.maxStartupQuickSearch,
     startupSiteLimit: 0,
     maxParses: normalizeLimit(config.maxParses),
+    retainCredentialSources: config.retainCredentialSources === true,
     autoLimit: false,
     pinnedKeys: Array.isArray(config.pinnedKeys) ? config.pinnedKeys : [],
     sortBySpeed: config.sortBySpeed === true,
@@ -295,6 +299,18 @@ export function applySearchQuota(
   const pinnedSearchable = pinned.filter(site => site.searchable === 1 && isUsableForSearch(site));
   let candidates = sites.filter(site => site.searchable === 1 && !pinnedKeySet.has(site.key) && isUsableForSearch(site));
 
+  // 可选：凭证就绪与客户端登录/JAR 源额外保留，不占用可测速源 maxSearchable 配额。
+  // 它们仍需排除 timeout/unusable，也不会绕过置顶规则。
+  const retainCredentialSources = config.retainCredentialSources === true;
+  const isExtraCredentialSource = (site: TVBoxSite): boolean => {
+    if (!retainCredentialSources) return false;
+    const persisted = qualityEntries.get(site.key);
+    // 有持久化分级时严格尊重分级结果：timeout/unusable 不能被额外保留。
+    if (persisted) return persisted.grade === 'credential-ready' || persisted.grade === 'untestable';
+    // 无分级数据时按源本身判断，避免候选池尚未建立时误把凭证/JAR 源算入可测速上限。
+    return isClientCredentialSite(site) || !isSiteProbeable(site);
+  };
+
   // 质量分级始终优先参与保留决策；sortBySpeed 只控制同质量级别内是否按速度排序。
   // 这样即使关闭速度排序，快但连续失败/响应无效的源也不会挤掉稍慢但稳定可用的好源。
   const qualityRank: Record<SiteQualityGrade, number> = {
@@ -356,7 +372,9 @@ export function applySearchQuota(
   if (limit > 0) {
     const effectiveLimit = Math.max(limit, pinnedSearchable.length);
     const keepCount = Math.max(0, effectiveLimit - pinnedSearchable.length);
-    keptCandidates = candidates.slice(0, keepCount);
+    const pooledCandidates = candidates.filter(site => !isExtraCredentialSource(site));
+    const retainedCredentialCandidates = candidates.filter(isExtraCredentialSource);
+    keptCandidates = [...pooledCandidates.slice(0, keepCount), ...retainedCredentialCandidates];
 
     const keptKeys = new Set(keptCandidates.map(site => site.key));
     truncated = new Set(

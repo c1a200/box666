@@ -29,12 +29,13 @@ import {
   excludedQualityKeys,
 } from './core/quality';
 import { isPanInitCredentialDistributable, loadCredentials, saveCredential, deleteCredential, loadCredentialPolicy, saveCredentialPolicy, normalizeCredentialInput, prepareQuarkCookie, credentialRevision } from './core/credential-store';
+import { isSiteProbeable } from './core/speedtest';
 import { generateQR, pollQRStatus, passwordLogin, PLATFORM_NAMES, QR_PLATFORMS, PASSWORD_PLATFORMS } from './core/cloud-login';
 import { assessAllSources, isClientCredentialSite } from './core/credential-risk';
 import { generateTokenJson, injectAListDriveCredentials, injectCredentials } from './core/credential-injector';
 import { formatLiveGroupsAsTxt, filterLivesBySource, filterLivesBySourceDetailed, sortLiveGroupsForOutput } from './core/live-merger';
 import { containsBlockedLiveUrl, isBlockedLiveSource, isBlockedLiveUrl } from './core/live-policy';
-import type { TVBoxConfig, TVBoxSite, SearchQuotaConfig, CloudPlatform, CloudCredential, TVBoxLive, TVBoxLiveGroup } from './core/types';
+import type { TVBoxConfig, TVBoxSite, SearchQuotaConfig, SiteQualityGrade, CloudPlatform, CloudCredential, TVBoxLive, TVBoxLiveGroup } from './core/types';
 import { mountChannelProbeRoutes } from './routes/channel-probe-admin';
 import { loadSpeedMap as loadChannelSpeedMap } from './core/channel-probe';
 import { createLogViewerRouter } from './routes/log-viewer';
@@ -634,6 +635,18 @@ export function createApp(deps: AppDeps): Hono {
       qualityPool = null;
     }
 
+    const qualityGradeByKey = new Map<string, SiteQualityGrade>();
+    if (qualityPool && Array.isArray(qualityPool.entries)) {
+      for (const entry of qualityPool.entries) {
+        if (!qualityGradeByKey.has(entry.key)) qualityGradeByKey.set(entry.key, entry.grade);
+      }
+    }
+    const isRetainedCredentialSite = (site: TVBoxSite): boolean => {
+      const grade = qualityGradeByKey.get(site.key);
+      if (grade) return grade === 'credential-ready' || grade === 'untestable';
+      return isClientCredentialSite(site) || !isSiteProbeable(site);
+    };
+
     // KV_MERGED_CONFIG 已经过 applySearchQuota，可能只保留前 N 个搜索源。
     // 质量池需要恢复被旧上限截断的站点，因此先以完整候选快照兜底，再用当前
     // 合并配置覆盖同 key 的最新对象（凭证、代理等字段可能刚刚更新）。
@@ -666,9 +679,9 @@ export function createApp(deps: AppDeps): Hono {
     for (const key of quota.pinnedKeys || []) {
       const site = siteByKey.get(key);
       if (!site || seenPinned.has(key)) continue;
-      if (qualityPool && qualityPool.entries.length > 0) {
-        const entry = qualityPool.entries.find((item) => item.key === key);
-        if (entry && (entry.grade === 'timeout' || entry.grade === 'unusable')) continue;
+      if (qualityGradeByKey.size > 0) {
+        const grade = qualityGradeByKey.get(key);
+        if (grade === 'timeout' || grade === 'unusable') continue;
       }
       seenPinned.add(key);
       pinnedSites.push(site.searchable === 1 ? site : { ...site, searchable: 1 });
@@ -694,8 +707,19 @@ export function createApp(deps: AppDeps): Hono {
     }
 
     // 置顶是用户显式选择，轻量启动时也保留；普通候选才按模式门控。
+    // 可选开关开启后，凭证就绪与客户端登录/JAR 源额外保留，不占可测速源上限。
     const limit = quota.maxSearchable ?? 0;
-    const limitedRest = limit > 0 ? eligibleRest.slice(0, Math.max(0, limit)) : eligibleRest;
+    const retainCredentialSources = quota.retainCredentialSources === true;
+    let limitedRest = eligibleRest;
+    if (limit > 0) {
+      const pooledRest = retainCredentialSources
+        ? eligibleRest.filter((site) => !isRetainedCredentialSite(site))
+        : eligibleRest;
+      const retainedCredentialRest = retainCredentialSources
+        ? eligibleRest.filter(isRetainedCredentialSite)
+        : [];
+      limitedRest = [...pooledRest.slice(0, Math.max(0, limit)), ...retainedCredentialRest];
+    }
 
     parsed.sites = [...pinnedSites, ...limitedRest];
     console.log('[startup] mode=' + (leanStartup ? 'lean' : 'full')
@@ -1177,6 +1201,15 @@ export function createApp(deps: AppDeps): Hono {
     return c.html(adminHtml);
   });
 
+  // ─── 存储诊断（需鉴权，仅返回掩码后的远端信息）─────────
+  app.get('/admin/storage-diagnostics', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+    const diagnostics = await rawStorage.getDiagnostics?.();
+    return c.json(diagnostics || { mode: 'direct', remoteConfigured: false });
+  });
+
   // ─── Admin API（需鉴权）────────────────────────────────
   app.route('/', createSourceManagementRouter({ storage, config, onDirty: markOutputDirty }));
 
@@ -1369,6 +1402,7 @@ export function createApp(deps: AppDeps): Hono {
     if (typeof body.maxParses === 'number' && Number.isFinite(body.maxParses)) {
       current.maxParses = Math.max(0, Math.floor(body.maxParses));
     }
+    if (typeof body.retainCredentialSources === 'boolean') current.retainCredentialSources = body.retainCredentialSources;
     // autoLimit is retired in schema 8; the two user-facing caps are explicit.
     if (typeof body.sortBySpeed === 'boolean') current.sortBySpeed = body.sortBySpeed;
     if (typeof body.leanStartup === 'boolean') current.leanStartup = body.leanStartup;

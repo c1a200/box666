@@ -12,4 +12,11 @@ export class KVStorage implements Storage {
   async put(key: string, value: string): Promise<void> {
     await this.kv.put(key, value);
   }
+
+  getDiagnostics(): Record<string, unknown> {
+    return {
+      mode: 'cloudflare-kv',
+      remoteConfigured: true,
+    };
+  }
 }
