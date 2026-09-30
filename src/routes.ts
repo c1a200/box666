@@ -9,6 +9,7 @@ import { getRequestBaseUrl, applyBaseUrlPlaceholder, assertHostAllowed } from '.
 import { logger } from './core/logger';
 import { loadGroupOrder, saveGroupOrder } from './core/group-order';
 import { validateMacCMS } from './core/maccms';
+import { applyCloudflareCompatibility } from './core/cf-compat';
 import { lookupJarUrl, isMd5Key, base64ToUint8Array, rewriteJarUrls, normalizeJarRequestKey } from './core/jar-proxy';
 import { BASE_URL_PLACEHOLDER } from './core/config';
 import { lookupLiveSource, listLiveProxyEntries, removeLiveProxyEntry } from './core/live-source';
@@ -312,6 +313,7 @@ export function createApp(deps: AppDeps): Hono {
       return raw;
     }
     if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.sites)) return raw;
+    if (config.workerBaseUrl) applyCloudflareCompatibility(parsed);
     const { sites } = injectCredentials(parsed.sites, credentials, policy, baseUrl);
     parsed.sites = sites;
     return JSON.stringify(parsed);
@@ -2943,6 +2945,8 @@ export function createApp(deps: AppDeps): Hono {
         }
       } catch { /* ignore parse error */ }
     }
+
+    if (config.workerBaseUrl) applyCloudflareCompatibility(result);
 
     // 重新应用 JAR proxy rewrite（与 aggregator Step 7 一致）
     result = await rewriteJarUrls(result, BASE_URL_PLACEHOLDER, storage);
