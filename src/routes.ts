@@ -27,7 +27,7 @@ import {
   updateQualityStatus,
   excludedQualityKeys,
 } from './core/quality';
-import { isPanInitCredentialDistributable, loadCredentials, saveCredential, deleteCredential, loadCredentialPolicy, saveCredentialPolicy, normalizeCredentialInput, prepareQuarkCookie } from './core/credential-store';
+import { isPanInitCredentialDistributable, loadCredentials, saveCredential, deleteCredential, loadCredentialPolicy, saveCredentialPolicy, normalizeCredentialInput, prepareQuarkCookie, credentialRevision } from './core/credential-store';
 import { generateQR, pollQRStatus, passwordLogin, PLATFORM_NAMES, QR_PLATFORMS, PASSWORD_PLATFORMS } from './core/cloud-login';
 import { assessAllSources, isClientCredentialSite } from './core/credential-risk';
 import { generateTokenJson, injectAListDriveCredentials, injectCredentials } from './core/credential-injector';
@@ -395,9 +395,8 @@ export function createApp(deps: AppDeps): Hono {
         const expectedPath = `${basePath}/credential/${field}`;
         if (url.pathname.replace(/\/+$/, '') !== expectedPath) continue;
 
-        const revision = Math.floor(Date.parse(credential?.obtainedAt || '') / 1000);
-        if (!Number.isFinite(revision) || revision <= 0) continue;
-        const version = String(revision);
+        const version = credentialRevision(credential);
+        if (!version) continue;
         if (url.searchParams.get('v') === version) continue;
 
         url.searchParams.set('v', version);

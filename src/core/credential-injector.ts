@@ -2,7 +2,7 @@
 
 import type { TVBoxSite, CloudPlatform, CloudCredential, CredentialPolicyConfig } from './types';
 import { assessSourceRisk, getDirectPlatformFromApi, isAListSite, ALIST_PLATFORMS } from './credential-risk';
-import { isCredentialDistributable, isPanInitCredentialDistributable } from './credential-store';
+import { isCredentialDistributable, isPanInitCredentialDistributable, credentialRevision } from './credential-store';
 
 // ─── 注入规则 ────────────────────────────────────────────
 
@@ -533,8 +533,8 @@ function injectPanInitUrls(
   for (const { field, platform } of PAN_INIT_FIELDS) {
     if (allowed && !allowed.has(platform)) continue;
     if (hasPanInitCredential(creds, platform)) {
-      const revision = Math.floor(Date.parse(creds.get(platform)?.obtainedAt || '') / 1000);
-      const query = Number.isFinite(revision) && revision > 0 ? `?v=${revision}` : '';
+      const revision = credentialRevision(creds.get(platform));
+      const query = revision ? `?v=${revision}` : '';
       const url = `${normalizedBaseUrl}/credential/${field}${query}`;
       if (next[field] !== url) {
         next[field] = url;

@@ -213,6 +213,35 @@ export function isPanInitCredentialDistributable(
   }
 }
 
+/**
+ * Build a short, stable, non-secret revision for a credential.
+ *
+ * Client JARs cache Pan.init responses by URL. If a cookie is refreshed but
+ * `obtainedAt` does not change (or two writes land in the same second), the
+ * old `?v=` value can keep the client on a stale credential. Hashing the
+ * credential content guarantees that any content change yields a new URL
+ * without exposing the cookie itself.
+ */
+export function credentialRevision(credential: CloudCredential | undefined): string {
+  if (!credential) return '';
+  const payload = JSON.stringify({
+    platform: credential.platform,
+    credential: credential.credential,
+    status: credential.status || '',
+    expiresAt: credential.expiresAt || '',
+  });
+  let h1 = 0x811c9dc5;
+  let h2 = 0x9e3779b9;
+  for (let i = 0; i < payload.length; i++) {
+    const code = payload.charCodeAt(i);
+    h1 ^= code;
+    h1 = Math.imul(h1, 0x01000193) >>> 0;
+    h2 ^= code + ((h2 << 6) >>> 0) + (h2 >>> 2);
+    h2 >>>= 0;
+  }
+  return h1.toString(36) + h2.toString(36);
+}
+
 function sanitizeCloudCredential(credential: CloudCredential): CloudCredential | null {
   const normalized = normalizeCloudCredential(credential);
   if (Object.keys(normalized.credential).length === 0) return null;
