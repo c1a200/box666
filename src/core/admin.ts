@@ -1760,7 +1760,7 @@ async function loadStorageDiagnostics() {
     if (d.skippedLocalOnlyWrites !== undefined) lines.push(t('storageSkippedLocalWrites') + ': ' + String(d.skippedLocalOnlyWrites));
     if (d.lastSkippedLocalOnlyKey) lines.push(t('storageLastSkippedKey') + ': ' + String(d.lastSkippedLocalOnlyKey));
     if (d.lastRemoteError) lines.push(t('storageLastError') + ': ' + String(d.lastRemoteError));
-    box.textContent = lines.join('\n');
+    box.textContent = lines.join(String.fromCharCode(10));
     box.className = d.lastRemoteError || d.remoteCoolingDown ? 'status-text error' : '';
   } catch (err) {
     box.textContent = (err && err.message) ? err.message : t('failedLoadStatus');
