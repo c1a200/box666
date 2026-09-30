@@ -8,6 +8,11 @@ const MIGRATED_WOGG_KEY = 'Wogg_FishGuard_v2';
 const MIGRATED_WOGG_NAME = '👽️┆玩偶┆4K 「摸鱼儿」';
 const WOGG_JAR_URL =
   'https://ncstatic.clewm.net/rsrc/2026/0508/10/56d0b667615145949789418bff9f22a5.png;md5;B63A0EB8852BB7AB06500C424CCC3DAE';
+const LEGACY_WOGG_API_JAR_MD5S = new Set([
+  '3d161697458ecbcd2651a749db761ba1',
+  '265301f463ec681dcbba91897f20f08b',
+]);
+const LEGACY_WOGG_MIGRATED_KEY_SUFFIX = '_Wogg_B63';
 
 const LEGACY_WOGG_GUARD_API = 'csp_woggguard';
 type ExtRecord = Record<string, unknown>;
@@ -79,6 +84,19 @@ function isHardenedWoggVariant(site: TVBoxSite): boolean {
 }
 
 /**
+ * Migrate the old csp_WoGG JARs used by 玩偶/老刘备-style sources. These JARs
+ * predate the project's Pan.init credential contract and therefore force a
+ * client-side cloud-drive login even after credentials have been injected.
+ * Match both the API and the old JAR fingerprint so shared JAR users such as
+ * AList/WebDAV sources remain untouched.
+ */
+function isLegacyWoggApiJarVariant(site: TVBoxSite): boolean {
+  if (!site.key.startsWith('玩偶') || !hasWoggApi(site)) return false;
+  const md5 = getJarMd5(site);
+  return !!md5 && LEGACY_WOGG_API_JAR_MD5S.has(md5);
+}
+
+/**
  * The old `Wogg` key persisted in TVBox clients after its JAR was replaced.
  * Some clients cache the spider by key and keep executing the previous
  * FishGuard JAR, which ignores Pan.init credential URLs. A stable versioned
@@ -106,11 +124,17 @@ export function applyLegacyWoggCompatibility(config: TVBoxConfig): boolean {
   if (!Array.isArray(sites)) return false;
 
   const legacyTargets = sites.filter(isLegacyWoggGuard);
+  const legacyJarTargets = sites.filter(isLegacyWoggApiJarVariant);
   const hardenedTargets = sites.filter(isHardenedWoggVariant);
   const keyTargets = sites.filter(
     (site) => isCurrentWoggNeedingKeyMigration(site) && !hardenedTargets.includes(site),
   );
-  if (legacyTargets.length === 0 && hardenedTargets.length === 0 && keyTargets.length === 0) return false;
+  if (
+    legacyTargets.length === 0
+    && legacyJarTargets.length === 0
+    && hardenedTargets.length === 0
+    && keyTargets.length === 0
+  ) return false;
 
   const woggDonor =
     sites.find((site) =>
@@ -133,13 +157,14 @@ export function applyLegacyWoggCompatibility(config: TVBoxConfig): boolean {
   const donorJar = hasJarMd5(woggDonor, WOGG_JAR_MD5) ? woggDonor.jar! : WOGG_JAR_URL;
   let changed = false;
 
-  for (const target of [...legacyTargets, ...hardenedTargets, ...keyTargets]) {
+  for (const target of [...legacyTargets, ...legacyJarTargets, ...hardenedTargets, ...keyTargets]) {
+    const migrateLegacyJarKey = isLegacyWoggApiJarVariant(target);
     const migrateKey = isCurrentWoggNeedingKeyMigration(target);
     const targetExt = parseExt(target.ext);
     if (!targetExt) continue;
 
     const nextExt: ExtRecord = { ...targetExt.value };
-    const targetSite = normalizeExtSite(nextExt.site);
+    const targetSite = normalizeExtSite(nextExt.site) ?? normalizeExtSite(nextExt.siteUrl);
     if (!targetSite) {
       nextExt.site = donorSite;
     } else if (targetSite !== nextExt.site) {
@@ -149,7 +174,11 @@ export function applyLegacyWoggCompatibility(config: TVBoxConfig): boolean {
     target.api = WOGG_API;
     target.jar = donorJar;
     target.ext = targetExt.wasString ? JSON.stringify(nextExt) : nextExt;
-    if (migrateKey) {
+    if (migrateLegacyJarKey) {
+      if (!target.key.endsWith(LEGACY_WOGG_MIGRATED_KEY_SUFFIX)) {
+        target.key += LEGACY_WOGG_MIGRATED_KEY_SUFFIX;
+      }
+    } else if (migrateKey) {
       target.key = MIGRATED_WOGG_KEY;
     }
     changed = true;
