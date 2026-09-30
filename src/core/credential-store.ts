@@ -204,6 +204,7 @@ export function isPanInitCredentialDistributable(
     case 'tianyi':
       return !!value('username') && !!value('password');
     case 'quark':
+      return /(?:^|;\s*)__pu(?:us|s)=/i.test(value('cookie'));
     case 'uc':
     case 'baidu':
       return !!value('cookie');

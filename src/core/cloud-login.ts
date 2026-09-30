@@ -229,6 +229,67 @@ function splitSetCookieHeader(header: string): string[] {
   return header.split(/,(?=\s*[^;,]+=)/g).map(s => s.trim()).filter(Boolean);
 }
 
+function cookieHeaderPairs(setCookies: string[]): string[] {
+  const pairs: string[] = [];
+  for (const sc of setCookies) {
+    const first = sc.split(';', 1)[0]?.trim();
+    if (!first) continue;
+    const eq = first.indexOf('=');
+    if (eq <= 0) continue;
+    pairs.push(`${first.slice(0, eq).trim()}=${first.slice(eq + 1).trim()}`);
+  }
+  return pairs;
+}
+
+function mergeCookiePairs(target: Map<string, string>, setCookies: string[]): void {
+  for (const pair of cookieHeaderPairs(setCookies)) {
+    const eq = pair.indexOf('=');
+    if (eq <= 0) continue;
+    target.set(pair.slice(0, eq), pair.slice(eq + 1));
+  }
+}
+
+function getResponseSetCookies(headers: Headers): string[] {
+  const getSetCookie = (headers as any).getSetCookie;
+  if (typeof getSetCookie === 'function') {
+    const values = getSetCookie.call(headers);
+    if (Array.isArray(values) && values.length > 0) return values;
+  }
+  return splitSetCookieHeader(headers.get('set-cookie') || '');
+}
+
+function isRedirectStatus(status: number): boolean {
+  return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
+}
+
+function hasQuarkLoginCookies(cookie: string): boolean {
+  return /(?:^|;\s*)__pu(?:us|s)=/i.test(cookie);
+}
+
+async function collectCookiesFromRedirects(url: string, userAgent: string, maxRedirects = 8): Promise<string> {
+  const cookies = new Map<string, string>();
+  let current = url;
+
+  for (let hop = 0; hop <= maxRedirects; hop++) {
+    const headers: Record<string, string> = { 'User-Agent': userAgent };
+    if (cookies.size > 0) {
+      headers.Cookie = [...cookies.entries()].map(([k, v]) => `${k}=${v}`).join('; ');
+    }
+
+    const resp = await fetch(current, {
+      headers,
+      redirect: 'manual',
+    });
+    mergeCookiePairs(cookies, getResponseSetCookies(resp.headers));
+
+    const location = resp.headers.get('location');
+    if (!isRedirectStatus(resp.status) || !location) break;
+    current = new URL(location, current).toString();
+  }
+
+  return [...cookies.entries()].map(([k, v]) => `${k}=${v}`).join('; ');
+}
+
 // ─── 阿里云盘（Web QR 登录）─────────────────────────────
 
 const aliyunHandler: PlatformLoginHandler = {
@@ -364,23 +425,20 @@ const quarkHandler: PlatformLoginHandler = {
       const serviceTicket = data.data?.members?.service_ticket;
       if (!serviceTicket) return { status: 'error' as QRStatus, message: 'No service ticket' };
 
-      // 用 service ticket 换 cookie
+      // 用 service ticket 换 cookie。夸克会跨多次 302 分批下发 Cookie，
+      // 只读取第一跳会漏掉 __pus/__puus，导致玩偶 JAR 再次要求登录。
       try {
-        const loginResp = await fetch(`https://pan.quark.cn/account/info?st=${serviceTicket}&lw=scan`, {
-          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
-          redirect: 'manual',
-        });
-        const setCookies = (loginResp.headers as any).getSetCookie?.() || [];
-        const cookieParts: string[] = [];
-        for (const sc of setCookies) {
-          const part = sc.split(';')[0];
-          if (part) cookieParts.push(part);
+        const cookie = await collectCookiesFromRedirects(
+          `https://pan.quark.cn/account/info?st=${encodeURIComponent(serviceTicket)}&lw=scan`,
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        );
+        if (!hasQuarkLoginCookies(cookie)) {
+          return {
+            status: 'error' as QRStatus,
+            message: '夸克登录已确认，但未返回完整的登录 Cookie，请重试扫码；如仍失败，请在管理页手动粘贴包含 __pus 或 __puus 的 Cookie',
+          };
         }
-        if (cookieParts.length > 0) {
-          return { status: 'confirmed' as QRStatus, credential: { cookie: cookieParts.join('; ') } };
-        }
-        // 如果拿不到 set-cookie，尝试从响应中提取
-        return { status: 'confirmed' as QRStatus, credential: { cookie: `__st=${serviceTicket}` } };
+        return { status: 'confirmed' as QRStatus, credential: { cookie } };
       } catch (err) {
         return { status: 'error' as QRStatus, message: `Cookie exchange failed: ${err}` };
       }
@@ -465,20 +523,17 @@ const ucHandler: PlatformLoginHandler = {
       if (!serviceTicket) return { status: 'error' as QRStatus, message: 'No service ticket' };
 
       try {
-        const loginResp = await fetch(`https://drive.uc.cn/account/info?st=${serviceTicket}&lw=scan`, {
-          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
-          redirect: 'manual',
-        });
-        const setCookies = (loginResp.headers as any).getSetCookie?.() || [];
-        const cookieParts: string[] = [];
-        for (const sc of setCookies) {
-          const part = sc.split(';')[0];
-          if (part) cookieParts.push(part);
+        const cookie = await collectCookiesFromRedirects(
+          `https://drive.uc.cn/account/info?st=${encodeURIComponent(serviceTicket)}&lw=scan`,
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        );
+        if (!cookie) {
+          return {
+            status: 'error' as QRStatus,
+            message: 'UC 登录已确认，但未返回完整的登录 Cookie，请重试扫码或手动粘贴 Cookie',
+          };
         }
-        if (cookieParts.length > 0) {
-          return { status: 'confirmed' as QRStatus, credential: { cookie: cookieParts.join('; ') } };
-        }
-        return { status: 'confirmed' as QRStatus, credential: { cookie: `__st=${serviceTicket}` } };
+        return { status: 'confirmed' as QRStatus, credential: { cookie } };
       } catch (err) {
         return { status: 'error' as QRStatus, message: `Cookie exchange failed: ${err}` };
       }
