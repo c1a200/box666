@@ -454,13 +454,18 @@ function normalizeSnapshot(raw: unknown): SearchQualitySnapshot | null {
 }
 
 export async function loadQualitySnapshot(storage: Storage): Promise<SearchQualitySnapshot | null> {
-  const raw = await storage.get(KV_SEARCH_QUALITY_SNAPSHOT);
-  if (!raw) return null;
-  try {
-    return normalizeSnapshot(JSON.parse(raw));
-  } catch {
-    return null;
+  // search_quality_pool is the canonical persisted snapshot. Keep a fallback
+  // for old deployments that only wrote the legacy snapshot key.
+  for (const key of [KV_SEARCH_QUALITY_POOL, KV_SEARCH_QUALITY_SNAPSHOT]) {
+    const raw = await storage.get(key);
+    if (!raw) continue;
+    try {
+      return normalizeSnapshot(JSON.parse(raw));
+    } catch {
+      // try the next compatible key
+    }
   }
+  return null;
 }
 
 export async function loadQualityPool(storage: Storage): Promise<SearchQualitySnapshot | null> {
@@ -787,9 +792,9 @@ function buildSnapshot(
 }
 
 async function persistQualitySnapshot(storage: Storage, snapshot: SearchQualitySnapshot): Promise<void> {
-  const serialized = JSON.stringify(snapshot);
-  await storage.put(KV_SEARCH_QUALITY_SNAPSHOT, serialized);
-  await storage.put(KV_SEARCH_QUALITY_POOL, serialized);
+  // Pool is the canonical key consumed by scheduling and downloads. Avoid
+  // writing the same potentially large payload to a second legacy key.
+  await storage.put(KV_SEARCH_QUALITY_POOL, JSON.stringify(snapshot));
 }
 
 export async function persistQualityCandidates(storage: Storage, sites: TVBoxSite[]): Promise<void> {
@@ -891,8 +896,10 @@ export async function runQualityGradingChunk(
   const entries = buildQualityEntries(allSearchable, probeMap, previousEntries, healthMap, credentials);
   const snapshot = buildSnapshot(allSearchable.length, entries, allSearchable);
   await persistQualitySnapshot(storage, snapshot);
-  await persistQualityCandidates(storage, allSearchable);
   const done = start + batch.length >= target.length;
+  // Candidate payloads are static during a chunked run. Persist them at the
+  // start or finish instead of rewriting the full list on every chunk.
+  if (start === 0 || done) await persistQualityCandidates(storage, allSearchable);
   if (done) await markQualityRun(storage, new Date(), mode, timezone);
   return { done, cursor: start + batch.length, processed: batch.length, targetTotal: target.length, mode, snapshot };
 }

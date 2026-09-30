@@ -8,6 +8,7 @@
 import type { Storage } from './interface';
 
 const REMOTE_RETRY_COOLDOWN_MS = 60_000;
+const QUOTA_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
 // 用户配置或持久化运行参数：写入失败时必须让管理接口感知，否则 Render
 // 重启/重新部署后会像“配置消失”一样回到空值。
@@ -131,6 +132,9 @@ export class HybridStorage implements Storage {
   private flushing = false;
   private remoteUnavailableUntil = 0;
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
+  private retryTimerDeadline = 0;
+  private remoteQuotaBlockedUntil: string | undefined;
+  private lastWriteValues = new Map<string, string>();
   private lastRemoteReadAt: string | undefined;
   private lastRemoteWriteAt: string | undefined;
   private lastRemoteError: string | undefined;
@@ -148,33 +152,74 @@ export class HybridStorage implements Storage {
     return Date.now() < this.remoteUnavailableUntil;
   }
 
-  private markRemoteSuccess(kind: 'read' | 'write'): void {
-    if (kind === 'read') this.lastRemoteReadAt = new Date().toISOString();
-    if (kind === 'write') this.lastRemoteWriteAt = new Date().toISOString();
+  private isRemoteQuotaCoolingDown(): boolean {
+    if (!this.remoteQuotaBlockedUntil) return false;
+    const until = Date.parse(this.remoteQuotaBlockedUntil);
+    if (Number.isFinite(until) && Date.now() < until) return true;
+    this.remoteQuotaBlockedUntil = undefined;
+    return false;
+  }
+
+  private clearRemoteFailure(): void {
     this.lastRemoteError = undefined;
     this.lastRemoteErrorAt = undefined;
     this.remoteUnavailableUntil = 0;
+    this.remoteQuotaBlockedUntil = undefined;
+    this.retryTimerDeadline = 0;
     if (this.retryTimer) {
       clearTimeout(this.retryTimer);
       this.retryTimer = undefined;
     }
   }
 
+  private markRemoteSuccess(kind: 'read' | 'write'): void {
+    if (kind === 'read') this.lastRemoteReadAt = new Date().toISOString();
+    if (kind === 'write') this.lastRemoteWriteAt = new Date().toISOString();
+    // KV reads and writes have separate quotas. A successful read must not
+    // clear an active write-quota cooldown, while a successful write proves
+    // that writes are available again.
+    if (kind === 'write' || !this.isRemoteQuotaCoolingDown()) {
+      this.clearRemoteFailure();
+    }
+  }
+
   private markRemoteFailure(err: unknown): void {
-    this.remoteUnavailableUntil = Date.now() + REMOTE_RETRY_COOLDOWN_MS;
-    this.lastRemoteError = errorMessage(err);
-    this.lastRemoteErrorAt = new Date().toISOString();
+    const now = Date.now();
+    const message = errorMessage(err);
+    const quotaLimited = /(?:^|\D)429(?:\D|$)|10048|free usage limit|usage limit/i.test(message);
+    const cooldownMs = quotaLimited ? QUOTA_COOLDOWN_MS : REMOTE_RETRY_COOLDOWN_MS;
+    const quotaCooling = this.isRemoteQuotaCoolingDown();
+    this.lastRemoteError = message;
+    this.lastRemoteErrorAt = new Date(now).toISOString();
+
+    // Do not shorten an existing longer cooldown, and do not keep extending
+    // a quota cooldown when repeat requests fail during the same outage.
+    if (quotaLimited && !quotaCooling) {
+      this.remoteUnavailableUntil = now + cooldownMs;
+      this.remoteQuotaBlockedUntil = new Date(this.remoteUnavailableUntil).toISOString();
+    } else if (!quotaLimited && !this.isRemoteCoolingDown()) {
+      this.remoteUnavailableUntil = now + cooldownMs;
+    }
+
     console.error(
-      '[storage-hybrid] remote KV unavailable; using local storage only for 60s:',
+      '[storage-hybrid] remote KV unavailable; using local storage only for ' +
+        Math.round(cooldownMs / 1000) + 's' + (quotaLimited ? ' (CF daily quota):' : ':'),
       this.lastRemoteError,
     );
 
-    if (!this.retryTimer) {
-      this.retryTimer = setTimeout(() => {
-        this.retryTimer = undefined;
-        this.remoteUnavailableUntil = 0;
-        void this.flushRemoteWrites();
-      }, REMOTE_RETRY_COOLDOWN_MS);
+    if (this.remoteUnavailableUntil > this.retryTimerDeadline) {
+      if (this.retryTimer) clearTimeout(this.retryTimer);
+      this.retryTimerDeadline = this.remoteUnavailableUntil;
+      this.retryTimer = setTimeout(
+        () => {
+          this.retryTimer = undefined;
+          this.retryTimerDeadline = 0;
+          this.remoteUnavailableUntil = 0;
+          this.remoteQuotaBlockedUntil = undefined;
+          void this.flushRemoteWrites();
+        },
+        Math.max(0, this.retryTimerDeadline - Date.now()),
+      );
     }
   }
 
@@ -182,7 +227,9 @@ export class HybridStorage implements Storage {
   // background sync from landing after a newer critical config write.
   private enqueueRemoteWrite(key: string, value: string): Promise<void> {
     const task = this.remoteWriteChain.then(async () => {
+      if (this.lastWriteValues.get(key) === value) return;
       await this.remote.put(key, value);
+      this.lastWriteValues.set(key, value);
       this.markRemoteSuccess('write');
     });
     this.remoteWriteChain = task.catch(() => undefined);
@@ -294,6 +341,7 @@ export class HybridStorage implements Storage {
       pendingWrites: this.pendingWrites.size,
       pendingKeys: [...this.pendingWrites.keys()],
       remoteCoolingDown: this.isRemoteCoolingDown(),
+      remoteQuotaBlockedUntil: this.remoteQuotaBlockedUntil,
       criticalKeys: [...CRITICAL_STORAGE_KEYS],
       durableKeys: [...DURABLE_STORAGE_KEYS],
       localOnlyKeys: [...LOCAL_ONLY_STORAGE_KEYS],
