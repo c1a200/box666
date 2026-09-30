@@ -533,7 +533,9 @@ function injectPanInitUrls(
   for (const { field, platform } of PAN_INIT_FIELDS) {
     if (allowed && !allowed.has(platform)) continue;
     if (hasPanInitCredential(creds, platform)) {
-      const url = `${normalizedBaseUrl}/credential/${field}`;
+      const revision = Math.floor(Date.parse(creds.get(platform)?.obtainedAt || '') / 1000);
+      const query = Number.isFinite(revision) && revision > 0 ? `?v=${revision}` : '';
+      const url = `${normalizedBaseUrl}/credential/${field}${query}`;
       if (next[field] !== url) {
         next[field] = url;
         changed = true;

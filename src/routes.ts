@@ -651,7 +651,7 @@ export function createApp(deps: AppDeps): Hono {
 
     return configBody(cached, {
       'Content-Type': 'application/json; charset=utf-8',
-      'Cache-Control': 'public, max-age=1800, stale-while-revalidate=86400',
+      'Cache-Control': 'no-store, no-cache, must-revalidate',
       'Access-Control-Allow-Origin': '*',
     });
   });
@@ -896,7 +896,7 @@ export function createApp(deps: AppDeps): Hono {
     cached = applyBaseUrlPlaceholder(cached, baseUrl);
     return configBody(cached, {
       'Content-Type': 'application/json; charset=utf-8',
-      'Cache-Control': 'public, max-age=1800, stale-while-revalidate=86400',
+      'Cache-Control': 'no-store, no-cache, must-revalidate',
       'Access-Control-Allow-Origin': '*',
       'Content-Disposition': 'attachment; filename="tvbox-config.json"',
     });
@@ -916,7 +916,7 @@ export function createApp(deps: AppDeps): Hono {
     cached = applyBaseUrlPlaceholder(cached, baseUrl);
     return configBody(cached, {
       'Content-Type': 'application/json; charset=utf-8',
-      'Cache-Control': 'public, max-age=1800, stale-while-revalidate=86400',
+      'Cache-Control': 'no-store, no-cache, must-revalidate',
       'Access-Control-Allow-Origin': '*',
       'Content-Disposition': 'attachment; filename="tvbox-config-full.json"',
     });

@@ -204,7 +204,7 @@ export function isPanInitCredentialDistributable(
     case 'tianyi':
       return !!value('username') && !!value('password');
     case 'quark':
-      return /(?:^|;\s*)__pu(?:us|s)=/i.test(value('cookie'));
+      return /(?:^|;\s*)__pus=/i.test(value('cookie'));
     case 'uc':
     case 'baidu':
       return !!value('cookie');
@@ -277,7 +277,12 @@ export function mergeQuarkCookie(cookie: string, setCookies: string[]): string {
  */
 export async function prepareQuarkCookie(cookie: string, timeoutMs = 2400): Promise<string> {
   const normalized = normalizeQuarkCookie(cookie);
-  if (!normalized || /(?:^|;\s*)__puus=/i.test(normalized)) return normalized;
+  // Client JARs require __pus specifically; __puus alone is not a valid login cookie.
+  // Refresh whenever either session cookie is missing so downstream Pan.init sees both.
+  const hasPus = /(?:^|;\s*)__pus=/i.test(normalized);
+  const hasPuus = /(?:^|;\s*)__puus=/i.test(normalized);
+  if (hasPus && hasPuus) return normalized;
+  if (!normalized) return normalized;
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
