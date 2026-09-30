@@ -4,7 +4,7 @@ import { Hono } from 'hono';
 import { MemoryCachedStorage } from './storage/cached';
 import type { Storage } from './storage/interface';
 import type { AppConfig, MacCMSSourceEntry, LiveSourceEntry, NameTransformConfig, EdgeProxyConfig, SearchQualityRunMode } from './core/types';
-import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_STARTUP_SITE_POOL, KV_MANUAL_SOURCES, KV_LAST_UPDATE, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_RUNTIME_TXT, KV_LIVE_RUNTIME_TXT_VERSION, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, LIVE_PROXY_TTL, IMG_PROXY_TTL, KV_NAME_TRANSFORM, KV_CRON_INTERVAL, DEFAULT_CRON_INTERVAL, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_PARSE_HEALTH_REPORT, KV_AGG_LOGS, KV_BG_SETTINGS, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, KV_SMART_BASE_URL_ENABLED, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SITE_HEALTH_MAP, KV_CHANNEL_MERGED_TREE, KV_LIVE_TEXT_PREFIX, KV_CREDENTIAL_DISTRIBUTION_ENABLED } from './core/config';
+import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_STARTUP_SITE_POOL, KV_MANUAL_SOURCES, KV_LAST_UPDATE, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_RUNTIME_TXT, KV_LIVE_RUNTIME_TXT_VERSION, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, LIVE_PROXY_TTL, IMG_PROXY_TTL, KV_NAME_TRANSFORM, KV_CRON_INTERVAL, DEFAULT_CRON_INTERVAL, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_PARSE_HEALTH_REPORT, KV_AGG_LOGS, KV_BG_SETTINGS, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, KV_SMART_BASE_URL_ENABLED, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SITE_HEALTH_MAP, KV_CHANNEL_MERGED_TREE, KV_LIVE_TEXT_PREFIX, KV_CREDENTIAL_DISTRIBUTION_ENABLED, KV_SEARCH_QUALITY_CANDIDATES } from './core/config';
 import { getRequestBaseUrl, applyBaseUrlPlaceholder, assertHostAllowed } from './core/base-url';
 import { logger } from './core/logger';
 import { loadGroupOrder, saveGroupOrder } from './core/group-order';
@@ -30,7 +30,7 @@ import {
 import { isPanInitCredentialDistributable, loadCredentials, saveCredential, deleteCredential, loadCredentialPolicy, saveCredentialPolicy, normalizeCredentialInput } from './core/credential-store';
 import { generateQR, pollQRStatus, passwordLogin, PLATFORM_NAMES, QR_PLATFORMS, PASSWORD_PLATFORMS } from './core/cloud-login';
 import { assessAllSources, isClientCredentialSite } from './core/credential-risk';
-import { generateTokenJson, injectAListDriveCredentials } from './core/credential-injector';
+import { generateTokenJson, injectAListDriveCredentials, injectCredentials } from './core/credential-injector';
 import { formatLiveGroupsAsTxt, filterLivesBySource, filterLivesBySourceDetailed, sortLiveGroupsForOutput } from './core/live-merger';
 import { containsBlockedLiveUrl, isBlockedLiveSource, isBlockedLiveUrl } from './core/live-policy';
 import type { TVBoxConfig, TVBoxSite, SearchQuotaConfig, CloudPlatform, CloudCredential, TVBoxLive, TVBoxLiveGroup } from './core/types';
@@ -296,8 +296,84 @@ export function createApp(deps: AppDeps): Hono {
     storage.clear();
   }
 
+  let credentialRefreshPromise: Promise<void> | null = null;
+
+  function rewriteCredentialSitePayload(
+    raw: string | null,
+    credentials: Awaited<ReturnType<typeof loadCredentials>>,
+    policy: Awaited<ReturnType<typeof loadCredentialPolicy>>,
+    baseUrl: string,
+  ): string | null {
+    if (!raw) return raw;
+    let parsed: any;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return raw;
+    }
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.sites)) return raw;
+    const { sites } = injectCredentials(parsed.sites, credentials, policy, baseUrl);
+    parsed.sites = sites;
+    return JSON.stringify(parsed);
+  }
+
+  async function reinjectCredentialsIntoOutputs(): Promise<void> {
+    const enabled = (await storage.get(KV_CREDENTIAL_DISTRIBUTION_ENABLED)) !== 'false';
+    if (!enabled) {
+      logger.info('routes', 'Credential distribution disabled; skipping immediate reinjection');
+      return;
+    }
+
+    const credentials = await loadCredentials(storage);
+    if (credentials.size === 0) {
+      logger.info('routes', 'No cloud credentials configured; skipping immediate reinjection');
+      return;
+    }
+
+    const policy = await loadCredentialPolicy(storage);
+    const baseUrl = (config.workerBaseUrl || config.localBaseUrl || '').replace(/\/$/, '');
+    if (!baseUrl) {
+      logger.warn('routes', 'Base URL unavailable; skipping immediate credential reinjection');
+      return;
+    }
+
+    const keys = [
+      KV_MERGED_CONFIG,
+      KV_MERGED_CONFIG_FULL,
+      KV_STARTUP_SITE_POOL,
+      KV_SEARCH_QUALITY_CANDIDATES,
+    ];
+    let updated = 0;
+    for (const key of keys) {
+      const raw = await storage.get(key);
+      const next = rewriteCredentialSitePayload(raw, credentials, policy, baseUrl);
+      if (next && next !== raw) {
+        await storage.put(key, next);
+        updated++;
+      }
+    }
+
+    storage.clear();
+    logger.infoFields('routes', 'credential-output-reinjected', { keys: updated, credentials: credentials.size });
+  }
+
   async function refreshAfterCredentialChange(c: any): Promise<void> {
     await markOutputDirty();
+
+    if (!credentialRefreshPromise) {
+      credentialRefreshPromise = (async () => {
+        try {
+          await reinjectCredentialsIntoOutputs();
+        } catch (error: unknown) {
+          const msg = error instanceof Error ? error.message : String(error);
+          logger.warn('routes', `Immediate credential reinjection failed: ${msg}`);
+        }
+      })().finally(() => {
+        credentialRefreshPromise = null;
+      });
+    }
+    await credentialRefreshPromise;
+
     if (deps.isSyncing?.()) return;
 
     try {

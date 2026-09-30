@@ -546,7 +546,9 @@ function injectPanInitUrls(
   }
 
   if (!changed) return { ext, changed: false };
-  return { ext: parsed.wasJson ? JSON.stringify(next) : next, changed: true };
+  // Pan.init only accepts a JSON object here. If the original ext was a token.json
+  // string (common in Wogg/WoGG configs), convert it instead of preserving that string.
+  return { ext: next, changed: true };
 }
 
 /**

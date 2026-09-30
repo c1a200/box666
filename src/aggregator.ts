@@ -254,10 +254,10 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
   const blacklist = await loadBlacklist(storage);
   const hasBlacklist = blacklist.sites.length > 0 || blacklist.parses.length > 0 || blacklist.lives.length > 0 || blacklist.regexRules.some(r => r.enabled);
 
-  // 保存过滤前的完整配置（供配置编辑器显示已屏蔽项）
-  await storage.put(KV_MERGED_CONFIG_FULL, JSON.stringify(merged));
-
-  // 保存源追踪映射（供 builder 使用）
+  // 保存过滤前的完整配置（供配置编辑器显示已屏蔽项）。
+  // 这里先暂存快照，Step 5.7 注入凭证后再统一写回，避免完整配置里的
+  // Wogg ext 仍停留在聚合前的旧对象。
+  const fullConfigSnapshot = JSON.parse(JSON.stringify(merged)) as typeof merged;
   await storage.put(KV_SOURCE_MAP, JSON.stringify({
     sites: Object.fromEntries(siteSourceMap),
     parses: Object.fromEntries(parseSourceMap),
@@ -333,6 +333,41 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
   } else {
     logger.info('aggregation', 'Step 5.7: No cloud credentials configured, skipping injection');
   }
+
+  // 完整配置快照同样需要凭证注入。编辑器和 /config-full.json 读取的是
+  // 黑名单过滤前的 KV_MERGED_CONFIG_FULL，若只注入 merged，玩偶/Wex 的
+  // ext.quark 仍会缺失，客户端就会再次弹出网盘登录。
+  if (
+    credentialDistributionEnabled
+    && credentials.size > 0
+    && Array.isArray(fullConfigSnapshot.sites)
+    && fullConfigSnapshot.sites.length > 0
+  ) {
+    try {
+      const credentialPolicy = await loadCredentialPolicy(storage);
+      const jarBaseUrl = config.workerBaseUrl || config.localBaseUrl;
+      const { sites: fullSites, report: fullReport } = injectCredentials(
+        fullConfigSnapshot.sites,
+        credentials,
+        credentialPolicy,
+        jarBaseUrl,
+      );
+      fullConfigSnapshot.sites = fullSites;
+      logger.infoFields('aggregation', 'credentials-injected-full', {
+        injected: fullReport.injected,
+        skippedSafe: fullReport.skippedSafe,
+        highRisk: fullReport.skippedHighRisk,
+        unaudited: fullReport.skippedUnaudited,
+        noRule: fullReport.skippedNoRule,
+        noCredential: fullReport.skippedNoCredential,
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn('aggregation', 'Full config credential injection failed (non-fatal): ' + msg);
+    }
+  }
+  await storage.put(KV_MERGED_CONFIG_FULL, JSON.stringify(fullConfigSnapshot));
+
 
   // Step 6: 站点验活 + 不可达过滤 + name 标记（CF 和 Node.js 统一）
   const speedTestRaw = await storage.get(KV_SPEED_TEST_ENABLED);
