@@ -471,6 +471,19 @@ ${sharedStyles}
       <div class="section-title" data-i18n="sqSelected">Active Search Sources</div>
       <div id="sqSelectedInfo" style="margin-bottom:8px;font-size:0.8rem;color:var(--text-secondary)"></div>
       <div id="sqQualityGrades" style="margin-bottom:8px;font-size:0.8rem;color:var(--text-secondary)"></div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+        <input id="sqSourceFilter" class="nt-input" style="width:220px" placeholder="Search source name or key..." data-i18n-placeholder="sqSourceFilterPh" oninput="renderSearchSources()">
+        <select id="sqGradeFilter" class="nt-input" style="width:190px" onchange="renderSearchSources()">
+          <option value="all" data-i18n="sqFilterAll">All grades</option>
+          <option value="excellent" data-i18n="sqExcellent">Excellent</option>
+          <option value="good" data-i18n="sqGood">Good</option>
+          <option value="usable" data-i18n="sqUsable">Usable</option>
+          <option value="credential-ready" data-i18n="sqCredentialReady">Credential-ready</option>
+          <option value="untestable" data-i18n="sqUntestable">Client-login/JAR</option>
+          <option value="blocked" data-i18n="sqBlocked">Blocked</option>
+        </select>
+        <span id="sqSourceFilterCount" style="font-size:0.75rem;color:var(--text-secondary)"></span>
+      </div>
       <div id="sqSelectedTable" style="max-height:500px;overflow:auto">
         <div style="color:var(--text-secondary);font-size:0.85rem" data-i18n="sqNoData">Run aggregation to see results</div>
       </div>
@@ -862,6 +875,7 @@ const translations = {
     sqStatsCurrent:'Current actual counts', sqStatsSearchable:'searchable', sqStatsQuick:'quick-search', sqStatsQuickLimit:'auto cap', sqStatsPool:'candidate pool', sqStatsParsers:'Parsers', sqStatsKept:'kept', sqStatsProbed:'probed', sqStatsRemoved:'removed', sqStatsLimit:'limit', sqStatsUnlimited:'unlimited', sqStatsQuality:'Quality grades', sqStatsNoData:'Run aggregation to show quality grades and parser counts.',
     sqKey:'Key', sqName:'Name', sqSource:'Source', sqReason:'Reason', sqAction:'Action',
     sqPin:'Pin', sqUnpin:'Unpin',
+    sqBlock:'Block', sqUnblock:'Unblock', sqBlocked:'Blocked', sqBlockedDesc:'Blocked sources are excluded from all client outputs but remain here so they can be restored.', sqSourceFilterPh:'Search source name or key...', sqFilterAll:'All grades', sqFilterMatched:'Matched', sqFilterNoMatch:'No matching sources',
     sqPinned:'Pinned', sqPinnedDesc:'Drag to reorder. Top sources are searched first in TVBox.', sqOtherSources:'Other Sources',
     sqHttp:'http', sqMainJar:'main jar', sqIndepJar:'indep jar', sqLeanRemoved:'lean-removed',
     channelProbeTitle:'Channel Speed Probe (Node/Docker)',
@@ -966,6 +980,7 @@ const translations = {
     sqStatsCurrent:'当前实际数量', sqStatsSearchable:'可搜索源', sqStatsQuick:'快速搜索', sqStatsQuickLimit:'自动上限', sqStatsPool:'候选池', sqStatsParsers:'解析器', sqStatsKept:'最终保留', sqStatsProbed:'探测', sqStatsRemoved:'剔除', sqStatsLimit:'上限', sqStatsUnlimited:'不限制', sqStatsQuality:'质量分级', sqStatsNoData:'执行聚合后显示质量分级和解析器数量。',
     sqKey:'Key', sqName:'名称', sqSource:'来源', sqReason:'原因', sqAction:'操作',
     sqPin:'置顶', sqUnpin:'取消置顶',
+    sqBlock:'屏蔽', sqUnblock:'取消屏蔽', sqBlocked:'已屏蔽', sqBlockedDesc:'屏蔽源不会下发到任何客户端，但仍保留在管理列表中，可随时恢复。可按名称/Key 搜索，并按质量等级或“已屏蔽”筛选。', sqSourceFilterPh:'搜索源名称或 Key...', sqFilterAll:'全部等级', sqFilterMatched:'匹配', sqFilterNoMatch:'没有匹配的源',
     sqPinned:'置顶源', sqPinnedDesc:'上下移动排序，排在前面的源在 TVBox 搜索时优先执行', sqOtherSources:'其他源',
     sqHttp:'HTTP', sqMainJar:'主 JAR', sqIndepJar:'独立 JAR', sqLeanRemoved:'轻量剔除',
     channelProbeTitle:'频道级测速（仅 Node/Docker）',
@@ -2007,6 +2022,7 @@ async function saveEdgeProxies() {
 
 // --- Search Quota ---
 let sqPinnedKeys = new Set();
+let sqBlockedKeys = new Set();
 
 async function loadSearchQuota() {
   try {
@@ -2027,6 +2043,7 @@ async function loadSearchQuota() {
     $('startupModeInput').value = 'lean';
     $('pruneDeadParsesInput').checked = true;
     sqPinnedKeys = new Set(d.pinnedKeys || []);
+    sqBlockedKeys = new Set(d.blockedKeys || []);
     loadSearchQuotaReport();
   } catch {}
 }
@@ -2047,6 +2064,7 @@ async function saveSearchQuota() {
     startupMode: 'lean',
     pruneDeadParses: true,
     pinnedKeys: [...sqPinnedKeys],
+    blockedKeys: [...sqBlockedKeys],
   };
   try {
     const res = await auth.authFetch('/admin/search-quota', {
@@ -2100,7 +2118,7 @@ async function loadSearchQuotaReport() {
     }
 
     // 加载站点列表
-    const cfgRes = await auth.authFetch('/config-full.json');
+    const cfgRes = await auth.authFetch('/admin/config-data');
     if (!cfgRes.ok) return;
     const cfg = await cfgRes.json();
     const allSites = (cfg.sites || []).filter(s => s.searchable === 1);
@@ -2153,6 +2171,7 @@ async function loadQualityReport() {
     qualityScheduleCache = d.schedule || null;
     renderQualitySchedule(d.schedule);
     renderQualityStats(d);
+    if (sqAllSites.length > 0) renderSearchSources();
     if (d.status && d.status.state === 'running') startQualityPolling();
     else setQualityButtonsRunning(false);
   } catch {}
@@ -2180,6 +2199,7 @@ function startQualityPolling() {
       qualityScheduleCache = d.schedule || qualityScheduleCache;
       renderQualitySchedule(d.schedule);
       renderQualityStats(qualityReportCache);
+      renderSearchSources();
 
       if (d.status && d.status.state === 'running') {
         qualityPollTimer = setTimeout(poll, 2000);
@@ -2370,49 +2390,128 @@ function renderQualityStats(d) {
 
 let sqAllSites = [];
 
+function qualityEntryByKey() {
+  const map = new Map();
+  const snap = qualityReportCache && qualityReportCache.snapshot ? qualityReportCache.snapshot : null;
+  if (!snap || !Array.isArray(snap.entries)) return map;
+  for (const entry of snap.entries) {
+    if (entry && typeof entry.key === 'string') map.set(entry.key, entry);
+  }
+  return map;
+}
+
+function qualityGradeLabel(grade) {
+  if (grade === 'excellent') return t('sqExcellent');
+  if (grade === 'good') return t('sqGood');
+  if (grade === 'usable') return t('sqUsable');
+  if (grade === 'credential-ready') return t('sqCredentialReady');
+  if (grade === 'untestable') return t('sqUntestable');
+  if (grade === 'timeout') return t('sqTimeout');
+  if (grade === 'unusable') return t('sqUnusable');
+  return '-';
+}
+
+function qualityGradeColor(grade) {
+  if (grade === 'excellent') return 'var(--green)';
+  if (grade === 'good') return 'var(--primary)';
+  if (grade === 'usable') return 'var(--accent)';
+  if (grade === 'credential-ready') return 'var(--text-secondary)';
+  if (grade === 'untestable') return 'var(--text-secondary)';
+  if (grade === 'timeout') return 'var(--red)';
+  if (grade === 'unusable') return 'var(--red)';
+  return 'var(--text-secondary)';
+}
+
+function qualitySpeedLabel(entry) {
+  if (!entry) return '-';
+  if (typeof entry.speedMs === 'number' && isFinite(entry.speedMs)) return entry.speedMs + 'ms';
+  return '-';
+}
+
 function renderSearchSources() {
   const pinnedArr = [...sqPinnedKeys];
-  const siteMap = new Map(sqAllSites.map(s => [s.key, s]));
-  let html = '';
+  const qualityMap = qualityEntryByKey();
+  const input = $('sqSourceFilter');
+  const select = $('sqGradeFilter');
+  const query = input ? String(input.value || '').trim().toLowerCase() : '';
+  const gradeFilter = select ? String(select.value || 'all') : 'all';
+  const matches = function(s) {
+    const entry = qualityMap.get(s.key);
+    if (gradeFilter === 'blocked') {
+      if (!sqBlockedKeys.has(s.key)) return false;
+    } else if (gradeFilter !== 'all') {
+      if (!entry || entry.grade !== gradeFilter) return false;
+    }
+    if (!query) return true;
+    return String(s.key || '').toLowerCase().includes(query)
+      || String(s.name || '').toLowerCase().includes(query);
+  };
 
-  // 1. Pinned 源（有序，可排序）
-  if (pinnedArr.length > 0) {
-    html += '<div style="margin-bottom:12px"><strong style="color:var(--primary)">' + t('sqPinned') + ' (' + pinnedArr.length + ')</strong>';
+  const pinnedFiltered = pinnedArr.filter(key => {
+    const site = sqAllSites.find(s => s.key === key) || { key: key, name: key };
+    return matches(site);
+  });
+  const unpinnedAll = sqAllSites.filter(s => !sqPinnedKeys.has(s.key)).filter(matches);
+  const visibleLimit = 1000;
+  const unpinned = unpinnedAll.slice(0, visibleLimit);
+
+  const count = $('sqSourceFilterCount');
+  if (count) {
+    count.textContent = (query || gradeFilter !== 'all')
+      ? t('sqFilterMatched') + ': ' + (pinnedFiltered.length + unpinnedAll.length)
+      : '';
+  }
+
+  let html = '';
+  if (pinnedFiltered.length > 0) {
+    html += '<div style="margin-bottom:12px"><strong style="color:var(--primary)">' + t('sqPinned') + ' (' + pinnedFiltered.length + ')</strong>';
     html += ' <span style="font-size:0.75rem;color:var(--text-secondary)">— ' + t('sqPinnedDesc') + '</span></div>';
     html += '<table style="width:100%;border-collapse:collapse;font-size:0.8rem">';
-    pinnedArr.forEach((key, i) => {
-      const s = siteMap.get(key);
-      const name = s ? (s.name || s.key) : key;
+    pinnedFiltered.forEach(function(key) {
+      const s = sqAllSites.find(item => item.key === key) || { key: key, name: key };
+      const entry = qualityMap.get(key);
+      const grade = entry ? entry.grade : null;
+      const i = pinnedArr.indexOf(key);
       html += '<tr style="border-bottom:1px solid var(--border);background:var(--bg-hover)">';
       html += '<td style="padding:4px;width:30px;color:var(--text-secondary)">' + (i + 1) + '</td>';
-      html += '<td style="padding:4px;font-family:var(--mono);font-size:0.75rem">' + escHtml(key) + '</td>';
-      html += '<td style="padding:4px">' + escHtml(name) + '</td>';
-      html += '<td style="padding:4px;width:100px;text-align:right;white-space:nowrap">';
+      html += '<td style="padding:4px;font-family:var(--mono);font-size:0.75rem">' + escHtml(s.key) + '</td>';
+      html += '<td style="padding:4px">' + escHtml(s.name || s.key) + '</td>';
+      html += '<td style="padding:4px;white-space:nowrap;color:' + qualityGradeColor(grade) + '">' + qualityGradeLabel(grade) + '</td>';
+      html += '<td style="padding:4px;white-space:nowrap;font-family:var(--mono);font-size:0.75rem">' + qualitySpeedLabel(entry) + '</td>';
+      html += '<td style="padding:4px;width:190px;text-align:right;white-space:nowrap">';
       if (i > 0) html += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem" onclick="movePinned(' + i + ',-1)">▲</button> ';
       if (i < pinnedArr.length - 1) html += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem" onclick="movePinned(' + i + ',1)">▼</button> ';
-      html += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem;color:var(--red)" onclick="togglePin(&quot;' + escHtml(key) + '&quot;)">' + t('sqUnpin') + '</button>';
+      html += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem;color:var(--red)" onclick="togglePin(&quot;' + escHtml(key) + '&quot;)">' + t('sqUnpin') + '</button> ';
+      html += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem;color:var(--red)" onclick="toggleBlocked(&quot;' + escHtml(key) + '&quot;)">' + t('sqBlock') + '</button>';
       html += '</td></tr>';
     });
     html += '</table>';
   }
 
-  // 2. 其他源（可 pin）
-  const unpinned = sqAllSites.filter(s => !sqPinnedKeys.has(s.key));
-  html += '<div style="margin-top:16px;margin-bottom:8px"><strong>' + t('sqOtherSources') + ' (' + unpinned.length + ')</strong></div>';
+  html += '<div style="margin-top:16px;margin-bottom:8px"><strong>' + t('sqOtherSources') + ' (' + unpinnedAll.length + ')</strong></div>';
+  html += '<div style="margin-bottom:6px;font-size:0.75rem;color:var(--text-secondary)">' + t('sqBlockedDesc') + '</div>';
   html += '<table style="width:100%;border-collapse:collapse;font-size:0.8rem">';
-  unpinned.slice(0, 200).forEach(s => {
-    html += '<tr style="border-bottom:1px solid var(--border)">';
+  unpinned.forEach(function(s) {
+    const isBlocked = sqBlockedKeys.has(s.key);
+    const entry = qualityMap.get(s.key);
+    const grade = entry ? entry.grade : null;
+    html += '<tr style="border-bottom:1px solid var(--border)' + (isBlocked ? ';opacity:0.55;text-decoration:line-through' : '') + '">';
     html += '<td style="padding:4px;font-family:var(--mono);font-size:0.75rem">' + escHtml(s.key) + '</td>';
-    html += '<td style="padding:4px">' + escHtml(s.name || s.key) + '</td>';
-    html += '<td style="padding:4px;width:50px;text-align:right"><button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem" onclick="togglePin(&quot;' + escHtml(s.key) + '&quot;)">' + t('sqPin') + '</button></td>';
+    html += '<td style="padding:4px">' + escHtml(s.name || s.key) + (isBlocked ? ' <span style="color:var(--red);font-size:0.7rem">' + t('sqBlocked') + '</span>' : '') + '</td>';
+    html += '<td style="padding:4px;white-space:nowrap;color:' + qualityGradeColor(grade) + '">' + qualityGradeLabel(grade) + '</td>';
+    html += '<td style="padding:4px;white-space:nowrap;font-family:var(--mono);font-size:0.75rem">' + qualitySpeedLabel(entry) + '</td>';
+    html += '<td style="padding:4px;width:120px;text-align:right;white-space:nowrap">';
+    if (!isBlocked) html += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem" onclick="togglePin(&quot;' + escHtml(s.key) + '&quot;)">' + t('sqPin') + '</button> ';
+    html += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem;color:var(--red)" onclick="toggleBlocked(&quot;' + escHtml(s.key) + '&quot;)">' + (isBlocked ? t('sqUnblock') : t('sqBlock')) + '</button>';
+    html += '</td>';
     html += '</tr>';
   });
-  if (unpinned.length > 200) html += '<tr><td colspan="3" style="padding:4px;color:var(--text-secondary)">... +' + (unpinned.length - 200) + ' more</td></tr>';
+  if (unpinnedAll.length > visibleLimit) html += '<tr><td colspan="5" style="padding:4px;color:var(--text-secondary)">... +' + (unpinnedAll.length - visibleLimit) + ' more</td></tr>';
+  if (unpinnedAll.length === 0) html += '<tr><td colspan="5" style="padding:8px;color:var(--text-secondary)">' + t('sqFilterNoMatch') + '</td></tr>';
   html += '</table>';
 
   $('sqSelectedTable').innerHTML = html;
 }
-
 async function movePinned(index, direction) {
   const arr = [...sqPinnedKeys];
   const target = index + direction;
@@ -2435,6 +2534,7 @@ async function movePinned(index, direction) {
 function escHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
 async function togglePin(key) {
+  if (sqBlockedKeys.has(key)) return;
   const isPinned = sqPinnedKeys.has(key);
   try {
     const res = await auth.authFetch('/admin/search-quota/pinned', {
@@ -2445,6 +2545,25 @@ async function togglePin(key) {
     if (res.ok) {
       const d = await res.json();
       sqPinnedKeys = new Set(d.pinnedKeys);
+      renderSearchSources();
+    }
+  } catch {}
+}
+
+async function toggleBlocked(key) {
+  const next = new Set(sqBlockedKeys);
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
+  try {
+    const res = await auth.authFetch('/admin/search-quota', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ blockedKeys: [...next] }),
+    });
+    if (res.ok) {
+      const d = await res.json();
+      sqBlockedKeys = new Set(d.blockedKeys || []);
+      sqPinnedKeys = new Set(d.pinnedKeys || []);
       renderSearchSources();
     }
   } catch {}

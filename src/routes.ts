@@ -623,6 +623,9 @@ export function createApp(deps: AppDeps): Hono {
     }
 
     const pinnedKeys = new Set(quota.pinnedKeys || []);
+    const blockedKeys = new Set(
+      (quota.blockedKeys || []).filter((key): key is string => typeof key === 'string')
+    );
     const allSites = Array.isArray(parsed.sites) ? parsed.sites : [];
 
     // 优先使用全量质量分级池：池内已按“优 > 良 > 可用 > 未探测 > 不可用”
@@ -641,10 +644,20 @@ export function createApp(deps: AppDeps): Hono {
         if (!qualityGradeByKey.has(entry.key)) qualityGradeByKey.set(entry.key, entry.grade);
       }
     }
+    const retainCredentialMode: 'off' | 'all' | 'selected' =
+      quota.retainCredentialMode === 'all' || quota.retainCredentialMode === 'selected' || quota.retainCredentialMode === 'off'
+        ? quota.retainCredentialMode
+        : (quota.retainCredentialSources === true ? 'all' : 'off');
+    const retainedCredentialKeys = new Set(quota.retainedCredentialKeys || []);
     const isRetainedCredentialSite = (site: TVBoxSite): boolean => {
+      if (blockedKeys.has(site.key)) return false;
+      if (retainCredentialMode === 'off') return false;
       const grade = qualityGradeByKey.get(site.key);
-      if (grade) return grade === 'credential-ready' || grade === 'untestable';
-      return isClientCredentialSite(site) || !isSiteProbeable(site);
+      const eligible = grade
+        ? grade === 'credential-ready' || grade === 'untestable'
+        : isClientCredentialSite(site) || !isSiteProbeable(site);
+      if (!eligible) return false;
+      return retainCredentialMode === 'all' || retainedCredentialKeys.has(site.key);
     };
 
     // KV_MERGED_CONFIG 已经过 applySearchQuota，可能只保留前 N 个搜索源。
@@ -656,12 +669,17 @@ export function createApp(deps: AppDeps): Hono {
     } catch {
       candidateSites = [];
     }
-    const siteByKey = new Map(candidateSites.map((site) => [site.key, site]));
-    for (const site of allSites) siteByKey.set(site.key, site);
+    const siteByKey = new Map(
+      candidateSites.filter((site) => !blockedKeys.has(site.key)).map((site) => [site.key, site])
+    );
+    for (const site of allSites) {
+      if (!blockedKeys.has(site.key)) siteByKey.set(site.key, site);
+    }
     let orderedSites: TVBoxSite[] = [];
     if (qualityPool && Array.isArray(qualityPool.entries) && qualityPool.entries.length > 0) {
       const restored: TVBoxSite[] = [];
       for (const entry of qualityPool.entries) {
+        if (blockedKeys.has(entry.key)) continue;
         if (entry.grade === 'timeout' || entry.grade === 'unusable') continue;
         const site = siteByKey.get(entry.key);
         if (!site) continue;
@@ -670,13 +688,14 @@ export function createApp(deps: AppDeps): Hono {
       orderedSites = restored;
     } else {
       // 质量池尚未生成时保持旧行为：只使用最终配置中仍可搜索的源。
-      orderedSites = allSites.filter((site) => site.searchable === 1);
+      orderedSites = allSites.filter((site) => site.searchable === 1 && !blockedKeys.has(site.key));
     }
 
     // 置顶源永远排在最前，且不受 maxSearchable 截断。
     const pinnedSites: TVBoxSite[] = [];
     const seenPinned = new Set<string>();
     for (const key of quota.pinnedKeys || []) {
+      if (blockedKeys.has(key)) continue;
       const site = siteByKey.get(key);
       if (!site || seenPinned.has(key)) continue;
       if (qualityGradeByKey.size > 0) {
@@ -688,7 +707,7 @@ export function createApp(deps: AppDeps): Hono {
     }
 
     const pinnedKeySet = new Set(pinnedSites.map((site) => site.key));
-    const rest = orderedSites.filter((site) => !pinnedKeySet.has(site.key));
+    const rest = orderedSites.filter((site) => !pinnedKeySet.has(site.key) && !blockedKeys.has(site.key));
 
     // 轻量启动要等远程 JAR 已落到本部署缓存后再下发，避免客户端逐个等待
     // 慢速上游；完整启动模式不做这层裁剪。客户端凭证型 type=3 源始终保留，
@@ -707,17 +726,13 @@ export function createApp(deps: AppDeps): Hono {
     }
 
     // 置顶是用户显式选择，轻量启动时也保留；普通候选才按模式门控。
-    // 可选开关开启后，凭证就绪与客户端登录/JAR 源额外保留，不占可测速源上限。
+    // 可选策略开启后，凭证就绪与客户端登录/JAR 源额外保留，不占可测速源上限。
+    // selected 模式仅放行已勾选 key；其余凭证源仍按正常质量顺序参与上限。
     const limit = quota.maxSearchable ?? 0;
-    const retainCredentialSources = quota.retainCredentialSources === true;
     let limitedRest = eligibleRest;
     if (limit > 0) {
-      const pooledRest = retainCredentialSources
-        ? eligibleRest.filter((site) => !isRetainedCredentialSite(site))
-        : eligibleRest;
-      const retainedCredentialRest = retainCredentialSources
-        ? eligibleRest.filter(isRetainedCredentialSite)
-        : [];
+      const pooledRest = eligibleRest.filter((site) => !isRetainedCredentialSite(site));
+      const retainedCredentialRest = eligibleRest.filter(isRetainedCredentialSite);
       limitedRest = [...pooledRest.slice(0, Math.max(0, limit)), ...retainedCredentialRest];
     }
 
@@ -747,15 +762,25 @@ export function createApp(deps: AppDeps): Hono {
   // 完整配置仍要排除质量分级里的超时/不可用源，保证 /config-full.json
   // 不会把客户端不可用的搜索源重新带回来。
   async function filterExcludedQualitySites(cached: string): Promise<string> {
-    let pool;
+    let quota: SearchQuotaConfig;
     try {
-      pool = await loadQualityPool(storage);
+      quota = await loadSearchQuota(storage);
     } catch {
       return cached;
     }
-    if (!pool || !Array.isArray(pool.entries) || pool.entries.length === 0) return cached;
-    const excluded = excludedQualityKeys(pool);
+
+    const excluded = new Set<string>(
+      (quota.blockedKeys || []).filter((key): key is string => typeof key === 'string')
+    );
+    try {
+      const pool = await loadQualityPool(storage);
+      for (const key of excludedQualityKeys(pool)) excluded.add(key);
+    } catch {
+      // 显式屏蔽仍然生效，质量池缺失不应导致屏蔽失效。
+    }
+
     if (excluded.size === 0) return cached;
+
     let parsed: TVBoxConfig;
     try {
       parsed = JSON.parse(cached) as TVBoxConfig;
@@ -1412,13 +1437,33 @@ export function createApp(deps: AppDeps): Hono {
     if (typeof body.maxParses === 'number' && Number.isFinite(body.maxParses)) {
       current.maxParses = Math.max(0, Math.floor(body.maxParses));
     }
-    if (typeof body.retainCredentialSources === 'boolean') current.retainCredentialSources = body.retainCredentialSources;
+    if (body.retainCredentialMode === 'off' || body.retainCredentialMode === 'all' || body.retainCredentialMode === 'selected') {
+      current.retainCredentialMode = body.retainCredentialMode;
+    } else if (typeof body.retainCredentialSources === 'boolean') {
+      current.retainCredentialMode = body.retainCredentialSources ? 'all' : 'off';
+    }
+    current.retainCredentialSources = current.retainCredentialMode !== 'off';
+    if (Array.isArray(body.retainedCredentialKeys)) {
+      current.retainedCredentialKeys = [...new Set(body.retainedCredentialKeys.filter((key): key is string => typeof key === 'string'))];
+    }
+    if (Array.isArray(body.blockedKeys)) {
+      current.blockedKeys = [...new Set(body.blockedKeys.filter((key): key is string => typeof key === 'string'))];
+    }
+    {
+      const blocked = new Set(current.blockedKeys || []);
+      current.pinnedKeys = (current.pinnedKeys || []).filter((key) => !blocked.has(key));
+      current.retainedCredentialKeys = (current.retainedCredentialKeys || []).filter((key) => !blocked.has(key));
+    }
     // autoLimit is retired in schema 8; the two user-facing caps are explicit.
     if (typeof body.sortBySpeed === 'boolean') current.sortBySpeed = body.sortBySpeed;
     if (typeof body.leanStartup === 'boolean') current.leanStartup = body.leanStartup;
     if (body.startupMode === 'lean' || body.startupMode === 'full') current.startupMode = body.startupMode;
     if (typeof body.pruneDeadParses === 'boolean') current.pruneDeadParses = body.pruneDeadParses;
-    if (Array.isArray(body.pinnedKeys)) current.pinnedKeys = body.pinnedKeys;
+    if (Array.isArray(body.pinnedKeys)) {
+      const blocked = new Set(current.blockedKeys || []);
+      current.pinnedKeys = [...new Set(body.pinnedKeys.filter((key): key is string => typeof key === 'string'))]
+        .filter((key) => !blocked.has(key));
+    }
 
 
     await saveSearchQuota(storage, current);
@@ -1433,8 +1478,11 @@ export function createApp(deps: AppDeps): Hono {
     if (!Array.isArray(body.keys)) return c.json({ error: 'keys must be an array' }, 400);
 
     const current = await loadSearchQuota(storage);
+    const blocked = new Set(current.blockedKeys || []);
     const set = new Set(current.pinnedKeys);
-    for (const key of body.keys) set.add(key);
+    for (const key of body.keys) {
+      if (!blocked.has(key)) set.add(key);
+    }
     current.pinnedKeys = [...set];
     await saveSearchQuota(storage, current);
     await markOutputDirty();
@@ -1449,7 +1497,9 @@ export function createApp(deps: AppDeps): Hono {
     if (!Array.isArray(body.keys)) return c.json({ error: 'keys must be an array' }, 400);
 
     const current = await loadSearchQuota(storage);
-    current.pinnedKeys = body.keys;
+    const blocked = new Set(current.blockedKeys || []);
+    current.pinnedKeys = [...new Set(body.keys.filter((key): key is string => typeof key === 'string'))]
+      .filter((key) => !blocked.has(key));
     await saveSearchQuota(storage, current);
     await markOutputDirty();
     return c.json({ success: true, pinnedKeys: current.pinnedKeys });
@@ -1654,7 +1704,7 @@ export function createApp(deps: AppDeps): Hono {
     try {
       const report = JSON.parse(raw) as Record<string, unknown>;
       const quota = await loadSearchQuota(storage);
-      return c.json({ enabled: true, ...report, maxSearchable: quota.maxSearchable, maxQuickSearch: quota.maxQuickSearch, startupSiteLimit: quota.startupSiteLimit ?? 0, maxParses: quota.maxParses, autoLimit: quota.autoLimit });
+      return c.json({ enabled: true, ...report, maxSearchable: quota.maxSearchable, maxQuickSearch: quota.maxQuickSearch, startupSiteLimit: quota.startupSiteLimit ?? 0, maxParses: quota.maxParses, autoLimit: quota.autoLimit, blockedCount: (quota.blockedKeys || []).length });
     } catch {
       return c.json({ enabled: false });
     }

@@ -253,7 +253,10 @@ export interface SearchQuotaConfig {
   startupMode?: 'lean' | 'full';// 客户端根配置模式：lean=快速启动，full=完整功能
   pruneDeadParses?: boolean;    // 聚合时探测并剔除确认失效的解析器
   maxParses?: number;           // 健康解析器上限，0 = 不限制
-  retainCredentialSources?: boolean; // 额外保留凭证就绪与客户端登录/JAR 源，不占用可测速源上限
+  retainCredentialSources?: boolean; // 旧版兼容字段：等价于 retainCredentialMode !== 'off'
+  retainCredentialMode?: 'off' | 'all' | 'selected'; // 凭证/JAR 源的额外保留策略
+  retainedCredentialKeys?: string[]; // selected 模式下允许绕过可搜索源上限的站点 key
+  blockedKeys?: string[];            // 显式屏蔽的源 key：优先于置顶/质量分级/凭证保留，仍保留在后台列表中以便恢复
   quotaSchemaVersion?: number;  // 自动配额迁移版本
 }
 // 搜索配额报告
@@ -266,6 +269,7 @@ export interface SearchQuotaReport {
   maxQuickSearch: number;       // 当前配置的快速搜索源上限，0 = 不限制
   autoLimit: boolean;           // 是否使用自动安全上限
   pinnedCount: number;          // 置顶源命中数
+  blockedCount?: number;        // 显式屏蔽源数量
   truncated: number;            // 被截断数（maxSearchable > 0 时）
   quickTruncated: number;       // 快速搜索被截断数
   speedSorted: boolean;         // 是否实际按测速结果排序
