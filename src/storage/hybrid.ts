@@ -1,7 +1,7 @@
 // 本地优先 + 远程持久化存储。
 //
 // Render 等 Node 环境的本地 SQLite 只作为缓存，不能被视为持久化存储；
-// 用户配置类 key 必须等远程 KV 写入成功后才向前端返回成功。远端 KV 只保存
+// 用户配置类 key 会等待远程 KV 写入；按 key 隔离写队列，避免大对象拖慢保存。远端 KV 只保存
 // 用户配置和最终可下发结果，任务进度、探测缓存和可重建索引都留在本地，避免
 // 定时测速/JAR 预热把 Cloudflare 免费额度耗尽。
 
@@ -129,7 +129,7 @@ export class HybridStorage implements Storage {
 
   // 同一个 key 只保留最后一次待同步值，避免聚合进度等高频写入造成请求堆积。
   private pendingWrites = new Map<string, string>();
-  private remoteWriteChain: Promise<void> = Promise.resolve();
+  private remoteWriteChains = new Map<string, Promise<void>>();
   private flushing = false;
   private remoteUnavailableUntil = 0;
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -224,16 +224,23 @@ export class HybridStorage implements Storage {
     }
   }
 
-  // All remote writes go through one promise chain. This prevents a stale
-  // background sync from landing after a newer critical config write.
+  // Each key has its own write chain. Large background objects (for example a
+  // full quality candidate snapshot) must never block a small critical config
+  // save such as credential_distribution, while writes to the same key still
+  // stay ordered.
   private enqueueRemoteWrite(key: string, value: string): Promise<void> {
-    const task = this.remoteWriteChain.then(async () => {
+    const previous = this.remoteWriteChains.get(key) ?? Promise.resolve();
+    const task = previous.then(async () => {
       if (this.lastWriteValues.get(key) === value) return;
       await this.remote.put(key, value);
       this.lastWriteValues.set(key, value);
       this.markRemoteSuccess('write');
     });
-    this.remoteWriteChain = task.catch(() => undefined);
+    const settled = task.catch(() => undefined);
+    this.remoteWriteChains.set(key, settled);
+    void settled.then(() => {
+      if (this.remoteWriteChains.get(key) === settled) this.remoteWriteChains.delete(key);
+    });
     return task;
   }
 
