@@ -10,6 +10,15 @@ const RESPONSE_INJECTABLE_EXT_KEYS = new Set([
   'p123', 'xunlei', 'quark', 'uc', 'tianyi', 'baidu',
 ]);
 
+/** 上游抢占字段：响应期被项目协议清理后允许从契约字段集合中消失。 */
+const RESPONSE_REMOVABLE_CONFLICT_EXT_KEYS = new Set([
+  'cloud-drive', 'clouddrive', 'ali-drive', 'alidrive',
+]);
+
+function normalizeCredentialConflictKey(key: string): string {
+  return key.trim().toLowerCase().replace(/[_\s]+/g, '-');
+}
+
 
 /** 从改写前后的 JAR URL 中提取 JAR 内容 MD5。 */
 export function extractJarMd5(jar?: string): string | undefined {
@@ -48,13 +57,15 @@ export function buildSiteContract(
   // 因此必须视为同一契约，否则合法站点会被误判为契约漂移。
   const shape = site.ext == null ? 'null' : extShape(site.ext);
   const contract: SiteContract = { api: site.api, extShape: shape };
-  const jarMd5 = extractJarMd5(site.jar || fallbackJar);
+  const jarMd5 = extractJarMd5(site.jar) ? extractJarMd5(site.jar) : extractJarMd5(fallbackJar);
   if (jarMd5) contract.jarMd5 = jarMd5;
   if (shape === 'object') {
     contract.extKeys = Object.keys(site.ext as Record<string, unknown>).sort();
     // 记录可能由本项目注入的字段；响应期允许这些字段被历史清理移除。
-    const injectable = contract.extKeys.filter((key) => RESPONSE_INJECTABLE_EXT_KEYS.has(key));
-    if (injectable.length > 0) contract.injectableExtKeys = injectable;
+    const removable = contract.extKeys.filter((key) =>
+      RESPONSE_INJECTABLE_EXT_KEYS.has(key) || RESPONSE_REMOVABLE_CONFLICT_EXT_KEYS.has(normalizeCredentialConflictKey(key)),
+    );
+    if (removable.length > 0) contract.injectableExtKeys = removable;
   }
   if (typeof site.pan === 'string' && site.pan.trim()) contract.pan = site.pan.trim();
   const extPan = extPanValue(site.ext);

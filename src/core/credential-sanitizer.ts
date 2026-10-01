@@ -1,4 +1,6 @@
-import type { TVBoxConfig, CloudPlatform, CloudCredential } from './types';
+import type { TVBoxConfig, CloudPlatform, CloudCredential, TVBoxSite } from './types';
+import { resolveCredentialProtocol } from './credential-protocol';
+import { extractJarMd5 } from './site-contract';
 
 const PROJECT_CREDENTIAL_FIELDS = new Set<string>([
   'cookie',
@@ -17,27 +19,18 @@ const PROJECT_CREDENTIAL_FIELDS = new Set<string>([
   'token',
 ]);
 
-/** 上游源自带的凭证入口字段；只有在显式启用 stripUpstreamCredentialEntries 时才处理。 */
-const UPSTREAM_CREDENTIAL_ENTRY_FIELDS = new Set<string>([
+/**
+ * 已确认会被 Pan.init/搜索协议消费的上游“抢占登录入口”。
+ * 这些键的值通常是远端登录脚本，JAR 若先看到它们就不会走项目凭证。
+ *
+ * 注意：quark/uc/baidu/... 既是平台名，也是合法初始化 URL 的字段名，
+ * 绝不能按字段名删除；只删除协议已识别且本次确实可能抢占的入口。
+ */
+const UPSTREAM_CREDENTIAL_CONFLICT_FIELDS = new Set<string>([
   'cloud-drive',
-  'cloud_drive',
   'clouddrive',
-  'drive',
-  'quark',
-  'uc',
-  'baidu',
-  'p123',
-  'pan123',
-  'xunlei',
-  'thunder',
-  'tianyi',
-  '115',
-  'aliyun',
-  'pikpak',
-  'bilibili',
-  'refresh_token',
-  'open_token',
-  'ali_token',
+  'ali-drive',
+  'alidrive',
 ]);
 const ACCOUNT_SECRET_FIELDS = new Set<string>([
   'username', 'password', 'pass', 'user', 'account', 'email', 'phone',
@@ -198,63 +191,87 @@ function cleanCredentialNode(
   return { value: changed ? next : node, changed };
 }
 
+function parseExtRecord(ext: unknown): Record<string, any> | null {
+  if (ext && typeof ext === 'object' && !Array.isArray(ext)) {
+    return ext as Record<string, any>;
+  }
+  if (typeof ext !== 'string' || !ext.trim()) return null;
+  try {
+    const parsed = JSON.parse(ext);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, any>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeCredentialConflictKey(key: string): string {
+  return key.trim().toLowerCase().replace(/[_\s]+/g, '-');
+}
+
+function stripKnownConflictFieldsFromExt(ext: unknown): unknown {
+  const parsed = parseExtRecord(ext);
+  if (!parsed) return ext;
+  let changed = false;
+  const next = { ...parsed };
+  for (const key of Object.keys(next)) {
+    if (UPSTREAM_CREDENTIAL_CONFLICT_FIELDS.has(normalizeCredentialConflictKey(key))) {
+      delete next[key];
+      changed = true;
+    }
+  }
+  return changed
+    ? (typeof ext === 'string' ? JSON.stringify(next) : next)
+    : ext;
+}
+
 /**
- * 移除上游源 ext 中明确属于网盘登录入口的字段。
- * 不删除 siteUrl/url 等可能是接口地址的字段；仅在调用方显式开启时使用。
+ * 移除“已识别凭证协议”的上游抢占登录入口。
+ *
+ * 只处理能确认会消费凭证的站点；unknown/none 协议一律原样保留，避免
+ * 误删 quark/uc/baidu 等同时可能是上游初始化 URL 的合法字段。
  */
 export function stripUpstreamCredentialEntries(
   config: TVBoxConfig | any,
+  effectiveJar?: string,
+  force = false,
 ): any {
   if (!config || typeof config !== 'object') return config;
 
-  const cleanExtValue = (ext: any): any => {
-    if (typeof ext === 'string') {
-      const trimmed = ext.trim();
-      if (!trimmed.startsWith('{')) return ext;
-      try {
-        const parsed = JSON.parse(trimmed);
-        const cleaned = cleanExtValue(parsed);
-        return cleaned === parsed ? ext : JSON.stringify(cleaned);
-      } catch {
-        return ext;
-      }
-    }
-    if (!ext || typeof ext !== 'object' || Array.isArray(ext)) return ext;
-
-    let changed = false;
-    const next: Record<string, any> = { ...ext };
-    for (const key of Object.keys(next)) {
-      if (UPSTREAM_CREDENTIAL_ENTRY_FIELDS.has(key.toLowerCase())) {
-        delete next[key];
-        changed = true;
-      }
-    }
-    return changed ? next : ext;
+  const cleanSite = (site: any): any => {
+    if (!site || typeof site !== 'object' || Array.isArray(site)) return site;
+    const siteJar = typeof site.jar === 'string' ? site.jar : undefined;
+    const jar = extractJarMd5(siteJar) ? siteJar : effectiveJar;
+    const protocol = resolveCredentialProtocol(site as TVBoxSite, { effectiveJar: jar });
+    // force 用于 none 策略：Cloud-drive/Ali-drive 是明确的远端登录入口，
+    // 即使当前 JAR 尚未归入已知协议族，也必须阻断，不能依赖协议识别。
+    if (!force && (!protocol.credentialRequired || !protocol.canInject)) return site;
+    const ext = stripKnownConflictFieldsFromExt(site.ext);
+    return ext === site.ext ? site : { ...site, ext };
   };
 
   const walk = (node: any): any => {
-    if (Array.isArray(node)) return node.map((item) => walk(item));
+    if (Array.isArray(node)) {
+      let changed = false;
+      const values = node.map((item) => {
+        const cleaned = walk(item);
+        if (cleaned !== item) changed = true;
+        return cleaned;
+      });
+      return changed ? values : node;
+    }
     if (!node || typeof node !== 'object') return node;
 
-    let changed = false;
-    const next: Record<string, any> = { ...node };
-    if (Object.prototype.hasOwnProperty.call(next, 'ext')) {
-      const cleaned = cleanExtValue(next.ext);
-      if (cleaned !== next.ext) { next.ext = cleaned; changed = true; }
+    // sites 是 TVBox 配置中唯一的站点集合；不要递归进任意对象，
+    // 以免把 JAR/AList 配置里的同名字段当作源 ext 处理。
+    if (Array.isArray(node.sites)) {
+      const sites = node.sites.map(cleanSite);
+      return sites.some((site: any, index: number) => site !== node.sites[index])
+        ? { ...node, sites }
+        : node;
     }
-    if (Object.prototype.hasOwnProperty.call(next, 'extend')) {
-      const cleaned = cleanExtValue(next.extend);
-      if (cleaned !== next.extend) { next.extend = cleaned; changed = true; }
-    }
-    for (const key of Object.keys(next)) {
-      if (key === 'ext' || key === 'extend') continue;
-      const value = next[key];
-      if (value && typeof value === 'object') {
-        const cleaned = walk(value);
-        if (cleaned !== value) { next[key] = cleaned; changed = true; }
-      }
-    }
-    return changed ? next : node;
+    return node;
   };
 
   return walk(config);

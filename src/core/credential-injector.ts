@@ -499,6 +499,49 @@ function canInjectPanSearchCredential(
 }
 
 /**
+ * 3D YiSo 继承 Ali.init；只有 ext.from 含 tvfan 时，才会把
+ * ext.Cloud-drive 指向的 JSON 中的 token 作为阿里云盘初始化凭证。
+ */
+function injectAliTokenUrl(
+  ext: any,
+  creds: Map<CloudPlatform, CloudCredential>,
+  baseUrl?: string,
+): { ext: any; changed: boolean } {
+  const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
+  if (!normalizedBaseUrl) return { ext, changed: false };
+
+  const parsed = parseExt(ext);
+  if (!parsed.injectable) return { ext, changed: false };
+  if (!isCredentialDistributable('aliyun', creds.get('aliyun'))) {
+    return { ext, changed: false };
+  }
+
+  const revision = credentialRevision(creds.get('aliyun'));
+  const query = revision ? `?v=${revision}` : '';
+  const url = `${normalizedBaseUrl}/credential/aliyun.json${query}`;
+  const next = { ...parsed.obj };
+  let changed = false;
+  if (next['Cloud-drive'] !== url) {
+    next['Cloud-drive'] = url;
+    changed = true;
+  }
+  const from = typeof next.from === 'string' ? next.from : '';
+  const fromParts = from.split('|').map((part: string) => part.trim()).filter(Boolean);
+  if (!fromParts.some((part: string) => part.toLowerCase() === 'tvfan')) {
+    fromParts.push('tvfan');
+  }
+  const normalizedFrom = fromParts.join('|');
+  if (next.from !== normalizedFrom) {
+    next.from = normalizedFrom;
+    changed = true;
+  }
+
+  return changed
+    ? { ext: restoreExt(next, parsed.wasString, parsed.wasJson), changed: true }
+    : { ext, changed: false };
+}
+
+/**
  * Mogg/Wogg 的 Pan.init 会把 ext 中以下键当作 URL 拉取：
  * p123/xunlei/tianyi 返回 username+password JSON，其余返回原始 cookie 文本。
  * 因此不能把 cookie 直接塞进 ext，只能下发项目自托管初始化 URL。
@@ -645,6 +688,53 @@ function injectDirectField(
 }
 
 /**
+ * 已确认会消费 Pan.init/搜索凭证的协议，仍可能被上游 ext 中的
+ * Cloud-drive/Ali-drive 登录入口抢先。项目凭证成功写入后必须移除这些
+ * 抢占字段；未确认协议或本次未写入时不触碰，避免误删上游有效配置。
+ */
+const CREDENTIAL_CONFLICT_EXT_KEYS = new Set([
+  'cloud-drive', 'clouddrive', 'ali-drive', 'alidrive',
+]);
+
+function isProjectCredentialUrl(value: unknown, baseUrl: string): boolean {
+  if (typeof value !== 'string' || !value.trim()) return false;
+  const base = baseUrl.replace(/\/+$/, '');
+  const url = value.trim();
+  if (!url.startsWith(base + '/')) return false;
+  const path = url.slice(base.length).split('?')[0].split('#')[0];
+  return /^(?:\/auth\/[^/]+)?\/(?:credential\/[A-Za-z0-9_.-]+|token\.json)$/.test(path);
+}
+
+function normalizeCredentialConflictKey(key: string): string {
+  return key.trim().toLowerCase().replace(/[_\s]+/g, '-');
+}
+
+function removeCredentialConflictEntries(
+  ext: any,
+  baseUrl?: string,
+): { ext: any; changed: boolean } {
+  const parsed = parseExt(ext);
+  if (!parsed.injectable) return { ext, changed: false };
+  const next = { ...parsed.obj };
+  const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
+  let changed = false;
+  for (const key of Object.keys(next)) {
+    if (CREDENTIAL_CONFLICT_EXT_KEYS.has(normalizeCredentialConflictKey(key))) {
+      // 本项目刚写入的凭证地址属于有效配置，不能被通用冲突清理误删。
+      // 只有上游自带的抢占入口才应移除。
+      if (normalizedBaseUrl && isProjectCredentialUrl(next[key], normalizedBaseUrl)) {
+        continue;
+      }
+      delete next[key];
+      changed = true;
+    }
+  }
+  return changed
+    ? { ext: restoreExt(next, parsed.wasString, parsed.wasJson), changed: true }
+    : { ext, changed: false };
+}
+
+/**
  * 唯一的协议执行入口。风险判断与正式下发都必须经过这里，避免两边规则漂移。
  * 返回 changed=false 时不允许计为已下发。
  */
@@ -657,7 +747,29 @@ function applyCredentialProtocol(
 ): { ext: any; changed: boolean } {
   if (!protocol.canInject) return { ext: site.ext, changed: false };
 
+  const applied = applyCredentialProtocolRaw(
+    site,
+    protocol,
+    credentials,
+    baseUrl,
+  );
+  const cleaned = removeCredentialConflictEntries(applied.ext, baseUrl);
+  return {
+    ext: cleaned.ext,
+    changed: applied.changed || cleaned.changed,
+  };
+}
+
+function applyCredentialProtocolRaw(
+  site: TVBoxSite,
+  protocol: CredentialProtocol,
+  credentials: Map<CloudPlatform, CloudCredential>,
+  baseUrl: string,
+): { ext: any; changed: boolean } {
   switch (protocol.mechanism) {
+    case 'ali-token-url':
+      return injectAliTokenUrl(site.ext, credentials, baseUrl);
+
     case 'pan-init-url':
       return injectPanInitUrls(site.ext, credentials, baseUrl);
 

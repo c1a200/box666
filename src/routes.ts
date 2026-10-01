@@ -591,9 +591,9 @@ export function createApp(deps: AppDeps): Hono {
     return { allowedSiteKeys, contractsBySiteKey };
   }
 
-  /** 仅 none 策略下使用；默认关闭，避免改变旧版 none 语义。 */
+  /** none 策略下必须剥离已验证的上游凭证入口，否则 JAR 会绕过策略直接登录。 */
   function shouldStripUpstreamCredentialEntries(context: ClientAuthContext): boolean {
-    return context.distribution.stripUpstreamCredentialEntries === true;
+    return context.mode === 'none' || context.distribution.stripUpstreamCredentialEntries === true;
   }
 
   /** 按当前上下文重新注入凭证地址。 */
@@ -612,9 +612,13 @@ export function createApp(deps: AppDeps): Hono {
     }
     if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.sites)) return raw;
 
-    // 独立、显式开启的选项：none 只撤销项目注入时默认不碰上游自带入口。
-    if (context.mode === 'none' && shouldStripUpstreamCredentialEntries(context)) {
-      parsed = stripUpstreamCredentialEntries(parsed);
+    // none 策略必须剥离上游公开凭证入口；显式开关在 all/selected 下同样生效。
+    if (shouldStripUpstreamCredentialEntries(context)) {
+      parsed = stripUpstreamCredentialEntries(
+        parsed,
+        typeof parsed.spider === 'string' ? parsed.spider : undefined,
+        context.mode === 'none',
+      );
     }
 
     const effective = selectCredentialsForContext(allCredentials, context);
@@ -2419,6 +2423,24 @@ export function createApp(deps: AppDeps): Hono {
     }
   }
 
+  async function handleAliyunTokenJson(c: any) {
+    const baseUrl = await resolveBaseUrl(c);
+    if (baseUrl instanceof Response) return baseUrl;
+    const resolved = await resolveClientAuthContext(c, baseUrl);
+    if (resolved.failure) return credentialAuthFailureResponse(c, resolved.failure);
+    const context = resolved.context!;
+    if (context.mode === 'none' || !context.platforms.includes('aliyun')) {
+      return c.json({ error: 'credential distribution disabled' }, 404, tokenResponseHeaders);
+    }
+    const credentials = selectCredentialsForContext(await loadCredentials(storage), context);
+    const tokenJson = generateTokenJson(credentials, ['aliyun']);
+    const token = typeof tokenJson.token === 'string' ? tokenJson.token.trim() : '';
+    if (!token) return c.json({ error: 'no credential available' }, 404, tokenResponseHeaders);
+    // 3D Ali.init 明确读取该 JSON 的 token 字段；不要返回完整 token.json，
+    // 避免其他平台凭证因一个源而扩大暴露面。
+    return c.json({ token }, 200, tokenResponseHeaders);
+  }
+
   async function handleTokenJson(c: any) {
     const baseUrl = await resolveBaseUrl(c);
     if (baseUrl instanceof Response) return baseUrl;
@@ -2446,6 +2468,7 @@ export function createApp(deps: AppDeps): Hono {
     app.get(prefix + '/credential/p123', (c) => handleAccountCredential(c, 'pan123'));
     app.get(prefix + '/credential/xunlei', (c) => handleAccountCredential(c, 'thunder'));
     app.get(prefix + '/credential/alist', handleAListCredential);
+    app.get(prefix + '/credential/aliyun.json', handleAliyunTokenJson);
     app.get(prefix + '/credential/token.json', handleTokenJson);
     app.get(prefix + '/token.json', handleTokenJson);
   }

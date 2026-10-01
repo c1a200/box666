@@ -6,6 +6,7 @@ import type { CloudPlatform, TVBoxSite } from './types';
 import { extractJarMd5 } from './site-contract';
 
 export type CredentialMechanism =
+  | 'ali-token-url'
   | 'pan-init-url'
   | 'pan-search-ext-pan'
   | 'pan-search-fixed-baidu'
@@ -98,6 +99,7 @@ const PAN_SEARCH_PLATFORM_MAP: Record<string, CloudPlatform> = {
 };
 
 const PAN_INIT_API_RE = /^csp_(?:Wo[bg]g|Mogg|MIPanSo|KkSs|PanSso)(?:Guard)?/i;
+const ALI_TOKEN_API_RE = /^csp_YiSo$/i;
 
 function directFieldProtocol(
   platform: CloudPlatform,
@@ -123,7 +125,9 @@ export function resolveCredentialProtocol(
   context: { effectiveJar?: string } = {},
 ): CredentialProtocol {
   const api = String(site.api || '');
-  const effectiveJar = site.jar || context.effectiveJar || '';
+  const effectiveJar = extractJarMd5(site.jar)
+    ? (site.jar || '')
+    : (context.effectiveJar || '');
 
   if (/^csp_AList/i.test(api)) {
     return {
@@ -169,6 +173,8 @@ export function resolveCredentialProtocol(
   }
 
   if (/^csp_PanSearch(?:Guard)?/i.test(api) && is3D(effectiveJar)) {
+    // 只有 ext.pan 能明确映射到 Pan.init 已支持的六类平台时才注入；
+    // 缺失或不支持的 ext.pan 必须保持未知，不能按站点名称猜测。
     const platform = getPanSearchPlatform(site);
     return {
       mechanism: 'pan-search-ext-pan',
@@ -180,6 +186,18 @@ export function resolveCredentialProtocol(
       reason: platform
         ? `PanSearch 3D ext.pan=${platform}`
         : 'PanSearch 3D missing/unsupported ext.pan',
+    };
+  }
+
+  // 3D 的 YiSo 直接继承 Ali，实际 JAR 已确认会读取 ext.Cloud-drive；
+  // 只有 ext.from 包含 tvfan 时才把该地址当 JSON 初始化源，因此由注入器补齐 from。
+  if (ALI_TOKEN_API_RE.test(api) && is3D(effectiveJar)) {
+    return {
+      mechanism: 'ali-token-url',
+      platforms: ['aliyun'],
+      credentialRequired: true,
+      canInject: true,
+      reason: '3D YiSo Ali.init Cloud-drive JSON contract',
     };
   }
 
