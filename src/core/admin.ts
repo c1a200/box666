@@ -349,7 +349,7 @@ ${sharedStyles}
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <button class="btn btn-sm" id="importBtn" onclick="importConfig()" data-i18n="import">Import</button>
         </div>
-    </div>
+      </div>
 
     <!-- Source list -->
     <div class="section">
@@ -360,6 +360,7 @@ ${sharedStyles}
       <div class="source-list" id="sourceList">
         <div class="empty">Loading sources...</div>
       </div>
+    </div>
     </div>
   </div>
 
