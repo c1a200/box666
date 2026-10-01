@@ -916,11 +916,19 @@ export function createApp(deps: AppDeps): Hono {
     } catch {
       candidateSites = [];
     }
-    const siteByKey = new Map(
+    const candidateByKey = new Map(
       candidateSites.filter((site) => !blockedKeys.has(site.key)).map((site) => [site.key, site])
     );
+    const siteByKey = new Map(candidateByKey);
     for (const site of allSites) {
-      if (!blockedKeys.has(site.key)) siteByKey.set(site.key, site);
+      if (blockedKeys.has(site.key)) continue;
+      // 合并配置中的对象可能已被 maxQuickSearch 把 quickSearch 改为 0；
+      // 根启动配置需要按 maxStartupQuickSearch 独立决策，因此以候选池
+      // 的原始 quickSearch 为准，其余字段仍采用最新配置。
+      const original = candidateByKey.get(site.key);
+      siteByKey.set(site.key, original
+        ? { ...site, quickSearch: original.quickSearch }
+        : site);
     }
     let orderedSites: TVBoxSite[] = [];
     if (qualityPool && Array.isArray(qualityPool.entries) && qualityPool.entries.length > 0) {
@@ -986,7 +994,23 @@ export function createApp(deps: AppDeps): Hono {
       limitedRest = [...pooledRest.slice(0, Math.max(0, limit)), ...retainedCredentialRest];
     }
 
-    parsed.sites = [...pinnedSites, ...limitedRest];
+    // 根配置的快速搜索是独立策略：0=不额外裁剪；非 0 时按最终顺序
+    // 仅保留前 N 个 quickSearch 源，其余仅关闭 quickSearch，不删站点。
+    const startupQuickLimit = quota.maxStartupQuickSearch ?? 0;
+    let startupSites = [...pinnedSites, ...limitedRest];
+    if (startupQuickLimit > 0) {
+      let keptQuick = 0;
+      startupSites = startupSites.map((site) => {
+        if (site.searchable !== 1 || site.quickSearch === 0) return site;
+        if (keptQuick < startupQuickLimit) {
+          keptQuick++;
+          return site;
+        }
+        return { ...site, quickSearch: 0 };
+      });
+    }
+
+    parsed.sites = startupSites;
     console.log('[startup] mode=' + (leanStartup ? 'lean' : 'full')
       + ' jar-ready=' + jarReadyKeys.size
       + ' type3-kept=' + parsed.sites.filter((site) => site.type === 3).length);
