@@ -328,6 +328,29 @@ export interface SiteQualityGrades {
   unusable: SiteQualityGradeBucket;  // 不可用：连续失败/明确错误
   poolTotal: number;                 // 可下发候选池总数（优/良/可用/凭证就绪/客户端可验证候选）
 }
+// 服务端预检状态。
+export type SourcePreflightStatus =
+  | 'verified'
+  | 'credential-ready'
+  | 'alist-verified'
+  | 'client-jar-verified'
+  | 'client-jar-unverified'
+  | 'credential-invalid'
+  | 'timeout'
+  | 'failed';
+
+// 服务端模拟 TVBox/HTTP 客户端得到的预检结果。
+export interface SourcePreflightResult {
+  status: SourcePreflightStatus;
+  reason: string;
+  message: string;
+  checkedAt: string;
+  httpStatus?: number;
+  contentLength?: number;
+  jarBytes?: number;
+  durationMs?: number;
+}
+
 // 搜索源质量分级快照
 export interface SearchQualityEntry {
   key: string;
@@ -340,6 +363,7 @@ export interface SearchQualityEntry {
   credentialPlatforms: CloudPlatform[];
   credentialStatus: 'not-required' | 'ready' | 'partial' | 'missing' | 'invalid';
   probeKind: 'http' | 'client-jar' | 'credential-http';
+  preflight?: SourcePreflightResult;
 }
 
 export interface SearchQualityThresholds {
@@ -356,6 +380,11 @@ export interface SearchQualityCoverage {
   credentialReady: number;   // 所需平台凭证均已就绪
   credentialPartial: number; // 已配置部分凭证或凭证无效
   credentialMissing: number; // 未配置所需平台凭证
+  preflightVerified?: number; // 服务端已完成真实请求/接口验证
+  preflightCredentialReady?: number; // 服务端已注入凭证并验证
+  preflightAListVerified?: number; // AList API 已验证
+  preflightJarVerified?: number; // JAR 已下载并通过结构校验
+  clientFinalOnly?: number; // 仅剩客户端最终执行/播放验证
 }
 
 export interface SearchQualitySnapshot {

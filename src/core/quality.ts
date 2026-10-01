@@ -17,12 +17,14 @@ import type {
   TVBoxSite,
   SiteQualityGrade,
   SiteQualityGrades,
+  SourcePreflightResult,
 } from './types';
 import type { Storage } from '../storage/interface';
 import { isCredentialDistributable, isPanInitCredentialDistributable, loadCredentials } from './credential-store';
 import { getCredentialPlatformsForSite } from './credential-risk';
 import { batchSiteSpeedTest, isSiteProbeable, type SiteProbeResult } from './speedtest';
 import { canDistributeCredentialsToSite } from './credential-injector';
+import { preflightSourcesBatch } from './source-preflight';
 import {
   DEFAULT_QUALITY_PROBE_CHUNK_SIZE,
   DEFAULT_QUALITY_PROBE_CONCURRENCY,
@@ -65,6 +67,14 @@ const SERVER_PROBE_GRADES = new Set<SiteQualityGrade>(['excellent', 'good', 'usa
 // 继续保留 credential-ready，等客户端真实播放验证。
 const HTTP_COOKIE_PLATFORMS = new Set<CloudPlatform>(['quark', 'uc', 'baidu', 'bilibili', 'tianyi', 'pan115']);
 const CREDENTIAL_PROBE_TIMEOUT_MS = 4000;
+
+// 服务端预检（模拟客户端读取配置 / 请求接口 / 下载 JAR）只跑在后台分级里，
+// 绝不在根配置热路径执行。超时与预算都比常规 HTTP 测速更宽松，但整体受控。
+const QUALITY_PREFLIGHT_TIMEOUT_MS = 4500;
+const QUALITY_PREFLIGHT_CONCURRENCY = 8;
+const QUALITY_PREFLIGHT_BUDGET_MS = 25000;
+// 候选池日常刷新时，已通过预检的源在 TTL 内直接复用结果，避免每天重复下载 JAR。
+const QUALITY_PREFLIGHT_TTL_MS = 20 * 60 * 60 * 1000;
 
 function isNodeRuntime(): boolean {
   return typeof process !== 'undefined' && !!process.env.PORT;
@@ -418,6 +428,19 @@ function normalizeSnapshot(raw: unknown): SearchQualitySnapshot | null {
     probeKind: entry.probeKind === 'client-jar' || entry.probeKind === 'credential-http' || entry.probeKind === 'http'
       ? entry.probeKind
       : 'http',
+    preflight: entry.preflight && typeof entry.preflight === 'object' && typeof entry.preflight.status === 'string'
+      ? {
+          ...entry.preflight,
+          status: PREFLIGHT_SETTLED_STATUSES.has(entry.preflight.status)
+            || entry.preflight.status === 'client-jar-unverified'
+            || entry.preflight.status === 'credential-invalid'
+            || entry.preflight.status === 'timeout'
+            || entry.preflight.status === 'failed'
+            ? entry.preflight.status
+            : 'failed',
+          checkedAt: typeof entry.preflight.checkedAt === 'string' ? entry.preflight.checkedAt : new Date().toISOString(),
+        } as SourcePreflightResult
+      : undefined,
   })) as SearchQualitySnapshot['entries'];
   const sorted = sortQualityEntries(entries);
   const grades = buildGrades(sorted);
@@ -440,6 +463,22 @@ function normalizeSnapshot(raw: unknown): SearchQualitySnapshot | null {
       credentialMissing: typeof coverageRaw.credentialMissing === 'number'
         ? coverageRaw.credentialMissing
         : sorted.filter((entry) => entry.credentialStatus === 'missing').length,
+      preflightVerified: typeof coverageRaw.preflightVerified === 'number'
+        ? coverageRaw.preflightVerified
+        : sorted.filter((entry) => entry.preflight?.status === 'verified').length,
+      preflightCredentialReady: typeof coverageRaw.preflightCredentialReady === 'number'
+        ? coverageRaw.preflightCredentialReady
+        : sorted.filter((entry) => entry.preflight?.status === 'credential-ready').length,
+      preflightAListVerified: typeof coverageRaw.preflightAListVerified === 'number'
+        ? coverageRaw.preflightAListVerified
+        : sorted.filter((entry) => entry.preflight?.status === 'alist-verified').length,
+      preflightJarVerified: typeof coverageRaw.preflightJarVerified === 'number'
+        ? coverageRaw.preflightJarVerified
+        : sorted.filter((entry) => entry.preflight?.status === 'client-jar-verified').length,
+      clientFinalOnly: typeof coverageRaw.clientFinalOnly === 'number'
+        ? coverageRaw.clientFinalOnly
+        : sorted.filter((entry) => !preflightProvesServerCapability(entry.preflight)
+          && entry.grade === 'untestable').length,
     },
     entries: sorted,
     grades,
@@ -495,8 +534,8 @@ export async function loadHealthMap(storage: Storage): Promise<SiteHealthMap> {
  *
  * 必须覆盖所有 searchable===1 的站点，包含 type=3 的远程扩展（csp_* 守卫）。
  * 它们同样占用前端配置的 maxSearchable 名额，因此必须计入分级统计与排序；
- * 不可探测的 type=3 客户端扩展不会由服务端发起请求，单独归入 untestable；
- * 它们仍然下发给客户端，由客户端登录/执行，不占用服务端探测预算。
+ * 不可探测的 type=3 客户端扩展会先接受服务端配置/接口/凭证/AList/JAR 结构预检；
+ * 只有仍需客户端执行 Java 或最终播放验证的源才归入 untestable，且不会进入 HTTP 测速预算。
  */
 export function collectSearchableSites(sites: TVBoxSite[]): TVBoxSite[] {
   const seen = new Set<string>();
@@ -516,9 +555,13 @@ function candidateKeysFromPool(pool: SearchQualitySnapshot | null): Set<string> 
   for (const entry of pool.entries) {
     const grade = normalizeGrade(entry.grade);
     if (SERVER_PROBE_GRADES.has(grade)) keys.add(entry.key);
-    // credential-ready 中，只有 HTTP 可真实验证的源才进入日常候选池重测；
-    // JAR/客户端扩展源仍需客户端执行，不能由服务端反复无效探测。
-    else if (grade === 'credential-ready' && entry.probeKind === 'credential-http') keys.add(entry.key);
+    // credential-ready 中，HTTP 与已通过服务端预检的 client-jar 源都要进入日常候选轮换；
+    // 前者重测凭证 HTTP，后者在 TTL 到期后重跑配置/凭证/AList/JAR 结构预检。
+    else if (grade === 'credential-ready' && (entry.probeKind === 'credential-http' || entry.probeKind === 'client-jar')) {
+      keys.add(entry.key);
+    }
+    // 尚未通过预检的非 HTTP 源也必须进入候选池，下一轮继续由服务端模拟客户端分析。
+    else if (grade === 'untestable') keys.add(entry.key);
   }
   return keys;
 }
@@ -577,8 +620,8 @@ export function qualityTargetSites(sites: TVBoxSite[], pool: SearchQualitySnapsh
 /**
  * 对可搜索池执行一次质量分级并持久化。
  *
- * candidate 模式只重测当前优/良/可用候选池；full 模式重测全部可服务端探测的 searchable。
- * untestable 由客户端执行，不参与服务端重测；timeout/unusable 保留历史统计但不进入候选池。
+ * candidate 模式刷新当前优/良/可用候选池，并对凭证源和客户端扩展重跑服务端预检；
+ * full 模式重测全部 searchable。timeout/unusable 保留历史统计但不进入候选池。
  */
 export async function runQualityGrading(
   storage: Storage,
@@ -629,7 +672,8 @@ export async function runQualityGrading(
     probeMap = collected;
   }
 
-  const entries = buildQualityEntries(allSearchable, probeMap, previousEntries, healthMap, credentials);
+  const preflightMap = await collectPreflightResults(target, credentials, previousEntries, mode);
+  const entries = buildQualityEntries(allSearchable, probeMap, previousEntries, healthMap, credentials, preflightMap);
   const snapshot = buildSnapshot(allSearchable.length, entries, allSearchable);
   await persistQualitySnapshot(storage, snapshot);
   await persistQualityCandidates(storage, allSearchable);
@@ -665,29 +709,111 @@ function credentialStatusForSite(
   return 'partial';
 }
 
+const PREFLIGHT_SETTLED_STATUSES = new Set<SourcePreflightResult['status']>([
+  'verified',
+  'credential-ready',
+  'alist-verified',
+  'client-jar-verified',
+]);
+
+/** 预检是否在服务端拿到了真实、可确认的结果（而不是仍需客户端执行）。 */
+function preflightProvesServerCapability(preflight: SourcePreflightResult | undefined): boolean {
+  return !!preflight && PREFLIGHT_SETTLED_STATUSES.has(preflight.status);
+}
+
+function isFreshPreflight(preflight: SourcePreflightResult | undefined, now: number): boolean {
+  if (!preflightProvesServerCapability(preflight)) return false;
+  const checked = Date.parse(preflight?.checkedAt || '');
+  return Number.isFinite(checked) && now - checked <= QUALITY_PREFLIGHT_TTL_MS;
+}
+
+/**
+ * 由服务端预检结果推导质量分级。
+ * 服务端已经真实请求成功的源提升到 credential-ready（候选池靠前），
+ * 只有确实无法在服务端模拟、必须交给客户端最终执行/播放的才留在 untestable。
+ */
+function gradeFromPreflight(
+  preflight: SourcePreflightResult | undefined,
+  credentialStatus: SearchQualityEntry['credentialStatus'],
+): SiteQualityGrade {
+  if (preflightProvesServerCapability(preflight)) return 'credential-ready';
+  return credentialStatus === 'ready' ? 'credential-ready' : 'untestable';
+}
+
+/**
+ * 对不可 HTTP 测速的源执行服务端预检。candidate 模式下 TTL 内复用上一轮结果，
+ * full 模式总是重跑；整体受一个时间预算约束，超预算时保留上一轮结果。
+ */
+async function collectPreflightResults(
+  sites: TVBoxSite[],
+  credentials: Map<CloudPlatform, CloudCredential>,
+  previousEntries: Map<string, SearchQualityEntry>,
+  mode: SearchQualityRunMode,
+): Promise<Map<string, SourcePreflightResult>> {
+  const out = new Map<string, SourcePreflightResult>();
+  const pending: TVBoxSite[] = [];
+  const now = Date.now();
+  for (const site of sites) {
+    if (isSiteProbeable(site)) continue;
+    const previous = previousEntries.get(site.key)?.preflight;
+    if (mode !== 'full' && isFreshPreflight(previous, now)) {
+      out.set(site.key, previous as SourcePreflightResult);
+      continue;
+    }
+    pending.push(site);
+  }
+  if (pending.length === 0) return out;
+
+  const fallback = (site: TVBoxSite): SourcePreflightResult =>
+    previousEntries.get(site.key)?.preflight ?? {
+      status: 'timeout',
+      reason: 'preflight-budget-exhausted',
+      message: '服务端预检超出本轮时间预算，下一轮继续',
+      checkedAt: new Date().toISOString(),
+    };
+
+  // 批次内部设置真实截止时间并 AbortController 中止在途请求；
+  // 超预算后不再启动新源，也不会让后台任务与下一轮分级重叠。
+  const settled = await preflightSourcesBatch(pending, credentials, {
+    timeoutMs: QUALITY_PREFLIGHT_TIMEOUT_MS,
+    concurrency: QUALITY_PREFLIGHT_CONCURRENCY,
+    budgetMs: QUALITY_PREFLIGHT_BUDGET_MS,
+  });
+  for (const [key, value] of settled) out.set(key, value);
+  for (const site of pending) {
+    if (!out.has(site.key)) out.set(site.key, fallback(site));
+  }
+  return out;
+}
+
 function buildQualityEntries(
   searchable: TVBoxSite[],
   probeMap: Map<string, SiteProbeResult>,
   previousEntries: Map<string, SearchQualitySnapshot['entries'][number]>,
   healthMap: SiteHealthMap,
   credentials: Map<CloudPlatform, CloudCredential>,
+  preflightMap: Map<string, SourcePreflightResult> = new Map(),
 ): SearchQualitySnapshot['entries'] {
   const now = new Date().toISOString();
   return searchable.map((site) => {
     const credentialPlatforms = [...new Set(getCredentialPlatformsForSite(site))];
     const credentialStatus = credentialStatusForSite(site, credentialPlatforms, credentials);
     if (!isSiteProbeable(site)) {
+      // 先模拟客户端行为做服务端预检，再决定分级；不再无条件判为“客户端登录/JAR”。
+      const previousEntry = previousEntries.get(site.key);
+      const preflight = preflightMap.get(site.key) ?? previousEntry?.preflight;
       return {
         key: site.key,
         name: site.name || site.key,
-        grade: credentialStatus === 'ready' ? 'credential-ready' : 'untestable',
+        grade: gradeFromPreflight(preflight, credentialStatus),
         speedMs: null,
         result: 'not_probed',
-        probedAt: undefined,
+        probedAt: preflight?.checkedAt || previousEntry?.probedAt,
         consecutiveFailures: 0,
         credentialPlatforms,
         credentialStatus,
         probeKind: 'client-jar',
+        preflight,
       };
     }
     const probe = probeMap.get(site.key);
@@ -751,9 +877,14 @@ function buildQualityEntries(
 function buildCoverage(sites: TVBoxSite[], entries: SearchQualitySnapshot['entries']) {
   let testable = 0;
   let untestable = 0;
+  const probeableKeys = new Set<string>();
   for (const site of sites) {
-    if (isSiteProbeable(site)) testable++;
-    else untestable++;
+    if (isSiteProbeable(site)) {
+      testable++;
+      probeableKeys.add(site.key);
+    } else {
+      untestable++;
+    }
   }
   const probed = entries.filter((entry) => entry.result !== 'not_probed').length;
   return {
@@ -764,6 +895,12 @@ function buildCoverage(sites: TVBoxSite[], entries: SearchQualitySnapshot['entri
     credentialReady: entries.filter((entry) => entry.credentialStatus === 'ready').length,
     credentialPartial: entries.filter((entry) => entry.credentialStatus === 'partial' || entry.credentialStatus === 'invalid').length,
     credentialMissing: entries.filter((entry) => entry.credentialStatus === 'missing').length,
+    preflightVerified: entries.filter((entry) => entry.preflight?.status === 'verified').length,
+    preflightCredentialReady: entries.filter((entry) => entry.preflight?.status === 'credential-ready').length,
+    preflightAListVerified: entries.filter((entry) => entry.preflight?.status === 'alist-verified').length,
+    preflightJarVerified: entries.filter((entry) => entry.preflight?.status === 'client-jar-verified').length,
+    clientFinalOnly: entries.filter((entry) => !probeableKeys.has(entry.key)
+      && !preflightProvesServerCapability(entry.preflight)).length,
   };
 }
 
@@ -876,7 +1013,7 @@ export async function runQualityGradingChunk(
   }
   const start = Math.max(0, Math.floor(cursor));
   if (start >= target.length) {
-    const entries = buildQualityEntries(allSearchable, new Map(), previousEntries, await loadHealthMap(storage), credentials);
+    const entries = buildQualityEntries(allSearchable, new Map(), previousEntries, await loadHealthMap(storage), credentials, new Map());
     const snapshot = buildSnapshot(allSearchable.length, entries, allSearchable);
     await persistQualitySnapshot(storage, snapshot);
     await persistQualityCandidates(storage, allSearchable);
@@ -893,7 +1030,8 @@ export async function runQualityGradingChunk(
     Math.max(10000, DEFAULT_QUALITY_PROBE_TIMEOUT_MS * DEFAULT_QUALITY_PROBE_CONCURRENCY),
   );
   const healthMap = await loadHealthMap(storage);
-  const entries = buildQualityEntries(allSearchable, probeMap, previousEntries, healthMap, credentials);
+  const preflightMap = await collectPreflightResults(batch, credentials, previousEntries, mode);
+  const entries = buildQualityEntries(allSearchable, probeMap, previousEntries, healthMap, credentials, preflightMap);
   const snapshot = buildSnapshot(allSearchable.length, entries, allSearchable);
   await persistQualitySnapshot(storage, snapshot);
   const done = start + batch.length >= target.length;
