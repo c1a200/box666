@@ -9,11 +9,11 @@ import { batchSiteSpeedTest, appendSpeedToName, filterUnreachableSites, type Sit
 import { isClientCredentialSite, getDirectPlatformFromApi } from './core/credential-risk';
 import { macCMSToTVBoxSites, processMacCMSForLocal } from './core/maccms';
 import { rewriteJarUrls, prefetchJarBinaries, type JarEntry } from './core/jar-proxy';
-import { mergeLivesToNative, separatedMergeLives, formatLiveGroupsAsTxt, filterLiveSourcesDetailed, type LiveSourceInput } from './core/live-merger';
+import { mergeLivesToNative, separatedMergeLives, applyChannelSpeedToGroups, formatLiveGroupsAsTxt, filterLiveSourcesDetailed, type LiveSourceInput } from './core/live-merger';
 import { loadSpeedMap as loadChannelSpeedMap } from './core/channel-probe';
 import { liveSourcesToTVBoxLives } from './core/live-source';
 import { isBlockedLiveSource, partitionBlockedLiveSources } from './core/live-policy';
-import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_STARTUP_SITE_POOL, KV_SOURCE_URLS, KV_LAST_UPDATE, KV_LAST_UPDATE_ERROR, KV_MANUAL_SOURCES, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_MERGE_REPORT, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_PARSE_HEALTH_REPORT, KV_CHANNEL_MERGED_TREE, KV_AGG_LOGS, AGG_LOGS_MAX, KV_SITE_SNAPSHOT, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, BASE_URL_PLACEHOLDER, KV_SITE_HEALTH_MAP, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SOURCE_MAP, KV_SITE_UPSTREAM_MAP, KV_SITE_CONTRACT_MAP, KV_SOURCE_URL_BLACKLIST } from './core/config';
+import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_STARTUP_SITE_POOL, KV_SOURCE_URLS, KV_LAST_UPDATE, KV_LAST_UPDATE_ERROR, KV_MANUAL_SOURCES, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_MERGE_REPORT, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_PARSE_HEALTH_REPORT, KV_CHANNEL_MERGED_TREE, KV_CHANNEL_RUNTIME_TREE, KV_AGG_LOGS, AGG_LOGS_MAX, KV_SITE_SNAPSHOT, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, BASE_URL_PLACEHOLDER, KV_SITE_HEALTH_MAP, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SOURCE_MAP, KV_SITE_UPSTREAM_MAP, KV_SITE_CONTRACT_MAP, KV_SOURCE_URL_BLACKLIST } from './core/config';
 import { loadBlacklist, applyBlacklist, pruneBlacklist, saveBlacklist, siteFingerprint } from './core/blacklist';
 import { transformSiteNames } from './core/cleaner';
 import { parseConfigJson, type FetchProxyConfig } from './core/fetcher';
@@ -618,12 +618,14 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
       const liveMergeMode = (await storage.get(KV_LIVE_MERGE_MODE)) || 'separated';
       logger.infoFields('aggregation', 'Step 6.5: live-sources', { unique: uniqueInputs.length, mode: liveMergeMode });
 
-      const channelSpeedMap = await loadChannelSpeedMap(storage);
+      // 第一步：不带测速过滤生成完整候选池。失败/超慢线路也必须进入池中，
+      // 否则 probe 下一轮只能看到“当前可用”的子集，无法重试和恢复线路。
+      const candidateOptions = { preserveAllUrls: true, candidatePoolMaxUrlsPerChannel: 64 };
       let mergeResult;
       if (liveMergeMode === 'separated') {
-        mergeResult = await separatedMergeLives(uniqueInputs, config.fetchTimeoutMs, channelSpeedMap, storage);
+        mergeResult = await separatedMergeLives(uniqueInputs, config.fetchTimeoutMs, undefined, storage, candidateOptions);
       } else {
-        mergeResult = await mergeLivesToNative(uniqueInputs, config.fetchTimeoutMs, channelSpeedMap, storage);
+        mergeResult = await mergeLivesToNative(uniqueInputs, config.fetchTimeoutMs, undefined, storage, candidateOptions);
       }
 
       if (mergeResult.groups.length === 0 && previousLiveLives.length > 0) {
@@ -634,9 +636,20 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
       } else {
         merged.lives = mergeResult.groups;
 
-        // 仅在有有效合并结果时覆盖频道树，避免测速或后续请求失去上一版数据。
+        // 完整候选池只由主聚合维护；运行时输出是下一步根据测速表派生的独立结果。
         if (mergeResult.groups.length > 0) {
           await storage.put(KV_CHANNEL_MERGED_TREE, JSON.stringify(mergeResult.groups));
+          const channelSpeedMap = await loadChannelSpeedMap(storage);
+          const maxUrlsPerChannel = liveMergeMode === 'merged' ? 9 : 6;
+          const runtimeGroups = applyChannelSpeedToGroups(mergeResult.groups, channelSpeedMap, undefined, maxUrlsPerChannel);
+          if (runtimeGroups.length > 0) {
+            merged.lives = runtimeGroups;
+            await storage.put(KV_CHANNEL_RUNTIME_TREE, JSON.stringify(runtimeGroups));
+          } else {
+            // 测速表异常或全部线路暂时失败时，不能把运行时树和 /live 清空。
+            merged.lives = previousLiveLives.length > 0 ? previousLiveLives : mergeResult.groups;
+            logger.warn('aggregation', 'Step 6.5: Runtime tree empty after speed filter, keeping previous output');
+          }
         }
       }
 

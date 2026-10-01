@@ -4,7 +4,7 @@ import { Hono } from 'hono';
 import { MemoryCachedStorage } from './storage/cached';
 import type { Storage } from './storage/interface';
 import type { AppConfig, MacCMSSourceEntry, LiveSourceEntry, NameTransformConfig, EdgeProxyConfig, SearchQualityRunMode } from './core/types';
-import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_STARTUP_SITE_POOL, KV_MANUAL_SOURCES, KV_LAST_UPDATE, KV_LAST_UPDATE_ERROR, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_RUNTIME_TXT, KV_LIVE_RUNTIME_TXT_VERSION, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, LIVE_PROXY_TTL, IMG_PROXY_TTL, KV_NAME_TRANSFORM, KV_CRON_INTERVAL, DEFAULT_CRON_INTERVAL, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_PARSE_HEALTH_REPORT, KV_AGG_LOGS, KV_BG_SETTINGS, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, KV_SMART_BASE_URL_ENABLED, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SITE_HEALTH_MAP, KV_CHANNEL_MERGED_TREE, KV_LIVE_TEXT_PREFIX, KV_CREDENTIAL_DISTRIBUTION, KV_CREDENTIAL_DISTRIBUTION_ENABLED, KV_SEARCH_QUALITY_CANDIDATES, KV_SITE_UPSTREAM_MAP, KV_SITE_CONTRACT_MAP } from './core/config';
+import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_STARTUP_SITE_POOL, KV_MANUAL_SOURCES, KV_LAST_UPDATE, KV_LAST_UPDATE_ERROR, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_RUNTIME_TXT, KV_LIVE_RUNTIME_TXT_VERSION, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, LIVE_PROXY_TTL, IMG_PROXY_TTL, KV_NAME_TRANSFORM, KV_CRON_INTERVAL, DEFAULT_CRON_INTERVAL, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_PARSE_HEALTH_REPORT, KV_AGG_LOGS, KV_BG_SETTINGS, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, KV_SMART_BASE_URL_ENABLED, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SITE_HEALTH_MAP, KV_CHANNEL_RUNTIME_TREE, KV_LIVE_TEXT_PREFIX, KV_CREDENTIAL_DISTRIBUTION, KV_CREDENTIAL_DISTRIBUTION_ENABLED, KV_SEARCH_QUALITY_CANDIDATES, KV_SITE_UPSTREAM_MAP, KV_SITE_CONTRACT_MAP } from './core/config';
 import { getRequestBaseUrl, applyBaseUrlPlaceholder, assertHostAllowed } from './core/base-url';
 import { logger } from './core/logger';
 import { loadGroupOrder, saveGroupOrder } from './core/group-order';
@@ -965,7 +965,10 @@ export function createApp(deps: AppDeps): Hono {
     if (leanStartup) {
       jarReadyKeys = await loadJarReadyKeys(storage);
       eligibleRest = rest.filter((site) => {
-        if (site.type !== 3 || isClientCredentialSite(site)) return true;
+        // 可搜索源不能因本部署尚未预取 JAR 而从根配置消失，否则
+        // maxSearchable=0 仍会退化成少量启动源。JAR 就绪门槛只用于
+        // 不可搜索的远程扩展，避免它们增加客户端启动等待。
+        if (site.type !== 3 || site.searchable === 1 || isClientCredentialSite(site)) return true;
         const key = getJarKeyForSite(site, parsed.spider);
         // 直连 CDN JAR 无需等待本部署预取；只有实际代理 JAR 才要求 ready。
         return !key || jarReadyKeys.has(key);
@@ -1254,8 +1257,8 @@ export function createApp(deps: AppDeps): Hono {
                 await storage.put(KV_LIVE_RUNTIME_TXT, txt);
                 await storage.put(KV_LIVE_RUNTIME_TXT_VERSION, mergedVersion || 'legacy');
                 await storage.put(KV_LIVE_RUNTIME_EMPTY_AT, '');
-                // 供 CF 定时有界测速使用；不聚合模式仍保留各源独立分组。
-                await storage.put(KV_CHANNEL_MERGED_TREE, JSON.stringify(groups));
+                // 运行时过滤结果；完整候选池只由主聚合维护，不能被实时解析覆盖。
+                await storage.put(KV_CHANNEL_RUNTIME_TREE, JSON.stringify(groups));
                 const responseHeaders = {
                   'Content-Type': 'text/plain; charset=utf-8',
                   'Cache-Control': 'public, max-age=1800, stale-while-revalidate=86400',
@@ -2391,9 +2394,17 @@ export function createApp(deps: AppDeps): Hono {
     const resolved = await resolveClientAuthContext(c, baseUrl);
     if (resolved.failure) return credentialAuthFailureResponse(c, resolved.failure);
     const context = resolved.context!;
-    if (context.mode === 'none') return c.json({}, 200, tokenResponseHeaders);
+    if (context.mode === 'none') {
+      return c.json({ error: 'credential distribution disabled' }, 404, tokenResponseHeaders);
+    }
     const credentials = selectCredentialsForContext(await loadCredentials(storage), context);
-    return c.json(generateTokenJson(credentials), 200, tokenResponseHeaders);
+    const tokenJson = generateTokenJson(credentials);
+    // 空对象会被部分客户端/JAR 视为“服务端凭证模式已启用”并跳过扫码；
+    // 没有实际可下发凭证时必须表现为端点不存在，让客户端回退本地登录。
+    if (Object.keys(tokenJson).length === 0) {
+      return c.json({ error: 'no credential available' }, 404, tokenResponseHeaders);
+    }
+    return c.json(tokenJson, 200, tokenResponseHeaders);
   }
 
   for (const prefix of ['', '/auth/:code']) {
@@ -4129,3 +4140,4 @@ function verifyAdmin(request: Request, config: AppConfig): boolean {
   const auth = request.headers.get('Authorization');
   return auth === `Bearer ${token}`;
 }
+

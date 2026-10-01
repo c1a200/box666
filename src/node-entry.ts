@@ -118,6 +118,16 @@ function createStorage(): Storage {
     console.log(`[storage] JSON file storage: ${jsonPath}`);
   }
 
+  // 显式关闭远端同步：仅用本地 SQLite 运行，便于验证/调试，完全不消耗 KV 额度。
+  // 支持 STORAGE_REMOTE_SYNC=off / CF_KV_DISABLE=1。
+  const remoteDisabled =
+    /^(?:0|false|off|no)$/i.test((process.env.STORAGE_REMOTE_SYNC || '').trim()) ||
+    /^(?:1|true|on|yes)$/i.test((process.env.CF_KV_DISABLE || '').trim());
+  if (remoteDisabled) {
+    console.log('[storage] Remote KV sync disabled by env; using local storage only');
+    return localStorage;
+  }
+
   // Cloudflare KV 作为可选同步后端（保留 Render 上已配置的三个变量）。
   if (process.env.CF_ACCOUNT_ID && process.env.CF_KV_NAMESPACE_ID && process.env.CF_API_TOKEN) {
     try {

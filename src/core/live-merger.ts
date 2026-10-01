@@ -560,6 +560,7 @@ export async function mergeLivesToNative(
   fetchTimeoutMs: number,
   channelSpeedMap?: ChannelSpeedMap,
   storage?: Storage,
+  options: { preserveAllUrls?: boolean; candidatePoolMaxUrlsPerChannel?: number } = {},
 ): Promise<MergeLivesResult> {
   if (sources.length === 0) {
     return {
@@ -591,8 +592,8 @@ export async function mergeLivesToNative(
         const sourceName = sanitizeTxtLabel(r.value.input.name || 'source', 'source');
         const entries = parseLiveContent(r.value.outcome.content, sourceName, r.value.input.speedMs);
         const prepared = prepareSourceChannels(entries, channelSpeedMap, {
-          maxUrlsPerChannel: SEPARATED_MAX_URLS_PER_CHANNEL,
-          maxSpeedMs: LIVE_KNOWN_MAX_SPEED_MS,
+          maxUrlsPerChannel: options.preserveAllUrls ? Math.max(1, options.candidatePoolMaxUrlsPerChannel ?? 64) : SEPARATED_MAX_URLS_PER_CHANNEL,
+          maxSpeedMs: options.preserveAllUrls ? 0 : LIVE_KNOWN_MAX_SPEED_MS,
         });
         const quality = evaluateSourceQuality(prepared, {
           minChannelsPerSource: SEPARATED_MIN_CHANNELS_PER_SOURCE,
@@ -666,6 +667,7 @@ export async function mergeLivesToNative(
   for (const [, agg] of channelMap) {
     // 对 urls 排序且过滤失效链接
     const urlList = Array.from(agg.urls.values()).filter((e) => {
+      if (options.preserveAllUrls) return true;
       const s = channelSpeedMap?.[e.url];
       return s?.kind !== 'fail';
     });
@@ -695,7 +697,9 @@ export async function mergeLivesToNative(
     });
 
     // Render 聚合模式每个频道最多保留 9 条线路，避免客户端加载过慢。
-    const limitedUrlList = urlList.slice(0, AGGREGATED_MAX_URLS_PER_CHANNEL);
+    const limitedUrlList = options.preserveAllUrls
+      ? urlList.slice(0, Math.max(1, options.candidatePoolMaxUrlsPerChannel ?? 64))
+      : urlList.slice(0, AGGREGATED_MAX_URLS_PER_CHANNEL);
 
     // 拼 $ 源名（URL 预防性 encode 避免 type 泄漏）
     const urlStrs = limitedUrlList.map((e) => `${scrubUrlType(e.url)}$${scrubTypeLiteral(e.source)}`);
@@ -796,6 +800,7 @@ export async function separatedMergeLives(
   fetchTimeoutMs: number,
   channelSpeedMap?: ChannelSpeedMap,
   storage?: Storage,
+  options: { preserveAllUrls?: boolean; candidatePoolMaxUrlsPerChannel?: number } = {},
 ): Promise<MergeLivesResult> {
   if (sources.length === 0) {
     return {
@@ -843,8 +848,8 @@ export async function separatedMergeLives(
       }
 
       const prepared = prepareSourceChannels(entries, channelSpeedMap, {
-        maxUrlsPerChannel: SEPARATED_MAX_URLS_PER_CHANNEL,
-        maxSpeedMs: LIVE_KNOWN_MAX_SPEED_MS,
+        maxUrlsPerChannel: options.preserveAllUrls ? Math.max(1, options.candidatePoolMaxUrlsPerChannel ?? 64) : SEPARATED_MAX_URLS_PER_CHANNEL,
+        maxSpeedMs: options.preserveAllUrls ? 0 : LIVE_KNOWN_MAX_SPEED_MS,
       });
       const quality = evaluateSourceQuality(prepared, {});
       if (quality.discard) {

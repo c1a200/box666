@@ -8,6 +8,7 @@ import {
   KV_CHANNEL_PROBE_STATUS,
   KV_CHANNEL_PROBE_ENABLED,
   KV_CHANNEL_MERGED_TREE,
+  KV_CHANNEL_RUNTIME_TREE,
   KV_LIVE_MERGE_MODE,
   KV_LIVE_MERGED_TXT,
   KV_LIVE_MERGED_TXT_VERSION,
@@ -263,6 +264,16 @@ function parseMergedGroups(raw: string | null): TVBoxLiveGroup[] {
 }
 
 /**
+ * 候选池始终优先读取完整合并树。
+ * 兼容升级前的部署：旧版本只有 channel_merged_tree 时仍可继续运行。
+ */
+async function loadCandidateTree(storage: Storage): Promise<TVBoxLiveGroup[]> {
+  const merged = parseMergedGroups(await storage.get(KV_CHANNEL_MERGED_TREE));
+  if (merged.length > 0) return merged;
+  return parseMergedGroups(await storage.get(KV_CHANNEL_RUNTIME_TREE));
+}
+
+/**
  * 免费 Worker 专用：每次只测一小批直播 URL，避免子请求数、CPU 和时长超限。
  * 优先测未知、过期或上次失败的 URL；结果合并进现有测速表，不覆盖完整状态。
  */
@@ -281,7 +292,7 @@ export async function probeLiveUrlsBounded(
   const budgetMs = Math.max(1000, Math.min(60000, options.budgetMs ?? 25000));
   const startedAt = Date.now();
 
-  const groups = parseMergedGroups(await storage.get(KV_CHANNEL_MERGED_TREE));
+  const groups = await loadCandidateTree(storage);
   const allUrls = extractAllUrls(groups);
   if (allUrls.length === 0) {
     return { candidates: 0, probed: 0, success: 0, failed: 0, skipped: true };
@@ -324,14 +335,14 @@ export async function probeLiveUrlsBounded(
     if (filteredGroups.length > 0) {
       const nextTree = JSON.stringify(filteredGroups);
       const nextTxt = formatLiveGroupsAsTxt(filteredGroups);
-      const previousTree = await storage.get(KV_CHANNEL_MERGED_TREE);
+      const previousTree = await storage.get(KV_CHANNEL_RUNTIME_TREE);
       const previousTxt = await storage.get(KV_LIVE_MERGED_TXT);
       const outputChanged = !stableJsonEqual(safeParseJson(previousTree), filteredGroups)
         || previousTxt !== nextTxt;
       if (outputChanged) {
         const version = `probe-${Date.now()}`;
         await Promise.all([
-          storage.put(KV_CHANNEL_MERGED_TREE, nextTree),
+          storage.put(KV_CHANNEL_RUNTIME_TREE, nextTree),
           storage.put(KV_LIVE_MERGED_TXT, nextTxt),
           storage.put(KV_LIVE_MERGED_TXT_VERSION, version),
           storage.put(KV_LIVE_RUNTIME_TXT_VERSION, version),
@@ -363,9 +374,9 @@ export async function runChannelProbe(storage: Storage): Promise<ChannelProbeSta
     return loadStatus(storage);
   }
 
-  // 读取上次合并的频道树
-  const treeRaw = await storage.get(KV_CHANNEL_MERGED_TREE);
-  if (!treeRaw) {
+  // 读取主聚合产出的完整候选池，而不是已被测速过滤过的运行时树。
+  const groups = await loadCandidateTree(storage);
+  if (groups.length === 0) {
     console.log('[channel-probe] No merged tree available, skipping (run main aggregation first)');
     const status: ChannelProbeStatus = {
       state: 'error',
@@ -376,24 +387,6 @@ export async function runChannelProbe(storage: Storage): Promise<ChannelProbeSta
       totalChannels: 0,
       coverage: 0,
       error: 'No merged channel tree (run main aggregation first)',
-    };
-    await saveStatus(storage, status);
-    return status;
-  }
-
-  let groups: TVBoxLiveGroup[];
-  try {
-    groups = JSON.parse(treeRaw);
-  } catch (err) {
-    const status: ChannelProbeStatus = {
-      state: 'error',
-      totalUrls: 0,
-      probed: 0,
-      success: 0,
-      failed: 0,
-      totalChannels: 0,
-      coverage: 0,
-      error: `Parse merged tree failed: ${err}`,
     };
     await saveStatus(storage, status);
     return status;
@@ -503,14 +496,14 @@ export async function runChannelProbe(storage: Storage): Promise<ChannelProbeSta
     if (filteredGroups.length > 0) {
       const nextTree = JSON.stringify(filteredGroups);
       const nextTxt = formatLiveGroupsAsTxt(filteredGroups);
-      const previousTree = await storage.get(KV_CHANNEL_MERGED_TREE);
+      const previousTree = await storage.get(KV_CHANNEL_RUNTIME_TREE);
       const previousTxt = await storage.get(KV_LIVE_MERGED_TXT);
       const outputChanged = !stableJsonEqual(safeParseJson(previousTree), filteredGroups)
         || previousTxt !== nextTxt;
       if (outputChanged) {
         const liveVersion = `probe-${Date.now()}`;
         await Promise.all([
-          storage.put(KV_CHANNEL_MERGED_TREE, nextTree),
+          storage.put(KV_CHANNEL_RUNTIME_TREE, nextTree),
           storage.put(KV_LIVE_MERGED_TXT, nextTxt),
           storage.put(KV_LIVE_MERGED_TXT_VERSION, liveVersion),
           storage.put(KV_LIVE_RUNTIME_TXT_VERSION, liveVersion),

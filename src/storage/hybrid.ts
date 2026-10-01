@@ -1,14 +1,24 @@
 // 本地优先 + 远程持久化存储。
 //
-// Render 等 Node 环境的本地 SQLite 只作为缓存，不能被视为持久化存储；
-// 用户配置类 key 会等待远程 KV 写入；按 key 隔离写队列，避免大对象拖慢保存。远端 KV 只保存
-// 用户配置和最终可下发结果，任务进度、探测缓存和可重建索引都留在本地，避免
-// 定时测速/JAR 预热把 Cloudflare 免费额度耗尽。
+// Render 等 Node 环境以本机 SQLite（或 JSON 文件）为第一落点：先写本地保证服务可用，
+// 再把用户配置和最终可下发结果同步到远端 KV。远端额度耗尽或暂不可用时，关键写入不再
+// 中断聚合/管理保存，而是转入本地持久化 outbox，额度恢复后自动补传。任务进度、探测缓存
+// 和可重建索引只留本地，避免定时测速/JAR 预热把 Cloudflare 免费额度耗尽。
 
 import type { Storage } from './interface';
 
 const REMOTE_RETRY_COOLDOWN_MS = 60_000;
 const QUOTA_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+
+// 本地持久化 outbox：远端 KV 额度耗尽或暂不可用时，待同步写入落在本机，
+// 进程重启后仍可补传，避免“额度用尽 = Render 项目不可用”。
+const OUTBOX_INDEX_KEY = '__hybrid_outbox_index';
+const OUTBOX_VALUE_PREFIX = '__hybrid_outbox_value:';
+const MAX_OUTBOX_KEYS = 64;
+
+function outboxValueKey(key: string): string {
+  return OUTBOX_VALUE_PREFIX + key;
+}
 
 // 用户配置或持久化运行参数：写入失败时必须让管理接口感知，否则 Render
 // 重启/重新部署后会像“配置消失”一样回到空值。
@@ -81,16 +91,19 @@ export const LOCAL_ONLY_STORAGE_KEYS = new Set<string>([
   'channel_probe_status',
   'channel_speed_map',
   'channel_merged_tree',
+  'channel_runtime_tree',
   'live_merge_report',
   'live_source_cache',
   'live_runtime_txt',
   'live_runtime_txt_version',
   'live_runtime_empty_at',
   'search_quality_status',
+  OUTBOX_INDEX_KEY,
 ]);
 
 export const LOCAL_ONLY_STORAGE_PREFIXES = [
   'jar_bin:',
+  OUTBOX_VALUE_PREFIX,
 ] as const;
 
 function hasPrefix(key: string, prefixes: readonly string[]): boolean {
@@ -145,6 +158,10 @@ export class HybridStorage implements Storage {
   private skippedLocalOnlyWrites = 0;
   private lastSkippedLocalOnlyKey: string | undefined;
   private lastSkippedLocalOnlyAt: string | undefined;
+  private outboxLoadPromise: Promise<void> | undefined;
+  private deferredCriticalWrites = 0;
+  private lastDeferredCriticalKey: string | undefined;
+  private lastDeferredCriticalAt: string | undefined;
 
   constructor(local: Storage, remote: Storage) {
     this.local = local;
@@ -223,6 +240,8 @@ export class HybridStorage implements Storage {
         },
         Math.max(0, this.retryTimerDeadline - Date.now()),
       );
+      // 不要让长额度冷却定时器单独吊住 Node 进程；服务本身由 HTTP server 保活。
+      if (typeof this.retryTimer.unref === 'function') this.retryTimer.unref();
     }
   }
 
@@ -247,6 +266,7 @@ export class HybridStorage implements Storage {
   }
 
   private async flushRemoteWrites(): Promise<void> {
+    if (!this.outboxLoadPromise) await this.ensureOutboxLoaded();
     if (this.flushing || this.isRemoteCoolingDown() || this.pendingWrites.size === 0) return;
 
     this.flushing = true;
@@ -258,6 +278,7 @@ export class HybridStorage implements Storage {
           // 如果同步期间又写了新值，保留新值，下一轮继续同步。
           if (this.pendingWrites.get(key) === value) {
             this.pendingWrites.delete(key);
+            await this.removePersisted(key);
           }
         } catch (err) {
           this.markRemoteFailure(err);
@@ -267,6 +288,76 @@ export class HybridStorage implements Storage {
     } finally {
       this.flushing = false;
     }
+  }
+
+  private ensureOutboxLoaded(): Promise<void> {
+    if (!this.outboxLoadPromise) this.outboxLoadPromise = this.loadPersistedOutbox();
+    return this.outboxLoadPromise;
+  }
+
+  private async loadPersistedOutbox(): Promise<void> {
+    try {
+      const raw = await this.local.get(OUTBOX_INDEX_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          for (const key of parsed) {
+            if (typeof key !== 'string' || this.pendingWrites.has(key)) continue;
+            const value = await this.local.get(outboxValueKey(key));
+            if (value !== null && value !== '') this.pendingWrites.set(key, value);
+          }
+        }
+      }
+      if (this.pendingWrites.size > 0) {
+        console.log(`[storage-hybrid] restored ${this.pendingWrites.size} pending write(s) from local outbox`);
+        setTimeout(() => { void this.flushRemoteWrites(); }, 0);
+      }
+    } catch (err) {
+      console.warn('[storage-hybrid] failed to restore local outbox:', errorMessage(err));
+    }
+  }
+
+  private async readOutboxKeys(): Promise<string[]> {
+    try {
+      const raw = await this.local.get(OUTBOX_INDEX_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed.filter((k): k is string => typeof k === 'string') : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private async persistPending(key: string, value: string): Promise<void> {
+    try {
+      await this.local.put(outboxValueKey(key), value);
+      const keys = await this.readOutboxKeys();
+      if (!keys.includes(key)) keys.push(key);
+      if (keys.length > MAX_OUTBOX_KEYS) {
+        const dropped = keys.splice(0, keys.length - MAX_OUTBOX_KEYS);
+        for (const stale of dropped) await this.local.put(outboxValueKey(stale), '');
+      }
+      await this.local.put(OUTBOX_INDEX_KEY, JSON.stringify(keys));
+    } catch (err) {
+      console.warn('[storage-hybrid] failed to persist local outbox entry:', errorMessage(err));
+    }
+  }
+
+  private async removePersisted(key: string): Promise<void> {
+    try {
+      const keys = await this.readOutboxKeys();
+      const next = keys.filter((k) => k !== key);
+      if (next.length !== keys.length) await this.local.put(OUTBOX_INDEX_KEY, JSON.stringify(next));
+      await this.local.put(outboxValueKey(key), '');
+    } catch {
+      // outbox 清理失败不影响主流程；下次 flush 会覆盖同一 key。
+    }
+  }
+
+  private noteDeferredCritical(key: string): void {
+    this.deferredCriticalWrites++;
+    this.lastDeferredCriticalKey = key;
+    this.lastDeferredCriticalAt = new Date().toISOString();
   }
 
   async get(key: string): Promise<string | null> {
@@ -295,6 +386,7 @@ export class HybridStorage implements Storage {
 
   async put(key: string, value: string): Promise<void> {
     await this.local.put(key, value);
+    await this.ensureOutboxLoaded();
 
     if (isLocalOnlyStorageKey(key)) {
       this.skippedLocalOnlyWrites++;
@@ -304,18 +396,29 @@ export class HybridStorage implements Storage {
     }
 
     if (isCriticalStorageKey(key)) {
-      // 关键配置必须同步写远端并确认成功；否则管理端不能误报“已保存”。
-      // 先记录 pending，防止后台旧值同步完成后删除新值。
+      // 关键配置以本机持久化为准：远端写入是尽力而为的补传。
+      // 远端额度用尽或不可用时不再抛错，否则 Render 的聚合和管理保存会整体失败；
+      // 待同步值进入本地 outbox，额度恢复后由 flushRemoteWrites 自动补传。
       this.pendingWrites.set(key, value);
+      if (this.isRemoteCoolingDown()) {
+        this.noteDeferredCritical(key);
+        await this.persistPending(key, value);
+        return;
+      }
       try {
         await this.enqueueRemoteWrite(key, value);
-        if (this.pendingWrites.get(key) === value) this.pendingWrites.delete(key);
+        if (this.pendingWrites.get(key) === value) {
+          this.pendingWrites.delete(key);
+          await this.removePersisted(key);
+        }
         return;
       } catch (err) {
         // 并发更新时只保留最新值，避免较旧的失败写入覆盖它。
         if (this.pendingWrites.get(key) === undefined) this.pendingWrites.set(key, value);
         this.markRemoteFailure(err);
-        throw new Error(`配置已写入本机，但远端 KV 持久化失败：${errorMessage(err)}`);
+        this.noteDeferredCritical(key);
+        await this.persistPending(key, value);
+        return;
       }
     }
 
@@ -323,10 +426,12 @@ export class HybridStorage implements Storage {
 
     // 最终派生结果采用尽力而为的合并后台同步，不阻塞应用请求。
     this.pendingWrites.set(key, value);
+    await this.persistPending(key, value);
     void this.flushRemoteWrites();
   }
 
   async getDiagnostics(): Promise<Record<string, unknown>> {
+    await this.ensureOutboxLoaded();
     let remoteDiagnostics: Record<string, unknown> = {};
     try {
       remoteDiagnostics = (await this.remote.getDiagnostics?.()) || {};
@@ -359,6 +464,10 @@ export class HybridStorage implements Storage {
       skippedLocalOnlyWrites: this.skippedLocalOnlyWrites,
       lastSkippedLocalOnlyKey: this.lastSkippedLocalOnlyKey,
       lastSkippedLocalOnlyAt: this.lastSkippedLocalOnlyAt,
+      deferredCriticalWrites: this.deferredCriticalWrites,
+      lastDeferredCriticalKey: this.lastDeferredCriticalKey,
+      lastDeferredCriticalAt: this.lastDeferredCriticalAt,
+      outboxPersisted: true,
     };
   }
 }
