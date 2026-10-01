@@ -80,7 +80,7 @@ ${sharedStyles}
 
 .nt-textarea:focus{border-color:var(--green)}
 
-/* Cloud login cards */
+/* Cloud login and credential distribution */
 .cloud-card{
   padding:12px;
   background:var(--surface);
@@ -90,29 +90,27 @@ ${sharedStyles}
   flex-direction:column;
   gap:8px;
 }
-.cloud-card-header{
-  display:flex;
-  justify-content:space-between;
-  align-items:center;
-}
-.cloud-card-name{
-  font-weight:600;
-  font-size:0.9rem;
-  color:var(--text-bright);
-}
-.cloud-badge{
-  font-family:var(--mono);
-  font-size:0.65rem;
-  padding:2px 8px;
-  border-radius:10px;
-  text-transform:uppercase;
-  letter-spacing:0.05em;
-}
+.cloud-card-header{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.cloud-card-name{font-weight:600;font-size:0.9rem;color:var(--text-bright)}
+.cloud-badge{font-family:var(--mono);font-size:0.65rem;padding:2px 8px;border-radius:10px;text-transform:uppercase;letter-spacing:0.05em}
 .cloud-badge.valid{background:rgba(80,250,123,0.15);color:var(--green)}
 .cloud-badge.expired{background:rgba(255,85,85,0.15);color:var(--red)}
 .cloud-badge.none{background:rgba(136,136,136,0.15);color:var(--text-dim)}
 .cloud-card-actions{display:flex;gap:6px;flex-wrap:wrap}
 .cloud-card-time{font-family:var(--mono);font-size:0.7rem;color:var(--text-dim)}
+.credential-policy-box{padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:6px}
+.credential-inline{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.credential-help{font-size:0.78rem;color:var(--text-secondary);line-height:1.55;margin-top:8px}
+.credential-status{font-family:var(--mono);font-size:0.72rem;color:var(--text-dim)}
+.credential-platform-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px;margin-top:10px}
+.credential-platform-grid label{display:flex;align-items:center;gap:6px;padding:6px 8px;background:var(--surface);border:1px solid var(--border);border-radius:4px;font-size:0.8rem;color:var(--text-secondary)}
+.credential-auth-list{display:grid;gap:12px;margin-top:10px}
+.credential-auth-card{padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:6px}
+.credential-auth-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-top:8px}
+.credential-auth-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+.credential-pill{font-family:var(--mono);font-size:0.65rem;padding:2px 6px;border-radius:8px;background:rgba(80,250,123,0.12);color:var(--green)}
+.credential-pill-warning{background:rgba(255,184,77,0.14);color:var(--yellow)}
+.credential-help-warning{color:var(--yellow);margin-top:8px}
 
 /* Risk badges */
 .risk-badge{
@@ -492,26 +490,53 @@ ${sharedStyles}
 
   <!-- Cloud Tab -->
   <div class="tab-panel" id="panelCloud">
-    <!-- 网盘登录 -->
     <div class="section">
       <div class="section-title" data-i18n="cloudLogin">Cloud Login</div>
-      <div id="cloudLoginGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px">
-      </div>
-    </div>
-    <!-- 凭证下发控制 -->
-    <div class="section">
-      <div class="section-title" data-i18n="credentialDistributionTitle">Credential Distribution</div>
-      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-        <label style="display:flex;align-items:center;gap:8px;font-size:0.85rem;color:var(--text-bright)">
-          <input type="checkbox" id="credentialDistributionCheck" onchange="saveCredentialDistribution()">
-          <span data-i18n="credentialDistributionEnable">Inject saved cloud credentials into client config</span>
-        </label>
-        <span class="status-text" id="credentialDistributionStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
-      </div>
-      <div style="margin-top:6px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="credentialDistributionDesc">Enabled by default. When disabled, aggregation will not inject credentials and /token.json will return empty; server-side quality grading can still use saved credentials for probing.</div>
+      <div class="credential-help" data-i18n="cloudLoginDesc"></div>
+      <div id="cloudLoginGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;margin-top:10px"></div>
     </div>
 
-    <!-- 手动粘贴凭证 -->
+    <div class="section">
+      <div class="section-title" data-i18n="credentialDistributionTitle">Credential Distribution &amp; Client Authentication</div>
+      <div class="credential-help" data-i18n="credentialDistributionDesc"></div>
+
+      <div class="credential-policy-box" style="margin-top:10px">
+        <div class="credential-inline">
+          <strong style="font-size:0.85rem;color:var(--text-bright)" data-i18n="credentialDefaultPolicy">Root-link default credential policy</strong>
+          <select id="credentialDefaultMode" class="nt-input" style="width:auto;min-width:180px" onchange="renderCredentialDistribution()">
+            <option value="none" data-i18n="credentialModeNone">Do not distribute</option>
+            <option value="all" data-i18n="credentialModeAll">Distribute all</option>
+            <option value="selected" data-i18n="credentialModeSelected">Distribute selected only</option>
+          </select>
+          <label class="credential-inline" style="font-size:0.82rem;color:var(--text-secondary)">
+            <input type="checkbox" id="credentialRequireAuth" onchange="renderCredentialDistribution()">
+            <span data-i18n="credentialRequireAuth">Require auth code for clients</span>
+          </label>
+          <button class="btn btn-sm" onclick="saveCredentialDistribution()" data-i18n="save">Save</button>
+          <button class="btn btn-sm" onclick="copyClientLink(window.location.origin + '/')" data-i18n="credentialCopyRoot">Copy root link</button>
+          <span class="credential-status" id="credentialDistributionStatus"></span>
+        </div>
+        <div id="credentialDefaultPlatforms" class="credential-platform-grid"></div>
+        <div class="credential-help">
+          <span data-i18n="credentialPolicyHint"></span>
+          <strong id="credentialRootLinkHint" style="display:block;margin-top:6px;color:var(--text-bright)"></strong>
+        </div>
+      </div>
+
+      <div class="credential-policy-box" style="margin-top:12px">
+        <div class="credential-inline" style="justify-content:space-between">
+          <div>
+            <strong style="font-size:0.85rem;color:var(--text-bright)" data-i18n="credentialAuthCodes">Client auth codes</strong>
+            <div class="credential-help" data-i18n="credentialAuthCodesDesc"></div>
+          </div>
+          <button class="btn btn-sm" onclick="addCredentialAuthCode()" data-i18n="credentialAddCode">+ Add auth code</button>
+        </div>
+        <div id="credentialAuthList" class="credential-auth-list"></div>
+      </div>
+
+      <div class="credential-help" data-i18n="credentialSecurityHint"></div>
+    </div>
+
     <div class="section">
       <div class="section-title" data-i18n="cloudManualPaste">Manual Credential Paste</div>
       <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
@@ -528,7 +553,6 @@ ${sharedStyles}
       <div id="manualPasteStatus" class="status-text" style="margin-top:6px"></div>
       <div class="cloud-helper-info" style="margin-top:12px;font-size:0.8rem;color:var(--text-secondary);background:rgba(255,255,255,0.03);padding:10px;border-radius:4px;border-left:3px solid var(--accent);line-height:1.5" data-i18n="cloudManualPasteHelp"></div>
     </div>
-
   </div>
 
   <!-- Settings Tab -->
@@ -895,12 +919,39 @@ const translations = {
     probeDeep:'Deep (validate content)', probeShallow:'Shallow (HTTP only)',
     autoCleanLabel:'Auto-blacklist after 5 consecutive failures (max 5/run)',
     siteProbeDesc:'Deep mode checks type0/type1 content validity. Failed sites get [⚠] marker after 3 failures.',
-    credentialDistributionTitle:'凭证下发',
-    credentialDistributionEnable:'将已保存的网盘凭证注入客户端配置',
-    credentialDistributionDesc:'默认开启。关闭后聚合不会注入凭证，/token.json 返回空；后台质量分级仍可使用已保存凭证进行探测。',
-    cloudManualPasteHelp: '<strong>💡 Manual Login Guide (Tianyi / 123Pan / UC):</strong><br>' +
-      '• <strong>Tianyi</strong>: Web QR is unstable. Use your phone browser to log in to <a href="https://h5.cloud.189.cn" target="_blank" style="color:var(--accent)">h5.cloud.189.cn</a>, copy the Cookie header value, select "Tianyi" above, and paste.<br>' +
-      '• <strong>123Pan</strong>: Third-party login is restricted. Log in to 123Pan Web -> Tool Center -> Third-Party Mount -> Generate WebDAV password. Select "123网盘" above and paste the password.',
+    credentialDistributionTitle:'Credential Distribution & Client Authentication',
+    credentialDistributionDesc:'Choose what the root link may distribute, then optionally create per-client auth codes. Auth codes live only in the URL path, so the client enters an ordinary /auth/<code>/ link and never a query parameter. When credentials are not distributed, the client can still scan the QR code and log in locally.',
+    credentialDefaultPolicy:'Root-link default credential policy',
+    credentialModeNone:'Do not distribute credentials',
+    credentialModeAll:'Distribute all saved credentials',
+    credentialModeSelected:'Distribute selected platforms only',
+    credentialRequireAuth:'Require an auth code; root link returns 401',
+    credentialPolicyHint:'The root policy applies only when authentication is off. Each auth code below can independently distribute none, all, or selected credentials. In selected mode, leaving every platform unchecked distributes no credentials.',
+    credentialAuthCodes:'Client auth codes',
+    credentialAuthCodesDesc:'Create one code per client or group. The client uses the shown /auth/&lt;code&gt;/ URL and never appends a query parameter; each code has its own credential policy.',
+    credentialAddCode:'+ Add auth code',
+    credentialNoCodes:'No auth codes yet. The root link uses the default policy above.',
+    credentialCodeLabel:'Name / note',
+    credentialCodeValue:'Auth code',
+    credentialCodeMode:'Credential policy',
+    credentialCodeEnabled:'Enabled',
+    credentialCopyRoot:'Copy root link',
+    credentialCopyAuth:'Copy authenticated link',
+    credentialCopied:'Copied',
+    credentialDelete:'Delete',
+    credentialRootLinkHint:'Root link status',
+    credentialSaved:'Credential distribution and auth codes saved',
+    credentialRootRequired:'Enable at least one auth code before requiring authentication.',
+    credentialCodeInvalid:'Auth code must be 4-64 characters: letters, numbers, underscore or hyphen.',
+    credentialSelectedSummary:'Selected',
+    credentialSelectedEmptyShort:'Selected: none (no credentials)',
+    credentialSelectedEmpty:'No platform is selected. This auth code will distribute no credentials; the client can still log in locally.',
+    credentialDefaultLabel:'Default client',
+    cloudLoginDesc:'Log in here once; the saved credential can be selectively distributed below. If a platform is not distributed, clients can still scan the QR code and log in themselves.',
+    cloudManualPasteHelp:'<strong>💡 Manual login:</strong><br>' +
+      '• <strong>Tianyi</strong>: Web QR is unstable. Sign in at <a href="https://h5.cloud.189.cn" target="_blank" style="color:var(--accent)">h5.cloud.189.cn</a> on a phone browser, copy the Cookie header value, select Tianyi above and paste.<br>' +
+      '• <strong>123Pan</strong>: Third-party QR login is restricted. Generate a WebDAV password in 123Pan Web -> Tool Center -> Third-Party Mount, select 123Pan above and paste.',
+    credentialSecurityHint:'Security: links with an auth code grant access to the selected credentials. Use HTTPS, do not publish auth-code links, and rotate a code if it leaks. Disabling a code immediately stops it from working.',
     footer:'TVBox Source Aggregator &middot; Admin Console',
   },
   zh: {
@@ -1000,12 +1051,39 @@ const translations = {
     probeDeep:'深度（验证内容有效性）', probeShallow:'浅层（仅 HTTP 可达）',
     autoCleanLabel:'连续失败 5 次自动屏蔽（每次最多 5 个）',
     siteProbeDesc:'深度模式会检查 type0/type1 站点是否返回有效内容。连续失败 3 次的站点会被标记 [⚠]。',
-    credentialDistributionTitle:'Credential Distribution',
-    credentialDistributionEnable:'Inject saved cloud credentials into client config',
-    credentialDistributionDesc:'Enabled by default. When disabled, aggregation will not inject credentials and /token.json returns empty; server-side quality grading can still use saved credentials for probing.',
-    cloudManualPasteHelp: '<strong>💡 手动配置指引 (天翼云盘 / 123网盘)：</strong><br>' +
-      '• <strong>天翼云盘</strong>：扫码极易失效，推荐手动抓取 Cookie 粘贴至上方。用手机浏览器登录 <a href="https://h5.cloud.189.cn" target="_blank" style="color:var(--accent)">h5.cloud.189.cn</a>，复制带 Cookie 的请求头填入。<br>' +
-      '• <strong>123网盘</strong>：第三方扫码受限，建议在 123网盘官网「工具中心」→「第三方挂载」生成 WebDAV 授权密码，在上方选择「123网盘」并填入密码。',
+    credentialDistributionTitle:'凭证分发与客户端鉴权',
+    credentialDistributionDesc:'先设置根链接默认可分发的凭证，再按需创建一个或多个鉴权码。鉴权码只放在 URL 路径中，应用端直接输入普通的 /auth/<鉴权码>/ 链接，不需要在链接后追加查询参数。不下发凭证时，应用端仍可自行扫码登录网盘。',
+    credentialDefaultPolicy:'根链接默认凭证策略',
+    credentialModeNone:'不下发凭证',
+    credentialModeAll:'下发全部已保存凭证',
+    credentialModeSelected:'仅下发选中平台',
+    credentialRequireAuth:'强制鉴权（根链接返回 401）',
+    credentialPolicyHint:'根链接策略仅在未启用强制鉴权时生效；下面每个鉴权码都能独立设置“不下发 / 全部下发 / 选择平台下发”。选择“仅下发选中平台”但未勾选任何平台时，等同于不下发任何凭证。',
+    credentialAuthCodes:'客户端鉴权码',
+    credentialAuthCodesDesc:'可给不同应用端或用户组分别建码。应用端填写卡片上生成的 /auth/<鉴权码>/ 链接，该链接的凭证策略与根链接互不影响。',
+    credentialAddCode:'+ 添加鉴权码',
+    credentialNoCodes:'还没有鉴权码；根链接将使用上面的默认策略。',
+    credentialCodeLabel:'名称 / 备注',
+    credentialCodeValue:'鉴权码',
+    credentialCodeMode:'凭证策略',
+    credentialCodeEnabled:'启用',
+    credentialCopyRoot:'复制根链接',
+    credentialCopyAuth:'复制鉴权链接',
+    credentialDelete:'删除',
+    credentialSaved:'凭证分发与鉴权码已保存',
+    credentialRootRequired:'启用强制鉴权前，至少需要保留一个启用的鉴权码。',
+    credentialCodeInvalid:'鉴权码需为 4-64 位字母、数字、下划线或连字符。',
+    credentialSelectedSummary:'已选',
+    credentialSelectedEmptyShort:'已选：无（不下发凭证）',
+    credentialSelectedEmpty:'未勾选任何平台，此鉴权码不会下发任何凭证；应用端仍可自行扫码登录。',
+    credentialRootLinkHint:'根链接状态',
+    credentialCopied:'已复制',
+    credentialDefaultLabel:'默认客户端',
+    cloudLoginDesc:'在这里登录一次即可，已保存凭证可在下方选择是否下发。未下发的平台，应用端仍可自行扫码登录。',
+    cloudManualPasteHelp:'<strong>💡 手动配置指引：</strong><br>' +
+      '• <strong>天翼云盘</strong>：扫码容易失效。用手机浏览器登录 <a href="https://h5.cloud.189.cn" target="_blank" style="color:var(--accent)">h5.cloud.189.cn</a>，复制 Cookie 请求头值，在上方选择“天翼云盘”后粘贴。<br>' +
+      '• <strong>123网盘</strong>：第三方扫码登录受限。请在 123网盘官网“工具中心 → 第三方挂载”生成 WebDAV 授权密码，在上方选择“123 网盘”后粘贴。',
+    credentialSecurityHint:'安全提示：带鉴权码的链接能够取得所选择的凭证。请使用 HTTPS，不要公开鉴权链接；如链接泄露，立即删除或停用对应鉴权码。',
     footer:'TVBox 源聚合器 &middot; 管理控制台',
   }
 };
@@ -2605,38 +2683,297 @@ const MANUAL_ONLY_PLATFORMS = ['pan123','tianyi'];
 const PW_PLATFORMS = ['pan123','tianyi','thunder','pikpak'];
 let cloudCredentials = {};
 
+let credentialDistribution = {
+  requireAuth: false,
+  defaultCredentialMode: 'all',
+  defaultPlatforms: [],
+  authCodes: [],
+};
+let credentialPlatforms = Object.keys(PLATFORM_NAMES);
+
+function newCredentialAuthCode() {
+  const bytes = new Uint8Array(12);
+  if (window.crypto && window.crypto.getRandomValues) window.crypto.getRandomValues(bytes);
+  else for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+  const random = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('').slice(0, 16);
+  const now = new Date().toISOString();
+  return {
+    id: 'auth_' + random,
+    label: t('credentialDefaultLabel') + ' ' + (credentialDistribution.authCodes.length + 1),
+    code: random,
+    enabled: true,
+    credentialMode: 'none',
+    platforms: [],
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function platformCheckboxes(container, selected, onchange) {
+  if (!container) return;
+  const selectedSet = new Set(Array.isArray(selected) ? selected : []);
+  container.innerHTML = '';
+  for (const platform of credentialPlatforms) {
+    const label = document.createElement('label');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = selectedSet.has(platform);
+    cb.onchange = () => onchange(platform, cb.checked);
+    const span = document.createElement('span');
+    span.textContent = PLATFORM_NAMES[platform] || platform;
+    label.appendChild(cb);
+    label.appendChild(span);
+    container.appendChild(label);
+  }
+}
+
+function syncCredentialDistributionForm() {
+  const mode = $('credentialDefaultMode');
+  const requireAuth = $('credentialRequireAuth');
+  if (mode) mode.value = credentialDistribution.defaultCredentialMode || 'all';
+  if (requireAuth) requireAuth.checked = credentialDistribution.requireAuth === true;
+  renderCredentialDistribution();
+}
+
+function renderCredentialDistribution() {
+  const modeEl = $('credentialDefaultMode');
+  const requireEl = $('credentialRequireAuth');
+  if (!modeEl || !requireEl) return;
+
+  credentialDistribution.defaultCredentialMode = modeEl.value;
+  credentialDistribution.requireAuth = requireEl.checked;
+
+  const defaultBox = $('credentialDefaultPlatforms');
+  if (defaultBox) {
+    defaultBox.style.display = modeEl.value === 'selected' ? 'grid' : 'none';
+    if (modeEl.value === 'selected') {
+      platformCheckboxes(defaultBox, credentialDistribution.defaultPlatforms, (platform, checked) => {
+        const set = new Set(credentialDistribution.defaultPlatforms || []);
+        if (checked) set.add(platform); else set.delete(platform);
+        credentialDistribution.defaultPlatforms = credentialPlatforms.filter((p) => set.has(p));
+      });
+    }
+  }
+
+  const rootHint = $('credentialRootLinkHint');
+  if (rootHint) {
+    const rootPolicy = {
+      none: t('credentialModeNone'),
+      all: t('credentialModeAll'),
+      selected: t('credentialModeSelected'),
+    }[modeEl.value] || modeEl.value;
+    const rootState = requireEl.checked ? t('credentialRequireAuth') : rootPolicy;
+    rootHint.textContent = t('credentialRootLinkHint') + ': ' + rootState;
+  }
+
+  const list = $('credentialAuthList');
+  if (!list) return;
+  list.innerHTML = '';
+  const codes = Array.isArray(credentialDistribution.authCodes) ? credentialDistribution.authCodes : [];
+  if (codes.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'credential-help';
+    empty.textContent = t('credentialNoCodes');
+    list.appendChild(empty);
+  }
+
+  codes.forEach((item, index) => {
+    const card = document.createElement('div');
+    card.className = 'credential-auth-card';
+    const top = document.createElement('div');
+    top.className = 'credential-inline';
+    top.style.justifyContent = 'space-between';
+
+    const title = document.createElement('div');
+    title.className = 'credential-inline';
+    const enabled = document.createElement('input');
+    enabled.type = 'checkbox';
+    enabled.checked = item.enabled !== false;
+    enabled.onchange = () => { item.enabled = enabled.checked; item.updatedAt = new Date().toISOString(); };
+    const titleText = document.createElement('strong');
+    titleText.style.color = 'var(--text-bright)';
+    titleText.textContent = item.label || ('Auth ' + (index + 1));
+    title.appendChild(enabled);
+    title.appendChild(titleText);
+    const summary = document.createElement('span');
+    summary.className = 'credential-pill';
+    summary.textContent = credentialModeSummary(item);
+    if (item.credentialMode === 'selected' && !(item.platforms || []).length) summary.className = 'credential-pill credential-pill-warning';
+    title.appendChild(summary);
+
+    const remove = document.createElement('button');
+    remove.className = 'btn btn-sm btn-danger';
+    remove.textContent = t('credentialDelete');
+    remove.onclick = () => {
+      credentialDistribution.authCodes.splice(index, 1);
+      renderCredentialDistribution();
+    };
+    top.appendChild(title);
+    top.appendChild(remove);
+    card.appendChild(top);
+
+    const grid = document.createElement('div');
+    grid.className = 'credential-auth-grid';
+
+    const labelWrap = document.createElement('div');
+    const labelTitle = document.createElement('label');
+    labelTitle.className = 'form-label';
+    labelTitle.textContent = t('credentialCodeLabel');
+    const labelInput = document.createElement('input');
+    labelInput.className = 'nt-input';
+    labelInput.value = item.label || '';
+    labelInput.oninput = () => { item.label = labelInput.value; item.updatedAt = new Date().toISOString(); if (titleText) titleText.textContent = labelInput.value || ('Auth ' + (index + 1)); };
+    labelWrap.appendChild(labelTitle);
+    labelWrap.appendChild(labelInput);
+
+    const codeWrap = document.createElement('div');
+    const codeTitle = document.createElement('label');
+    codeTitle.className = 'form-label';
+    codeTitle.textContent = t('credentialCodeValue');
+    const codeInput = document.createElement('input');
+    codeInput.className = 'nt-input';
+    codeInput.value = item.code || '';
+    codeInput.oninput = () => { item.code = codeInput.value.trim(); item.updatedAt = new Date().toISOString(); };
+    codeWrap.appendChild(codeTitle);
+    codeWrap.appendChild(codeInput);
+
+    const modeWrap = document.createElement('div');
+    const modeTitle = document.createElement('label');
+    modeTitle.className = 'form-label';
+    modeTitle.textContent = t('credentialCodeMode');
+    const modeSelect = document.createElement('select');
+    modeSelect.className = 'nt-input';
+    for (const value of ['none', 'all', 'selected']) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = value === 'none' ? t('credentialModeNone') : value === 'all' ? t('credentialModeAll') : t('credentialModeSelected');
+      modeSelect.appendChild(option);
+    }
+    modeSelect.value = item.credentialMode || 'none';
+    modeSelect.onchange = () => {
+      item.credentialMode = modeSelect.value;
+      item.updatedAt = new Date().toISOString();
+      renderCredentialDistribution();
+    };
+    modeWrap.appendChild(modeTitle);
+    modeWrap.appendChild(modeSelect);
+
+    grid.appendChild(labelWrap);
+    grid.appendChild(codeWrap);
+    grid.appendChild(modeWrap);
+    card.appendChild(grid);
+
+    const platformBox = document.createElement('div');
+    platformBox.className = 'credential-platform-grid';
+    platformBox.style.display = item.credentialMode === 'selected' ? 'grid' : 'none';
+    if (item.credentialMode === 'selected') {
+      platformCheckboxes(platformBox, item.platforms, (platform, checked) => {
+        const set = new Set(item.platforms || []);
+        if (checked) set.add(platform); else set.delete(platform);
+        item.platforms = credentialPlatforms.filter((p) => set.has(p));
+        item.updatedAt = new Date().toISOString();
+      });
+    }
+    card.appendChild(platformBox);
+    if (item.credentialMode === 'selected' && !(item.platforms || []).length) {
+      const warning = document.createElement('div');
+      warning.className = 'credential-help credential-help-warning';
+      warning.textContent = t('credentialSelectedEmpty');
+      card.appendChild(warning);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'credential-auth-actions';
+    const copyAuth = document.createElement('button');
+    copyAuth.className = 'btn btn-sm';
+    copyAuth.textContent = t('credentialCopyAuth');
+    copyAuth.onclick = () => copyClientLink(window.location.origin + '/auth/' + encodeURIComponent(item.code || '') + '/');
+    actions.appendChild(copyAuth);
+    card.appendChild(actions);
+
+    list.appendChild(card);
+  });
+
+  const status = $('credentialDistributionStatus');
+  if (status) status.textContent = requireEl.checked ? t('credentialRequireAuth') : t('credentialDefaultPolicy');
+}
+
+function credentialModeSummary(item) {
+  if (item.credentialMode === 'none') return t('credentialModeNone');
+  if (item.credentialMode === 'all') return t('credentialModeAll');
+  const names = (item.platforms || []).map((platform) => PLATFORM_NAMES[platform] || platform).join(', ');
+  return names ? t('credentialSelectedSummary') + ': ' + names : t('credentialSelectedEmptyShort');
+}
+
+function addCredentialAuthCode() {
+  if (!Array.isArray(credentialDistribution.authCodes)) credentialDistribution.authCodes = [];
+  credentialDistribution.authCodes.push(newCredentialAuthCode());
+  renderCredentialDistribution();
+}
+
+function copyClientLink(link) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(link).then(() => toast(t('credentialCopied') + ': ' + link, 'success')).catch(() => {});
+  } else {
+    window.prompt(t('credentialCopyAuth'), link);
+  }
+}
+
 async function loadCredentialDistribution() {
   try {
     const res = await auth.authFetch('/admin/credential-distribution');
     if (!res.ok) return;
     const data = await res.json();
-    const check = $('credentialDistributionCheck');
-    if (check) check.checked = data.enabled !== false;
+    credentialDistribution = {
+      requireAuth: data.requireAuth === true,
+      defaultCredentialMode: data.defaultCredentialMode || 'all',
+      defaultPlatforms: Array.isArray(data.defaultPlatforms) ? data.defaultPlatforms : [],
+      authCodes: Array.isArray(data.authCodes) ? data.authCodes : [],
+    };
+    syncCredentialDistributionForm();
   } catch {}
 }
 
 async function saveCredentialDistribution() {
-  const check = $('credentialDistributionCheck');
   const status = $('credentialDistributionStatus');
-  if (!check || !status) return;
-  check.disabled = true;
-  status.textContent = '...';
+  if (!status) return;
+  const modeEl = $('credentialDefaultMode');
+  const requireEl = $('credentialRequireAuth');
+  if (!modeEl || !requireEl) return;
+  credentialDistribution.defaultCredentialMode = modeEl.value;
+  credentialDistribution.requireAuth = requireEl.checked;
+  if (credentialDistribution.defaultCredentialMode !== 'selected') credentialDistribution.defaultPlatforms = [];
+  if (credentialDistribution.requireAuth && !(credentialDistribution.authCodes || []).some((item) => item.enabled !== false)) {
+    toast(t('credentialRootRequired'), 'error');
+    return;
+  }
+  for (const item of credentialDistribution.authCodes || []) {
+    if (!/^[A-Za-z0-9_-]{4,64}$/.test(item.code || '')) {
+      toast(t('credentialCodeInvalid'), 'error');
+      return;
+    }
+  }
+  status.textContent = t('saving');
   try {
     const res = await auth.authFetch('/admin/credential-distribution', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enabled: check.checked }),
+      body: JSON.stringify(credentialDistribution),
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || 'Save failed');
-    status.textContent = check.checked ? 'ON' : 'OFF';
-    toast(check.checked ? 'Credential distribution enabled' : 'Credential distribution disabled', 'success');
+    if (!res.ok) throw new Error(data.error || t('saveFailed'));
+    credentialDistribution = {
+      requireAuth: data.requireAuth === true,
+      defaultCredentialMode: data.defaultCredentialMode || 'all',
+      defaultPlatforms: Array.isArray(data.defaultPlatforms) ? data.defaultPlatforms : [],
+      authCodes: Array.isArray(data.authCodes) ? data.authCodes : [],
+    };
+    syncCredentialDistributionForm();
+    status.textContent = t('saved');
+    toast(t('credentialSaved'), 'success');
   } catch (e) {
-    check.checked = !check.checked;
     status.textContent = '';
-    toast('Save failed: ' + (e && e.message ? e.message : e), 'error');
-  } finally {
-    check.disabled = false;
+    toast((e && e.message ? e.message : e), 'error');
   }
 }
 

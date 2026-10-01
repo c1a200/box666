@@ -70,6 +70,7 @@ export const KV_EDGE_PROXIES = 'edge_proxies';
 export const KV_CLOUD_CREDENTIALS = 'cloud_credentials';
 export const KV_CREDENTIAL_POLICY = 'credential_policy';
 export const KV_CREDENTIAL_ENCRYPTION_KEY = 'credential_encryption_key';
+export const KV_CREDENTIAL_DISTRIBUTION = 'credential_distribution'; // 凭证分发模式与鉴权码配置
 export const KV_CREDENTIAL_DISTRIBUTION_ENABLED = 'credential_distribution_enabled'; // 是否向前端下发已保存的网盘凭证（默认开启）
 
 // 搜索配额

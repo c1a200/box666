@@ -1,8 +1,8 @@
 // 网盘凭证加密存储
 
 import type { Storage } from '../storage/interface';
-import type { CloudPlatform, CloudCredential, CredentialPolicyConfig } from './types';
-import { KV_CLOUD_CREDENTIALS, KV_CREDENTIAL_POLICY, KV_CREDENTIAL_ENCRYPTION_KEY } from './config';
+import type { CloudPlatform, CloudCredential, CredentialPolicyConfig, CredentialDistributionConfig, CredentialAuthCode, CredentialDistributionMode } from './types';
+import { KV_CLOUD_CREDENTIALS, KV_CREDENTIAL_POLICY, KV_CREDENTIAL_ENCRYPTION_KEY, KV_CREDENTIAL_DISTRIBUTION, KV_CREDENTIAL_DISTRIBUTION_ENABLED } from './config';
 
 // ─── AES-GCM 加密层 ─────────────────────────────────────
 
@@ -465,4 +465,157 @@ export async function loadCredentialPolicy(storage: Storage): Promise<Credential
 
 export async function saveCredentialPolicy(storage: Storage, policy: CredentialPolicyConfig): Promise<void> {
   await storage.put(KV_CREDENTIAL_POLICY, JSON.stringify(policy));
+}
+// ─── 凭证分发 / 鉴权配置 ────────────────────────────────
+
+export const CLOUD_PLATFORMS: CloudPlatform[] = [
+  'aliyun', 'bilibili', 'quark', 'uc', 'pan115',
+  'tianyi', 'baidu', 'pan123', 'thunder', 'pikpak',
+];
+
+const CREDENTIAL_DISTRIBUTION_MODES = new Set<CredentialDistributionMode>(['none', 'all', 'selected']);
+const AUTH_CODE_RE = /^[A-Za-z0-9_-]{4,64}$/;
+
+export const DEFAULT_CREDENTIAL_DISTRIBUTION: CredentialDistributionConfig = {
+  requireAuth: false,
+  defaultCredentialMode: 'all',
+  defaultPlatforms: [...CLOUD_PLATFORMS],
+  authCodes: [],
+};
+
+function isCloudPlatform(value: unknown): value is CloudPlatform {
+  return typeof value === 'string' && (CLOUD_PLATFORMS as string[]).includes(value);
+}
+
+function normalizePlatforms(value: unknown): CloudPlatform[] {
+  if (!Array.isArray(value)) return [];
+  const unique = new Set<CloudPlatform>();
+  for (const item of value) {
+    if (isCloudPlatform(item)) unique.add(item);
+  }
+  return [...unique];
+}
+
+function normalizeDistributionMode(value: unknown, fallback: CredentialDistributionMode): CredentialDistributionMode {
+  return typeof value === 'string' && CREDENTIAL_DISTRIBUTION_MODES.has(value as CredentialDistributionMode)
+    ? value as CredentialDistributionMode
+    : fallback;
+}
+
+function randomAuthCode(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(12));
+  return [...bytes].map((value) => value.toString(36).padStart(2, '0')).join('').slice(0, 16);
+}
+
+function randomAuthId(): string {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  return 'auth_' + randomAuthCode();
+}
+
+export function normalizeCredentialDistributionConfig(raw: unknown): CredentialDistributionConfig {
+  const base = (raw && typeof raw === 'object' && !Array.isArray(raw))
+    ? raw as Record<string, unknown>
+    : {};
+  const rawCodes = Array.isArray(base.authCodes) ? base.authCodes : [];
+  const seenCodes = new Set<string>();
+  const seenIds = new Set<string>();
+  const authCodes: CredentialAuthCode[] = [];
+
+  for (const item of rawCodes) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const entry = item as Record<string, unknown>;
+    const code = typeof entry.code === 'string' ? entry.code.trim() : '';
+    if (!AUTH_CODE_RE.test(code) || seenCodes.has(code)) continue;
+    seenCodes.add(code);
+
+    let id = typeof entry.id === 'string' && entry.id.trim() ? entry.id.trim() : randomAuthId();
+    if (seenIds.has(id)) id = randomAuthId();
+    seenIds.add(id);
+
+    const mode = normalizeDistributionMode(entry.credentialMode, 'none');
+    const now = new Date().toISOString();
+    const createdAt = typeof entry.createdAt === 'string' && entry.createdAt ? entry.createdAt : now;
+    const updatedAt = typeof entry.updatedAt === 'string' && entry.updatedAt ? entry.updatedAt : createdAt;
+    const platforms = normalizePlatforms(entry.platforms);
+    authCodes.push({
+      id,
+      label: typeof entry.label === 'string' && entry.label.trim() ? entry.label.trim().slice(0, 80) : code,
+      code,
+      enabled: entry.enabled !== false,
+      credentialMode: mode,
+      platforms,
+      createdAt,
+      updatedAt,
+    });
+  }
+
+  const defaultMode = normalizeDistributionMode(base.defaultCredentialMode, 'all');
+  const defaultPlatforms = normalizePlatforms(base.defaultPlatforms);
+  return {
+    requireAuth: base.requireAuth === true,
+    defaultCredentialMode: defaultMode,
+    defaultPlatforms,
+    authCodes,
+  };
+}
+
+export function createCredentialAuthCode(
+  raw: Partial<CredentialAuthCode> = {},
+): CredentialAuthCode {
+  const now = new Date().toISOString();
+  const mode = normalizeDistributionMode(raw.credentialMode, 'none');
+  const platforms = normalizePlatforms(raw.platforms);
+  return {
+    id: typeof raw.id === 'string' && raw.id.trim() ? raw.id.trim() : randomAuthId(),
+    label: typeof raw.label === 'string' && raw.label.trim() ? raw.label.trim().slice(0, 80) : 'Auth code',
+    code: typeof raw.code === 'string' && AUTH_CODE_RE.test(raw.code.trim()) ? raw.code.trim() : randomAuthCode(),
+    enabled: raw.enabled !== false,
+    credentialMode: mode,
+    platforms,
+    createdAt: typeof raw.createdAt === 'string' && raw.createdAt ? raw.createdAt : now,
+    updatedAt: typeof raw.updatedAt === 'string' && raw.updatedAt ? raw.updatedAt : now,
+  };
+}
+
+export async function loadCredentialDistribution(storage: Storage): Promise<CredentialDistributionConfig> {
+  const raw = await storage.get(KV_CREDENTIAL_DISTRIBUTION);
+  if (raw) {
+    try {
+      return normalizeCredentialDistributionConfig(JSON.parse(raw));
+    } catch {
+      // fall through to legacy migration
+    }
+  }
+  const legacyEnabled = await storage.get(KV_CREDENTIAL_DISTRIBUTION_ENABLED);
+  return normalizeCredentialDistributionConfig({
+    requireAuth: false,
+    defaultCredentialMode: legacyEnabled === 'false' ? 'none' : 'all',
+    defaultPlatforms: [...CLOUD_PLATFORMS],
+    authCodes: [],
+  });
+}
+
+export async function saveCredentialDistribution(
+  storage: Storage,
+  config: CredentialDistributionConfig,
+): Promise<CredentialDistributionConfig> {
+  const normalized = normalizeCredentialDistributionConfig(config);
+  await storage.put(KV_CREDENTIAL_DISTRIBUTION, JSON.stringify(normalized));
+  await storage.put(KV_CREDENTIAL_DISTRIBUTION_ENABLED, normalized.defaultCredentialMode === 'none' ? 'false' : 'true');
+  return normalized;
+}
+
+export function findCredentialAuthCode(
+  config: CredentialDistributionConfig,
+  code: string | null | undefined,
+): CredentialAuthCode | undefined {
+  if (!code) return undefined;
+  const normalized = code.trim();
+  if (!AUTH_CODE_RE.test(normalized)) return undefined;
+  return config.authCodes.find((item) => item.enabled && item.code === normalized);
+}
+
+export function maskCredentialCode(code: string): string {
+  if (code.length <= 6) return code.slice(0, 1) + '***';
+  return code.slice(0, 3) + '***' + code.slice(-2);
 }

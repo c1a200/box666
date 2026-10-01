@@ -13,15 +13,13 @@ import { mergeLivesToNative, separatedMergeLives, formatLiveGroupsAsTxt, filterL
 import { loadSpeedMap as loadChannelSpeedMap } from './core/channel-probe';
 import { liveSourcesToTVBoxLives } from './core/live-source';
 import { isBlockedLiveSource, partitionBlockedLiveSources } from './core/live-policy';
-import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_STARTUP_SITE_POOL, KV_SOURCE_URLS, KV_LAST_UPDATE, KV_LAST_UPDATE_ERROR, KV_MANUAL_SOURCES, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_MERGE_REPORT, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_CREDENTIAL_DISTRIBUTION_ENABLED, KV_PARSE_HEALTH_REPORT, KV_CHANNEL_MERGED_TREE, KV_AGG_LOGS, AGG_LOGS_MAX, KV_SITE_SNAPSHOT, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, BASE_URL_PLACEHOLDER, KV_SITE_HEALTH_MAP, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SOURCE_MAP, KV_SOURCE_URL_BLACKLIST } from './core/config';
+import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_STARTUP_SITE_POOL, KV_SOURCE_URLS, KV_LAST_UPDATE, KV_LAST_UPDATE_ERROR, KV_MANUAL_SOURCES, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_MERGE_REPORT, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_PARSE_HEALTH_REPORT, KV_CHANNEL_MERGED_TREE, KV_AGG_LOGS, AGG_LOGS_MAX, KV_SITE_SNAPSHOT, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, BASE_URL_PLACEHOLDER, KV_SITE_HEALTH_MAP, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SOURCE_MAP, KV_SOURCE_URL_BLACKLIST } from './core/config';
 import { loadBlacklist, applyBlacklist, pruneBlacklist, saveBlacklist, siteFingerprint } from './core/blacklist';
 import { transformSiteNames } from './core/cleaner';
 import { parseConfigJson, type FetchProxyConfig } from './core/fetcher';
 import { scrapeSourceList, scrapeMacCMSSources, type ScrapeSourceConfig, type ScrapeMacCMSConfig } from './core/source-scraper';
 import { loadSearchQuota, applySearchQuota, excludeJsUrlSites, probeAndPruneParses } from './core/search-quota';
 import { loadCredentials } from './core/credential-store';
-import { loadCredentialPolicy } from './core/credential-store';
-import { generateTokenJson, injectCredentials } from './core/credential-injector';
 import { loadGroupOrder, applyGroupOrder } from './core/group-order';
 import { deduplicateClientCredentialSites, deduplicateSimilarNames } from './core/dedup';
 import { logger } from './core/logger';
@@ -257,19 +255,9 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     logger.infoFields('aggregation', 'legacy-woggguard-migrated', { key: '玩偶' });
   }
 
-  // 全局 token 接口必须和“凭证下发开关”保持一致：关闭或没有非空凭证时
-  // 不能把 token 字段留在根配置里，否则客户端仍会尝试拉取凭证。
+  // 服务端质量分级与凭证感知探测仍需读取凭证，但凭证不再写入聚合结果。
+  // 客户端响应由 routes.ts 按根策略或 /auth/<code> 在请求时动态注入。
   const credentials = await loadCredentials(storage);
-  const credentialDistributionRaw = await storage.get(KV_CREDENTIAL_DISTRIBUTION_ENABLED);
-  const credentialDistributionEnabled = credentialDistributionRaw !== 'false';
-  const distributableCredentials = credentialDistributionEnabled
-    ? generateTokenJson(credentials)
-    : {};
-  if (Object.keys(distributableCredentials).length > 0) {
-    merged.token = `${BASE_URL_PLACEHOLDER}/token.json`;
-  } else {
-    delete merged.token;
-  }
 
   // Step 4.5: 黑名单过滤
   logger.info('aggregation', 'Step 4.5: Applying blacklist...');
@@ -334,68 +322,10 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     merged = transformSiteNames(merged, {});
   }
 
-  // Step 5.7: 网盘凭证注入
-  // 服务端没有凭证不代表客户端不可用：客户端可以自行登录网盘。
-  // 因此这里只注入已有凭证，绝不删除未配置凭证的直连网盘源。
-  if (!credentialDistributionEnabled) {
-    logger.info('aggregation', 'Step 5.7: Credential distribution disabled, skipping injection');
-  } else if (credentials.size > 0 && merged.sites && merged.sites.length > 0) {
-    logger.info('aggregation', 'Step 5.7: Injecting cloud credentials...');
-    const credentialPolicy = await loadCredentialPolicy(storage);
-    const jarBaseUrl = config.workerBaseUrl || config.localBaseUrl;
-    const { sites: injectedSites, report: injReport } = injectCredentials(
-      merged.sites, credentials, credentialPolicy, jarBaseUrl,
-    );
-    merged.sites = injectedSites;
-    logger.infoFields('aggregation', 'credentials-injected', {
-      injected: injReport.injected, skippedSafe: injReport.skippedSafe,
-      highRisk: injReport.skippedHighRisk, unaudited: injReport.skippedUnaudited,
-      noRule: injReport.skippedNoRule, noCredential: injReport.skippedNoCredential,
-    });
-    if (applyLegacyWoggCompatibility(merged)) {
-      logger.infoFields('aggregation', 'legacy-woggguard-migrated-after-credentials', { key: '玩偶' });
-    }
-  } else {
-    logger.info('aggregation', 'Step 5.7: No cloud credentials configured, skipping injection');
-  }
-
-  // 完整配置快照同样需要凭证注入。编辑器和 /config-full.json 读取的是
-  // 黑名单过滤前的 KV_MERGED_CONFIG_FULL，若只注入 merged，玩偶/Wex 的
-  // ext.quark 仍会缺失，客户端就会再次弹出网盘登录。
-  if (
-    credentialDistributionEnabled
-    && credentials.size > 0
-    && Array.isArray(fullConfigSnapshot.sites)
-    && fullConfigSnapshot.sites.length > 0
-  ) {
-    try {
-      const credentialPolicy = await loadCredentialPolicy(storage);
-      const jarBaseUrl = config.workerBaseUrl || config.localBaseUrl;
-      const { sites: fullSites, report: fullReport } = injectCredentials(
-        fullConfigSnapshot.sites,
-        credentials,
-        credentialPolicy,
-        jarBaseUrl,
-      );
-      fullConfigSnapshot.sites = fullSites;
-      logger.infoFields('aggregation', 'credentials-injected-full', {
-        injected: fullReport.injected,
-        skippedSafe: fullReport.skippedSafe,
-        highRisk: fullReport.skippedHighRisk,
-        unaudited: fullReport.skippedUnaudited,
-        noRule: fullReport.skippedNoRule,
-        noCredential: fullReport.skippedNoCredential,
-      });
-      if (applyLegacyWoggCompatibility(fullConfigSnapshot)) {
-        logger.infoFields('aggregation', 'legacy-woggguard-migrated-full-after-credentials', { key: '玩偶' });
-      }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.warn('aggregation', 'Full config credential injection failed (non-fatal): ' + msg);
-    }
-  }
-  await storage.put(KV_MERGED_CONFIG_FULL, JSON.stringify(fullConfigSnapshot));
-
+  // Step 5.7: 凭证不写入聚合结果。
+  // 原先在这里把凭证 URL/明文注入 KV_MERGED_CONFIG，会导致根链接与不同鉴权码
+  // 共用同一份结果而互相污染。现在仅保留源本身，响应阶段按请求上下文注入。
+  logger.info('aggregation', 'Step 5.7: Credential injection deferred to request context');
 
   // Step 6: 站点验活 + 不可达过滤 + name 标记（CF 和 Node.js 统一）
   const speedTestRaw = await storage.get(KV_SPEED_TEST_ENABLED);
@@ -1003,8 +933,11 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
   }
 
   // Step 8: 存入存储
+  // 完整快照只保存源本身，不写凭证；客户端凭证始终由 routes.ts 按请求
+  // 的根策略或 /auth/<code> 上下文动态注入。
   const mergedJson = JSON.stringify(merged);
   await storage.put(KV_MERGED_CONFIG, mergedJson);
+  await storage.put(KV_MERGED_CONFIG_FULL, JSON.stringify(fullConfigSnapshot));
   await storage.put(KV_LAST_UPDATE, new Date().toISOString());
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);

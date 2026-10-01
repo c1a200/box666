@@ -23,6 +23,7 @@ export const CRITICAL_STORAGE_KEYS = new Set<string>([
   'credential_policy',
   'credential_encryption_key',
   'credential_distribution_enabled',
+  'credential_distribution',
   'search_quota',
   'cron_interval',
   'speed_test_enabled',

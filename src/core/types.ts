@@ -240,6 +240,29 @@ export interface CredentialPolicyConfig {
   deniedKeys: string[];           // 用户手动拉黑的源 key
 }
 
+// 凭证下发模式：none=不下发；all=全部可用凭证；selected=仅指定平台
+export type CredentialDistributionMode = 'none' | 'all' | 'selected';
+
+// 单个客户端鉴权码（不同码可下发不同凭证）
+export interface CredentialAuthCode {
+  id: string;                          // 稳定内部 ID
+  label: string;                       // 管理页显示名称
+  code: string;                        // URL 中使用的鉴权码
+  enabled: boolean;
+  credentialMode: CredentialDistributionMode;
+  platforms: CloudPlatform[];          // selected 模式下允许下发的平台
+  createdAt: string;
+  updatedAt: string;
+}
+
+// 客户端源/凭证分发与鉴权配置
+export interface CredentialDistributionConfig {
+  requireAuth: boolean;                // true=根链接不可用，必须 /auth/<code>/
+  defaultCredentialMode: CredentialDistributionMode; // 无鉴权根链接使用的凭证策略
+  defaultPlatforms: CloudPlatform[];
+  authCodes: CredentialAuthCode[];
+}
+
 // 搜索配额配置（持久化到 KV）
 export interface SearchQuotaConfig {
   maxSearchable: number;        // 可搜索源上限，0 = 不限制
