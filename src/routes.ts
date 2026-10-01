@@ -35,7 +35,7 @@ import { assessAllSources, isClientCredentialSite } from './core/credential-risk
 import { generateTokenJson, injectAListDriveCredentials, injectCredentials } from './core/credential-injector';
 import type { SiteContract } from './core/types';
 import { stripInjectedCredentialsFromConfig, stripUpstreamCredentialEntries } from './core/credential-sanitizer';
-import { formatLiveGroupsAsTxt, filterLivesBySource, filterLivesBySourceDetailed, sortLiveGroupsForOutput } from './core/live-merger';
+import { formatAggregatedLiveGroupsAsTxt, formatLiveGroupsAsTxt, filterLivesBySource, filterLivesBySourceDetailed, sortLiveGroupsForOutput } from './core/live-merger';
 import { containsBlockedLiveUrl, isBlockedLiveSource, isBlockedLiveUrl } from './core/live-policy';
 import { autoNameFromUrl, backupTypeMismatch, createSourceBackup, extractBackupItems, parseSourceList } from './core/source-list-parser';
 import type { TVBoxConfig, TVBoxSite, SearchQuotaConfig, SiteQualityGrade, CloudPlatform, CloudCredential, TVBoxLive, TVBoxLiveGroup, CredentialAuthCode, CredentialDistributionConfig, CredentialDistributionMode } from './core/types';
@@ -1281,7 +1281,7 @@ export function createApp(deps: AppDeps): Hono {
                   return null;
                 }
 
-                const txt = formatLiveGroupsAsTxt(groups);
+                const txt = formatAggregatedLiveGroupsAsTxt(groups);
                 await storage.put(KV_LIVE_RUNTIME_TXT, txt);
                 await storage.put(KV_LIVE_RUNTIME_TXT_VERSION, mergedVersion || 'legacy');
                 await storage.put(KV_LIVE_RUNTIME_EMPTY_AT, '');
@@ -1353,7 +1353,7 @@ export function createApp(deps: AppDeps): Hono {
       }
 
       // 如果已经是 Native 格式（Docker/Node 环境预先合并好的 groups），应用 baseUrl 占位符并返回
-      const nativeTxt = formatLiveGroupsAsTxt(lives);
+      const nativeTxt = formatAggregatedLiveGroupsAsTxt(lives);
       const resolvedTxt = renderLiveText(nativeTxt);
       return c.body(resolvedTxt, 200, {
         'Content-Type': 'text/plain; charset=utf-8',

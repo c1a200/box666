@@ -9,7 +9,7 @@ import { batchSiteSpeedTest, appendSpeedToName, filterUnreachableSites, type Sit
 import { isClientCredentialSite, getDirectPlatformFromApi } from './core/credential-risk';
 import { macCMSToTVBoxSites, processMacCMSForLocal } from './core/maccms';
 import { rewriteJarUrls, prefetchJarBinaries, type JarEntry } from './core/jar-proxy';
-import { mergeLivesToNative, separatedMergeLives, applyChannelSpeedToGroups, formatLiveGroupsAsTxt, filterLiveSourcesDetailed, type LiveSourceInput } from './core/live-merger';
+import { mergeLivesToNative, separatedMergeLives, applyChannelSpeedToGroups, formatAggregatedLiveGroupsAsTxt, formatLiveGroupsAsTxt, filterLiveSourcesDetailed, type LiveSourceInput } from './core/live-merger';
 import { loadSpeedMap as loadChannelSpeedMap } from './core/channel-probe';
 import { liveSourcesToTVBoxLives } from './core/live-source';
 import { isBlockedLiveSource, partitionBlockedLiveSources } from './core/live-policy';
@@ -842,7 +842,7 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     );
     const liveOutputVersion = String(Date.now());
     if (nativeLiveGroups.length > 0) {
-      await storage.put(KV_LIVE_MERGED_TXT, formatLiveGroupsAsTxt(nativeLiveGroups));
+      await storage.put(KV_LIVE_MERGED_TXT, formatAggregatedLiveGroupsAsTxt(nativeLiveGroups));
       await storage.put(KV_LIVE_MERGED_TXT_VERSION, liveOutputVersion);
     } else if (config.workerBaseUrl && !liveDisabled && ((merged.lives?.length) || 0) > 0) {
       // CF 非聚合模式：全局 /live 继续由请求时解析；根配置在 Step 7.8

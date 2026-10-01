@@ -18,7 +18,7 @@ import {
   CHANNEL_SPEED_TTL_MS,
   TVBOX_UA,
 } from './config';
-import { AGGREGATED_MAX_URLS_PER_CHANNEL, applyChannelSpeedToGroups, extractAllUrls, formatLiveGroupsAsTxt } from './live-merger';
+import { AGGREGATED_MAX_URLS_PER_CHANNEL, applyChannelSpeedToGroups, extractAllUrls, formatAggregatedLiveGroupsAsTxt } from './live-merger';
 import { stableJsonEqual } from './stable-json';
 
 // ─── 开关/状态 ─────────────────────────────────────────
@@ -334,7 +334,7 @@ export async function probeLiveUrlsBounded(
     const filteredGroups = applyChannelSpeedToGroups(groups, speedMap, undefined, maxUrlsPerChannel);
     if (filteredGroups.length > 0) {
       const nextTree = JSON.stringify(filteredGroups);
-      const nextTxt = formatLiveGroupsAsTxt(filteredGroups);
+      const nextTxt = formatAggregatedLiveGroupsAsTxt(filteredGroups);
       const previousTree = await storage.get(KV_CHANNEL_RUNTIME_TREE);
       const previousTxt = await storage.get(KV_LIVE_MERGED_TXT);
       const outputChanged = !stableJsonEqual(safeParseJson(previousTree), filteredGroups)
@@ -495,7 +495,7 @@ export async function runChannelProbe(storage: Storage): Promise<ChannelProbeSta
     const filteredGroups = applyChannelSpeedToGroups(groups, fresh, undefined, maxUrlsPerChannel);
     if (filteredGroups.length > 0) {
       const nextTree = JSON.stringify(filteredGroups);
-      const nextTxt = formatLiveGroupsAsTxt(filteredGroups);
+      const nextTxt = formatAggregatedLiveGroupsAsTxt(filteredGroups);
       const previousTree = await storage.get(KV_CHANNEL_RUNTIME_TREE);
       const previousTxt = await storage.get(KV_LIVE_MERGED_TXT);
       const outputChanged = !stableJsonEqual(safeParseJson(previousTree), filteredGroups)

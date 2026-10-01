@@ -333,24 +333,228 @@ export function sortLiveGroupsForOutput(groups: TVBoxLiveGroup[]): TVBoxLiveGrou
  * 将 TVBox Native live groups 转为 DIYP/txt 格式：
  *   央视,#genre#
  *   CCTV-1,http://url1$源A#http://url2$源B
+ *
+ * 单源代理输出必须尽量保持上游分组和频道名原样，因此这里只做换行/逗号
+ * 安全清洗、同名分组头合并和同频道重复 URL 清理，不做跨名称归一。
+ * 全局聚合的额外归一只在 formatAggregatedLiveGroupsAsTxt 中执行。
  */
-export function formatLiveGroupsAsTxt(groups: TVBoxLiveGroup[]): string {
-  const lines: string[] = [];
+function formatLiveGroupsAsTxtInternal(
+  groups: TVBoxLiveGroup[],
+  canonicalizeChannels: boolean,
+): string {
+  interface OutputChannel {
+    name: string;
+    urls: string[];
+    seenUrls: Set<string>;
+  }
+
+  const groupChannels = new Map<string, Map<string, OutputChannel>>();
 
   for (const group of sortLiveGroupsForOutput(groups)) {
     const groupName = sanitizeTxtLabel(group.group || '', '其他');
-    lines.push(`${groupName},#genre#`);
+    let channels = groupChannels.get(groupName);
+    if (!channels) {
+      channels = new Map<string, OutputChannel>();
+      groupChannels.set(groupName, channels);
+    }
 
     for (const channel of group.channels || []) {
-      const urls = (channel.urls || []).filter((url) => url.trim());
+      const urls = (channel.urls || []).map((url) => url.trim()).filter(Boolean);
       if (urls.length === 0) continue;
 
-      const channelName = sanitizeTxtLabel(channel.name || '', '未命名');
-      lines.push(`${channelName},${urls.join('#')}`);
+      const rawChannelName = sanitizeTxtLabel(channel.name || '', '未命名');
+      const channelName = canonicalizeChannels
+        ? canonicalAggregateChannelName(rawChannelName)
+        : rawChannelName;
+      const channelKey = channelName.toLocaleLowerCase('zh-CN');
+      let output = channels.get(channelKey);
+      if (!output) {
+        output = { name: channelName, urls: [], seenUrls: new Set<string>() };
+        channels.set(channelKey, output);
+      }
+
+      for (const url of urls) {
+        const dedupeKey = bareLiveUrl(url) || url;
+        if (output.seenUrls.has(dedupeKey)) continue;
+        output.seenUrls.add(dedupeKey);
+        output.urls.push(url);
+      }
+    }
+  }
+
+  const lines: string[] = [];
+  for (const [groupName, channels] of groupChannels) {
+    const outputChannels = [...channels.values()]
+      .filter((channel) => channel.urls.length > 0)
+      .sort((a, b) => compareLiveChannelNames(a.name, b.name));
+    if (outputChannels.length === 0) continue;
+
+    lines.push(`${groupName},#genre#`);
+    for (const channel of outputChannels) {
+      lines.push(`${channel.name},${channel.urls.join('#')}`);
     }
   }
 
   return lines.join('\n');
+}
+
+export function formatLiveGroupsAsTxt(groups: TVBoxLiveGroup[]): string {
+  return formatLiveGroupsAsTxtInternal(groups, false);
+}
+
+/**
+ * 聚合 TXT 输出使用的央视主频道别名归一。
+ *
+ * 上游常见写法包括 CCTV1、CCTV-1、CCTV1-1综合、CCTV-2财经 等。
+ * 这些应视为同一频道；但 CCTV-5+、CCTV-5+咪咕、CCTV第一剧场 等
+ * 有独立语义的名称不能被合并。这里只归一主频道，频道线路仍由
+ * formatAggregatedLiveGroupsAsTxt 按 URL 去重合并。
+ *
+ * 画质后缀只对 CCTV/中央/央视 前缀的名称剥离，避免把“苏州4K”
+ * “东方卫视4K”“变形金刚_4K”这类本身带 4K 的普通频道名改掉。
+ */
+function canonicalAggregateChannelName(raw: string): string {
+  const base = sanitizeTxtLabel(raw, '未命名').trim();
+  if (!/^(?:CCTV|中央|央视)/i.test(base)) return base;
+  const cleaned = base
+    .replace(/\s*(?:高清|超清|蓝光|4k|1080p?|720p?)$/i, '')
+    .replace(/[-_\s]*(?:咪咕|移动)$/i, '')
+    .trim();
+  const match = cleaned.match(
+    /^(?:CCTV|中央|央视)[-_\s]*0*(\d{1,2})(\+)?(?:[-_\s]+\d+)?(?:[-_\s]*(综合|财经|中文国际|体育|电影|军事|电视剧|纪录|科教|戏曲|社会与法|新闻|少儿|音乐|奥林匹克|农业农村))?$/i,
+  );
+  if (!match) return cleaned;
+  const number = Number(match[1]);
+  if (!Number.isInteger(number) || number < 1 || number > 17) return cleaned;
+  return `CCTV-${number}${match[2] ? '+' : ''}`;
+}
+
+/**
+ * 对聚合后的频道做有限的内容纠偏。
+ *
+ * 上游存在把地方综合台塞进“纪录频道”、把港剧塞进“电影频道”、
+ * 把地方频道塞进“卫视/央视”等情况。这里只识别语义非常明确的频道名，
+ * 且把地方/省/市/县频道组整体保留在“地方”，避免把普通地方新闻、综合、
+ * 生活台拆散成多个只有几个台的小分类。
+ */
+function normalizeAggregateChannelGroup(
+  rawGroup: string,
+  rawChannelName: string,
+): string {
+  const group = normalizeAggregateGroupName(rawGroup);
+  const name = sanitizeTxtLabel(rawChannelName, '未命名');
+  const rawGroupCompact = sanitizeTxtLabel(rawGroup, '').replace(/\s+/g, '').toLowerCase();
+  const compact = name.replace(/\s+/g, '').toLowerCase();
+  if (!compact) return group;
+
+  // 主播/一起看、风景直播分组里频道名常是主播昵称，整组保留。
+  if (group === '一起看' || group === '风景直播') return group;
+
+  // 语义唯一、不会被地方台重名的频道，先于地方/卫视兜底归位。
+  if (/^(?:cctv)?(?:第一剧场|怀旧剧场|文化精品|风云剧场|兵器科技|电视指南|发现之旅|老故事)$/.test(compact)) return '影视';
+  if (/第一财经/.test(compact)) return '新闻财经';
+  if (/教育|学习/.test(compact)) return '教育';
+  if (/之江纪录|cgtn纪录|cgtn记录|飞碟之谜|航拍中国|中国村庄/.test(compact)) return '纪录';
+  if (/卫视/.test(compact)) return '卫视';
+  if (/^[\u4e00-\u9fa5]{1,8}(?:4k|8k)$/.test(compact.replace(/(?:频道)?超?$/, ''))) return '4K/8K';
+
+  // 地方频道组整体保留，避免把普通地方新闻/综合/生活台拆散。
+  const explicitLocalGroup = /地方频道|省频道|市频道|县频道/.test(rawGroupCompact);
+  if (explicitLocalGroup) return '地方';
+  const fromLocalGroup = group === '地方' || /地方频道|省频道|市频道|县频道|浙江频道|广州电信/.test(rawGroupCompact);
+  if (group === '少儿' || group === '体育' || group === '音乐' || group === '电视剧' || group === '春晚') return group;
+  if (fromLocalGroup && !/少儿|儿童|卡通|动漫|动画|体育|足球|篮球|网球|赛事|运动|音乐|歌曲|演唱会|港乐|dj|串烧/.test(compact)) return group;
+
+  const explicitProvinceOrCity = /北京|上海|天津|重庆|河北|山西|辽宁|吉林|黑龙江|江苏|浙江|安徽|福建|江西|山东|河南|湖北|湖南|广东|广西|海南|四川|贵州|云南|陕西|甘肃|青海|宁夏|新疆|西藏|内蒙古|广州|深圳|杭州|南京|苏州|东阳|武汉|成都|西安|哈尔滨|长春|沈阳|济南|郑州|长沙|合肥|福州|南昌|昆明|贵阳|南宁|海口|太原|石家庄|兰州|西宁|银川|乌鲁木齐|拉萨|呼和浩特/.test(compact);
+
+  if (/第一财经|财经|新闻|资讯/.test(compact)) {
+    if (group === '地方' && !/第一财经|财经|新闻|资讯/.test(rawGroupCompact)) return group;
+    return '新闻财经';
+  }
+  if (/教育|学习/.test(compact)) return '教育';
+  if (/生活|民生|都市/.test(compact)) return '地方';
+  if (/体育|足球|篮球|网球|赛事|运动/.test(compact)) return '体育';
+  if (/少儿|儿童|卡通|动漫|动画|猫和老鼠|七龙珠|中华小当家/.test(compact)) return '少儿';
+  if (/音乐|歌曲|演唱会|港乐|dj|串烧|风云音乐|音乐现场/.test(compact)) return '音乐';
+  if (/电视剧|连续剧|剧集|港剧|美剧|韩剧|短剧|经典剧|射雕英雄传|倚天屠龙记|笑傲江湖|寻秦记|创世纪|大时代|楚汉骄雄|大唐双龙传|法政先锋|鉴证实录|妙手仁心|陀枪师姐|洗冤录|刑事侦缉档案|金枝欲孽|活佛济公|西游记|封神榜|倩女幽魂|龙门飞甲|甄嬛传|还珠格格|亮剑|流星花园|大地恩情|凡人修仙|粤经典/.test(compact)) return '电视剧';
+  const localComprehensiveChannel = /东丰|敦化一套|桦甸|靖宇|九台|柳河|龙井|磐石|双辽|通化县|汪清|白山公共|舒兰新闻|辉南新闻|珲春新闻/.test(compact);
+  if (localComprehensiveChannel) return '地方';
+  if (/纪录|纪实|探索|地理|人文|自然|飞碟之谜|航拍中国|中国村庄|之江纪录|cgtn纪录/.test(compact)) return '纪录';
+  if (explicitProvinceOrCity && /综合|公共|都市|生活|影视|新闻|经济|科教|文化|导视|频道|电视/.test(compact)) return '地方';
+  if (/综合|公共/.test(compact) && /白山|东丰|敦化|桦甸|辉南|珲春|靖宇|九台|柳河|龙井|磐石|舒兰|双辽|通化|汪清|德惠|昌黎|朝天|定襄|汾西|古县|固镇|灌阳|广安|广元|甘南|海宁|邯郸|河源|衡水|衡阳|湖州|怀仁|黄山|嘉兴|嘉峪关|剑阁|津南|晋江|缙云|荆门|井研|靖江|句容|开化|可克达拉|来宾|兰溪|六安|龙泉|龙游/.test(compact)) return '地方';
+
+  return group;
+}
+
+/**
+ * 聚合直播专用分组归一。上游源各自维护 group 名，常出现“央视/央视频道/
+ * 📺央视频道”、地方省台拆成单频道分类、电影和电视剧混在一起等情况。
+ * 这里只处理最终聚合输出，不影响 /live/<key> 的单源代理内容。
+ *
+ * 原则：
+ * - 明确且内容量足够大的专题分类保留，避免把几百个频道硬塞进“其他”；
+ * - 同义分类合并，极小且无明确归属的分类归入“其他”；
+ * - 空分类不输出，频道线路仍按 URL 去重并保留多线路。
+ */
+function normalizeAggregateGroupName(raw: string): string {
+  const label = sanitizeTxtLabel(raw, '其他')
+    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '')
+    .replace(/[·•・]/g, '')
+    .trim();
+  const compact = label.replace(/\s+/g, '').toLowerCase();
+  if (!compact) return '其他';
+
+  if (/cctv|央视|中央电视|央卫|咪咕|cg?tn/.test(compact)) {
+    if (/cctv第一剧场|cctv怀旧剧场|cctv文化精品|风云剧场|兵器科技|电视指南|发现之旅|老故事/.test(compact)) return '影视';
+    return '央视';
+  }
+  if (/卫视/.test(compact)) return '卫视';
+  if (/港澳台|港·澳·台|港台/.test(compact)) return '港澳台';
+  const provinceOrCity = /北京|上海|天津|重庆|河北|山西|辽宁|吉林|黑龙江|江苏|浙江|安徽|福建|江西|山东|河南|湖北|湖南|广东|广西|海南|四川|贵州|云南|陕西|甘肃|青海|宁夏|新疆|西藏|内蒙古|广州|深圳|杭州|南京|苏州|武汉|成都|西安|哈尔滨|长春|沈阳|济南|郑州|长沙|合肥|福州|南昌|昆明|贵阳|南宁|海口|太原|石家庄|兰州|西宁|银川|乌鲁木齐|拉萨|呼和浩特/.test(compact);
+  if ((/地方|省频道|市频道|县频道|频道/.test(compact) && provinceOrCity)
+    || /广州电信|电信频道/.test(compact)) {
+    return '地方';
+  }
+  if (/少儿|儿童|卡通|动漫|动画/.test(compact)) return '少儿';
+  if (/体育|足球|篮球|网球|赛事|运动/.test(compact)) return '体育';
+  if (/纪录|纪实|探索|地理|人文/.test(compact)) return '纪录';
+  if (/新闻|资讯|财经/.test(compact)) return '新闻财经';
+  if (/音乐|歌曲|演唱会|港乐|dj|串烧|欣赏港乐|欣赏音乐/.test(compact)) return '音乐';
+  if (/电影|影院|影视|剧场|大片|动作|喜剧|科幻|恐怖|战争|武侠|视觉效果/.test(compact)) return '影视';
+  if (/电视剧|连续剧|剧集|港剧|美剧|韩剧|短剧|经典剧|甄嬛传|还珠格格|亮剑|流星花园|大地恩情|大时代|凡人修仙|粤经典/.test(compact)) return '电视剧';
+  if (/春晚|春节/.test(compact)) return '春晚';
+  if (/直播中国|风景|景区|航拍/.test(compact)) return '风景直播';
+  if (/一起看|虎牙|斗鱼|b站|原创|zonghe|综合直播/.test(compact)) return '一起看';
+  if (/^(?:4k8k频道|4k频道|8k频道|超高清|高清频道)$/.test(compact)) return '4K/8K';
+  if (/教育|学习/.test(compact)) return '教育';
+  if (/生活|民生|都市/.test(compact)) return '生活';
+  if (/欣赏频道/.test(compact)) return '其他';
+  if (/解说|数字|car|测试|备用/.test(compact)) return '其他';
+
+  // 内容明确但名称不规范的专题分类保留原名称，避免破坏有效分类。
+  if (compact.length >= 3) return label;
+  return '其他';
+}
+
+/**
+ * 将聚合直播分组转成 TVBox TXT。分类归一和频道线路去重只用于全局
+ * /live；单源 /live/<key> 继续调用 formatLiveGroupsAsTxt。
+ */
+export function formatAggregatedLiveGroupsAsTxt(groups: TVBoxLiveGroup[]): string {
+  const normalized: TVBoxLiveGroup[] = [];
+  for (const group of groups) {
+    const byGroup = new Map<string, TVBoxLiveChannel[]>();
+    for (const channel of group.channels || []) {
+      const targetGroup = normalizeAggregateChannelGroup(group.group || '', channel.name || '');
+      const list = byGroup.get(targetGroup) || [];
+      list.push(channel);
+      byGroup.set(targetGroup, list);
+    }
+    for (const [targetGroup, channels] of byGroup) {
+      normalized.push({ group: targetGroup, channels });
+    }
+  }
+  return formatLiveGroupsAsTxtInternal(normalized, true);
 }
 
 /** 自动识别 m3u 还是 txt */
