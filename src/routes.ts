@@ -1950,8 +1950,8 @@ export function createApp(deps: AppDeps): Hono {
       for (const raw of body.authCodes) {
         if (!raw || typeof raw !== 'object') return c.json({ error: 'authCodes entries must be objects' }, 400);
         const code = createCredentialAuthCode(raw as Partial<CredentialAuthCode>);
-        if (!/^[A-Za-z0-9_-]{4,64}$/.test(code.code)) {
-          return c.json({ error: 'Each auth code must be 4-64 letters, numbers, underscores or hyphens' }, 400);
+        if (!/^[A-Za-z0-9_-]{1,64}$/.test(code.code)) {
+          return c.json({ error: 'Each auth code must be 1-64 letters, numbers, underscores or hyphens' }, 400);
         }
         if (seenCodes.has(code.code)) return c.json({ error: 'Auth codes must be unique' }, 400);
         seenCodes.add(code.code);

@@ -942,7 +942,7 @@ const translations = {
     credentialRootLinkHint:'Root link status',
     credentialSaved:'Credential distribution and auth codes saved',
     credentialRootRequired:'Enable at least one auth code before requiring authentication.',
-    credentialCodeInvalid:'Auth code must be 4-64 characters: letters, numbers, underscore or hyphen.',
+    credentialCodeInvalid:'Auth code must be 1-64 characters: letters, numbers, underscore or hyphen.',
     credentialSelectedSummary:'Selected',
     credentialSelectedEmptyShort:'Selected: none (no credentials)',
     credentialSelectedEmpty:'No platform is selected. This auth code will distribute no credentials; the client can still log in locally.',
@@ -1072,7 +1072,7 @@ const translations = {
     credentialDelete:'删除',
     credentialSaved:'凭证分发与鉴权码已保存',
     credentialRootRequired:'启用强制鉴权前，至少需要保留一个启用的鉴权码。',
-    credentialCodeInvalid:'鉴权码需为 4-64 位字母、数字、下划线或连字符。',
+    credentialCodeInvalid:'鉴权码需为 1-64 位字母、数字、下划线或连字符。',
     credentialSelectedSummary:'已选',
     credentialSelectedEmptyShort:'已选：无（不下发凭证）',
     credentialSelectedEmpty:'未勾选任何平台，此鉴权码不会下发任何凭证；应用端仍可自行扫码登录。',
@@ -2963,7 +2963,7 @@ async function saveCredentialDistribution() {
     return;
   }
   for (const item of credentialDistribution.authCodes || []) {
-    if (!/^[A-Za-z0-9_-]{4,64}$/.test(item.code || '')) {
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(item.code || '')) {
       toast(t('credentialCodeInvalid'), 'error');
       return;
     }

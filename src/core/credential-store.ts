@@ -474,7 +474,7 @@ export const CLOUD_PLATFORMS: CloudPlatform[] = [
 ];
 
 const CREDENTIAL_DISTRIBUTION_MODES = new Set<CredentialDistributionMode>(['none', 'all', 'selected']);
-const AUTH_CODE_RE = /^[A-Za-z0-9_-]{4,64}$/;
+const AUTH_CODE_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
 export const DEFAULT_CREDENTIAL_DISTRIBUTION: CredentialDistributionConfig = {
   requireAuth: false,
