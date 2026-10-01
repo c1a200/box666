@@ -2991,7 +2991,7 @@ async function loadCloudCredentials() {
 function renderCloudCards() {
   const grid = $('cloudLoginGrid');
   grid.innerHTML = '';
-  const allPlatforms = [...QR_PLATFORMS, ...MANUAL_ONLY_PLATFORMS, ...PW_PLATFORMS];
+  const allPlatforms = [...new Set([...QR_PLATFORMS, ...MANUAL_ONLY_PLATFORMS, ...PW_PLATFORMS])];
 
   for (const p of allPlatforms) {
     const cred = cloudCredentials[p];
