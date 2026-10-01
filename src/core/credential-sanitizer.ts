@@ -17,6 +17,28 @@ const PROJECT_CREDENTIAL_FIELDS = new Set<string>([
   'token',
 ]);
 
+/** 上游源自带的凭证入口字段；只有在显式启用 stripUpstreamCredentialEntries 时才处理。 */
+const UPSTREAM_CREDENTIAL_ENTRY_FIELDS = new Set<string>([
+  'cloud-drive',
+  'cloud_drive',
+  'clouddrive',
+  'drive',
+  'quark',
+  'uc',
+  'baidu',
+  'p123',
+  'pan123',
+  'xunlei',
+  'thunder',
+  'tianyi',
+  '115',
+  'aliyun',
+  'pikpak',
+  'bilibili',
+  'refresh_token',
+  'open_token',
+  'ali_token',
+]);
 const ACCOUNT_SECRET_FIELDS = new Set<string>([
   'username', 'password', 'pass', 'user', 'account', 'email', 'phone',
 ]);
@@ -126,13 +148,17 @@ function cleanCredentialNode(
 
     if (typeof rawValue === 'string') {
       const isProjectUrl = isProjectCredentialUrl(rawValue, baseUrl) || !!isAListProxyUrl(rawValue, baseUrl);
-      if (isCredentialField || isAccountField || nestedKey || isProjectUrl || lowerKey === 'ext' || lowerKey === 'extend') {
+      // 平台名键（quark/uc/baidu 等）既可能是凭证，也可能是上游初始化 URL。
+      // 不能仅凭键名删除字符串，否则上游 URL 会被误删并触发契约漂移。
+      // 只有明确的凭证/账号字段，或已确认的项目凭证 URL，才启用严格删除语义。
+      const strictCredentialValue = isCredentialField || isAccountField || isProjectUrl;
+      if (strictCredentialValue || nestedKey || lowerKey === 'ext' || lowerKey === 'extend') {
         const cleaned = cleanStringValue(
           rawValue,
           baseUrl,
           secrets,
           allowedSecrets,
-          isCredentialField || isAccountField || nestedKey || isProjectUrl,
+          strictCredentialValue,
         );
         if (cleaned === null) {
           delete next[key];
@@ -172,6 +198,67 @@ function cleanCredentialNode(
   return { value: changed ? next : node, changed };
 }
 
+/**
+ * 移除上游源 ext 中明确属于网盘登录入口的字段。
+ * 不删除 siteUrl/url 等可能是接口地址的字段；仅在调用方显式开启时使用。
+ */
+export function stripUpstreamCredentialEntries(
+  config: TVBoxConfig | any,
+): any {
+  if (!config || typeof config !== 'object') return config;
+
+  const cleanExtValue = (ext: any): any => {
+    if (typeof ext === 'string') {
+      const trimmed = ext.trim();
+      if (!trimmed.startsWith('{')) return ext;
+      try {
+        const parsed = JSON.parse(trimmed);
+        const cleaned = cleanExtValue(parsed);
+        return cleaned === parsed ? ext : JSON.stringify(cleaned);
+      } catch {
+        return ext;
+      }
+    }
+    if (!ext || typeof ext !== 'object' || Array.isArray(ext)) return ext;
+
+    let changed = false;
+    const next: Record<string, any> = { ...ext };
+    for (const key of Object.keys(next)) {
+      if (UPSTREAM_CREDENTIAL_ENTRY_FIELDS.has(key.toLowerCase())) {
+        delete next[key];
+        changed = true;
+      }
+    }
+    return changed ? next : ext;
+  };
+
+  const walk = (node: any): any => {
+    if (Array.isArray(node)) return node.map((item) => walk(item));
+    if (!node || typeof node !== 'object') return node;
+
+    let changed = false;
+    const next: Record<string, any> = { ...node };
+    if (Object.prototype.hasOwnProperty.call(next, 'ext')) {
+      const cleaned = cleanExtValue(next.ext);
+      if (cleaned !== next.ext) { next.ext = cleaned; changed = true; }
+    }
+    if (Object.prototype.hasOwnProperty.call(next, 'extend')) {
+      const cleaned = cleanExtValue(next.extend);
+      if (cleaned !== next.extend) { next.extend = cleaned; changed = true; }
+    }
+    for (const key of Object.keys(next)) {
+      if (key === 'ext' || key === 'extend') continue;
+      const value = next[key];
+      if (value && typeof value === 'object') {
+        const cleaned = walk(value);
+        if (cleaned !== value) { next[key] = cleaned; changed = true; }
+      }
+    }
+    return changed ? next : node;
+  };
+
+  return walk(config);
+}
 export function stripInjectedCredentialsFromConfig(
   config: TVBoxConfig | any,
   baseUrl: string,

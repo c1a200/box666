@@ -24,6 +24,7 @@ import { isCredentialDistributable, isPanInitCredentialDistributable, loadCreden
 import { getCredentialPlatformsForSite } from './credential-risk';
 import { batchSiteSpeedTest, isSiteProbeable, type SiteProbeResult } from './speedtest';
 import { canDistributeCredentialsToSite } from './credential-injector';
+import { stripInternalSiteMarkers } from './site-contract';
 import { preflightSourcesBatch } from './source-preflight';
 import {
   DEFAULT_QUALITY_PROBE_CHUNK_SIZE,
@@ -938,7 +939,7 @@ export async function persistQualityCandidates(storage: Storage, sites: TVBoxSit
   const searchable = collectSearchableSites(sites);
   await storage.put(KV_SEARCH_QUALITY_CANDIDATES, JSON.stringify({
     updatedAt: new Date().toISOString(),
-    sites: searchable,
+    sites: stripInternalSiteMarkers({ sites: searchable }).sites,
   }));
 }
 

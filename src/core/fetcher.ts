@@ -12,6 +12,11 @@ export interface FetchConfigsResult {
   fetchResults: SourceFetchResult[];
 }
 
+interface ExpandSourceItem {
+  entry: SourceEntry;
+  upstreamNames: string[];
+}
+
 /**
  * 批量获取配置 JSON，并发执行，带超时
  * 自动检测多仓格式（storeHouse / urls），递归展开（最多 3 层）
@@ -31,8 +36,12 @@ export async function fetchConfigs(
   const configs: SourcedConfig[] = [];
   const fetchResults: SourceFetchResult[] = [];
   const seen = new Set<string>(); // URL 去重，防循环引用
+  const initialItems: ExpandSourceItem[] = sources.map((entry) => ({
+    entry,
+    upstreamNames: entry.upstreamNames?.length ? [...entry.upstreamNames] : [entry.name],
+  }));
 
-  await expandSources(sources, configs, fetchResults, seen, timeoutMs, 0, proxyConfig, sourceUrlBlacklist);
+  await expandSources(initialItems, configs, fetchResults, seen, timeoutMs, 0, proxyConfig, sourceUrlBlacklist);
 
   console.log(`[fetcher] Fetched ${configs.length} configs from ${sources.length} top-level sources`);
   return { configs, fetchResults };
@@ -42,7 +51,7 @@ export async function fetchConfigs(
  * 递归展开多仓源
  */
 async function expandSources(
-  sources: SourceEntry[],
+  sources: ExpandSourceItem[],
   configs: SourcedConfig[],
   fetchResults: SourceFetchResult[],
   seen: Set<string>,
@@ -51,14 +60,28 @@ async function expandSources(
   proxyConfig?: FetchProxyConfig,
   sourceUrlBlacklist: Set<string> = new Set(),
 ): Promise<void> {
-  // 去重
-  const uniqueSources = sources.filter(s => {
-    if (sourceUrlBlacklist.has(s.url)) {
-      console.log(`[fetcher] Skipping blacklisted source: ${s.url}`);
-      return false;
+  // 同一 URL 被多个顶层总源引用时不能直接丢弃：站点可能同时属于多个总源，
+  // 凭证边界必须保留完整来源集合。这里按 URL 归并来源后再去重。
+  const mergedByUrl = new Map<string, ExpandSourceItem>();
+  for (const item of sources) {
+    if (sourceUrlBlacklist.has(item.entry.url)) {
+      console.log(`[fetcher] Skipping blacklisted source: ${item.entry.url}`);
+      continue;
     }
-    if (seen.has(s.url)) return false;
-    seen.add(s.url);
+    const existing = mergedByUrl.get(item.entry.url);
+    if (existing) {
+      existing.upstreamNames = [...new Set([...existing.upstreamNames, ...item.upstreamNames])];
+      continue;
+    }
+    mergedByUrl.set(item.entry.url, {
+      entry: item.entry,
+      upstreamNames: [...new Set(item.upstreamNames)],
+    });
+  }
+
+  const uniqueSources = [...mergedByUrl.values()].filter(item => {
+    if (seen.has(item.entry.url)) return false;
+    seen.add(item.entry.url);
     return true;
   });
 
@@ -70,14 +93,15 @@ async function expandSources(
   const results = await allSettledConcurrent(
     uniqueSources,
     FETCH_CONCURRENCY,
-    (source) => fetchSingleConfig(source, timeoutMs, proxyConfig),
+    (item) => fetchSingleConfig(item.entry, timeoutMs, proxyConfig),
   );
 
-  const multiRepoChildren: SourceEntry[] = [];
+  const multiRepoChildren: ExpandSourceItem[] = [];
 
   for (let i = 0; i < results.length; i++) {
     const result = results[i];
-    const source = uniqueSources[i];
+    const sourceItem = uniqueSources[i];
+    const source = sourceItem.entry;
     if (result.status === 'fulfilled' && result.value) {
       const { config: fetchedConfig, fetchResult } = result.value;
       fetchResults.push(fetchResult);
@@ -91,7 +115,10 @@ async function expandSources(
         const children = extractMultiRepoEntries(fetchedConfig!, fetchResult.name);
         console.log(`[fetcher] Multi-repo: ${source.url} → ${children.length} sub-sources`);
         if (depth < MAX_MULTI_REPO_DEPTH) {
-          multiRepoChildren.push(...children);
+          multiRepoChildren.push(...children.map((entry) => ({
+            entry,
+            upstreamNames: sourceItem.upstreamNames,
+          })));
         } else {
           console.log(`[fetcher] Max depth reached, skipping expansion of ${source.url}`);
         }
@@ -101,6 +128,7 @@ async function expandSources(
           sourceName: source.name,
           config: fetchedConfig!,
           speedMs: fetchResult.speedMs,
+          upstreamNames: sourceItem.upstreamNames,
         });
       }
     } else if (result.status === 'rejected') {

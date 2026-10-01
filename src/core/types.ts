@@ -1,8 +1,28 @@
 // TVBox JSON 配置完整类型定义
 
+export interface SiteContract {
+  /** JAR 内容 MD5；同一 api 在不同 JAR 中协议可能不同。 */
+  jarMd5?: string;
+  /** 站点 API/Spider 类名。 */
+  api: string;
+  /** ext 原始形态，用于区分对象、字符串和 null。 */
+  extShape: 'null' | 'undefined' | 'object' | 'string' | 'array' | 'other';
+  /** ext 为对象时的顶层字段名，排序后保存。 */
+  extKeys?: string[];
+  /** 响应期清洗历史注入时，允许从上述集合中移除的可注入字段。 */
+  injectableExtKeys?: string[];
+  /** TVBox site.pan 字段（若上游提供）。 */
+  /** PanSearch 等从 ext 读取的语义平台值；仅记录，不参与字段名集合。 */
+  extPan?: string;
+  pan?: string;
+  /** 聚合阶段一次计算的稳定契约哈希；响应期只比较该值。 */
+  contractHash?: string;
+}
+
 export interface TVBoxSite {
   key: string;
   name?: string;
+  __upstreamNames?: string[]; // 聚合内部来源标记；写 KV 前移除
   type: number; // 0=XML, 1=JSON, 3=JAR, 4=Remote
   api: string;
   searchable?: number; // 0|1
@@ -11,6 +31,7 @@ export interface TVBoxSite {
   playUrl?: string;
   playerType?: number; // -1|0|1|2|10
   jar?: string; // per-site JAR override
+  pan?: string; // 部分网盘聚合源的平台标识
   ext?: string | Record<string, unknown>;
   categories?: string[];
   click?: string;
@@ -133,6 +154,7 @@ export interface SourceEntry {
   url: string;
   configKey?: string; // AES ECB 解密密钥（来自 URL 的 ;pk; 后缀）
   disabled?: boolean;
+  upstreamNames?: string[]; // 内部多仓展开用：保留顶层总源身份
 }
 
 // 内部处理用：带来源标记的配置
@@ -141,6 +163,11 @@ export interface SourcedConfig {
   sourceName: string;
   config: TVBoxConfig;
   speedMs?: number; // 配置 URL 响应时间
+  /**
+   * 顶层总源名称。多仓展开后仍保留最初配置的启用总源，
+   * 供运行时按“总源边界”决定哪些站点允许注入凭证。
+   */
+  upstreamNames?: string[];
 }
 
 // 名称定制配置
@@ -261,6 +288,8 @@ export interface CredentialDistributionConfig {
   defaultCredentialMode: CredentialDistributionMode; // 无鉴权根链接使用的凭证策略
   defaultPlatforms: CloudPlatform[];
   authCodes: CredentialAuthCode[];
+  /** none 策略下是否额外移除上游源自带的凭证入口字段；默认关闭。 */
+  stripUpstreamCredentialEntries?: boolean;
 }
 
 // 搜索配额配置（持久化到 KV）

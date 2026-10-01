@@ -13,10 +13,11 @@ import { mergeLivesToNative, separatedMergeLives, formatLiveGroupsAsTxt, filterL
 import { loadSpeedMap as loadChannelSpeedMap } from './core/channel-probe';
 import { liveSourcesToTVBoxLives } from './core/live-source';
 import { isBlockedLiveSource, partitionBlockedLiveSources } from './core/live-policy';
-import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_STARTUP_SITE_POOL, KV_SOURCE_URLS, KV_LAST_UPDATE, KV_LAST_UPDATE_ERROR, KV_MANUAL_SOURCES, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_MERGE_REPORT, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_PARSE_HEALTH_REPORT, KV_CHANNEL_MERGED_TREE, KV_AGG_LOGS, AGG_LOGS_MAX, KV_SITE_SNAPSHOT, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, BASE_URL_PLACEHOLDER, KV_SITE_HEALTH_MAP, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SOURCE_MAP, KV_SOURCE_URL_BLACKLIST } from './core/config';
+import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_STARTUP_SITE_POOL, KV_SOURCE_URLS, KV_LAST_UPDATE, KV_LAST_UPDATE_ERROR, KV_MANUAL_SOURCES, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_MERGE_REPORT, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_PARSE_HEALTH_REPORT, KV_CHANNEL_MERGED_TREE, KV_AGG_LOGS, AGG_LOGS_MAX, KV_SITE_SNAPSHOT, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, BASE_URL_PLACEHOLDER, KV_SITE_HEALTH_MAP, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SOURCE_MAP, KV_SITE_UPSTREAM_MAP, KV_SITE_CONTRACT_MAP, KV_SOURCE_URL_BLACKLIST } from './core/config';
 import { loadBlacklist, applyBlacklist, pruneBlacklist, saveBlacklist, siteFingerprint } from './core/blacklist';
 import { transformSiteNames } from './core/cleaner';
 import { parseConfigJson, type FetchProxyConfig } from './core/fetcher';
+import { buildSiteContract, stripInternalSiteMarkers } from './core/site-contract';
 import { scrapeSourceList, scrapeMacCMSSources, type ScrapeSourceConfig, type ScrapeMacCMSConfig } from './core/source-scraper';
 import { loadSearchQuota, applySearchQuota, excludeJsUrlSites, probeAndPruneParses } from './core/search-quota';
 import { loadCredentials } from './core/credential-store';
@@ -246,7 +247,7 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
   const allConfigs = [...filteredConfigs, ...inlineConfigs, ...macCMSConfigs];
   const mergeResult = mergeConfigs(allConfigs);
   let merged = mergeResult.config;
-  const { siteSourceMap, parseSourceMap, liveSourceMap } = mergeResult;
+  const { siteSourceMap, siteUpstreamMap, parseSourceMap, liveSourceMap } = mergeResult;
 
   // Deployment-agnostic compatibility: the deprecated WoGGGuard shell does
   // not honor the project's Pan.init credential protocol. Each deployment keeps
@@ -268,6 +269,7 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
   // 这里先暂存快照，Step 5.7 注入凭证后再统一写回，避免完整配置里的
   // Wogg ext 仍停留在聚合前的旧对象。
   const fullConfigSnapshot = JSON.parse(JSON.stringify(merged)) as typeof merged;
+
   await storage.put(KV_SOURCE_MAP, JSON.stringify({
     sites: Object.fromEntries(siteSourceMap),
     parses: Object.fromEntries(parseSourceMap),
@@ -708,7 +710,7 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     // 启动源数量取前 N 个，不会反向修改最终配置或另一套部署的 KV。
     await storage.put(KV_STARTUP_SITE_POOL, JSON.stringify({
       updatedAt: new Date().toISOString(),
-      sites: candidateSites,
+      sites: stripInternalSiteMarkers({ sites: candidateSites }).sites,
     }));
 
     // autoLimit=false 时 0 表示明确不限制；开启时保存前必须满足最终不变量。
@@ -935,9 +937,34 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
   // Step 8: 存入存储
   // 完整快照只保存源本身，不写凭证；客户端凭证始终由 routes.ts 按请求
   // 的根策略或 /auth/<code> 上下文动态注入。
-  const mergedJson = JSON.stringify(merged);
+  // 总源映射只保留最终实际存在的站点，并且只允许本次实际启用的总源贡献。
+  // __upstreamNames 是内部标记，绝不能写入对外配置。
+  const finalSiteUpstreams: Record<string, string[]> = {};
+  for (const site of merged.sites || []) {
+    const upstreams = (site.__upstreamNames?.length ? site.__upstreamNames : siteUpstreamMap.get(site.key)) || [];
+    if (upstreams.length > 0) finalSiteUpstreams[site.key] = [...new Set(upstreams)].sort();
+  }
+  await storage.put(KV_SITE_UPSTREAM_MAP, JSON.stringify({
+    updatedAt: new Date().toISOString(),
+    sites: finalSiteUpstreams,
+  }));
+
+  // 契约指纹独立落库，响应期用于防止不同 JAR/API/ext 形态之间误共用注入模板。
+  const finalSiteContracts: Record<string, unknown> = {};
+  for (const site of merged.sites || []) {
+    // 必须在所有站点过滤/兼容迁移完成后重建，不能用合并阶段的旧指纹。
+    finalSiteContracts[site.key] = buildSiteContract(site);
+  }
+  await storage.put(KV_SITE_CONTRACT_MAP, JSON.stringify({
+    updatedAt: new Date().toISOString(),
+    sites: finalSiteContracts,
+  }));
+
+  const publicMerged = stripInternalSiteMarkers(merged);
+  const publicFullSnapshot = stripInternalSiteMarkers(fullConfigSnapshot);
+  const mergedJson = JSON.stringify(publicMerged);
   await storage.put(KV_MERGED_CONFIG, mergedJson);
-  await storage.put(KV_MERGED_CONFIG_FULL, JSON.stringify(fullConfigSnapshot));
+  await storage.put(KV_MERGED_CONFIG_FULL, JSON.stringify(publicFullSnapshot));
   await storage.put(KV_LAST_UPDATE, new Date().toISOString());
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);

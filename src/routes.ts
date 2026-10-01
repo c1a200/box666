@@ -4,7 +4,7 @@ import { Hono } from 'hono';
 import { MemoryCachedStorage } from './storage/cached';
 import type { Storage } from './storage/interface';
 import type { AppConfig, MacCMSSourceEntry, LiveSourceEntry, NameTransformConfig, EdgeProxyConfig, SearchQualityRunMode } from './core/types';
-import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_STARTUP_SITE_POOL, KV_MANUAL_SOURCES, KV_LAST_UPDATE, KV_LAST_UPDATE_ERROR, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_RUNTIME_TXT, KV_LIVE_RUNTIME_TXT_VERSION, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, LIVE_PROXY_TTL, IMG_PROXY_TTL, KV_NAME_TRANSFORM, KV_CRON_INTERVAL, DEFAULT_CRON_INTERVAL, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_PARSE_HEALTH_REPORT, KV_AGG_LOGS, KV_BG_SETTINGS, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, KV_SMART_BASE_URL_ENABLED, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SITE_HEALTH_MAP, KV_CHANNEL_MERGED_TREE, KV_LIVE_TEXT_PREFIX, KV_CREDENTIAL_DISTRIBUTION, KV_CREDENTIAL_DISTRIBUTION_ENABLED, KV_SEARCH_QUALITY_CANDIDATES } from './core/config';
+import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_STARTUP_SITE_POOL, KV_MANUAL_SOURCES, KV_LAST_UPDATE, KV_LAST_UPDATE_ERROR, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_RUNTIME_TXT, KV_LIVE_RUNTIME_TXT_VERSION, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, LIVE_PROXY_TTL, IMG_PROXY_TTL, KV_NAME_TRANSFORM, KV_CRON_INTERVAL, DEFAULT_CRON_INTERVAL, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_PARSE_HEALTH_REPORT, KV_AGG_LOGS, KV_BG_SETTINGS, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, KV_SMART_BASE_URL_ENABLED, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SITE_HEALTH_MAP, KV_CHANNEL_MERGED_TREE, KV_LIVE_TEXT_PREFIX, KV_CREDENTIAL_DISTRIBUTION, KV_CREDENTIAL_DISTRIBUTION_ENABLED, KV_SEARCH_QUALITY_CANDIDATES, KV_SITE_UPSTREAM_MAP, KV_SITE_CONTRACT_MAP } from './core/config';
 import { getRequestBaseUrl, applyBaseUrlPlaceholder, assertHostAllowed } from './core/base-url';
 import { logger } from './core/logger';
 import { loadGroupOrder, saveGroupOrder } from './core/group-order';
@@ -33,7 +33,8 @@ import { isSiteProbeable } from './core/speedtest';
 import { generateQR, pollQRStatus, passwordLogin, PLATFORM_NAMES, QR_PLATFORMS, PASSWORD_PLATFORMS } from './core/cloud-login';
 import { assessAllSources, isClientCredentialSite } from './core/credential-risk';
 import { generateTokenJson, injectAListDriveCredentials, injectCredentials } from './core/credential-injector';
-import { stripInjectedCredentialsFromConfig } from './core/credential-sanitizer';
+import type { SiteContract } from './core/types';
+import { stripInjectedCredentialsFromConfig, stripUpstreamCredentialEntries } from './core/credential-sanitizer';
 import { formatLiveGroupsAsTxt, filterLivesBySource, filterLivesBySourceDetailed, sortLiveGroupsForOutput } from './core/live-merger';
 import { containsBlockedLiveUrl, isBlockedLiveSource, isBlockedLiveUrl } from './core/live-policy';
 import { autoNameFromUrl, backupTypeMismatch, createSourceBackup, extractBackupItems, parseSourceList } from './core/source-list-parser';
@@ -554,13 +555,54 @@ export function createApp(deps: AppDeps): Hono {
     return set;
   }
 
+  /** 读取聚合阶段保存的启用总源边界；仅确有凭证下发时才读取契约指纹。 */
+  async function loadSiteInjectionConstraints(includeContracts: boolean): Promise<{
+    allowedSiteKeys: Set<string> | null;
+    contractsBySiteKey: Map<string, SiteContract> | null;
+  }> {
+    let allowedSiteKeys: Set<string> | null = null;
+    let contractsBySiteKey: Map<string, SiteContract> | null = null;
+
+    const [upstreamRaw, contractRaw] = await Promise.all([
+      storage.get(KV_SITE_UPSTREAM_MAP),
+      includeContracts ? storage.get(KV_SITE_CONTRACT_MAP) : Promise.resolve(null),
+    ]);
+
+    if (upstreamRaw) {
+      try {
+        const parsed = JSON.parse(upstreamRaw) as { sites?: Record<string, unknown> };
+        // 映射存在时，仅允许映射中实际存在来源的站点注入；即使映射为空也保持拒绝，
+        // 避免空聚合结果误用旧的对外配置。
+        allowedSiteKeys = new Set(Object.keys(parsed.sites || {}));
+      } catch {
+        allowedSiteKeys = null;
+      }
+    }
+
+    if (contractRaw) {
+      try {
+        const parsed = JSON.parse(contractRaw) as { sites?: Record<string, SiteContract> };
+        contractsBySiteKey = new Map(Object.entries(parsed.sites || {}));
+      } catch {
+        contractsBySiteKey = null;
+      }
+    }
+
+    return { allowedSiteKeys, contractsBySiteKey };
+  }
+
+  /** 仅 none 策略下使用；默认关闭，避免改变旧版 none 语义。 */
+  function shouldStripUpstreamCredentialEntries(context: ClientAuthContext): boolean {
+    return context.distribution.stripUpstreamCredentialEntries === true;
+  }
+
   /** 按当前上下文重新注入凭证地址。 */
-  function applyCredentialPolicyToConfig(
+  async function applyCredentialPolicyToConfig(
     raw: string,
     allCredentials: Map<CloudPlatform, CloudCredential>,
     policy: Awaited<ReturnType<typeof loadCredentialPolicy>>,
     context: ClientAuthContext,
-  ): string {
+  ): Promise<string> {
     if (!raw) return raw;
     let parsed: any;
     try {
@@ -570,13 +612,30 @@ export function createApp(deps: AppDeps): Hono {
     }
     if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.sites)) return raw;
 
+    // 独立、显式开启的选项：none 只撤销项目注入时默认不碰上游自带入口。
+    if (context.mode === 'none' && shouldStripUpstreamCredentialEntries(context)) {
+      parsed = stripUpstreamCredentialEntries(parsed);
+    }
+
     const effective = selectCredentialsForContext(allCredentials, context);
+    const constraints = await loadSiteInjectionConstraints(
+      context.mode !== 'none' && effective.size > 0,
+    );
     // 先清除历史注入的凭证/地址；本次允许的值保留，随后重新按策略注入。
     const allowedSecrets = context.mode === 'none' ? new Set<string>() : credentialSecretSet(effective);
     const stripped = stripInjectedCredentialsFromConfig(parsed, context.effectiveBaseUrl, allCredentials, allowedSecrets);
-    const { sites } = injectCredentials(stripped.sites || [], effective, policy, context.effectiveBaseUrl);
+    const { sites } = injectCredentials(
+      stripped.sites || [],
+      effective,
+      policy,
+      context.effectiveBaseUrl,
+      constraints.allowedSiteKeys,
+      constraints.contractsBySiteKey,
+      true,
+      true,
+    );
+    // 注入结果必须写回响应配置，否则凭证计算完成但客户端仍收到原 ext。
     parsed.sites = sites;
-
     // 顶层 token 与本次下发的平台绑定：有凭证才下发，none/无可用凭证时移除，
     // 避免旧根地址残留导致客户端在未授权时仍尝试拉取凭证。
     const tokenUrl = `${context.effectiveBaseUrl}/token.json`;
@@ -598,7 +657,7 @@ export function createApp(deps: AppDeps): Hono {
     if (!raw) return raw;
     const credentials = await loadCredentials(storage);
     const policy = await loadCredentialPolicy(storage);
-    return applyCredentialPolicyToConfig(raw, credentials, policy, context);
+    return await applyCredentialPolicyToConfig(raw, credentials, policy, context);
   }
 
   function stripMissingCredentialUrls(raw: string, effectiveBaseUrl: string, credentials: Map<CloudPlatform, CloudCredential>): string {
@@ -1993,6 +2052,7 @@ export function createApp(deps: AppDeps): Hono {
       defaultCredentialMode: body.defaultCredentialMode,
       defaultPlatforms: body.defaultPlatforms,
       authCodes,
+      stripUpstreamCredentialEntries: body.stripUpstreamCredentialEntries === true,
     });
     if (candidate.requireAuth && !candidate.authCodes.some((item) => item.enabled)) {
       return c.json({ error: 'At least one enabled auth code is required when requireAuth is enabled' }, 400);

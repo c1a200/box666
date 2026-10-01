@@ -1,13 +1,17 @@
 // Cookie 注入引擎
 
-import type { TVBoxSite, CloudPlatform, CloudCredential, CredentialPolicyConfig } from './types';
+import type { TVBoxSite, CloudPlatform, CloudCredential, CredentialPolicyConfig, SiteContract } from './types';
+import { buildSiteContract, extractJarMd5 } from './site-contract';
 import { assessSourceRisk, getDirectPlatformFromApi, isAListSite, ALIST_PLATFORMS } from './credential-risk';
 import { isCredentialDistributable, isPanInitCredentialDistributable, credentialRevision } from './credential-store';
 
 // ─── 注入规则 ────────────────────────────────────────────
 
 export interface InjectionRule {
+  /** API class 匹配。默认按完整 api 字段匹配。 */
   apiPattern: string | RegExp;
+  /** 可选的 JAR 指纹匹配；同一 api 在不同 JAR 中契约不同，必须优先按此区分。 */
+  jarPattern?: RegExp;
   platforms: CloudPlatform[];
   inject: (ext: any, credentials: Map<CloudPlatform, CloudCredential>, baseUrl?: string) => any;
   canInject?: (ext: any, credentials: Map<CloudPlatform, CloudCredential>, baseUrl?: string) => boolean;
@@ -621,15 +625,29 @@ const BUILTIN_RULES: InjectionRule[] = [
     inject: (ext, creds, baseUrl?: string) => injectPanInitUrls(ext, creds, baseUrl || undefined).ext,
   },
 
-  // csp_PanSearch(Guard): Pan 基类同样从 ext 中的平台键拉取 Pan.init 数据。
-  // 线上“夸搜/盘搜”使用此 API；缺失该规则时，前端保存的夸克凭证不会下发。
+  // csp_PanSearch + B63 JAR：searchContent() 固定请求 pan=baidu，ext 中没有 pan 字段，
+  // 因此只能注入百度凭证；注入夸克/UC 等其它平台不会改变实际检索盘。
   {
     apiPattern: /^csp_PanSearch(?:Guard)?/i,
+    jarPattern: /b63a0eb8852bb7ab06500c424ccc3dae/i,
+    platforms: ['baidu'],
+    skipTokenJsonReplacement: true,
+    canInject: (_ext, creds) => hasPanInitCredential(creds, 'baidu'),
+    inject: (ext, creds, baseUrl?: string) => injectPanInitUrls(ext, creds, baseUrl || undefined, ['baidu']).ext,
+  },
+
+  // csp_PanSearch + 3D JAR：init() 读取 ext.pan（默认 aliyundrive），搜索 URL 使用该值。
+  // 只注入 ext.pan 对应的平台，避免夸克 Cookie 误下发给 UC/百度等盘搜索源。
+  {
+    apiPattern: /^csp_PanSearch(?:Guard)?/i,
+    jarPattern: /3d161697458ecbcd2651a749db761ba1/i,
     platforms: ['quark', 'uc', 'tianyi', 'baidu', 'pan123', 'thunder'],
     skipTokenJsonReplacement: true,
     canInject: (ext, creds) => canInjectPanSearchCredential(ext, creds),
     inject: (ext, creds, baseUrl?: string) => injectPanSearchCredential(ext, creds, baseUrl || undefined),
   },
+
+  // 其它 csp_PanSearch 版本未确认协议，按 ext.pan 保守处理，不使用总源名做猜测。
 
   // csp_Mogg: Pan.init 按 URL 读取各平台初始化数据。
   {
@@ -700,20 +718,47 @@ const BUILTIN_RULES: InjectionRule[] = [
 
 // ─── 规则匹配 ────────────────────────────────────────────
 
-function matchRule(api: string, rule: InjectionRule): boolean {
-  if (typeof rule.apiPattern === 'string') {
-    return api === rule.apiPattern;
-  }
-  return rule.apiPattern.test(api);
+function matchPattern(value: string, pattern: string | RegExp): boolean {
+  if (typeof pattern === 'string') return value === pattern;
+  return pattern.test(value);
+}
+
+
+/** 响应期契约预检：API 与 JAR MD5 均为 O(1)/轻量提取，不读取 ext。 */
+function matchesContractBaseline(site: TVBoxSite, expected: SiteContract): boolean {
+  if (expected.api !== site.api) return false;
+  return (expected.jarMd5 || undefined) === (extractJarMd5(site.jar) || undefined);
+}
+
+/** 完整契约校验只应在确认本次会注入后调用。 */
+export function matchesFullContract(site: TVBoxSite, expected: SiteContract): boolean {
+  const actual = buildSiteContract(site);
+  if (actual.api !== expected.api) return false;
+  if ((actual.jarMd5 || undefined) !== (expected.jarMd5 || undefined)) return false;
+  if (actual.extShape !== expected.extShape) return false;
+  if ((actual.pan || undefined) !== (expected.pan || undefined)) return false;
+  if ((actual.extPan || undefined) !== (expected.extPan || undefined)) return false;
+  if (actual.extShape !== 'object') return true;
+
+  const actualKeys = actual.extKeys || [];
+  const expectedKeys = expected.extKeys || [];
+  const actualSet = new Set(actualKeys);
+  const expectedSet = new Set(expectedKeys);
+  // 响应期清洗可能移除历史项目注入字段；其它缺字段、增字段均视为真实漂移。
+  if (actualKeys.some((key) => !expectedSet.has(key))) return false;
+  const removable = new Set(expected.injectableExtKeys || []);
+  return expectedKeys.every((key) => actualSet.has(key) || removable.has(key));
+}
+function matchRule(site: TVBoxSite, rule: InjectionRule): boolean {
+  if (rule.jarPattern && !matchPattern(site.jar || '', rule.jarPattern)) return false;
+  return matchPattern(site.api, rule.apiPattern);
 }
 
 export function findMatchingRule(site: TVBoxSite): InjectionRule | null {
-  for (const rule of BUILTIN_RULES) {
-    if (matchRule(site.api, rule)) return rule;
-  }
-  return null;
+  // 带 jarPattern 的规则优先；调用方无需关心规则表顺序。
+  const candidates = BUILTIN_RULES.filter((rule) => matchRule(site, rule));
+  return candidates.find((rule) => !!rule.jarPattern) || candidates[0] || null;
 }
-
 // ─── 注入引擎 ────────────────────────────────────────────
 
 export interface InjectionReport {
@@ -724,6 +769,8 @@ export interface InjectionReport {
   skippedUnaudited: number;
   skippedNoRule: number;
   skippedNoCredential: number;
+  skippedDisallowedUpstream: number;
+  skippedContractMismatch: number;
 }
 
 /**
@@ -759,6 +806,12 @@ export function injectCredentials(
   credentials: Map<CloudPlatform, CloudCredential>,
   policy: CredentialPolicyConfig,
   baseUrl?: string,
+  allowedSiteKeys?: Set<string> | null,
+  contractsBySiteKey?: Map<string, SiteContract> | null,
+  /** 严格模式：来源边界缺失/损坏时拒绝注入，而不是回退到全量注入。 */
+  requireSiteBoundary = false,
+  /** 严格模式：契约缺失时拒绝注入，避免旧模板跨 JAR/API 误注入。 */
+  requireContractMap = false,
 ): { sites: TVBoxSite[]; report: InjectionReport } {
   const report: InjectionReport = {
     injected: 0,
@@ -768,11 +821,31 @@ export function injectCredentials(
     skippedUnaudited: 0,
     skippedNoRule: 0,
     skippedNoCredential: 0,
+    skippedDisallowedUpstream: 0,
+    skippedContractMismatch: 0,
   };
 
   const deniedSet = new Set(policy.deniedKeys);
 
+  // 严格模式只应在聚合已完成、site_upstream_map 已落库的部署上开启。
+  // 映射缺失或为空时拒绝所有注入，避免“边界数据不可用”退化为全量下发。
+  if (requireSiteBoundary && (!allowedSiteKeys || allowedSiteKeys.size === 0)) {
+    report.skippedDisallowedUpstream = sites.length;
+    return { sites, report };
+  }
+  if (requireContractMap && (!contractsBySiteKey || contractsBySiteKey.size === 0)) {
+    report.skippedContractMismatch = sites.length;
+    return { sites, report };
+  }
+
   const result = sites.map(site => {
+    // 总源边界：映射存在时，只允许由实际启用的顶层总源贡献的站点注入。
+    // 这必须在风险判断之前执行，确保未知/禁用/残留站点一个凭证字段都不写。
+    if (allowedSiteKeys && !allowedSiteKeys.has(site.key)) {
+      report.skippedDisallowedUpstream++;
+      return site;
+    }
+
     const risk = assessSourceRisk(site);
 
     // A类：源不需要凭证
@@ -806,6 +879,20 @@ export function injectCredentials(
 
     if (!canInject) {
       report.skippedNoRule++;
+      return site;
+    }
+
+    // 契约安全阀放在“确认本次确实可注入”之后执行：
+    // 不改变拒绝结果，但避免对整库无需注入的站点做 ext 解析/排序。
+    const expectedContract = contractsBySiteKey?.get(site.key);
+    if (expectedContract && !matchesContractBaseline(site, expectedContract)) {
+      report.skippedContractMismatch++;
+      return site;
+    }
+
+    // 到这里才支付详细契约校验的成本；ext 漂移会被拒绝，防止跨 JAR/形态误注入。
+    if (expectedContract && !matchesFullContract(site, expectedContract)) {
+      report.skippedContractMismatch++;
       return site;
     }
 

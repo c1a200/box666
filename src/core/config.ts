@@ -128,6 +128,8 @@ export const KV_SITE_AUTO_CLEAN = 'site_auto_clean';   // 'true' | 'false'
 
 // Builder 源追踪
 export const KV_SOURCE_MAP = 'builder_source_map'; // { sites: Record, parses: Record, lives: Record }
+export const KV_SITE_UPSTREAM_MAP = 'site_upstream_map';
+export const KV_SITE_CONTRACT_MAP = 'site_contract_map'; // { sites: Record<siteKey, SiteContract> }
 
 // 频道测速 cron：每 12 小时
 export const CHANNEL_PROBE_CRON = '0 */12 * * *';

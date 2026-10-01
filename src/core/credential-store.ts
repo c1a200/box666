@@ -481,6 +481,7 @@ export const DEFAULT_CREDENTIAL_DISTRIBUTION: CredentialDistributionConfig = {
   defaultCredentialMode: 'all',
   defaultPlatforms: [...CLOUD_PLATFORMS],
   authCodes: [],
+  stripUpstreamCredentialEntries: false,
 };
 
 function isCloudPlatform(value: unknown): value is CloudPlatform {
@@ -556,6 +557,7 @@ export function normalizeCredentialDistributionConfig(raw: unknown): CredentialD
     defaultCredentialMode: defaultMode,
     defaultPlatforms,
     authCodes,
+    stripUpstreamCredentialEntries: base.stripUpstreamCredentialEntries === true,
   };
 }
 

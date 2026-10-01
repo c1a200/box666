@@ -23,6 +23,7 @@ import {
 export interface MergeResult {
   config: TVBoxConfig;
   siteSourceMap: Map<string, string>;   // site.key → sourceName
+  siteUpstreamMap: Map<string, string[]>; // site.key → 顶层总源名（可能多个）
   parseSourceMap: Map<string, string>;  // parse.url → sourceName
   liveSourceMap: Map<string, string>;   // (live.url || live.api) → sourceName
 }
@@ -31,6 +32,7 @@ export function mergeConfigs(sourcedConfigs: SourcedConfig[]): MergeResult {
   // Step 1: 规范化所有配置
   const normalized = sourcedConfigs.map(normalizeConfig);
   const siteSourceMap = new Map<string, string>();
+  const siteUpstreamMap = new Map<string, string[]>();
   const parseSourceMap = new Map<string, string>();
   const liveSourceMap = new Map<string, string>();
 
@@ -40,6 +42,7 @@ export function mergeConfigs(sourcedConfigs: SourcedConfig[]): MergeResult {
 
   // Step 3: 收集并合并所有字段
   const allSites: TVBoxSite[] = [];
+  const siteUpstreamsByObject = new WeakMap<TVBoxSite, Set<string>>();
   const allParses: TVBoxConfig['parses'] = [];
   const allLives: TVBoxConfig['lives'] = [];
   const allHosts: string[] = [];
@@ -63,6 +66,9 @@ export function mergeConfigs(sourcedConfigs: SourcedConfig[]): MergeResult {
           }
         }
 
+        const upstreams = sourced.upstreamNames?.length ? sourced.upstreamNames : [sourced.sourceName];
+        siteUpstreamsByObject.set(siteCopy, new Set(upstreams));
+        siteCopy.__upstreamNames = [...upstreams].filter(Boolean).sort();
         allSites.push(siteCopy);
       }
     }
@@ -102,10 +108,27 @@ export function mergeConfigs(sourcedConfigs: SourcedConfig[]): MergeResult {
     }
   }
 
-  // Step 4: 去重
-  const dedupedSites = deduplicateSites(allSites);
+  // Step 4: 按稳定顺序去重，同时保留对象身份以关联顶层总源。
+  // 不能直接用 deduplicateSites(allSites)，因为它在 key 冲突时会原地改 key。
+  const order = new Map<string, number>();
+  const seenDedupKeys = new Map<string, TVBoxSite>();
+  for (const site of allSites) {
+    const dk = `${site.key}|${site.api}`;
+    const existing = seenDedupKeys.get(dk);
+    if (existing) {
+      const mergedUpstreams = siteUpstreamsByObject.get(existing) || new Set<string>();
+      for (const upstream of siteUpstreamsByObject.get(site) || []) mergedUpstreams.add(upstream);
+      siteUpstreamsByObject.set(existing, mergedUpstreams);
+      existing.__upstreamNames = [...mergedUpstreams].filter(Boolean).sort();
+      continue;
+    }
+    seenDedupKeys.set(dk, site);
+    order.set(dk, order.size);
+  }
 
-  // dedup 后用实际 key 构建 siteSourceMap
+  const dedupedSites = deduplicateSites([...seenDedupKeys.values()]);
+
+  // dedup 后用实际 key 构建 siteSourceMap 与顶层总源映射。
   for (const site of dedupedSites) {
     const dk = `${site.key}|${site.api}`;
     const source = sourceByDedupKey.get(dk);
@@ -119,6 +142,11 @@ export function mergeConfigs(sourcedConfigs: SourcedConfig[]): MergeResult {
           break;
         }
       }
+    }
+
+    const upstreams = siteUpstreamsByObject.get(site);
+    if (upstreams && upstreams.size > 0) {
+      siteUpstreamMap.set(site.key, [...upstreams].filter(Boolean).sort());
     }
   }
 
@@ -143,7 +171,7 @@ export function mergeConfigs(sourcedConfigs: SourcedConfig[]): MergeResult {
       `${merged.parses?.length} parses, ${merged.lives?.length} lives`,
   );
 
-  return { config: merged, siteSourceMap, parseSourceMap, liveSourceMap };
+  return { config: merged, siteSourceMap, siteUpstreamMap, parseSourceMap, liveSourceMap };
 }
 
 /**

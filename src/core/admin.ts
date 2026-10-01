@@ -519,6 +519,10 @@ ${sharedStyles}
             <input type="checkbox" id="credentialRequireAuth" onchange="renderCredentialDistribution()">
             <span data-i18n="credentialRequireAuth">Require auth code for clients</span>
           </label>
+          <label class="credential-inline" style="font-size:0.82rem;color:var(--text-secondary)" title="Applies only when the credential mode is none">
+            <input type="checkbox" id="credentialStripUpstreamEntries" onchange="renderCredentialDistribution()">
+            <span data-i18n="credentialStripUpstreamEntries">Also remove upstream cloud-login entries</span>
+          </label>
           <button class="btn btn-sm" onclick="saveCredentialDistribution()" data-i18n="save">Save</button>
           <button class="btn btn-sm" onclick="copyClientLink(window.location.origin + '/')" data-i18n="credentialCopyRoot">Copy root link</button>
           <span class="credential-status" id="credentialDistributionStatus"></span>
@@ -935,6 +939,7 @@ const translations = {
     credentialModeAll:'Distribute all saved credentials',
     credentialModeSelected:'Distribute selected platforms only',
     credentialRequireAuth:'Require an auth code; root link returns 401',
+    credentialStripUpstreamEntries:'Also remove upstream cloud-login entries in no-credential mode',
     credentialPolicyHint:'The root policy applies only when authentication is off. Each auth code below can independently distribute none, all, or selected credentials. In selected mode, leaving every platform unchecked distributes no credentials.',
     credentialAuthCodes:'Client auth codes',
     credentialAuthCodesDesc:'Create one code per client or group. The client uses the shown /auth/&lt;code&gt;/ URL and never appends a query parameter; each code has its own credential policy.',
@@ -1069,6 +1074,7 @@ const translations = {
     credentialModeAll:'下发全部已保存凭证',
     credentialModeSelected:'仅下发选中平台',
     credentialRequireAuth:'强制鉴权（根链接返回 401）',
+    credentialStripUpstreamEntries:'不下发凭证时同时移除上游自带网盘登录入口',
     credentialPolicyHint:'根链接策略仅在未启用强制鉴权时生效；下面每个鉴权码都能独立设置“不下发 / 全部下发 / 选择平台下发”。选择“仅下发选中平台”但未勾选任何平台时，等同于不下发任何凭证。',
     credentialAuthCodes:'客户端鉴权码',
     credentialAuthCodesDesc:'可给不同应用端或用户组分别建码。应用端填写卡片上生成的 /auth/<鉴权码>/ 链接，该链接的凭证策略与根链接互不影响。',
@@ -2799,6 +2805,8 @@ function syncCredentialDistributionForm() {
   const requireAuth = $('credentialRequireAuth');
   if (mode) mode.value = credentialDistribution.defaultCredentialMode || 'all';
   if (requireAuth) requireAuth.checked = credentialDistribution.requireAuth === true;
+  const stripUpstream = $('credentialStripUpstreamEntries');
+  if (stripUpstream) stripUpstream.checked = credentialDistribution.stripUpstreamCredentialEntries === true;
   renderCredentialDistribution();
 }
 
@@ -2809,6 +2817,8 @@ function renderCredentialDistribution() {
 
   credentialDistribution.defaultCredentialMode = modeEl.value;
   credentialDistribution.requireAuth = requireEl.checked;
+  const stripUpstreamEl = $('credentialStripUpstreamEntries');
+  if (stripUpstreamEl) credentialDistribution.stripUpstreamCredentialEntries = stripUpstreamEl.checked;
 
   const defaultBox = $('credentialDefaultPlatforms');
   if (defaultBox) {
@@ -2996,6 +3006,7 @@ async function loadCredentialDistribution() {
       defaultCredentialMode: data.defaultCredentialMode || 'all',
       defaultPlatforms: Array.isArray(data.defaultPlatforms) ? data.defaultPlatforms : [],
       authCodes: Array.isArray(data.authCodes) ? data.authCodes : [],
+      stripUpstreamCredentialEntries: data.stripUpstreamCredentialEntries === true,
     };
     syncCredentialDistributionForm();
   } catch {}
@@ -3009,6 +3020,8 @@ async function saveCredentialDistribution() {
   if (!modeEl || !requireEl) return;
   credentialDistribution.defaultCredentialMode = modeEl.value;
   credentialDistribution.requireAuth = requireEl.checked;
+  const stripUpstreamEl = $('credentialStripUpstreamEntries');
+  if (stripUpstreamEl) credentialDistribution.stripUpstreamCredentialEntries = stripUpstreamEl.checked;
   if (credentialDistribution.defaultCredentialMode !== 'selected') credentialDistribution.defaultPlatforms = [];
   if (credentialDistribution.requireAuth && !(credentialDistribution.authCodes || []).some((item) => item.enabled !== false)) {
     toast(t('credentialRootRequired'), 'error');
@@ -3034,6 +3047,7 @@ async function saveCredentialDistribution() {
       defaultCredentialMode: data.defaultCredentialMode || 'all',
       defaultPlatforms: Array.isArray(data.defaultPlatforms) ? data.defaultPlatforms : [],
       authCodes: Array.isArray(data.authCodes) ? data.authCodes : [],
+      stripUpstreamCredentialEntries: data.stripUpstreamCredentialEntries === true,
     };
     syncCredentialDistributionForm();
     status.textContent = t('saved');
