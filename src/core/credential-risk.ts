@@ -1,6 +1,7 @@
 // 源风险分级引擎
 
 import type { TVBoxSite, CloudPlatform } from './types';
+import { resolveCredentialProtocol } from './credential-protocol';
 
 export type RiskLevel = 'safe' | 'low' | 'high' | 'unaudited';
 
@@ -12,6 +13,25 @@ export interface SourceRiskAssessment {
   neededPlatforms: CloudPlatform[];
   thirdPartyDomains: string[];
 }
+
+/**
+ * 未识别 token.json 派源用于风险展示的保守平台集合。
+ *
+ * 注意：这个集合只参与风险分级/平台展示，不参与凭证注入判定。
+ * 是否真的可注入必须由 resolveCredentialProtocol() 的已验证协议决定。
+ */
+const TOKEN_JSON_PLATFORMS: CloudPlatform[] = [
+  'aliyun',
+  'quark',
+  'uc',
+  'pan115',
+  'thunder',
+  'pikpak',
+  'bilibili',
+  'tianyi',
+  'baidu',
+  'pan123',
+];
 
 // cookie 相关的 ext 字段名（各 Spider 约定）
 const COOKIE_FIELD_NAMES = new Set([
@@ -76,58 +96,10 @@ const FIELD_TO_PLATFORM: Record<string, CloudPlatform> = {
   '115cookie': 'pan115',
 };
 
-// 从 api class 推断需要的平台
-const API_TO_PLATFORMS: Record<string, CloudPlatform[]> = {
-  'csp_Bili': ['bilibili'],
-  'csp_BiliR': ['bilibili'],
-  'csp_Wobg': ['aliyun', 'quark', 'uc', 'pan115', 'thunder', 'pikpak', 'tianyi', 'baidu', 'pan123'],
-  'csp_Wogg': ['aliyun', 'quark', 'uc', 'pan115', 'thunder', 'pikpak', 'tianyi', 'baidu', 'pan123'],
-  'csp_PanSearch': ['quark', 'uc', 'tianyi', 'baidu', 'pan123', 'thunder'],
-  'csp_Mogg': ['quark', 'aliyun', 'uc', 'tianyi', 'baidu', 'pan123', 'thunder'],
-  'csp_Pan115': ['pan115'],
-  'csp_P123': ['pan123'],
-  'csp_XunLei': ['thunder'],
-};
-
-const TOKEN_JSON_PLATFORMS: CloudPlatform[] = [
-  'aliyun',
-  'quark',
-  'uc',
-  'pan115',
-  'thunder',
-  'pikpak',
-  'bilibili',
-  'tianyi',
-  'baidu',
-  'pan123',
-];
-
 export const ALIST_PLATFORMS: CloudPlatform[] = [
   'aliyun', 'quark', 'uc', 'pan115', 'thunder',
   'pikpak', 'tianyi', 'baidu', 'pan123',
 ];
-
-const API_PLATFORM_PATTERNS: Array<{ pattern: RegExp; platforms: CloudPlatform[]; tokenJson?: boolean }> = [
-  { pattern: /^csp_Bili/i, platforms: ['bilibili'] },
-  { pattern: /^csp_Wo[bg]g(?:Guard)?/i, platforms: ['aliyun', 'quark', 'uc', 'pan115', 'thunder', 'pikpak', 'tianyi', 'baidu', 'pan123'], tokenJson: true },
-  { pattern: /^csp_PanSearch(?:Guard)?/i, platforms: ['quark', 'uc', 'tianyi', 'baidu', 'pan123', 'thunder'] },
-  { pattern: /^csp_Mogg/i, platforms: ['quark', 'aliyun', 'uc', 'tianyi', 'baidu', 'pan123', 'thunder'] },
-  { pattern: /^csp_Pan115/i, platforms: ['pan115'] },
-  { pattern: /^csp_AList/i, platforms: ALIST_PLATFORMS },
-  { pattern: /^csp_P123/i, platforms: ['pan123'] },
-  { pattern: /^csp_XunLei(?!8)/i, platforms: ['thunder'] },
-];
-
-function getPlatformsFromApi(api: string): CloudPlatform[] | null {
-  // csp_Xunlei8 stores a raw referer/base URL in ext; it does not consume
-  // Thunder username/password credentials. Never classify it as a client-login source.
-  if (isXunlei8Api(api)) return null;
-
-  const exact = API_TO_PLATFORMS[api];
-  if (exact) return exact;
-
-  return API_PLATFORM_PATTERNS.find((item) => item.pattern.test(api))?.platforms || null;
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -145,17 +117,9 @@ function parseExtObject(ext: unknown): Record<string, unknown> | null {
   }
 }
 
-/** csp_AweSomeGuard 只有在 ext.sp 为 AList 时才按 AList 凭证源处理。 */
-export function isAweSomeGuardAList(site: TVBoxSite): boolean {
-  if (!/^csp_AweSomeGuard/i.test(site.api)) return false;
-  const ext = parseExtObject(site.ext);
-  if (!ext) return false;
-  return typeof ext.sp === 'string' && ext.sp.toLowerCase() === 'alist';
-}
-
 /** 判断源是否为 AList 或 AweSomeGuard(AList) 凭证源。 */
 export function isAListSite(site: TVBoxSite): boolean {
-  return /^csp_AList/i.test(site.api) || isAweSomeGuardAList(site);
+  return resolveCredentialProtocol(site).mechanism === 'alist';
 }
 
 /** csp_Xunlei8 的 ext 是 Referer/base URL，不是迅雷账号凭证。 */
@@ -163,40 +127,25 @@ export function isXunlei8Api(api: string): boolean {
   return /^csp_Xunlei8/i.test(api);
 }
 
-/** 是否为需要客户端登录网盘/执行 JAR 的已知客户端 API。 */
+/** 是否为需要客户端登录网盘/执行 JAR 的已审计客户端 API。 */
 export function isClientCredentialApi(api: string): boolean {
-  return getPlatformsFromApi(api) !== null || /^csp_AList/i.test(api);
+  return resolveCredentialProtocol({ key: '__api_probe__', name: '__api_probe__', api } as TVBoxSite).credentialRequired;
 }
 
 /** 判断源是否需要下发客户端网盘凭证。 */
 export function isClientCredentialSite(site: TVBoxSite): boolean {
-  return isClientCredentialApi(site.api) || isAListSite(site);
+  return resolveCredentialProtocol(site).credentialRequired;
 }
 
 /** 返回源所需的网盘平台；不发起任何网络请求。 */
 export function getCredentialPlatformsForSite(site: TVBoxSite): CloudPlatform[] {
-  return assessSourceRisk(site).neededPlatforms;
+  return resolveCredentialProtocol(site).platforms;
 }
 
-function isTokenJsonApi(api: string): boolean {
-  return API_PLATFORM_PATTERNS.some((item) => item.tokenJson && item.pattern.test(api));
-}
-
+/** 只保留已审计直连协议的平台解析；未知 API 返回 null，绝不做名称猜测。 */
 export function getDirectPlatformFromApi(api: string): CloudPlatform | null {
-  if (/^csp_(AList|AweSomeGuard)/i.test(api)) return null;
-  if (isXunlei8Api(api)) return null;
-
-  const name = api.toLowerCase();
-  if (name.includes('ali')) return 'aliyun';
-  if (name.includes('quark')) return 'quark';
-  if (name.includes('uc') || name.startsWith('csp_uc')) return 'uc';
-  if (name.includes('pikpak')) return 'pikpak';
-  if (name.includes('115')) return 'pan115';
-  if (name.includes('baidu')) return 'baidu';
-  if (name.includes('tianyi') || name.includes('189')) return 'tianyi';
-  if (name.includes('123')) return 'pan123';
-  if (name.includes('xunlei') || name.includes('thunder')) return 'thunder';
-  return null;
+  const protocol = resolveCredentialProtocol({ key: '__api_probe__', name: '__api_probe__', api } as TVBoxSite);
+  return protocol.mechanism === 'direct-ext-field' ? protocol.platforms[0] || null : null;
 }
 
 /**
@@ -212,8 +161,8 @@ export function assessSourceRisk(site: TVBoxSite): SourceRiskAssessment {
     thirdPartyDomains: [],
   };
 
-  const apiPlatforms = getPlatformsFromApi(site.api)
-    || (isAListSite(site) ? ALIST_PLATFORMS : null);
+  const protocol = resolveCredentialProtocol(site);
+  const apiPlatforms = protocol.credentialRequired ? protocol.platforms : null;
   if (apiPlatforms) {
     result.neededPlatforms = [...apiPlatforms];
   }
@@ -221,7 +170,7 @@ export function assessSourceRisk(site: TVBoxSite): SourceRiskAssessment {
   const ext = site.ext;
   if (!ext) {
     if (apiPlatforms) {
-      result.riskLevel = isTokenJsonApi(site.api) ? 'low' : 'safe';
+      result.riskLevel = protocol.mechanism === 'pan-init-url' ? 'low' : 'safe';
       result.reason = 'A class: known netdisk API with empty ext still needs credential injection';
       return result;
     }
@@ -234,22 +183,9 @@ export function assessSourceRisk(site: TVBoxSite): SourceRiskAssessment {
 
   result.thirdPartyDomains = thirdPartyDomains;
 
-  // 从 api class 推断需要的平台
+  // 平台需求只来自已验证的协议解析器，绝不按 API 名称或 ext 字段猜测。
   if (apiPlatforms) {
     result.neededPlatforms = [...apiPlatforms];
-  } else {
-    const directPlatform = getDirectPlatformFromApi(site.api);
-    if (directPlatform) {
-      result.neededPlatforms = [directPlatform];
-    } else {
-      // 从 ext 字段名推断
-      const platforms = new Set<CloudPlatform>();
-      for (const field of cookieFieldNames) {
-        const p = FIELD_TO_PLATFORM[field.toLowerCase()];
-        if (p) platforms.add(p);
-      }
-      result.neededPlatforms = [...platforms];
-    }
   }
 
   // A类: ext 无 cookie 相关字段 → safe

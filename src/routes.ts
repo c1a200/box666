@@ -840,7 +840,13 @@ export function createApp(deps: AppDeps): Hono {
 
     parsedConfig.lives = proxyLives;
     const repaired = JSON.stringify(parsedConfig);
-    await storage.put(KV_MERGED_CONFIG, repaired);
+    // 读接口不应因持久化写失败而失败；KV 写额度耗尽时仍返回修正后的内存配置，
+    // 后台聚合/下次成功写入会再落盘。
+    try {
+      await storage.put(KV_MERGED_CONFIG, repaired);
+    } catch (error: unknown) {
+      logger.warn('routes', 'CF separated lives repair persist failed: ' + (error instanceof Error ? error.message : String(error)));
+    }
     console.log(`[routes] CF separated lives repaired: ${proxyLives.length} verified /live/<key> entries`);
     return repaired;
   }
@@ -1364,30 +1370,44 @@ export function createApp(deps: AppDeps): Hono {
   // 完整配置入口：不受轻量启动模式影响，始终返回最终聚合结果。
   // 仍然排除质量分级中的“超时/不可用”源，避免客户端拿到不可用搜索源。
   const handleFullConfig = async (c: any) => {
-    const baseUrl = await resolveBaseUrl(c);
-    if (baseUrl instanceof Response) return baseUrl;
+    let stage = 'base-url';
+    try {
+      const baseUrl = await resolveBaseUrl(c);
+      if (baseUrl instanceof Response) return baseUrl;
 
-    // Authenticate before any KV read, repair, or quality filtering work.
-    const resolved = await resolveClientAuthContext(c, baseUrl);
-    if (resolved.failure) {
-      return c.json({ error: resolved.failure.message, code: resolved.failure.code }, resolved.failure.status as any);
-    }
-    const ctx = resolved.context!;
+      // Authenticate before any KV read, repair, or quality filtering work.
+      stage = 'auth';
+      const resolved = await resolveClientAuthContext(c, baseUrl);
+      if (resolved.failure) {
+        return c.json({ error: resolved.failure.message, code: resolved.failure.code }, resolved.failure.status as any);
+      }
+      const ctx = resolved.context!;
 
-    let cached = await storage.get(KV_MERGED_CONFIG_FULL)
-      || await storage.get(KV_MERGED_CONFIG);
-    if (!cached) {
-      return c.json({ error: 'No config available yet.' }, 503);
+      stage = 'read-full-config';
+      let cached = await storage.get(KV_MERGED_CONFIG_FULL)
+        || await storage.get(KV_MERGED_CONFIG);
+      if (!cached) {
+        return c.json({ error: 'No config available yet.' }, 503);
+      }
+      stage = 'repair-lives';
+      cached = await repairCfSeparatedLives(cached);
+      stage = 'quality-filter';
+      cached = await filterExcludedQualitySites(cached);
+      stage = 'credential-policy';
+      cached = await applyClientContextToConfigBody(cached, ctx);
+      stage = 'serialize-response';
+      const response = configBody(cached, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'no-store, no-cache, must-revalidate',
+        'Access-Control-Allow-Origin': '*',
+        'Content-Disposition': 'attachment; filename="tvbox-config-full.json"',
+      });
+      return response;
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.errorFields('routes', 'config-full-failed', { stage, message });
+      return c.json({ error: 'Full config processing failed.', code: 'config_full_failed' }, 500);
     }
-    cached = await repairCfSeparatedLives(cached);
-    cached = await filterExcludedQualitySites(cached);
-    cached = await applyClientContextToConfigBody(cached, ctx);
-    return configBody(cached, {
-      'Content-Type': 'application/json; charset=utf-8',
-      'Cache-Control': 'no-store, no-cache, must-revalidate',
-      'Access-Control-Allow-Origin': '*',
-      'Content-Disposition': 'attachment; filename="tvbox-config-full.json"',
-    });
   };
   app.get('/config-full.json', handleFullConfig);
   app.get('/auth/:code/config-full.json', handleFullConfig);
@@ -2059,7 +2079,20 @@ export function createApp(deps: AppDeps): Hono {
       return c.json({ error: 'At least one enabled auth code is required when requireAuth is enabled' }, 400);
     }
 
-    const saved = await saveCredentialDistribution(storage, candidate);
+    let saved: CredentialDistributionConfig;
+    try {
+      saved = await saveCredentialDistribution(storage, candidate);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      const quotaBlocked = /10048|quota|usage limit|limit exceeded/i.test(message);
+      logger.warn('routes', `Credential distribution save failed: ${message}`);
+      return c.json({
+        error: quotaBlocked
+          ? 'Remote KV write quota is exhausted; credential distribution was not saved.'
+          : 'Failed to persist credential distribution.',
+        code: quotaBlocked ? 'kv_write_quota_exhausted' : 'credential_distribution_save_failed',
+      }, quotaBlocked ? 503 : 500);
+    }
     await refreshAfterCredentialChange(c);
     return c.json({ success: true, ...saved });
   });

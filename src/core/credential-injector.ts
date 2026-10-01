@@ -2,21 +2,12 @@
 
 import type { TVBoxSite, CloudPlatform, CloudCredential, CredentialPolicyConfig, SiteContract } from './types';
 import { buildSiteContract, extractJarMd5 } from './site-contract';
-import { assessSourceRisk, getDirectPlatformFromApi, isAListSite, ALIST_PLATFORMS } from './credential-risk';
+import { ALIST_PLATFORMS } from './credential-risk';
+import { resolveCredentialProtocol, getPanSearchPlatform } from './credential-protocol';
+import type { CredentialProtocol } from './credential-protocol';
 import { isCredentialDistributable, isPanInitCredentialDistributable, credentialRevision } from './credential-store';
 
 // ─── 注入规则 ────────────────────────────────────────────
-
-export interface InjectionRule {
-  /** API class 匹配。默认按完整 api 字段匹配。 */
-  apiPattern: string | RegExp;
-  /** 可选的 JAR 指纹匹配；同一 api 在不同 JAR 中契约不同，必须优先按此区分。 */
-  jarPattern?: RegExp;
-  platforms: CloudPlatform[];
-  inject: (ext: any, credentials: Map<CloudPlatform, CloudCredential>, baseUrl?: string) => any;
-  canInject?: (ext: any, credentials: Map<CloudPlatform, CloudCredential>, baseUrl?: string) => boolean;
-  skipTokenJsonReplacement?: boolean;
-}
 
 /**
  * 解析 ext：只有对象或 JSON 对象字符串允许注入。
@@ -436,6 +427,15 @@ const PAN_INIT_FIELDS: Array<{ field: string; platform: PanInitPlatform }> = [
   { field: 'baidu', platform: 'baidu' },
 ];
 
+function isPanInitPlatform(value: CloudPlatform): value is PanInitPlatform {
+  return value === 'pan123'
+    || value === 'thunder'
+    || value === 'quark'
+    || value === 'uc'
+    || value === 'tianyi'
+    || value === 'baidu';
+}
+
 export function hasPanInitCredential(creds: Map<CloudPlatform, CloudCredential>, platform: PanInitPlatform): boolean {
   return isPanInitCredentialDistributable(platform, creds.get(platform));
 }
@@ -596,133 +596,116 @@ function canInjectAListCredentials(
   return hasInjectablePlatformField(ext, creds, platforms, ALIST_DEFAULT_FIELDS);
 }
 
-// ─── 内置注入规则表 ─────────────────────────────────────
+// ─── 协议执行 ────────────────────────────────────────────
 
-const BUILTIN_RULES: InjectionRule[] = [
-  // csp_Bili / csp_BiliR: ext.cookie = bilibili cookie
-  {
-    apiPattern: /^csp_Bili/,
-    platforms: ['bilibili'],
-    canInject: (ext, creds) => isCompleteCredential('bilibili', creds.get('bilibili')) && parseExt(ext).injectable,
-    inject: (ext, creds) => {
-      const cookie = getCredValue(creds, 'bilibili', 'cookie');
-      if (!cookie) return ext;
-      const parsed = parseExt(ext);
-      if (!parsed.injectable) return ext;
-      if (parsed.obj.cookie === cookie) return ext;
-      parsed.obj.cookie = cookie;
-      return restoreExt(parsed.obj, parsed.wasString, parsed.wasJson);
-    },
-  },
-
-  // csp_Wobg / csp_Wogg: Pan.init 按 URL 读取各平台初始化数据。
-  // 不再使用 token.json 字符串；只生成当前真正完整配置的六个平台 URL。
-  {
-    apiPattern: /^csp_Wo[bg]g(?:Guard)?/i,
-    platforms: ['aliyun', 'quark', 'uc', 'pan115', 'thunder', 'pikpak', 'tianyi', 'baidu', 'pan123'],
-    skipTokenJsonReplacement: true,
-    canInject: (_ext, creds) => getInjectablePanInitPlatforms(creds).length > 0,
-    inject: (ext, creds, baseUrl?: string) => injectPanInitUrls(ext, creds, baseUrl || undefined).ext,
-  },
-
-  // csp_PanSearch + B63 JAR：searchContent() 固定请求 pan=baidu，ext 中没有 pan 字段，
-  // 因此只能注入百度凭证；注入夸克/UC 等其它平台不会改变实际检索盘。
-  {
-    apiPattern: /^csp_PanSearch(?:Guard)?/i,
-    jarPattern: /b63a0eb8852bb7ab06500c424ccc3dae/i,
-    platforms: ['baidu'],
-    skipTokenJsonReplacement: true,
-    canInject: (_ext, creds) => hasPanInitCredential(creds, 'baidu'),
-    inject: (ext, creds, baseUrl?: string) => injectPanInitUrls(ext, creds, baseUrl || undefined, ['baidu']).ext,
-  },
-
-  // csp_PanSearch + 3D JAR：init() 读取 ext.pan（默认 aliyundrive），搜索 URL 使用该值。
-  // 只注入 ext.pan 对应的平台，避免夸克 Cookie 误下发给 UC/百度等盘搜索源。
-  {
-    apiPattern: /^csp_PanSearch(?:Guard)?/i,
-    jarPattern: /3d161697458ecbcd2651a749db761ba1/i,
-    platforms: ['quark', 'uc', 'tianyi', 'baidu', 'pan123', 'thunder'],
-    skipTokenJsonReplacement: true,
-    canInject: (ext, creds) => canInjectPanSearchCredential(ext, creds),
-    inject: (ext, creds, baseUrl?: string) => injectPanSearchCredential(ext, creds, baseUrl || undefined),
-  },
-
-  // 其它 csp_PanSearch 版本未确认协议，按 ext.pan 保守处理，不使用总源名做猜测。
-
-  // csp_Mogg: Pan.init 按 URL 读取各平台初始化数据。
-  {
-    apiPattern: /^csp_Mogg/i,
-    platforms: ['quark', 'uc', 'tianyi', 'baidu', 'pan123', 'thunder'],
-    skipTokenJsonReplacement: true,
-    canInject: (_ext, creds) => getInjectablePanInitPlatforms(creds).length > 0,
-    inject: (ext, creds, baseUrl?: string) => injectPanInitUrls(ext, creds, baseUrl || undefined).ext,
-  },
-
-  // csp_Pan115: ext.cookie = 115 cookie
-  {
-    apiPattern: /^csp_Pan115(?:Guard)?$/i,
-    platforms: ['pan115'],
-    canInject: (ext, creds) => isCompleteCredential('pan115', creds.get('pan115')) && parseExt(ext).injectable,
-    inject: (ext, creds) => {
-      const cookie = getCredValue(creds, 'pan115', 'cookie');
-      if (!cookie) return ext;
-      const parsed = parseExt(ext);
-      if (!parsed.injectable) return ext;
-      parsed.obj.cookie = cookie;
-      return restoreExt(parsed.obj, parsed.wasString, parsed.wasJson);
-    },
-  },
-
-  // csp_P123：JAR 从 ext JSON 精确读取 username + password。
-  {
-    apiPattern: /^csp_P123/i,
-    platforms: ['pan123'],
-    canInject: (ext, creds) => hasPanInitCredential(creds, 'pan123') && parseExt(ext).injectable,
-    inject: (ext, creds) => injectAccountPasswordExt(ext, creds, 'pan123').ext,
-  },
-
-  // csp_XunLei：JAR 从 ext JSON 精确读取 username + password。
-  {
-    apiPattern: /^csp_XunLei(?!8)/i,
-    platforms: ['thunder'],
-    canInject: (ext, creds) => hasPanInitCredential(creds, 'thunder') && parseExt(ext).injectable,
-    inject: (ext, creds) => injectAccountPasswordExt(ext, creds, 'thunder').ext,
-  },
-
-  // csp_AList：远程 AList JSON 由本服务代理后再合并凭证；对象形式仍按字段注入。
-  {
-    apiPattern: /^csp_AList/i,
-    platforms: ALIST_PLATFORMS,
-    canInject: (ext, creds) => canInjectAListCredentials(ext, creds),
-    inject: (ext, creds, baseUrl?: string) => {
-      const proxied = injectAListProxyUrl(ext, baseUrl);
-      if (proxied.changed) return proxied.ext;
-      return injectPlatformFields(ext, creds, ALIST_PLATFORMS, ALIST_DEFAULT_FIELDS).ext;
-    },
-  },
-
-  // csp_AweSomeGuard：仅 sp=AList 时改写远程 json URL；file:// 保持原样。
-  {
-    apiPattern: /^csp_AweSomeGuard/i,
-    platforms: ALIST_PLATFORMS,
-    canInject: (ext, creds) => isAListSite({ key: '', type: 3, api: 'csp_AweSomeGuard', ext })
-      && canInjectAListCredentials(ext, creds),
-    inject: (ext, creds, baseUrl?: string) => {
-      if (!isAListSite({ key: '', type: 3, api: 'csp_AweSomeGuard', ext })) return ext;
-      const proxied = injectAListProxyUrl(ext, baseUrl);
-      if (proxied.changed) return proxied.ext;
-      return injectPlatformFields(ext, creds, ALIST_PLATFORMS, ALIST_DEFAULT_FIELDS).ext;
-    },
-  },
-];
-
-// ─── 规则匹配 ────────────────────────────────────────────
-
-function matchPattern(value: string, pattern: string | RegExp): boolean {
-  if (typeof pattern === 'string') return value === pattern;
-  return pattern.test(value);
+function getEffectiveJar(site: TVBoxSite, globalSpider?: string): string {
+  return extractJarMd5(site.jar) ? (site.jar || '') : (globalSpider || '');
 }
 
+/** 对直连 cookie 字段的协议执行真实 ext 写入。 */
+function injectDirectField(
+  ext: any,
+  creds: Map<CloudPlatform, CloudCredential>,
+  platform: CloudPlatform,
+): { ext: any; changed: boolean } {
+  const parsed = parseExt(ext);
+  if (!parsed.injectable) return { ext, changed: false };
+  const next = { ...parsed.obj };
+  let changed = false;
+
+  if (platform === 'bilibili' || platform === 'pan115') {
+    const value = getCredValue(creds, platform, 'cookie');
+    if (value && next.cookie !== value) {
+      next.cookie = value;
+      changed = true;
+    }
+    return changed
+      ? { ext: restoreExt(next, parsed.wasString, parsed.wasJson), changed: true }
+      : { ext, changed: false };
+  }
+
+  if (platform === 'pan123' || platform === 'thunder') {
+    const username = getCredValue(creds, platform, 'username');
+    const password = getCredValue(creds, platform, 'password');
+    if (!username || !password) return { ext, changed: false };
+    if (next.username !== username) {
+      next.username = username;
+      changed = true;
+    }
+    if (next.password !== password) {
+      next.password = password;
+      changed = true;
+    }
+    return changed
+      ? { ext: restoreExt(next, parsed.wasString, parsed.wasJson), changed: true }
+      : { ext, changed: false };
+  }
+
+  return { ext, changed: false };
+}
+
+/**
+ * 唯一的协议执行入口。风险判断与正式下发都必须经过这里，避免两边规则漂移。
+ * 返回 changed=false 时不允许计为已下发。
+ */
+function applyCredentialProtocol(
+  site: TVBoxSite,
+  protocol: CredentialProtocol,
+  credentials: Map<CloudPlatform, CloudCredential>,
+  baseUrl: string,
+  globalSpider?: string,
+): { ext: any; changed: boolean } {
+  if (!protocol.canInject) return { ext: site.ext, changed: false };
+
+  switch (protocol.mechanism) {
+    case 'pan-init-url':
+      return injectPanInitUrls(site.ext, credentials, baseUrl);
+
+    case 'pan-search-fixed-baidu':
+      return injectPanInitUrls(site.ext, credentials, baseUrl, ['baidu']);
+
+    case 'pan-search-ext-pan': {
+      const platform = protocol.fixedPlatform || getPanSearchPlatform(site);
+      if (!platform || !isPanInitPlatform(platform)) return { ext: site.ext, changed: false };
+      return injectPanInitUrls(site.ext, credentials, baseUrl, [platform]);
+    }
+
+    case 'alist': {
+      const proxied = injectAListProxyUrl(site.ext, baseUrl);
+      if (proxied.changed) return proxied;
+
+      // AList 既可能通过 /credential/alist?src=... 代理远程 JSON，也可能把
+      // drives 直接内联在 ext 中。后者必须在这里同步合并，否则响应侧虽然
+      // 能识别 AList，配置里的 drive 凭证仍为空。
+      const parsed = parseExt(site.ext);
+      if (parsed.injectable && Array.isArray(parsed.obj.drives)) {
+        const merged = injectAListDriveCredentials(parsed.obj.drives, credentials);
+        if (merged.changed) {
+          return {
+            ext: restoreExt({ ...parsed.obj, drives: merged.drives }, parsed.wasString, parsed.wasJson),
+            changed: true,
+          };
+        }
+      }
+
+      return injectPlatformFields(
+        site.ext,
+        credentials,
+        ALIST_PLATFORMS,
+        ALIST_DEFAULT_FIELDS,
+      );
+    }
+
+    case 'direct-ext-field': {
+      const platform = protocol.platforms[0];
+      if (!platform) return { ext: site.ext, changed: false };
+      return injectDirectField(site.ext, credentials, platform);
+    }
+
+    default:
+      return { ext: site.ext, changed: false };
+  }
+}
 
 /** 响应期契约预检：API 与 JAR MD5 均为 O(1)/轻量提取，不读取 ext。 */
 function matchesContractBaseline(site: TVBoxSite, expected: SiteContract, fallbackJar?: string): boolean {
@@ -749,24 +732,7 @@ export function matchesFullContract(site: TVBoxSite, expected: SiteContract, fal
   const removable = new Set(expected.injectableExtKeys || []);
   return expectedKeys.every((key) => actualSet.has(key) || removable.has(key));
 }
-function matchRule(site: TVBoxSite, rule: InjectionRule, effectiveJar: string): boolean {
-  if (rule.jarPattern && !matchPattern(effectiveJar, rule.jarPattern)) return false;
-  return matchPattern(site.api, rule.apiPattern);
-}
 
-/**
- * 找不到规则时返回 null。
- *
- * type:3 站点没有自己的 jar 时，最终配置会回退到顶层 spider；注入规则
- * 必须使用同一个有效 JAR 指纹，否则会漏掉“站点级 jar 为空、依赖全局 spider”
- * 的源，或者把不同 JAR 的协议混在一起。
- */
-export function findMatchingRule(site: TVBoxSite, globalSpider?: string): InjectionRule | null {
-  const effectiveJar = extractJarMd5(site.jar) ? (site.jar || '') : (globalSpider || '');
-  // 带 jarPattern 的规则优先；调用方无需关心规则表顺序。
-  const candidates = BUILTIN_RULES.filter((rule) => matchRule(site, rule, effectiveJar));
-  return candidates.find((rule) => !!rule.jarPattern) || candidates[0] || null;
-}
 // ─── 注入引擎 ────────────────────────────────────────────
 
 export interface InjectionReport {
@@ -783,7 +749,7 @@ export interface InjectionReport {
 
 /**
  * 判断某个源在已保存凭证下是否真的能发生注入。
- * 用占位 base URL 运行与正式下发相同的规则，但不把占位地址返回给调用方。
+ * 用占位 base URL 运行与正式下发相同的协议执行器，但不把占位地址返回给调用方。
  */
 export function canDistributeCredentialsToSite(
   site: TVBoxSite,
@@ -791,19 +757,18 @@ export function canDistributeCredentialsToSite(
   baseUrl = 'https://credential.invalid',
   globalSpider?: string,
 ): boolean {
-  const risk = assessSourceRisk(site);
-  if (risk.neededPlatforms.length === 0) return false;
+  const protocol = resolveCredentialProtocol(site, {
+    effectiveJar: getEffectiveJar(site, globalSpider),
+  });
+  if (!protocol.credentialRequired || !protocol.canInject) return false;
 
-  const rule = findMatchingRule(site, globalSpider);
-  if (rule) {
-    if (rule.canInject) return rule.canInject(site.ext, credentials, baseUrl);
-    return hasCompleteCredentialForPlatforms(credentials, rule.platforms) && parseExt(site.ext).injectable;
-  }
-
-  const directPlatform = getDirectPlatformFromApi(site.api);
-  return !!directPlatform
-    && isCompleteCredential(directPlatform, credentials.get(directPlatform))
-    && parseExt(site.ext).injectable;
+  return applyCredentialProtocol(
+    site,
+    protocol,
+    credentials,
+    baseUrl,
+    globalSpider,
+  ).changed;
 }
 
 /**
@@ -851,17 +816,9 @@ export function injectCredentials(
 
   const result = sites.map(site => {
     // 总源边界：映射存在时，只允许由实际启用的顶层总源贡献的站点注入。
-    // 这必须在风险判断之前执行，确保未知/禁用/残留站点一个凭证字段都不写。
+    // 这必须在协议判断之前执行，确保未知/禁用/残留站点一个凭证字段都不写。
     if (allowedSiteKeys && !allowedSiteKeys.has(site.key)) {
       report.skippedDisallowedUpstream++;
-      return site;
-    }
-
-    const risk = assessSourceRisk(site);
-
-    // A类：源不需要凭证
-    if (risk.neededPlatforms.length === 0) {
-      report.skippedSafe++;
       return site;
     }
 
@@ -871,29 +828,26 @@ export function injectCredentials(
       return site;
     }
 
-    const rule = findMatchingRule(site, globalSpider);
-    const platforms = rule?.platforms || risk.neededPlatforms;
-    const hasAnyCredential = hasCredentialForPlatforms(credentials, platforms);
-    if (!hasAnyCredential) {
-      report.skippedNoCredential++;
+    const protocol = resolveCredentialProtocol(site, {
+      effectiveJar: getEffectiveJar(site, globalSpider),
+    });
+
+    // 没有已验证凭证协议，或源本身不需要客户端凭证。
+    if (!protocol.credentialRequired) {
+      report.skippedSafe++;
       return site;
     }
-
-    const directPlatform = rule ? null : getDirectPlatformFromApi(site.api);
-    const canInject = rule
-      ? (rule.canInject
-          ? rule.canInject(site.ext, credentials, baseUrl)
-          : hasCompleteCredentialForPlatforms(credentials, platforms) && parseExt(site.ext).injectable)
-      : !!directPlatform
-        && isCompleteCredential(directPlatform, credentials.get(directPlatform))
-        && parseExt(site.ext).injectable;
-
-    if (!canInject) {
+    if (!protocol.canInject) {
       report.skippedNoRule++;
       return site;
     }
 
-    // 契约安全阀放在“确认本次确实可注入”之后执行：
+    if (!protocol.platforms.some((platform) => isCredentialDistributable(platform, credentials.get(platform)))) {
+      report.skippedNoCredential++;
+      return site;
+    }
+
+    // 契约安全阀放在“确认协议可注入且存在凭证”之后执行：
     // 不改变拒绝结果，但避免对整库无需注入的站点做 ext 解析/排序。
     const expectedContract = contractsBySiteKey?.get(site.key);
     if (expectedContract && !matchesContractBaseline(site, expectedContract, globalSpider)) {
@@ -907,35 +861,23 @@ export function injectCredentials(
       return site;
     }
 
-    // Wogg/Mogg 的 Pan.init 规则必须自己生成平台 URL，不能再把 ext 替换成 token.json。
-    let nextExt = site.ext;
-    if (!rule?.skipTokenJsonReplacement) {
-      const tokenResult = replaceTokenJsonUrl(nextExt, baseUrl || undefined);
-      nextExt = tokenResult.ext;
-    }
-
-    if (rule) {
-      nextExt = rule.inject(nextExt, credentials, baseUrl);
-    } else if (directPlatform) {
-      // 对于直连的单网盘平台，直接把凭据字段以 JSON 对象形式合并注入到 ext 中，
-      // 避免客户端加载不到外部 token.json 的问题。
-      const credObj = generateTokenJson(credentials, [directPlatform]);
-      if (credObj && Object.keys(credObj).length > 0) {
-        const parsed = parseExt(nextExt);
-        if (parsed.injectable) {
-          nextExt = restoreExt({ ...parsed.obj, ...credObj }, parsed.wasString, parsed.wasJson);
-        }
-      }
-    }
-
-    if (!rule?.skipTokenJsonReplacement) {
-      const fieldResult = injectPlatformFields(nextExt, credentials, platforms);
-      nextExt = fieldResult.ext;
+    const applied = applyCredentialProtocol(
+      site,
+      protocol,
+      credentials,
+      baseUrl || '',
+      globalSpider,
+    );
+    if (!applied.changed) {
+      // 协议存在但当前 ext 形态没有可写字段（例如未识别的 AList 结构）。
+      report.skippedNoCredential++;
+      return site;
     }
 
     report.injected++;
-    return { ...site, ext: nextExt };
+    return { ...site, ext: applied.ext };
   });
+
 
   return { sites: result, report };
 }

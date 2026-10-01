@@ -327,17 +327,28 @@ ${sharedStyles}
           <button class="btn" id="addBtn" onclick="addSource()" data-i18n="add">Add</button>
         </div>
       </div>
-      <!-- Import (collapsible) -->
-      <div class="collapsible-toggle" onclick="toggleCollapsible(this)" data-i18n="importConfig">Import Config</div>
+      <!-- Backup & Restore (always visible) -->
+      <div class="section" style="margin-top:16px">
+        <div class="section-title" data-i18n="backupRestore">Source Backup &amp; Restore</div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <button class="btn btn-sm" id="exportBtn" onclick="exportConfig()" data-i18n="export">Download Backup</button>
+          <input type="file" id="restoreFile" accept=".json,application/json" style="display:none" onchange="loadRestoreFile(this)">
+          <button class="btn btn-sm secondary" type="button" onclick="document.getElementById('restoreFile').click()" data-i18n="chooseBackup">Choose backup file</button>
+          <button class="btn btn-sm secondary" id="restoreBtn" onclick="restoreSources()" data-i18n="restoreBackup">Restore Backup</button>
+          <span class="status-text" id="restoreFileName" style="font-family:var(--mono);font-size:0.75rem"></span>
+          <span class="status-text" id="importResult" style="font-family:var(--mono);font-size:0.75rem"></span>
+        </div>
+        <div class="source-help" data-i18n="backupHelp">Download Backup saves all movie sources. Restore replaces the current list, so download a backup first.</div>
+      </div>
+
+      <!-- Batch import (collapsible) -->
+      <div class="collapsible-toggle" onclick="toggleCollapsible(this)" data-i18n="importConfig">Batch Import</div>
       <div class="collapsible-body">
         <textarea id="importInput" class="import-textarea" placeholder="每行一个源：源名 URL / URL 源名 / 仅 URL；也可粘贴旧版 JSON 或远程配置 URL。" data-i18n-placeholder="importPlaceholder"></textarea>
         <div class="source-help" data-i18n="sourceListHelp">每行一个源，支持“源名 URL”“URL 源名”或仅 URL；单行 URL 仍按远程配置抓取。导入默认合并，重复 URL 不会覆盖现有源。</div>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <button class="btn btn-sm" id="importBtn" onclick="importConfig()" data-i18n="import">Import</button>
-          <button class="btn btn-sm" id="exportBtn" onclick="exportConfig()" data-i18n="export">Export</button>
-          <span class="status-text" id="importResult" style="font-family:var(--mono);font-size:0.75rem"></span>
         </div>
-      </div>
     </div>
 
     <!-- Source list -->
@@ -870,12 +881,12 @@ const translations = {
     invalidJson:'Invalid JSON', mustBeArray:'Must be a JSON array',
     allFieldsRequired:'All fields required', importFailed:'Import failed',
     aggregationStarted:'Aggregation started', refreshFailed:'Refresh failed',
-    importConfig:'Import Config', import:'Import', importing:'Importing...',
+    importConfig:'Batch Import', backupRestore:'Source Backup & Restore', backupHelp:'Download Backup saves all movie sources. Restore replaces the current list, so download a backup first.', import:'Import', importing:'Importing...', restoreBackup:'Restore Backup', restoring:'Restoring...', chooseBackup:'Choose backup file', restoreFileLoaded:'Loaded backup:', restoreBackupConfirm:'Replace all current sources with this backup? This cannot be undone.', restored:'Backup restored', restoreFailed:'Restore failed', restoreInvalidJson:'This is not a valid source backup JSON file.',
     importPlaceholder:'One source per line: Name URL / URL Name / URL only; legacy JSON or remote config URL is also accepted.',
     sourceListHelp:'One source per line. Supports “Name URL”, “URL Name”, or URL only. A single URL without a name is still fetched as a remote TVBox config. Import merges by default and duplicate URLs are skipped.',
     importMulti:'Multi-repo detected', importSingle:'Single config detected',
     importAdded:'added', importDuplicates:'duplicates', importInvalid:'invalid', importParseFailed:'Failed to parse',
-    exportConfig:'Export Config', export:'Export', exporting:'Exporting...', exported:'Exported', exportFailed:'Export failed',
+    exportConfig:'Download Backup', export:'Download Backup', exporting:'Exporting...', exported:'Backup downloaded', exportFailed:'Export failed',
     nameTransform:'Name Transform', ntPrefix:'Prefix', ntSuffix:'Suffix',
     ntPromoReplace:'Promo Replacement (empty = delete)', ntExtraPatterns:'Extra Clean Patterns (one regex per line)',
     ntPrefixPh:'e.g. 【RioTV】', ntSuffixPh:'e.g.  · Curated',
@@ -1005,12 +1016,12 @@ const translations = {
     invalidJson:'无效的 JSON', mustBeArray:'必须是 JSON 数组',
     allFieldsRequired:'所有字段必填', importFailed:'导入失败',
     aggregationStarted:'聚合已开始', refreshFailed:'刷新失败',
-    importConfig:'导入配置', import:'导入', importing:'导入中...',
+    importConfig:'批量导入', backupRestore:'源备份与恢复', backupHelp:'下载备份会保存全部影视源；恢复备份会覆盖当前列表，操作前请先下载备份。', import:'导入', importing:'导入中...', restoreBackup:'恢复备份', restoring:'恢复中...', chooseBackup:'选择备份文件', restoreFileLoaded:'已载入备份：', restoreBackupConfirm:'恢复将覆盖当前全部影视源配置，且无法撤销。确定继续吗？', restored:'备份已恢复', restoreFailed:'恢复失败', restoreInvalidJson:'这不是有效的源备份 JSON 文件。',
     importPlaceholder:'每行一个源：源名 URL / URL 源名 / 仅 URL；也可粘贴旧版 JSON 或远程配置 URL。',
     sourceListHelp:'每行一个源，支持“源名 URL”“URL 源名”或仅 URL；仅 URL 的单行仍按远程 TVBox 配置抓取。导入默认合并，重复 URL 会跳过。',
     importMulti:'检测到多仓', importSingle:'检测到单仓',
     importAdded:'已添加', importDuplicates:'重复跳过', importInvalid:'无效', importParseFailed:'解析失败',
-    exportConfig:'导出配置', export:'导出', exporting:'导出中...', exported:'已导出', exportFailed:'导出失败',
+    exportConfig:'下载备份', export:'下载备份', exporting:'导出中...', exported:'备份已下载', exportFailed:'导出失败',
     nameTransform:'名称定制', ntPrefix:'前缀', ntSuffix:'后缀',
     ntPromoReplace:'推广替换文字（留空则删除）', ntExtraPatterns:'额外清洗正则（每行一条）',
     ntPrefixPh:'如 【RioTV】', ntSuffixPh:'如  · 精选',
@@ -1767,6 +1778,77 @@ async function importConfig() {
   }
 
   btn.textContent = t('import');
+  btn.className = 'btn btn-sm';
+}
+
+// --- Restore Config (replace mode) ---
+function loadRestoreFile(input) {
+  const file = input && input.files && input.files[0];
+  const nameEl = $('restoreFileName');
+  const result = $('importResult');
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    $('importInput').value = typeof reader.result === 'string' ? reader.result : '';
+    if (nameEl) nameEl.textContent = t('restoreFileLoaded') + ' ' + file.name;
+    result.textContent = '';
+    result.className = 'status-text';
+  };
+  reader.onerror = () => {
+    if (nameEl) nameEl.textContent = '';
+    result.textContent = t('restoreFailed');
+    result.className = 'status-text error';
+  };
+  reader.readAsText(file, 'utf-8');
+  input.value = '';
+}
+
+async function restoreSources() {
+  const input = $('importInput').value.trim();
+  if (!input) { $('importInput').focus(); return; }
+  let parsed;
+  try { parsed = JSON.parse(input); } catch {
+    $('importResult').textContent = t('restoreInvalidJson');
+    $('importResult').className = 'status-text error';
+    return;
+  }
+  if (!parsed || typeof parsed !== 'object' || parsed.type !== 'tvbox-sources' || !Array.isArray(parsed.items)) {
+    $('importResult').textContent = t('restoreInvalidJson');
+    $('importResult').className = 'status-text error';
+    return;
+  }
+  if (!window.confirm(t('restoreBackupConfirm'))) return;
+  const btn = $('restoreBtn');
+  const result = $('importResult');
+  btn.textContent = t('restoring');
+  btn.className = 'btn btn-sm loading';
+  result.textContent = '';
+  result.className = 'status-text';
+  try {
+    const res = await auth.authFetch('/admin/sources/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input, mode: 'replace' })
+    });
+    const d = await res.json();
+    if (res.ok) {
+      result.textContent = t('restored') + ': ' + d.added + ' ' + t('importAdded') + (d.duplicates > 0 ? ', ' + d.duplicates + ' ' + t('importDuplicates') : '') + (Array.isArray(d.invalid) && d.invalid.length > 0 ? ', ' + d.invalid.length + ' ' + t('importInvalid') : '');
+      result.className = 'status-text success';
+      $('importInput').value = '';
+      const nameEl = $('restoreFileName');
+      if (nameEl) nameEl.textContent = '';
+      await loadSources();
+      await loadSourceHealth();
+      toast(t('restored'));
+    } else {
+      result.textContent = d.error || t('restoreFailed');
+      result.className = 'status-text error';
+    }
+  } catch {
+    result.textContent = t('networkError');
+    result.className = 'status-text error';
+  }
+  btn.textContent = t('restoreBackup');
   btn.className = 'btn btn-sm';
 }
 

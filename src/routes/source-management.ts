@@ -224,36 +224,55 @@ export function createSourceManagementRouter(deps: SourceManagementDeps): Hono {
             ? parsedRecord.items as unknown[]
             : null;
         if (backupItems) {
+          const mode = body.mode === 'replace' ? 'replace' : 'merge';
           const existingUrls = new Set(sources.map((source) => source.url));
-          let added = 0;
+          const restored: SourceEntry[] = [];
+          const restoredUrls = new Set<string>();
           let duplicates = 0;
-          const addedSources: string[] = [];
+          let invalid = 0;
 
           for (const item of backupItems) {
-            if (!item || typeof item !== 'object') continue;
+            if (!item || typeof item !== 'object') { invalid++; continue; }
             const record = item as Record<string, unknown>;
             const rawUrl = typeof record.url === 'string' ? record.url : '';
             const split = splitPkUrl(rawUrl, typeof record.configKey === 'string' ? record.configKey : undefined);
-            if (!split.url) continue;
-            try { new URL(split.url); } catch { continue; }
-            if (existingUrls.has(split.url)) { duplicates++; continue; }
+            if (!split.url) { invalid++; continue; }
+            try { new URL(split.url); } catch { invalid++; continue; }
+            if (restoredUrls.has(split.url)) { duplicates++; continue; }
+            if (mode === 'merge' && existingUrls.has(split.url)) { duplicates++; continue; }
             const entry: SourceEntry = {
               name: typeof record.name === 'string' && record.name.trim() ? record.name.trim() : autoNameFromUrl(split.url),
               url: split.url,
             };
             if (split.configKey) entry.configKey = split.configKey;
             if (typeof record.disabled === 'boolean') entry.disabled = record.disabled;
-            sources.push(entry);
-            existingUrls.add(split.url);
-            addedSources.push(split.url);
-            added++;
+            restored.push(entry);
+            restoredUrls.add(split.url);
           }
 
-          if (added > 0) {
-            await storage.put(KV_MANUAL_SOURCES, JSON.stringify(sources));
+          let nextSources: SourceEntry[];
+          if (mode === 'replace') {
+            // 替换模式必须真的带来源；空备份或全部无效时直接拒绝，避免误清空源列表。
+            if (restored.length === 0) {
+              return c.json({ error: 'Backup contains no valid sources', invalid }, 400);
+            }
+            nextSources = restored;
+          } else {
+            nextSources = [...sources, ...restored];
+          }
+
+          if (mode === 'replace' || restored.length > 0) {
+            await storage.put(KV_MANUAL_SOURCES, JSON.stringify(nextSources));
             await onDirty();
           }
-          return c.json({ type: 'backup', added, duplicates, sources: addedSources });
+          return c.json({
+            type: 'backup',
+            mode,
+            added: restored.length,
+            duplicates,
+            invalid,
+            sources: restored.map((entry) => entry.url),
+          });
         }
       } catch {
         // 继续走原有 JSON 配置解析。
