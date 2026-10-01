@@ -18,6 +18,7 @@ import { loadBlacklist, applyBlacklist, pruneBlacklist, saveBlacklist, siteFinge
 import { transformSiteNames } from './core/cleaner';
 import { parseConfigJson, type FetchProxyConfig } from './core/fetcher';
 import { buildSiteContract, stripInternalSiteMarkers } from './core/site-contract';
+import { stableJsonEqual } from './core/stable-json';
 import { scrapeSourceList, scrapeMacCMSSources, type ScrapeSourceConfig, type ScrapeMacCMSConfig } from './core/source-scraper';
 import { loadSearchQuota, applySearchQuota, excludeJsUrlSites, probeAndPruneParses } from './core/search-quota';
 import { loadCredentials } from './core/credential-store';
@@ -944,10 +945,20 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     const upstreams = (site.__upstreamNames?.length ? site.__upstreamNames : siteUpstreamMap.get(site.key)) || [];
     if (upstreams.length > 0) finalSiteUpstreams[site.key] = [...new Set(upstreams)].sort();
   }
-  await storage.put(KV_SITE_UPSTREAM_MAP, JSON.stringify({
-    updatedAt: new Date().toISOString(),
-    sites: finalSiteUpstreams,
-  }));
+  // 总源边界/契约指纹属于可重建的派生结果：KV 额度不足时不能中断整轮聚合，
+  // 否则应用端拿不到本轮最新配置。失败时仅警告，下一轮或 outbox 补传。
+  try {
+    const previousRaw = await storage.get(KV_SITE_UPSTREAM_MAP);
+    const previous = previousRaw ? JSON.parse(previousRaw) : null;
+    if (!previous || !stableJsonEqual(previous.sites, finalSiteUpstreams)) {
+      await storage.put(KV_SITE_UPSTREAM_MAP, JSON.stringify({
+        updatedAt: new Date().toISOString(),
+        sites: finalSiteUpstreams,
+      }));
+    }
+  } catch (err) {
+    logger.warn('aggregation', `site_upstream_map write deferred: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   // 契约指纹独立落库，响应期用于防止不同 JAR/API/ext 形态之间误共用注入模板。
   const finalSiteContracts: Record<string, unknown> = {};
@@ -958,10 +969,18 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
       typeof merged.spider === 'string' ? merged.spider : undefined,
     );
   }
-  await storage.put(KV_SITE_CONTRACT_MAP, JSON.stringify({
-    updatedAt: new Date().toISOString(),
-    sites: finalSiteContracts,
-  }));
+  try {
+    const previousRaw = await storage.get(KV_SITE_CONTRACT_MAP);
+    const previous = previousRaw ? JSON.parse(previousRaw) : null;
+    if (!previous || !stableJsonEqual(previous.sites, finalSiteContracts)) {
+      await storage.put(KV_SITE_CONTRACT_MAP, JSON.stringify({
+        updatedAt: new Date().toISOString(),
+        sites: finalSiteContracts,
+      }));
+    }
+  } catch (err) {
+    logger.warn('aggregation', `site_contract_map write deferred: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   const publicMerged = stripInternalSiteMarkers(merged);
   const publicFullSnapshot = stripInternalSiteMarkers(fullConfigSnapshot);

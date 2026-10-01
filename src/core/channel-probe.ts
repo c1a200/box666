@@ -18,6 +18,7 @@ import {
   TVBOX_UA,
 } from './config';
 import { AGGREGATED_MAX_URLS_PER_CHANNEL, applyChannelSpeedToGroups, extractAllUrls, formatLiveGroupsAsTxt } from './live-merger';
+import { stableJsonEqual } from './stable-json';
 
 // ─── 开关/状态 ─────────────────────────────────────────
 
@@ -81,6 +82,40 @@ export async function loadSpeedMap(storage: Storage): Promise<ChannelSpeedMap> {
 
 async function saveSpeedMap(storage: Storage, map: ChannelSpeedMap): Promise<void> {
   await storage.put(KV_CHANNEL_SPEED_MAP, JSON.stringify(map));
+}
+
+/** 清理 7 天前的测速缓存 */
+export const CHANNEL_FAILURE_RETRY_MS = 6 * 60 * 60 * 1000;
+
+/** 返回下一轮应优先探测的 URL。新鲜成功项不重复测，失败项 6 小时后重试。 */
+export function selectProbeCandidates(
+  allUrls: string[],
+  speedMap: ChannelSpeedMap,
+  now = Date.now(),
+  maxUrls = Number.POSITIVE_INFINITY,
+): Array<{ url: string; priority: number; probedAt: number }> {
+  return allUrls
+    .map((url) => {
+      const entry = speedMap[url];
+      const probedAt = entry ? Date.parse(entry.probedAt) : NaN;
+      const age = Number.isFinite(probedAt) ? now - probedAt : Number.POSITIVE_INFINITY;
+      const isFresh = Number.isFinite(probedAt) && age >= 0 && age < CHANNEL_SPEED_TTL_MS;
+      const due = !entry
+        || !isFresh
+        || (entry.kind === 'fail' && age >= CHANNEL_FAILURE_RETRY_MS);
+      if (!due) return null;
+      const priority = !entry
+        ? 0
+        : entry.kind === 'fail'
+          ? 1
+          : !isFresh
+            ? 2
+            : 3;
+      return { url, priority, probedAt: Number.isFinite(probedAt) ? probedAt : 0 };
+    })
+    .filter((item): item is { url: string; priority: number; probedAt: number } => item !== null)
+    .sort((a, b) => a.priority - b.priority || a.probedAt - b.probedAt)
+    .slice(0, maxUrls);
 }
 
 /** 清理 7 天前的测速缓存 */
@@ -208,6 +243,15 @@ export interface BoundedLiveProbeResult {
   skipped: boolean;
 }
 
+function safeParseJson(raw: string | null): unknown {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
 function parseMergedGroups(raw: string | null): TVBoxLiveGroup[] {
   if (!raw) return [];
   try {
@@ -244,17 +288,7 @@ export async function probeLiveUrlsBounded(
   }
 
   const speedMap = pruneExpired(await loadSpeedMap(storage));
-  const now = Date.now();
-  const candidates = allUrls
-    .map((url) => {
-      const entry = speedMap[url];
-      const probedAt = entry ? Date.parse(entry.probedAt) : NaN;
-      const expired = !entry || !isFinite(probedAt) || now - probedAt >= CHANNEL_SPEED_TTL_MS;
-      const priority = !entry ? 0 : entry.kind === 'fail' ? 1 : expired ? 2 : 3;
-      return { url, priority, probedAt: isFinite(probedAt) ? probedAt : 0 };
-    })
-    .sort((a, b) => a.priority - b.priority || a.probedAt - b.probedAt)
-    .slice(0, maxUrls);
+  const candidates = selectProbeCandidates(allUrls, speedMap, Date.now(), maxUrls);
 
   const results: ProbeResult[] = [];
   let index = 0;
@@ -281,7 +315,29 @@ export async function probeLiveUrlsBounded(
 
   if (results.length > 0) {
     await saveSpeedMap(storage, speedMap);
-    await storage.put(KV_LIVE_RUNTIME_TXT_VERSION, `probe-${Date.now()}`);
+
+    // 有界探测的结果必须先反映到预生成直播输出，否则 /live 的实时解析仍会使用旧顺序。
+    // 只有实际输出变化时才刷新版本，避免每轮探测都让客户端缓存失效。
+    const liveMergeMode = (await storage.get(KV_LIVE_MERGE_MODE)) || 'separated';
+    const maxUrlsPerChannel = liveMergeMode === 'merged' ? AGGREGATED_MAX_URLS_PER_CHANNEL : 6;
+    const filteredGroups = applyChannelSpeedToGroups(groups, speedMap, undefined, maxUrlsPerChannel);
+    if (filteredGroups.length > 0) {
+      const nextTree = JSON.stringify(filteredGroups);
+      const nextTxt = formatLiveGroupsAsTxt(filteredGroups);
+      const previousTree = await storage.get(KV_CHANNEL_MERGED_TREE);
+      const previousTxt = await storage.get(KV_LIVE_MERGED_TXT);
+      const outputChanged = !stableJsonEqual(safeParseJson(previousTree), filteredGroups)
+        || previousTxt !== nextTxt;
+      if (outputChanged) {
+        const version = `probe-${Date.now()}`;
+        await Promise.all([
+          storage.put(KV_CHANNEL_MERGED_TREE, nextTree),
+          storage.put(KV_LIVE_MERGED_TXT, nextTxt),
+          storage.put(KV_LIVE_MERGED_TXT_VERSION, version),
+          storage.put(KV_LIVE_RUNTIME_TXT_VERSION, version),
+        ]);
+      }
+    }
   }
 
   console.log(
@@ -387,14 +443,19 @@ export async function runChannelProbe(storage: Storage): Promise<ChannelProbeSta
     const oldMap = pruneExpired(await loadSpeedMap(storage));
     const fresh: ChannelSpeedMap = { ...oldMap };
 
-    // 只测缓存里没有的 URL
-    const toProbe = urls.filter((u) => !fresh[u]);
+    // 只测未知、已过期或失败后达到重试间隔的 URL；新鲜成功项直接复用。
+    const toProbe = selectProbeCandidates(urls, fresh, Date.now(), Number.POSITIVE_INFINITY).map((item) => item.url);
     console.log(`[channel-probe] ${toProbe.length} new URLs to probe (${urls.length - toProbe.length} cached)`);
 
-    const cachedSuccess = urls.length - toProbe.length;
+    const cachedSuccess = urls.reduce((count, url) => {
+      const entry = fresh[url];
+      return count + (entry && entry.kind !== 'fail' ? 1 : 0);
+    }, 0);
+    const cachedKnown = urls.length - toProbe.length;
     success = cachedSuccess;
     status.success = success;
-    status.probed = cachedSuccess;
+    status.failed = cachedKnown - cachedSuccess;
+    status.probed = 0;
     status.coverage = urls.length > 0 ? Math.round((success / urls.length) * 100) : 0;
 
     let lastProgressSave = 0;
@@ -407,7 +468,7 @@ export async function runChannelProbe(storage: Storage): Promise<ChannelProbeSta
         if (probeResult.kind === 'fail') failed++;
         else success++;
 
-        status.probed = cachedSuccess + done;
+        status.probed = done;
         status.success = success;
         status.failed = failed;
         status.coverage = urls.length > 0 ? Math.round((success / urls.length) * 100) : 0;
@@ -440,13 +501,21 @@ export async function runChannelProbe(storage: Storage): Promise<ChannelProbeSta
     const maxUrlsPerChannel = liveMergeMode === 'merged' ? AGGREGATED_MAX_URLS_PER_CHANNEL : 6;
     const filteredGroups = applyChannelSpeedToGroups(groups, fresh, undefined, maxUrlsPerChannel);
     if (filteredGroups.length > 0) {
-      const liveVersion = `probe-${Date.now()}`;
-      await Promise.all([
-        storage.put(KV_CHANNEL_MERGED_TREE, JSON.stringify(filteredGroups)),
-        storage.put(KV_LIVE_MERGED_TXT, formatLiveGroupsAsTxt(filteredGroups)),
-        storage.put(KV_LIVE_MERGED_TXT_VERSION, liveVersion),
-        storage.put(KV_LIVE_RUNTIME_TXT_VERSION, liveVersion),
-      ]);
+      const nextTree = JSON.stringify(filteredGroups);
+      const nextTxt = formatLiveGroupsAsTxt(filteredGroups);
+      const previousTree = await storage.get(KV_CHANNEL_MERGED_TREE);
+      const previousTxt = await storage.get(KV_LIVE_MERGED_TXT);
+      const outputChanged = !stableJsonEqual(safeParseJson(previousTree), filteredGroups)
+        || previousTxt !== nextTxt;
+      if (outputChanged) {
+        const liveVersion = `probe-${Date.now()}`;
+        await Promise.all([
+          storage.put(KV_CHANNEL_MERGED_TREE, nextTree),
+          storage.put(KV_LIVE_MERGED_TXT, nextTxt),
+          storage.put(KV_LIVE_MERGED_TXT_VERSION, liveVersion),
+          storage.put(KV_LIVE_RUNTIME_TXT_VERSION, liveVersion),
+        ]);
+      }
     }
 
     const durationMs = Date.now() - startMs;
