@@ -36,6 +36,7 @@ import { generateTokenJson, injectAListDriveCredentials, injectCredentials } fro
 import { stripInjectedCredentialsFromConfig } from './core/credential-sanitizer';
 import { formatLiveGroupsAsTxt, filterLivesBySource, filterLivesBySourceDetailed, sortLiveGroupsForOutput } from './core/live-merger';
 import { containsBlockedLiveUrl, isBlockedLiveSource, isBlockedLiveUrl } from './core/live-policy';
+import { autoNameFromUrl, createSourceBackup, extractBackupItems, parseSourceList } from './core/source-list-parser';
 import type { TVBoxConfig, TVBoxSite, SearchQuotaConfig, SiteQualityGrade, CloudPlatform, CloudCredential, TVBoxLive, TVBoxLiveGroup, CredentialAuthCode, CredentialDistributionConfig, CredentialDistributionMode } from './core/types';
 import { mountChannelProbeRoutes } from './routes/channel-probe-admin';
 import { loadSpeedMap as loadChannelSpeedMap } from './core/channel-probe';
@@ -149,26 +150,47 @@ async function fetchAListJson(rawUrl: string): Promise<Record<string, any>> {
   throw new Error('too_many_redirects');
 }
 
-function autoNameFromUrl(url: string): string {
-  try {
-    const parsed = new URL(url);
-    if (parsed.hostname.includes('githubusercontent.com') || parsed.hostname.includes('github.com')) {
-      const parts = parsed.pathname.split('/').filter(Boolean);
-      if (parts.length >= 2) {
-        return parts[0];
-      }
-    }
-    const pathname = parsed.pathname;
-    const filename = pathname.substring(pathname.lastIndexOf('/') + 1);
-    const dotIdx = filename.lastIndexOf('.');
-    const nameWithoutExt = dotIdx > 0 ? filename.substring(0, dotIdx) : filename;
-    if (nameWithoutExt && !/^\d+$/.test(nameWithoutExt)) {
-      return nameWithoutExt;
-    }
-    return parsed.hostname;
-  } catch {
-    return 'Imported';
+function macCMSKeyFromUrl(url: string, used: Set<string>): string {
+  let base = autoNameFromUrl(url).toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
+  if (!base || /^\d+$/.test(base)) base = 'maccms';
+  let key = base;
+  let suffix = 1;
+  while (used.has(key)) {
+    suffix++;
+    key = `${base}-${suffix}`;
   }
+  used.add(key);
+  return key;
+}
+
+function normalizeImportedMacCMS(parsed: unknown): MacCMSSourceEntry[] {
+  const rawItems = Array.isArray(parsed)
+    ? parsed
+    : (parsed && typeof parsed === 'object' && Array.isArray((parsed as { items?: unknown }).items)
+      ? (parsed as { items: unknown[] }).items
+      : []);
+  const result: MacCMSSourceEntry[] = [];
+  const usedKeys = new Set<string>();
+  for (const item of rawItems) {
+    if (!item || typeof item !== 'object') continue;
+    const record = item as Record<string, unknown>;
+    const api = typeof record.api === 'string' ? record.api.trim() : '';
+    if (!api) continue;
+    try {
+      const parsedUrl = new URL(api);
+      if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') continue;
+    } catch {
+      continue;
+    }
+    const name = typeof record.name === 'string' && record.name.trim() ? record.name.trim() : autoNameFromUrl(api);
+    const key = typeof record.key === 'string' && record.key.trim() ? record.key.trim() : macCMSKeyFromUrl(api, usedKeys);
+    if (usedKeys.has(key)) continue;
+    usedKeys.add(key);
+    const entry: MacCMSSourceEntry = { key, name, api };
+    if (typeof record.disabled === 'boolean') entry.disabled = record.disabled;
+    result.push(entry);
+  }
+  return result;
 }
 
 function normalizeImportedLives(parsed: unknown): LiveSourceEntry[] {
@@ -2753,7 +2775,7 @@ export function createApp(deps: AppDeps): Hono {
     }
     const raw = await storage.get(KV_LIVE_SOURCES);
     const entries: LiveSourceEntry[] = raw ? JSON.parse(raw) : [];
-    return c.json(entries.filter((entry) => !isBlockedLiveSource(entry)));
+    return c.json(createSourceBackup('live-sources', entries.filter((entry) => !isBlockedLiveSource(entry))));
   });
 
   app.post('/admin/lives/import', async (c) => {
@@ -2771,7 +2793,35 @@ export function createApp(deps: AppDeps): Hono {
     const input = body.input?.trim();
     if (!input) return c.json({ error: 'input is required' }, 400);
 
+    const raw = await storage.get(KV_LIVE_SOURCES);
+    const entries: LiveSourceEntry[] = raw ? JSON.parse(raw) : [];
+    const looksLikeBackup = input.startsWith('{') || input.startsWith('[');
+    const listResult = parseSourceList(input);
+    const namedInlineList = listResult.entries.some((entry) => entry.explicitName) || listResult.entries.length > 1;
+    if (namedInlineList && !looksLikeBackup) {
+      const existingUrls = new Set(entries.map((entry) => entry.url));
+      const addedSources: string[] = [];
+      let duplicates = listResult.duplicates;
+      for (const parsedEntry of listResult.entries) {
+        if (existingUrls.has(parsedEntry.url)) {
+          duplicates++;
+          continue;
+        }
+        const entry: LiveSourceEntry = { name: parsedEntry.name, url: parsedEntry.url };
+        if (isBlockedLiveSource(entry)) continue;
+        entries.push(entry);
+        existingUrls.add(entry.url);
+        addedSources.push(entry.url);
+      }
+      if (addedSources.length > 0) {
+        await storage.put(KV_LIVE_SOURCES, JSON.stringify(entries));
+        await markOutputDirty();
+      }
+      return c.json({ type: 'list', added: addedSources.length, duplicates, invalid: listResult.invalid, sources: addedSources });
+    }
+
     let jsonText = input;
+    let remoteWasFetched = false;
     if (/^https?:\/\//i.test(input)) {
       try {
         const resp = await fetch(input, {
@@ -2782,6 +2832,7 @@ export function createApp(deps: AppDeps): Hono {
         });
         if (!resp.ok) return c.json({ error: `Fetch failed: HTTP ${resp.status}` }, 502);
         jsonText = await resp.text();
+        remoteWasFetched = true;
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         return c.json({ error: `Fetch failed: ${msg}` }, 502);
@@ -2792,16 +2843,23 @@ export function createApp(deps: AppDeps): Hono {
     try {
       parsed = JSON.parse(jsonText);
     } catch {
-      return c.json({ error: 'Failed to parse JSON' }, 400);
+      // 单行纯 URL 既可能是直播源，也可能是历史用法中的远程 TVBox 配置。
+      // 若远程内容不是 JSON，则按直播源 URL 本身导入。
+      if (!remoteWasFetched) return c.json({ error: 'Failed to parse JSON' }, 400);
+      parsed = null;
     }
 
-    const imported = normalizeImportedLives(parsed);
+    const backupItems = extractBackupItems(parsed, 'live-sources');
+    if (backupItems) {
+      parsed = backupItems;
+    }
+    const imported = parsed
+      ? normalizeImportedLives(parsed)
+      : (/^https?:\/\//i.test(input) ? [{ name: autoNameFromUrl(input), url: input }] : []);
     if (imported.length === 0) {
       return c.json({ error: 'No valid live sources found' }, 400);
     }
 
-    const raw = await storage.get(KV_LIVE_SOURCES);
-    const entries: LiveSourceEntry[] = raw ? JSON.parse(raw) : [];
     const existingUrls = new Set(entries.map((entry) => entry.url));
     const seenImportedUrls = new Set<string>();
     const addedSources: string[] = [];
@@ -2980,6 +3038,108 @@ export function createApp(deps: AppDeps): Hono {
     return c.json(sources);
   });
 
+  app.get('/admin/maccms/export', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+    const raw = await storage.get(KV_MACCMS_SOURCES);
+    const sources: MacCMSSourceEntry[] = raw ? JSON.parse(raw) : [];
+    return c.json(createSourceBackup('maccms-sources', sources));
+  });
+
+  app.post('/admin/maccms/import', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+
+    let body: { input?: string };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'Invalid JSON' }, 400);
+    }
+
+    const input = body.input?.trim();
+    if (!input) return c.json({ error: 'input is required' }, 400);
+
+    const raw = await storage.get(KV_MACCMS_SOURCES);
+    const sources: MacCMSSourceEntry[] = raw ? JSON.parse(raw) : [];
+    const existingKeys = new Set(sources.map((source) => source.key));
+    const existingApis = new Set(sources.map((source) => source.api));
+    const addedSources: string[] = [];
+    let duplicates = 0;
+    let invalid: unknown[] = [];
+
+    const listResult = parseSourceList(input);
+    const looksLikeBackup = input.startsWith('{') || input.startsWith('[');
+    const singleLineDirectSource = !input.includes('\n') && listResult.entries.length === 1 && listResult.invalid.length === 0 && /^https?:\/\//i.test(input);
+    const listMode = !looksLikeBackup && (input.includes('\n') || singleLineDirectSource || listResult.entries.some((entry) => entry.explicitName));
+    let imported: MacCMSSourceEntry[] = [];
+    if (listMode) {
+      invalid = listResult.invalid;
+      duplicates = listResult.duplicates;
+      const usedKeys = new Set(existingKeys);
+      for (const parsedEntry of listResult.entries) {
+        imported.push({
+          key: macCMSKeyFromUrl(parsedEntry.url, usedKeys),
+          name: parsedEntry.name,
+          api: parsedEntry.url,
+        });
+      }
+    } else {
+      let jsonText = input;
+      if (/^https?:\/\//i.test(input)) {
+        try {
+          const resp = await fetch(input, {
+            headers: {
+              'Accept': 'application/json, text/plain, */*',
+              'User-Agent': 'okhttp/3.12.0',
+            },
+          });
+          if (!resp.ok) return c.json({ error: `Fetch failed: HTTP ${resp.status}` }, 502);
+          jsonText = await resp.text();
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return c.json({ error: `Fetch failed: ${msg}` }, 502);
+        }
+      }
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(jsonText);
+      } catch {
+        return c.json({ error: 'Failed to parse JSON' }, 400);
+      }
+      const backupItems = extractBackupItems(parsed, 'maccms-sources');
+      imported = normalizeImportedMacCMS(backupItems || parsed);
+      if (imported.length === 0) {
+        return c.json({ error: 'No valid MacCMS sources found' }, 400);
+      }
+    }
+
+    for (const entry of imported) {
+      if (existingKeys.has(entry.key) || existingApis.has(entry.api)) {
+        duplicates++;
+        continue;
+      }
+      existingKeys.add(entry.key);
+      existingApis.add(entry.api);
+      sources.push(entry);
+      addedSources.push(entry.key);
+    }
+
+    if (addedSources.length > 0) {
+      await storage.put(KV_MACCMS_SOURCES, JSON.stringify(sources));
+      await markOutputDirty();
+    }
+
+    return c.json({
+      type: listMode ? 'list' : 'backup',
+      added: addedSources.length,
+      duplicates,
+      invalid,
+      sources: addedSources,
+    });
+  });
   app.post('/admin/maccms', async (c) => {
     if (!verifyAdmin(c.req.raw, config)) {
       return c.json({ error: 'Unauthorized' }, 401);

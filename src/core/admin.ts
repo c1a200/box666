@@ -330,8 +330,9 @@ ${sharedStyles}
       <!-- Import (collapsible) -->
       <div class="collapsible-toggle" onclick="toggleCollapsible(this)" data-i18n="importConfig">Import Config</div>
       <div class="collapsible-body">
-        <textarea id="importInput" class="import-textarea" placeholder="Paste TVBox JSON or URL here..." data-i18n-placeholder="importPlaceholder"></textarea>
-        <div style="display:flex;gap:8px;align-items:center">
+        <textarea id="importInput" class="import-textarea" placeholder="每行一个源：源名 URL / URL 源名 / 仅 URL；也可粘贴旧版 JSON 或远程配置 URL。" data-i18n-placeholder="importPlaceholder"></textarea>
+        <div class="source-help" data-i18n="sourceListHelp">每行一个源，支持“源名 URL”“URL 源名”或仅 URL；单行 URL 仍按远程配置抓取。导入默认合并，重复 URL 不会覆盖现有源。</div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <button class="btn btn-sm" id="importBtn" onclick="importConfig()" data-i18n="import">Import</button>
           <button class="btn btn-sm" id="exportBtn" onclick="exportConfig()" data-i18n="export">Export</button>
           <span class="status-text" id="importResult" style="font-family:var(--mono);font-size:0.75rem"></span>
@@ -367,8 +368,13 @@ ${sharedStyles}
       <!-- Batch import (collapsible) -->
       <div class="collapsible-toggle" onclick="toggleCollapsible(this)" data-i18n="batchImport">Batch Import</div>
       <div class="collapsible-body">
-        <textarea id="mcBatchInput" class="batch-textarea" placeholder='[{"key":"...","name":"...","api":"..."}]'></textarea>
-        <button class="btn btn-sm" style="margin-top:8px" id="mcBatchBtn" onclick="batchImportMacCMS()" data-i18n="submitBatch">Submit Batch</button>
+        <textarea id="mcBatchInput" class="batch-textarea" placeholder="每行一个 MacCMS 源：源名 API URL / API URL 源名 / 仅 URL；也可粘贴旧版 JSON 数组。" data-i18n-placeholder="mcBatchPlaceholder"></textarea>
+        <div class="source-help" data-i18n="mcListHelp">每行一个 MacCMS 源，支持“源名 API URL”“API URL 源名”或仅 URL；缺少 key 时会自动生成唯一 key。导入默认合并，重复 key/API 不会覆盖现有源。</div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
+          <button class="btn btn-sm" id="mcBatchBtn" onclick="batchImportMacCMS()" data-i18n="submitBatch">Import / Restore</button>
+          <button class="btn btn-sm" id="mcExportBtn" onclick="exportMacCMS()" data-i18n="export">Export</button>
+          <span class="status-text" id="mcBatchResult" style="font-family:var(--mono);font-size:0.75rem"></span>
+        </div>
       </div>
     </div>
 
@@ -399,7 +405,8 @@ ${sharedStyles}
       <!-- Live import/export (collapsible) -->
       <div class="collapsible-toggle" onclick="toggleCollapsible(this)" data-i18n="liveImportExport">Live Import / Export</div>
       <div class="collapsible-body">
-        <textarea id="liveImportInput" class="import-textarea" placeholder="Paste live sources JSON, TVBox config, or URL here..." data-i18n-placeholder="liveImportPlaceholder"></textarea>
+        <textarea id="liveImportInput" class="import-textarea" placeholder="每行一个直播源：源名 URL / URL 源名 / 仅 URL；也可粘贴旧版 JSON、TVBox 配置或远程配置 URL。" data-i18n-placeholder="liveImportPlaceholder"></textarea>
+        <div class="source-help" data-i18n="liveListHelp">每行一个直播源，支持“源名 URL”“URL 源名”或仅 URL；仍兼容旧版 JSON、TVBox 配置和远程 URL。导入默认合并，重复 URL 不会覆盖现有源。</div>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <button class="btn btn-sm" id="liveImportBtn" onclick="importLives()" data-i18n="liveImport">Import Live Sources</button>
           <button class="btn btn-sm" id="liveExportBtn" onclick="exportLives()" data-i18n="liveExport">Export Live Sources</button>
@@ -835,13 +842,14 @@ const translations = {
     addSource:'Add Source', editSource:'Edit Source', edit:'Edit', cancel:'Cancel', updating:'Updating...', sourceUpdated:'Source updated', aggregation:'Aggregation', sourcesList:'Sources',
     addMacCMS:'Add MacCMS Source', editMacCMS:'Edit MacCMS Source', macCMSSourceUpdated:'MacCMS source updated', macCMSSources:'MacCMS Sources',
     addLiveSource:'Add Live Source', editLiveSource:'Edit Live Source', liveSourceUpdated:'Live source updated', liveSources:'Live Sources',
-    liveImportExport:'Live Import / Export', liveImportPlaceholder:'Paste live sources JSON, TVBox config, or URL here...', liveImport:'Import Live Sources', liveExport:'Export Live Sources', liveImporting:'Importing...', liveImported:'Live sources imported', liveImportDuplicates:'duplicates skipped', liveImportParseFailed:'Failed to import live sources',
+    liveImportExport:'Live Import / Export', liveImportPlaceholder:'One live source per line: Name URL / URL Name / URL only; a single URL accepts a live source, TVBox config, or remote config.', liveListHelp:'One live source per line. Supports “Name URL”, “URL Name”, or URL only. A single URL expands when it returns a TVBox config; otherwise it is imported as a live source. Legacy JSON and remote config URLs are also supported. Import merges by default and duplicate URLs are skipped.', liveImport:'Import Live Sources', liveExport:'Export Live Sources', liveImporting:'Importing...', liveImported:'Live sources imported', liveImportDuplicates:'duplicates skipped', liveImportParseFailed:'Failed to import live sources',
     nameOptional:'Name (optional)', configJsonUrl:'TVBox config JSON URL',
     mcKeyPh:'Key (e.g. hongniuzy)', mcNamePh:'Name', mcApiPh:'MacCMS API URL',
     liveNamePh:'Name (e.g. iptv365)', liveUrlPh:'m3u/txt URL',
-    add:'Add', adding:'Adding...', batchImport:'Batch Import',
-    submitBatch:'Submit Batch',
-    refresh:'Refresh', aggregateNow:'Aggregate now', aggregateNowRunning:'Aggregating...', running:'Running...', remove:'Remove', test:'Test',
+    add:'Add', adding:'Adding...', batchImport:'Batch Import / Restore',
+    mcBatchPlaceholder:'One MacCMS source per line: Name API URL / API URL Name / URL only; legacy JSON array is also accepted.',
+    mcListHelp:'One MacCMS source per line. Supports “Name API URL”, “API URL Name”, or URL only. A unique key is generated when omitted. Import merges by default and duplicate key/API entries are skipped.',
+    submitBatch:'Import / Restore',refresh:'Refresh', aggregateNow:'Aggregate now', aggregateNowRunning:'Aggregating...', running:'Running...', remove:'Remove', test:'Test',
     loadingStatus:'Loading...',
     lastUpdate:'Last update: ', neverUpdated:'No successful update yet', updateFailed:'Recent aggregation failed: ',
     failedLoadStatus:'Failed to load status',
@@ -859,9 +867,10 @@ const translations = {
     allFieldsRequired:'All fields required', importFailed:'Import failed',
     aggregationStarted:'Aggregation started', refreshFailed:'Refresh failed',
     importConfig:'Import Config', import:'Import', importing:'Importing...',
-    importPlaceholder:'Paste TVBox JSON or URL here...',
+    importPlaceholder:'One source per line: Name URL / URL Name / URL only; legacy JSON or remote config URL is also accepted.',
+    sourceListHelp:'One source per line. Supports “Name URL”, “URL Name”, or URL only. A single URL without a name is still fetched as a remote TVBox config. Import merges by default and duplicate URLs are skipped.',
     importMulti:'Multi-repo detected', importSingle:'Single config detected',
-    importAdded:'added', importDuplicates:'duplicates', importParseFailed:'Failed to parse',
+    importAdded:'added', importDuplicates:'duplicates', importInvalid:'invalid', importParseFailed:'Failed to parse',
     exportConfig:'Export Config', export:'Export', exporting:'Exporting...', exported:'Exported', exportFailed:'Export failed',
     nameTransform:'Name Transform', ntPrefix:'Prefix', ntSuffix:'Suffix',
     ntPromoReplace:'Promo Replacement (empty = delete)', ntExtraPatterns:'Extra Clean Patterns (one regex per line)',
@@ -967,13 +976,14 @@ const translations = {
     addSource:'添加源', editSource:'修改源', edit:'修改', cancel:'取消', updating:'修改中...', sourceUpdated:'源已修改', aggregation:'聚合', sourcesList:'源列表',
     addMacCMS:'添加 MacCMS 源', editMacCMS:'修改 MacCMS 源', macCMSSourceUpdated:'MacCMS 源已修改', macCMSSources:'MacCMS 源列表',
     addLiveSource:'添加直播源', editLiveSource:'修改直播源', liveSourceUpdated:'直播源已修改', liveSources:'直播源列表',
-    liveImportExport:'直播导入 / 导出', liveImportPlaceholder:'粘贴直播源 JSON、TVBox 配置或 URL...', liveImport:'导入直播源', liveExport:'导出直播源', liveImporting:'导入中...', liveImported:'直播源已导入', liveImportDuplicates:'条重复已跳过', liveImportParseFailed:'导入直播源失败',
+    liveImportExport:'直播导入 / 导出', liveImportPlaceholder:'每行一个直播源：源名 URL / URL 源名 / 仅 URL；单行 URL 兼容直播源、TVBox 配置和远程配置。', liveListHelp:'每行一个直播源，支持“源名 URL”“URL 源名”或仅 URL；单行 URL 若返回 TVBox 配置会展开，否则直接作为直播源导入。也兼容旧版 JSON 和远程配置 URL。导入默认合并，重复 URL 会跳过。', liveImport:'导入直播源', liveExport:'导出直播源', liveImporting:'导入中...', liveImported:'直播源已导入', liveImportDuplicates:'条重复已跳过', liveImportParseFailed:'导入直播源失败',
     nameOptional:'名称（可选）', configJsonUrl:'TVBox 配置 JSON 地址',
     mcKeyPh:'Key（如 hongniuzy）', mcNamePh:'名称', mcApiPh:'MacCMS API 地址',
     liveNamePh:'名称（如 iptv365）', liveUrlPh:'m3u/txt 地址',
-    add:'添加', adding:'添加中...', batchImport:'批量导入',
-    submitBatch:'提交批量',
-    refresh:'刷新', aggregateNow:'立即聚合', aggregateNowRunning:'聚合中...', running:'运行中...', remove:'删除', test:'测试',
+    add:'添加', adding:'添加中...', batchImport:'批量导入 / 恢复',
+    mcBatchPlaceholder:'每行一个 MacCMS 源：源名 API URL / API URL 源名 / 仅 URL；也可粘贴旧版 JSON 数组。',
+    mcListHelp:'每行一个 MacCMS 源，支持“源名 API URL”“API URL 源名”或仅 URL；缺少 key 时自动生成唯一 key。导入默认合并，重复 key/API 会跳过。',
+    submitBatch:'导入 / 恢复',refresh:'刷新', aggregateNow:'立即聚合', aggregateNowRunning:'聚合中...', running:'运行中...', remove:'删除', test:'测试',
     loadingStatus:'加载中...',
     lastUpdate:'上次更新: ', neverUpdated:'暂无成功更新时间', updateFailed:'最近聚合失败：',
     failedLoadStatus:'获取状态失败',
@@ -991,9 +1001,10 @@ const translations = {
     allFieldsRequired:'所有字段必填', importFailed:'导入失败',
     aggregationStarted:'聚合已开始', refreshFailed:'刷新失败',
     importConfig:'导入配置', import:'导入', importing:'导入中...',
-    importPlaceholder:'粘贴 TVBox JSON 内容或 URL...',
+    importPlaceholder:'每行一个源：源名 URL / URL 源名 / 仅 URL；也可粘贴旧版 JSON 或远程配置 URL。',
+    sourceListHelp:'每行一个源，支持“源名 URL”“URL 源名”或仅 URL；仅 URL 的单行仍按远程 TVBox 配置抓取。导入默认合并，重复 URL 会跳过。',
     importMulti:'检测到多仓', importSingle:'检测到单仓',
-    importAdded:'已添加', importDuplicates:'重复跳过', importParseFailed:'解析失败',
+    importAdded:'已添加', importDuplicates:'重复跳过', importInvalid:'无效', importParseFailed:'解析失败',
     exportConfig:'导出配置', export:'导出', exporting:'导出中...', exported:'已导出', exportFailed:'导出失败',
     nameTransform:'名称定制', ntPrefix:'前缀', ntSuffix:'后缀',
     ntPromoReplace:'推广替换文字（留空则删除）', ntExtraPatterns:'额外清洗正则（每行一条）',
@@ -1508,27 +1519,66 @@ async function validateMC(api) {
 }
 
 async function batchImportMacCMS() {
-  const raw = $('mcBatchInput').value.trim();
-  if (!raw) return;
-  let data;
-  try { data = JSON.parse(raw); } catch { toast(t('invalidJson'), 'error'); return; }
-  if (!Array.isArray(data)) { toast(t('mustBeArray'), 'error'); return; }
+  const input = $('mcBatchInput').value.trim();
+  if (!input) { $('mcBatchInput').focus(); return; }
+
+  const btn = $('mcBatchBtn');
+  const result = $('mcBatchResult');
+  btn.textContent = t('importing');
+  btn.className = 'btn btn-sm loading';
+  result.textContent = '';
 
   try {
-    const res = await auth.authFetch('/admin/maccms', {
+    const res = await auth.authFetch('/admin/maccms/import', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data)
+      body: JSON.stringify({ input, mode: 'merge' })
     });
     const d = await res.json();
     if (res.ok) {
-      toast('Imported ' + (d.added || 0) + ' source(s)');
-      $('mcBatchInput').value = '';
-      loadMacCMS();
+      result.textContent = d.added + ' ' + t('importAdded') + (d.duplicates > 0 ? ', ' + d.duplicates + ' ' + t('importDuplicates') : '') + (Array.isArray(d.invalid) && d.invalid.length > 0 ? ', ' + d.invalid.length + ' ' + t('importInvalid') : '');
+      result.className = 'status-text success';
+      if (d.added > 0) {
+        $('mcBatchInput').value = '';
+        loadMacCMS();
+      }
     } else {
-      toast(d.error || t('importFailed'), 'error');
+      result.textContent = d.error || t('importFailed');
+      result.className = 'status-text error';
     }
-  } catch { toast(t('networkError'), 'error'); }
+  } catch {
+    result.textContent = t('networkError');
+    result.className = 'status-text error';
+  }
+
+  btn.textContent = t('submitBatch');
+  btn.className = 'btn btn-sm';
+}
+
+async function exportMacCMS() {
+  const btn = $('mcExportBtn');
+  const result = $('mcBatchResult');
+  btn.textContent = t('exporting');
+  btn.className = 'btn btn-sm loading';
+  result.textContent = '';
+
+  try {
+    const res = await auth.authFetch('/admin/maccms/export');
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || t('exportFailed'));
+    const items = Array.isArray(data) ? data : (Array.isArray(data.items) ? data.items : null);
+    if (!items) throw new Error(t('exportFailed'));
+    downloadJson(exportFilename('maccms-sources'), Array.isArray(data) ? data : data);
+    result.textContent = t('exported') + ' (' + items.length + ')';
+    result.className = 'status-text success';
+  } catch (err) {
+    const message = err instanceof Error ? err.message : t('exportFailed');
+    result.textContent = message;
+    result.className = 'status-text error';
+  }
+
+  btn.textContent = t('export');
+  btn.className = 'btn btn-sm';
 }
 
 // --- Live Sources ---
@@ -1690,12 +1740,12 @@ async function importConfig() {
     const res = await auth.authFetch('/admin/sources/import', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ input })
+      body: JSON.stringify({ input, mode: 'merge' })
     });
     const d = await res.json();
     if (res.ok) {
-      const typeLabel = d.type === 'multi' ? t('importMulti') : t('importSingle');
-      result.textContent = typeLabel + ': ' + d.added + ' ' + t('importAdded') + (d.duplicates > 0 ? ', ' + d.duplicates + ' ' + t('importDuplicates') : '');
+      const typeLabel = d.type === 'multi' ? t('importMulti') : d.type === 'list' || d.type === 'backup' ? t('importConfig') : t('importSingle');
+      result.textContent = typeLabel + ': ' + d.added + ' ' + t('importAdded') + (d.duplicates > 0 ? ', ' + d.duplicates + ' ' + t('importDuplicates') : '') + (Array.isArray(d.invalid) && d.invalid.length > 0 ? ', ' + d.invalid.length + ' ' + t('importInvalid') : '');
       result.className = 'status-text success';
       if (d.added > 0) {
         $('importInput').value = '';
@@ -1747,10 +1797,11 @@ async function exportConfig() {
     const res = await auth.authFetch('/admin/sources/export');
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || t('exportFailed'));
-    if (!Array.isArray(data)) throw new Error(t('exportFailed'));
-    downloadJson(exportFilename('tvbox-sources'), data);
+    const items = Array.isArray(data) ? data : (Array.isArray(data.items) ? data.items : null);
+    if (!items) throw new Error(t('exportFailed'));
+    downloadJson(exportFilename('tvbox-sources'), Array.isArray(data) ? data : data);
     if (result) {
-      result.textContent = t('exported') + ' (' + data.length + ')';
+      result.textContent = t('exported') + ' (' + items.length + ')';
       result.className = 'status-text success';
     }
   } catch (err) {
@@ -1781,11 +1832,11 @@ async function importLives() {
     const res = await auth.authFetch('/admin/lives/import', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ input })
+      body: JSON.stringify({ input, mode: 'merge' })
     });
     const d = await res.json();
     if (res.ok) {
-      result.textContent = d.added + ' ' + t('importAdded') + (d.duplicates > 0 ? ', ' + d.duplicates + ' ' + t('liveImportDuplicates') : '');
+      result.textContent = d.added + ' ' + t('importAdded') + (d.duplicates > 0 ? ', ' + d.duplicates + ' ' + t('liveImportDuplicates') : '') + (Array.isArray(d.invalid) && d.invalid.length > 0 ? ', ' + d.invalid.length + ' ' + t('importInvalid') : '');
       result.className = 'status-text success';
       if (d.added > 0) {
         $('liveImportInput').value = '';
@@ -1815,9 +1866,10 @@ async function exportLives() {
     const res = await auth.authFetch('/admin/lives/export');
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || t('exportFailed'));
-    if (!Array.isArray(data)) throw new Error(t('exportFailed'));
-    downloadJson(exportFilename('tvbox-lives'), data);
-    result.textContent = t('exported') + ' (' + data.length + ')';
+    const items = Array.isArray(data) ? data : (Array.isArray(data.items) ? data.items : null);
+    if (!items) throw new Error(t('exportFailed'));
+    downloadJson(exportFilename('live-sources'), Array.isArray(data) ? data : data);
+    result.textContent = t('exported') + ' (' + items.length + ')';
     result.className = 'status-text success';
   } catch (err) {
     const message = err instanceof Error ? err.message : t('exportFailed');

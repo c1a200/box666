@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { KV_INLINE_PREFIX, KV_MANUAL_SOURCES } from '../core/config';
 import { decodeConfigResponse } from '../core/decoder';
 import { extractMultiRepoEntries, isMultiRepoConfig, parseConfigJson } from '../core/fetcher';
+import { autoNameFromUrl, createSourceBackup, parseSourceList, splitPkUrl } from '../core/source-list-parser';
 import type { AppConfig, SourceEntry } from '../core/types';
 import type { Storage } from '../storage/interface';
 import { verifyAdmin } from './admin-auth';
@@ -11,40 +12,6 @@ export interface SourceManagementDeps {
   config: AppConfig;
   onDirty: () => Promise<void>;
 }
-
-function autoNameFromUrl(url: string): string {
-  try {
-    const parsed = new URL(url);
-    if (parsed.hostname.includes('githubusercontent.com') || parsed.hostname.includes('github.com')) {
-      const parts = parsed.pathname.split('/').filter(Boolean);
-      if (parts.length >= 2) {
-        return parts[0];
-      }
-    }
-    const pathname = parsed.pathname;
-    const filename = pathname.substring(pathname.lastIndexOf('/') + 1);
-    const dotIdx = filename.lastIndexOf('.');
-    const nameWithoutExt = dotIdx > 0 ? filename.substring(0, dotIdx) : filename;
-    if (nameWithoutExt && !/^\d+$/.test(nameWithoutExt)) {
-      return nameWithoutExt;
-    }
-    return parsed.hostname;
-  } catch {
-    return 'Imported';
-  }
-}
-
-function splitPkUrl(input: string, explicitKey?: string): { url: string; configKey: string } {
-  let url = input.trim();
-  let configKey = explicitKey?.trim() || '';
-  const pkMatch = url.match(/;pk;(.+)$/);
-  if (pkMatch) {
-    configKey = configKey || pkMatch[1];
-    url = url.replace(/;pk;.+$/, '');
-  }
-  return { url, configKey };
-}
-
 export function createSourceManagementRouter(deps: SourceManagementDeps): Hono {
   const { storage, config, onDirty } = deps;
   const router = new Hono();
@@ -187,13 +154,13 @@ export function createSourceManagementRouter(deps: SourceManagementDeps): Hono {
     if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
     const raw = await storage.get(KV_MANUAL_SOURCES);
     const sources: SourceEntry[] = raw ? JSON.parse(raw) : [];
-    return c.json(sources);
+    return c.json(createSourceBackup('tvbox-sources', sources));
   });
 
   router.post('/admin/sources/import', async (c) => {
     if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
 
-    let body: { input?: string };
+    let body: { input?: string; mode?: 'merge' | 'replace' };
     try {
       body = await c.req.json();
     } catch {
@@ -202,6 +169,96 @@ export function createSourceManagementRouter(deps: SourceManagementDeps): Hono {
 
     const input = body.input?.trim();
     if (!input) return c.json({ error: 'input is required' }, 400);
+
+    const raw = await storage.get(KV_MANUAL_SOURCES);
+    const sources: SourceEntry[] = raw ? JSON.parse(raw) : [];
+
+    // 多行清单：源名 URL / URL 源名 / 只有 URL
+    // 单行 URL 仍按“抓取配置”处理，Backup JSON 也在这里兼容。
+    const listResult = parseSourceList(input);
+    const looksLikeBackup = input.startsWith('{') || input.startsWith('[');
+    const namedInlineList = listResult.entries.some((entry) => entry.explicitName) || listResult.entries.length > 1;
+    if (!looksLikeBackup && (namedInlineList || listResult.invalid.length > 0)) {
+      if (listResult.entries.length === 0) {
+        return c.json({ error: 'No valid sources found', invalid: listResult.invalid }, 400);
+      }
+
+      const existingUrls = new Set(sources.map((source) => source.url));
+      let added = 0;
+      let duplicates = listResult.duplicates;
+      const addedSources: string[] = [];
+
+      for (const parsed of listResult.entries) {
+        if (existingUrls.has(parsed.url)) {
+          duplicates++;
+          continue;
+        }
+        const entry: SourceEntry = { name: parsed.name, url: parsed.url };
+        if (parsed.configKey) entry.configKey = parsed.configKey;
+        sources.push(entry);
+        existingUrls.add(parsed.url);
+        addedSources.push(parsed.url);
+        added++;
+      }
+
+      if (added > 0) {
+        await storage.put(KV_MANUAL_SOURCES, JSON.stringify(sources));
+        await onDirty();
+      }
+      return c.json({ type: 'list', added, duplicates, invalid: listResult.invalid, sources: addedSources });
+    }
+
+    // 无协议的 JSON 内容先尝试作为备份恢复，避免多行输入中的 JSON 被误判成纯文本。
+    if (looksLikeBackup) {
+      try {
+        const parsedBackup = JSON.parse(input);
+        const parsedRecord = parsedBackup && typeof parsedBackup === 'object' && !Array.isArray(parsedBackup)
+          ? parsedBackup as Record<string, unknown>
+          : null;
+        if (parsedRecord && typeof parsedRecord.type === 'string' && parsedRecord.type !== 'tvbox-sources') {
+          return c.json({ error: `Backup type mismatch: expected tvbox-sources, got ${parsedRecord.type}` }, 400);
+        }
+        const backupItems = Array.isArray(parsedBackup)
+          ? parsedBackup
+          : (parsedRecord && Array.isArray(parsedRecord.items))
+            ? parsedRecord.items as unknown[]
+            : null;
+        if (backupItems) {
+          const existingUrls = new Set(sources.map((source) => source.url));
+          let added = 0;
+          let duplicates = 0;
+          const addedSources: string[] = [];
+
+          for (const item of backupItems) {
+            if (!item || typeof item !== 'object') continue;
+            const record = item as Record<string, unknown>;
+            const rawUrl = typeof record.url === 'string' ? record.url : '';
+            const split = splitPkUrl(rawUrl, typeof record.configKey === 'string' ? record.configKey : undefined);
+            if (!split.url) continue;
+            try { new URL(split.url); } catch { continue; }
+            if (existingUrls.has(split.url)) { duplicates++; continue; }
+            const entry: SourceEntry = {
+              name: typeof record.name === 'string' && record.name.trim() ? record.name.trim() : autoNameFromUrl(split.url),
+              url: split.url,
+            };
+            if (split.configKey) entry.configKey = split.configKey;
+            if (typeof record.disabled === 'boolean') entry.disabled = record.disabled;
+            sources.push(entry);
+            existingUrls.add(split.url);
+            addedSources.push(split.url);
+            added++;
+          }
+
+          if (added > 0) {
+            await storage.put(KV_MANUAL_SOURCES, JSON.stringify(sources));
+            await onDirty();
+          }
+          return c.json({ type: 'backup', added, duplicates, sources: addedSources });
+        }
+      } catch {
+        // 继续走原有 JSON 配置解析。
+      }
+    }
 
     const isUrl = /^https?:\/\//i.test(input);
     let jsonText: string;
@@ -213,7 +270,7 @@ export function createSourceManagementRouter(deps: SourceManagementDeps): Hono {
       sourceUrl = split.url;
       configKey = split.configKey || undefined;
       try {
-        const resp = await fetch(sourceUrl, {
+        const resp = await fetch(sourceUrl!, {
           headers: { 'Accept': 'application/json, text/plain, */*', 'User-Agent': 'okhttp/3.12.0' },
         });
         if (!resp.ok) return c.json({ error: `Fetch failed: HTTP ${resp.status}` }, 502);
@@ -230,8 +287,6 @@ export function createSourceManagementRouter(deps: SourceManagementDeps): Hono {
     const parsed = parseConfigJson(jsonText);
     if (!parsed) return c.json({ error: 'Failed to parse JSON' }, 400);
 
-    const raw = await storage.get(KV_MANUAL_SOURCES);
-    const sources: SourceEntry[] = raw ? JSON.parse(raw) : [];
     const existingUrls = new Set(sources.map(s => s.url));
     let added = 0;
     let duplicates = 0;
