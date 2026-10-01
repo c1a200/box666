@@ -1742,8 +1742,14 @@ export function createApp(deps: AppDeps): Hono {
     if (typeof body.maxSearchable === 'number' && Number.isFinite(body.maxSearchable)) {
       current.maxSearchable = Math.max(0, Math.floor(body.maxSearchable));
     }
-    // maxQuickSearch / maxStartupQuickSearch / startupSiteLimit are automatic
-    // deployment-specific guards since schema 8; ignore stale client values.
+    // 快速搜索上限为 0 时明确不限制；字段缺失则保留当前值，避免管理页
+    // 局部保存意外重置。旧版本自动写入的常量已由 loadSearchQuota 迁移。
+    if (typeof body.maxQuickSearch === 'number' && Number.isFinite(body.maxQuickSearch)) {
+      current.maxQuickSearch = Math.max(0, Math.floor(body.maxQuickSearch));
+    }
+    if (typeof body.maxStartupQuickSearch === 'number' && Number.isFinite(body.maxStartupQuickSearch)) {
+      current.maxStartupQuickSearch = Math.max(0, Math.floor(body.maxStartupQuickSearch));
+    }
     if (typeof body.maxParses === 'number' && Number.isFinite(body.maxParses)) {
       current.maxParses = Math.max(0, Math.floor(body.maxParses));
     }
@@ -2279,13 +2285,14 @@ export function createApp(deps: AppDeps): Hono {
 
   // Pan.init 初始化数据（Mogg/Wogg 的 ext.p123/quark/... 会直接请求这些 URL）。
   // 所有响应都按当前根策略或 /auth/<code> 鉴权码过滤，绝不能回退到全量凭证。
+  // 凭证响应不得进入客户端 HTTP 缓存：策略从下发切到不下发后，旧响应必须立即失效。
   const credentialResponseHeaders = {
     'Access-Control-Allow-Origin': '*',
-    'Cache-Control': 'private, max-age=300, immutable',
+    'Cache-Control': 'private, no-store',
   };
   const tokenResponseHeaders = {
     'Access-Control-Allow-Origin': '*',
-    'Cache-Control': 'no-cache',
+    'Cache-Control': 'private, no-store',
   };
 
   function credentialAuthFailureResponse(c: any, failure: ClientAuthFailure): Response {

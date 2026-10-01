@@ -5,8 +5,9 @@ import { isSiteProbeable, type SiteProbeResult } from './speedtest';
 import { isClientCredentialSite } from './credential-risk';
 import type { Storage } from '../storage/interface';
 import { KV_SEARCH_QUOTA } from './config';
-const QUOTA_SCHEMA_VERSION = 10;
+const QUOTA_SCHEMA_VERSION = 11;
 const LEGACY_PARSE_LIMIT_SCHEMA_VERSION = 8;
+const EXPLICIT_QUICK_LIMIT_SCHEMA_VERSION = 11;
 
 function isNodeRuntime(): boolean {
   return typeof process !== 'undefined' && !!process.env.PORT;
@@ -19,13 +20,13 @@ function defaultSearchLimit(): number {
 }
 
 function defaultQuickSearchLimit(): number {
-  // 快速搜索只保留少量健康度最高的源，减少影视仓/TVBox 启动与首屏等待。
-  return isNodeRuntime() ? 32 : 20;
+  // 默认不限制；由可搜索源上限和质量筛选控制下发数量。
+  return 0;
 }
 
 function defaultStartupQuickSearchLimit(): number {
-  // 根配置保留全部通过健康/速度筛选的快速源；Render 资源更充足，可多保留一些；CF 保持较小上限。
-  return isNodeRuntime() ? 32 : 20;
+  // 默认不限制；保留字段用于兼容旧配置和显式回滚。
+  return 0;
 }
 
 function defaultParseLimit(): number {
@@ -69,6 +70,9 @@ export async function loadSearchQuota(storage: Storage): Promise<SearchQuotaConf
       const fallback = createDefaultSearchQuota();
       const quotaVersion = parsed.quotaSchemaVersion ?? 1;
       const legacyParseLimit = quotaVersion < LEGACY_PARSE_LIMIT_SCHEMA_VERSION;
+      // schema 10 及以前，quick/startup 上限是代码自动写入的部署常量，
+      // 不代表用户配置。升级时清零，否则 maxSearchable=0 仍会被暗截断。
+      const quickLimitsAreUserConfigured = quotaVersion >= EXPLICIT_QUICK_LIMIT_SCHEMA_VERSION;
       const retainCredentialMode: 'off' | 'all' | 'selected' =
         parsed.retainCredentialMode === 'all' || parsed.retainCredentialMode === 'selected' || parsed.retainCredentialMode === 'off'
           ? parsed.retainCredentialMode
@@ -78,8 +82,8 @@ export async function loadSearchQuota(storage: Storage): Promise<SearchQuotaConf
       // Everything else is an automatic performance guard.
       return {
         maxSearchable: normalizeLimit(parsed.maxSearchable),
-        maxQuickSearch: fallback.maxQuickSearch,
-        maxStartupQuickSearch: fallback.maxStartupQuickSearch,
+        maxQuickSearch: quickLimitsAreUserConfigured ? normalizeLimit(parsed.maxQuickSearch) : 0,
+        maxStartupQuickSearch: quickLimitsAreUserConfigured ? normalizeLimit(parsed.maxStartupQuickSearch) : 0,
         // Legacy startup-site values are intentionally ignored after schema 8:
         // the root startup config is always derived from the automatic quick cap.
         startupSiteLimit: 0,
@@ -111,17 +115,15 @@ export async function loadSearchQuota(storage: Storage): Promise<SearchQuotaConf
 
 /** 保存搜索配额配置。 */
 export async function saveSearchQuota(storage: Storage, config: SearchQuotaConfig): Promise<void> {
-  const fallback = createDefaultSearchQuota();
   const retainCredentialMode: 'off' | 'all' | 'selected' =
     config.retainCredentialMode === 'all' || config.retainCredentialMode === 'selected' || config.retainCredentialMode === 'off'
       ? config.retainCredentialMode
       : (config.retainCredentialSources === true ? 'all' : 'off');
   await storage.put(KV_SEARCH_QUOTA, JSON.stringify({
     maxSearchable: normalizeLimit(config.maxSearchable),
-    // Automatic startup/quick-search guards are deployment-specific and are
-    // never taken from stale form values.
-    maxQuickSearch: fallback.maxQuickSearch,
-    maxStartupQuickSearch: fallback.maxStartupQuickSearch,
+    // 0 表示不限制；显式值由管理接口保存，不能再被部署默认值覆盖。
+    maxQuickSearch: normalizeLimit(config.maxQuickSearch),
+    maxStartupQuickSearch: normalizeLimit(config.maxStartupQuickSearch),
     startupSiteLimit: 0,
     maxParses: normalizeLimit(config.maxParses),
     retainCredentialSources: retainCredentialMode !== 'off',
@@ -426,7 +428,7 @@ export function applySearchQuota(
   for (const key of blockedKeySet) allowedSearchableKeys.delete(key);
 
   // 快速搜索独立限制：不会删除站点，只把 quickSearch 置 0。
-  // Render 默认 32、CF 默认 20，足以覆盖常用源并显著缩短首屏等待。
+  // 0 表示不限制，与 maxSearchable=0 的语义保持一致。
   const quickCandidates = [
     ...pinned.filter(site => site.searchable === 1 && site.quickSearch !== 0 && !blockedKeySet.has(site.key)),
     ...keptCandidates.filter(site => site.searchable === 1 && site.quickSearch !== 0 && !blockedKeySet.has(site.key)),
