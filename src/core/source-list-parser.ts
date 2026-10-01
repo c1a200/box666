@@ -161,6 +161,20 @@ export function createSourceBackup<T>(type: SourceBackupKind, items: T[]): Sourc
  * Accept both the current versioned backup and legacy raw arrays. For live
  * sources, a TVBox config containing a `lives` array is also accepted.
  */
+const SOURCE_BACKUP_KINDS: ReadonlyArray<SourceBackupKind> = ['tvbox-sources', 'maccms-sources', 'live-sources'];
+
+/**
+ * Returns a human-readable mismatch message when the payload explicitly
+ * declares a different known backup type, otherwise null.
+ */
+export function backupTypeMismatch(parsed: unknown, type: SourceBackupKind): string | null {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const declared = (parsed as { type?: unknown }).type;
+  if (typeof declared !== 'string') return null;
+  if (!SOURCE_BACKUP_KINDS.includes(declared as SourceBackupKind)) return null;
+  if (declared === type) return null;
+  return declared;
+}
 export function extractBackupItems(parsed: unknown, type: SourceBackupKind): unknown[] | null {
   if (Array.isArray(parsed)) return parsed;
   if (!parsed || typeof parsed !== 'object') return null;

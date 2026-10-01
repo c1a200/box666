@@ -36,7 +36,7 @@ import { generateTokenJson, injectAListDriveCredentials, injectCredentials } fro
 import { stripInjectedCredentialsFromConfig } from './core/credential-sanitizer';
 import { formatLiveGroupsAsTxt, filterLivesBySource, filterLivesBySourceDetailed, sortLiveGroupsForOutput } from './core/live-merger';
 import { containsBlockedLiveUrl, isBlockedLiveSource, isBlockedLiveUrl } from './core/live-policy';
-import { autoNameFromUrl, createSourceBackup, extractBackupItems, parseSourceList } from './core/source-list-parser';
+import { autoNameFromUrl, backupTypeMismatch, createSourceBackup, extractBackupItems, parseSourceList } from './core/source-list-parser';
 import type { TVBoxConfig, TVBoxSite, SearchQuotaConfig, SiteQualityGrade, CloudPlatform, CloudCredential, TVBoxLive, TVBoxLiveGroup, CredentialAuthCode, CredentialDistributionConfig, CredentialDistributionMode } from './core/types';
 import { mountChannelProbeRoutes } from './routes/channel-probe-admin';
 import { loadSpeedMap as loadChannelSpeedMap } from './core/channel-probe';
@@ -2849,6 +2849,10 @@ export function createApp(deps: AppDeps): Hono {
       parsed = null;
     }
 
+    const liveMismatch = backupTypeMismatch(parsed, 'live-sources');
+    if (liveMismatch) {
+      return c.json({ error: `Backup type mismatch: expected live-sources, got ${liveMismatch}` }, 400);
+    }
     const backupItems = extractBackupItems(parsed, 'live-sources');
     if (backupItems) {
       parsed = backupItems;
@@ -3108,6 +3112,10 @@ export function createApp(deps: AppDeps): Hono {
         parsed = JSON.parse(jsonText);
       } catch {
         return c.json({ error: 'Failed to parse JSON' }, 400);
+      }
+      const mcMismatch = backupTypeMismatch(parsed, 'maccms-sources');
+      if (mcMismatch) {
+        return c.json({ error: `Backup type mismatch: expected maccms-sources, got ${mcMismatch}` }, 400);
       }
       const backupItems = extractBackupItems(parsed, 'maccms-sources');
       imported = normalizeImportedMacCMS(backupItems || parsed);
