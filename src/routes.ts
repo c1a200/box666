@@ -617,25 +617,27 @@ export function createApp(deps: AppDeps): Hono {
   }
 
   async function refreshAfterCredentialChange(c: any): Promise<void> {
-    await markOutputDirty();
-
-    if (!credentialRefreshPromise) {
-      credentialRefreshPromise = (async () => {
-        try {
-          await reinjectCredentialsIntoOutputs();
-        } catch (error: unknown) {
-          const msg = error instanceof Error ? error.message : String(error);
-          logger.warn('routes', `Immediate credential cleanup failed: ${msg}`);
-        }
-      })().finally(() => {
-        credentialRefreshPromise = null;
-      });
-    }
-    await credentialRefreshPromise;
-
-    if (deps.isSyncing?.()) return;
-
+    // 配置写入成功即视为保存成功；旧聚合结果的清理和重建属于后台优化，
+    // 不可因 KV 暂时限流/网络抖动把已成功的保存反向报告为失败。
     try {
+      await markOutputDirty();
+
+      if (!credentialRefreshPromise) {
+        credentialRefreshPromise = (async () => {
+          try {
+            await reinjectCredentialsIntoOutputs();
+          } catch (error: unknown) {
+            const msg = error instanceof Error ? error.message : String(error);
+            logger.warn('routes', `Immediate credential cleanup failed: ${msg}`);
+          }
+        })().finally(() => {
+          credentialRefreshPromise = null;
+        });
+      }
+      await credentialRefreshPromise;
+
+      if (deps.isSyncing?.()) return;
+
       let hasCtx = false;
       try {
         if (c.executionCtx) {

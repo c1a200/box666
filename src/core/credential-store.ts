@@ -601,7 +601,15 @@ export async function saveCredentialDistribution(
 ): Promise<CredentialDistributionConfig> {
   const normalized = normalizeCredentialDistributionConfig(config);
   await storage.put(KV_CREDENTIAL_DISTRIBUTION, JSON.stringify(normalized));
-  await storage.put(KV_CREDENTIAL_DISTRIBUTION_ENABLED, normalized.defaultCredentialMode === 'none' ? 'false' : 'true');
+  // 旧标记仅用于迁移旧版本；主配置已经写入时，它不能反向决定保存成败。
+  try {
+    await storage.put(KV_CREDENTIAL_DISTRIBUTION_ENABLED, normalized.defaultCredentialMode === 'none' ? 'false' : 'true');
+  } catch (err) {
+    console.warn(
+      '[credential-store] legacy credential distribution flag update failed:',
+      err instanceof Error ? err.message : String(err),
+    );
+  }
   return normalized;
 }
 
