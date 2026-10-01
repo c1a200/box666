@@ -617,44 +617,49 @@ export function createApp(deps: AppDeps): Hono {
   }
 
   async function refreshAfterCredentialChange(c: any): Promise<void> {
-    // 配置写入成功即视为保存成功；旧聚合结果的清理和重建属于后台优化，
-    // 不可因 KV 暂时限流/网络抖动把已成功的保存反向报告为失败。
+    // 保存成功后只做本地失效标记；凭证清理和聚合刷新必须在后台执行。
+    // 否则 Render 请求会一直等到整次聚合结束，浏览器最终误报“保存失败”。
     try {
       await markOutputDirty();
-
-      if (!credentialRefreshPromise) {
-        credentialRefreshPromise = (async () => {
-          try {
-            await reinjectCredentialsIntoOutputs();
-          } catch (error: unknown) {
-            const msg = error instanceof Error ? error.message : String(error);
-            logger.warn('routes', `Immediate credential cleanup failed: ${msg}`);
-          }
-        })().finally(() => {
-          credentialRefreshPromise = null;
-        });
-      }
-      await credentialRefreshPromise;
-
-      if (deps.isSyncing?.()) return;
-
-      let hasCtx = false;
-      try {
-        if (c.executionCtx) {
-          hasCtx = true;
-        }
-      } catch {
-        // Hono throws if executionCtx getter is accessed outside Worker runtime.
-      }
-
-      if (hasCtx) {
-        c.executionCtx.waitUntil(deps.triggerRefresh());
-      } else {
-        await deps.triggerRefresh();
-      }
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
-      logger.warn('routes', `Credential change refresh failed: ${msg}`);
+      logger.warn('routes', `Credential change dirty marker failed: ${msg}`);
+      return;
+    }
+
+    const background = (async () => {
+      try {
+        if (!credentialRefreshPromise) {
+          credentialRefreshPromise = (async () => {
+            try {
+              await reinjectCredentialsIntoOutputs();
+            } catch (error: unknown) {
+              const msg = error instanceof Error ? error.message : String(error);
+              logger.warn('routes', `Immediate credential cleanup failed: ${msg}`);
+            }
+          })().finally(() => {
+            credentialRefreshPromise = null;
+          });
+        }
+        await credentialRefreshPromise;
+
+        if (deps.isSyncing?.()) return;
+        await deps.triggerRefresh();
+      } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error);
+        logger.warn('routes', `Credential change refresh failed: ${msg}`);
+      }
+    })();
+
+    try {
+      if (c.executionCtx) {
+        c.executionCtx.waitUntil(background);
+      } else {
+        void background;
+      }
+    } catch {
+      // Hono 在 Worker 运行时之外访问 executionCtx 会抛错，此时直接后台执行。
+      void background;
     }
   }
 
