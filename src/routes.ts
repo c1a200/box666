@@ -633,6 +633,7 @@ export function createApp(deps: AppDeps): Hono {
       constraints.contractsBySiteKey,
       true,
       true,
+      typeof parsed.spider === 'string' ? parsed.spider : undefined,
     );
     // 注入结果必须写回响应配置，否则凭证计算完成但客户端仍收到原 ext。
     parsed.sites = sites;

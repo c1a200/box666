@@ -38,10 +38,17 @@ function extPanValue(ext: TVBoxSite['ext']): string | undefined {
 }
 
 /** 提取站点的稳定契约指纹。只描述协议输入形态，不做任何猜测。 */
-export function buildSiteContract(site: Pick<TVBoxSite, 'api' | 'jar' | 'ext' | 'pan'>): SiteContract {
-  const shape = extShape(site.ext);
+export function buildSiteContract(
+  site: Pick<TVBoxSite, 'api' | 'jar' | 'ext' | 'pan'>,
+  /** 站点自身 jar 为空时的实际生效 JAR（通常是顶层 spider）。 */
+  fallbackJar?: string,
+): SiteContract {
+  // JSON.stringify 会把对象里值为 undefined 的 ext 丢掉；同一站点从聚合对象
+  // 变成下发 JSON 时，undefined 会自然变成 null。两者都没有可注入的 ext 内容，
+  // 因此必须视为同一契约，否则合法站点会被误判为契约漂移。
+  const shape = site.ext == null ? 'null' : extShape(site.ext);
   const contract: SiteContract = { api: site.api, extShape: shape };
-  const jarMd5 = extractJarMd5(site.jar);
+  const jarMd5 = extractJarMd5(site.jar || fallbackJar);
   if (jarMd5) contract.jarMd5 = jarMd5;
   if (shape === 'object') {
     contract.extKeys = Object.keys(site.ext as Record<string, unknown>).sort();
@@ -76,4 +83,3 @@ export function stripInternalSiteMarkers<T extends TVBoxConfig>(config: T): T {
   }
   return clone;
 }
-

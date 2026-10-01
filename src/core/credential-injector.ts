@@ -725,14 +725,14 @@ function matchPattern(value: string, pattern: string | RegExp): boolean {
 
 
 /** 响应期契约预检：API 与 JAR MD5 均为 O(1)/轻量提取，不读取 ext。 */
-function matchesContractBaseline(site: TVBoxSite, expected: SiteContract): boolean {
+function matchesContractBaseline(site: TVBoxSite, expected: SiteContract, fallbackJar?: string): boolean {
   if (expected.api !== site.api) return false;
-  return (expected.jarMd5 || undefined) === (extractJarMd5(site.jar) || undefined);
+  return (expected.jarMd5 || undefined) === (extractJarMd5(site.jar || fallbackJar) || undefined);
 }
 
 /** 完整契约校验只应在确认本次会注入后调用。 */
-export function matchesFullContract(site: TVBoxSite, expected: SiteContract): boolean {
-  const actual = buildSiteContract(site);
+export function matchesFullContract(site: TVBoxSite, expected: SiteContract, fallbackJar?: string): boolean {
+  const actual = buildSiteContract(site, fallbackJar);
   if (actual.api !== expected.api) return false;
   if ((actual.jarMd5 || undefined) !== (expected.jarMd5 || undefined)) return false;
   if (actual.extShape !== expected.extShape) return false;
@@ -749,14 +749,22 @@ export function matchesFullContract(site: TVBoxSite, expected: SiteContract): bo
   const removable = new Set(expected.injectableExtKeys || []);
   return expectedKeys.every((key) => actualSet.has(key) || removable.has(key));
 }
-function matchRule(site: TVBoxSite, rule: InjectionRule): boolean {
-  if (rule.jarPattern && !matchPattern(site.jar || '', rule.jarPattern)) return false;
+function matchRule(site: TVBoxSite, rule: InjectionRule, effectiveJar: string): boolean {
+  if (rule.jarPattern && !matchPattern(effectiveJar, rule.jarPattern)) return false;
   return matchPattern(site.api, rule.apiPattern);
 }
 
-export function findMatchingRule(site: TVBoxSite): InjectionRule | null {
+/**
+ * 找不到规则时返回 null。
+ *
+ * type:3 站点没有自己的 jar 时，最终配置会回退到顶层 spider；注入规则
+ * 必须使用同一个有效 JAR 指纹，否则会漏掉“站点级 jar 为空、依赖全局 spider”
+ * 的源，或者把不同 JAR 的协议混在一起。
+ */
+export function findMatchingRule(site: TVBoxSite, globalSpider?: string): InjectionRule | null {
+  const effectiveJar = extractJarMd5(site.jar) ? (site.jar || '') : (globalSpider || '');
   // 带 jarPattern 的规则优先；调用方无需关心规则表顺序。
-  const candidates = BUILTIN_RULES.filter((rule) => matchRule(site, rule));
+  const candidates = BUILTIN_RULES.filter((rule) => matchRule(site, rule, effectiveJar));
   return candidates.find((rule) => !!rule.jarPattern) || candidates[0] || null;
 }
 // ─── 注入引擎 ────────────────────────────────────────────
@@ -781,11 +789,12 @@ export function canDistributeCredentialsToSite(
   site: TVBoxSite,
   credentials: Map<CloudPlatform, CloudCredential>,
   baseUrl = 'https://credential.invalid',
+  globalSpider?: string,
 ): boolean {
   const risk = assessSourceRisk(site);
   if (risk.neededPlatforms.length === 0) return false;
 
-  const rule = findMatchingRule(site);
+  const rule = findMatchingRule(site, globalSpider);
   if (rule) {
     if (rule.canInject) return rule.canInject(site.ext, credentials, baseUrl);
     return hasCompleteCredentialForPlatforms(credentials, rule.platforms) && parseExt(site.ext).injectable;
@@ -812,6 +821,8 @@ export function injectCredentials(
   requireSiteBoundary = false,
   /** 严格模式：契约缺失时拒绝注入，避免旧模板跨 JAR/API 误注入。 */
   requireContractMap = false,
+  /** 顶层 spider；站点自身 jar 为空时作为实际生效的 JAR 契约。 */
+  globalSpider?: string,
 ): { sites: TVBoxSite[]; report: InjectionReport } {
   const report: InjectionReport = {
     injected: 0,
@@ -860,7 +871,7 @@ export function injectCredentials(
       return site;
     }
 
-    const rule = findMatchingRule(site);
+    const rule = findMatchingRule(site, globalSpider);
     const platforms = rule?.platforms || risk.neededPlatforms;
     const hasAnyCredential = hasCredentialForPlatforms(credentials, platforms);
     if (!hasAnyCredential) {
@@ -885,13 +896,13 @@ export function injectCredentials(
     // 契约安全阀放在“确认本次确实可注入”之后执行：
     // 不改变拒绝结果，但避免对整库无需注入的站点做 ext 解析/排序。
     const expectedContract = contractsBySiteKey?.get(site.key);
-    if (expectedContract && !matchesContractBaseline(site, expectedContract)) {
+    if (expectedContract && !matchesContractBaseline(site, expectedContract, globalSpider)) {
       report.skippedContractMismatch++;
       return site;
     }
 
     // 到这里才支付详细契约校验的成本；ext 漂移会被拒绝，防止跨 JAR/形态误注入。
-    if (expectedContract && !matchesFullContract(site, expectedContract)) {
+    if (expectedContract && !matchesFullContract(site, expectedContract, globalSpider)) {
       report.skippedContractMismatch++;
       return site;
     }

@@ -953,7 +953,10 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
   const finalSiteContracts: Record<string, unknown> = {};
   for (const site of merged.sites || []) {
     // 必须在所有站点过滤/兼容迁移完成后重建，不能用合并阶段的旧指纹。
-    finalSiteContracts[site.key] = buildSiteContract(site);
+    finalSiteContracts[site.key] = buildSiteContract(
+      site,
+      typeof merged.spider === 'string' ? merged.spider : undefined,
+    );
   }
   await storage.put(KV_SITE_CONTRACT_MAP, JSON.stringify({
     updatedAt: new Date().toISOString(),
