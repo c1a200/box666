@@ -733,7 +733,11 @@ function isProjectCredentialUrl(value: unknown, baseUrl: string): boolean {
   const url = value.trim();
   if (!url.startsWith(base + '/')) return false;
   const path = url.slice(base.length).split('?')[0].split('#')[0];
-  return /^(?:\/auth\/[^/]+)?\/(?:credential\/[A-Za-z0-9_.-]+|token\.json)$/.test(path);
+  const match = path.match(/^(?:\/auth\/[^/]+)?\/credential\/([A-Za-z0-9_.-]+)$/);
+  if (!match) return false;
+  // 只保护 Pan.init 实际会消费的六个入口；token.json 等历史协议不是有效
+  // Cloud-drive 值，仍应作为抢占字段移除。
+  return PAN_INIT_FIELDS.some(({ field }) => field === match[1]);
 }
 
 function normalizeCredentialConflictKey(key: string): string {
