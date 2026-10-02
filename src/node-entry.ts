@@ -226,7 +226,6 @@ async function main() {
     completed: boolean;
     skipped?: boolean;
     timedOut?: boolean;
-    abandoned?: boolean;
     runId?: string;
     startedAt?: string;
     phase?: string;
@@ -238,16 +237,11 @@ async function main() {
   let refreshRunId = '';
   let refreshStartedAt = 0;
   let refreshTimedOut = false;
-  let refreshAbandoned = false;
   let refreshLastPhase = '';
   let refreshLastResult: AggregationTriggerResult | null = null;
   const aggregationTimeoutMs = Math.max(
     60_000,
     parseInt(process.env.AGGREGATION_TIMEOUT_MS || '') || 420_000,
-  );
-  const aggregationAbandonGraceMs = Math.max(
-    60_000,
-    parseInt(process.env.AGGREGATION_ABANDON_GRACE_MS || '') || 180_000,
   );
 
   function aggregationStatus(): AggregationTriggerResult & { lastResult: AggregationTriggerResult | null } {
@@ -261,7 +255,6 @@ async function main() {
       running: refreshRunning,
       completed: false,
       timedOut: refreshTimedOut || undefined,
-      abandoned: refreshAbandoned || undefined,
       runId: refreshRunId || undefined,
       startedAt: refreshStartedAt ? new Date(refreshStartedAt).toISOString() : undefined,
       phase: refreshLastPhase || undefined,
@@ -275,46 +268,24 @@ async function main() {
 
   const runWithGuard = async (): Promise<AggregationTriggerResult> => {
     if (refreshRunning) {
-      const elapsed = Date.now() - refreshStartedAt;
-      if (refreshTimedOut && elapsed > aggregationTimeoutMs + aggregationAbandonGraceMs) {
-        refreshAbandoned = true;
-        refreshRunning = false;
-        const abandonedResult: AggregationTriggerResult = {
-          started: false,
-          running: false,
-          completed: false,
-          abandoned: true,
-          timedOut: true,
-          runId: refreshRunId,
-          startedAt: new Date(refreshStartedAt).toISOString(),
-          phase: refreshLastPhase || undefined,
-          elapsedMs: elapsed,
-          message: 'Previous aggregation exceeded the hard timeout and was abandoned; starting a new run',
-        };
-        refreshLastResult = abandonedResult;
-        console.error('[aggregation] Previous run exceeded hard timeout; guard released for a new run');
-      } else {
-        const runningResult = aggregationStatus();
-        console.log(`[aggregation] Already running, skipping (phase: ${refreshLastPhase || 'unknown'})`);
-        return {
-          started: false,
-          running: true,
-          completed: false,
-          skipped: true,
-          timedOut: refreshTimedOut || undefined,
-          abandoned: refreshAbandoned || undefined,
-          runId: refreshRunId || undefined,
-          startedAt: refreshStartedAt ? new Date(refreshStartedAt).toISOString() : undefined,
-          phase: refreshLastPhase || undefined,
-          elapsedMs: runningResult.elapsedMs,
-          message: 'Aggregation is already running',
-        };
-      }
+      const runningResult = aggregationStatus();
+      console.log(`[aggregation] Already running, skipping (phase: ${refreshLastPhase || 'unknown'})`);
+      return {
+        started: false,
+        running: true,
+        completed: false,
+        skipped: true,
+        timedOut: refreshTimedOut || undefined,
+        runId: refreshRunId || undefined,
+        startedAt: refreshStartedAt ? new Date(refreshStartedAt).toISOString() : undefined,
+        phase: refreshLastPhase || undefined,
+        elapsedMs: runningResult.elapsedMs,
+        message: 'Aggregation is already running',
+      };
     }
 
     refreshRunning = true;
     refreshTimedOut = false;
-    refreshAbandoned = false;
     refreshStartedAt = Date.now();
     refreshRunId = new Date(refreshStartedAt).toISOString();
     refreshLastPhase = 'starting';
@@ -674,6 +645,27 @@ async function main() {
     void warmCachedJarBinaries(storage);
     void scheduleStartupAggregation();
   });
+
+  // Render/Docker 滚动重启时给正在执行的聚合一段时间收尾。软超时只用于
+  // 可观测性，不再释放单实例锁，避免两个任务并发写同一份配置。
+  let shutdownRequested = false;
+  const waitForAggregationOnShutdown = async (signal: string): Promise<void> => {
+    if (shutdownRequested) return;
+    shutdownRequested = true;
+    const waitStartedAt = Date.now();
+    console.log(`[shutdown] ${signal} received; waiting for active aggregation to finish`);
+    while (refreshRunning && Date.now() - waitStartedAt < 15 * 60_000) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    if (refreshRunning) {
+      console.error('[shutdown] Aggregation still running after 15 minutes; exiting');
+    } else {
+      console.log(`[shutdown] Aggregation settled in ${Date.now() - waitStartedAt}ms`);
+    }
+    process.exit(0);
+  };
+  process.once('SIGTERM', () => { void waitForAggregationOnShutdown('SIGTERM'); });
+  process.once('SIGINT', () => { void waitForAggregationOnShutdown('SIGINT'); });
 }
 
 function getLocalIp(): string | null {

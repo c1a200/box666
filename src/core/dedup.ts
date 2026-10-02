@@ -219,8 +219,24 @@ export function deduplicateClientCredentialSites(
     const betterProbe = currentSpeed < existingSpeed;
     const sameProbe = currentSpeed === existingSpeed;
     const betterExt = extScore(site) > extScore(existing);
+    const mergedUpstreamNames = [
+      ...new Set([
+        ...(existing.__upstreamNames || []),
+        ...(site.__upstreamNames || []),
+      ]),
+    ].filter(Boolean).sort();
+
     if (betterProbe || (sameProbe && betterExt)) {
-      result[existingIndex] = site;
+      result[existingIndex] = {
+        ...site,
+        __upstreamNames: mergedUpstreamNames,
+      };
+    } else if (mergedUpstreamNames.length > 0) {
+      // 去重只改变站点数量，不应丢失它由哪些总源贡献这一边界信息。
+      result[existingIndex] = {
+        ...existing,
+        __upstreamNames: mergedUpstreamNames,
+      };
     }
   }
 
@@ -284,7 +300,13 @@ export function deduplicateSimilarNames(
       }
     }
 
-    kept.push(sites[bestIdx]);
+    const mergedUpstreamNames = [
+      ...new Set(indices.flatMap((idx) => sites[idx].__upstreamNames || [])),
+    ].filter(Boolean).sort();
+    kept.push({
+      ...sites[bestIdx],
+      ...(mergedUpstreamNames.length > 0 ? { __upstreamNames: mergedUpstreamNames } : {}),
+    });
     dedupCount += indices.length - 1;
 
     if (indices.length > 1) {
@@ -297,8 +319,9 @@ export function deduplicateSimilarNames(
     console.log(`[dedup-similar] Removed ${dedupCount} similar-name duplicates (threshold: ${threshold})`);
   }
 
-  const keptKeys = new Set(kept.map(s => s.key));
-  return sites.filter(s => keptKeys.has(s.key));
+  // 必须返回 kept 中的对象本身。若按 key 回查原数组，上面合并后的来源标记
+  // 会被原对象覆盖，导致去重后的站点在严格边界校验中被拒绝注入。
+  return kept;
 }
 
 function nameSimilarity(a: string, b: string): number {

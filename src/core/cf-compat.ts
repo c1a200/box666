@@ -119,9 +119,19 @@ function hasWoggApi(site: TVBoxSite): boolean {
  * the project's /credential/* endpoints. The hardened variant is matched by
  * key+JAR fingerprint only, so other sources sharing that JAR are untouched.
  */
-export function applyLegacyWoggCompatibility(config: TVBoxConfig): boolean {
+export interface LegacyWoggMigration {
+  oldKey: string;
+  newKey: string;
+}
+
+export interface LegacyWoggMigrationResult {
+  changed: boolean;
+  keyMigrations: LegacyWoggMigration[];
+}
+
+export function migrateLegacyWoggCompatibility(config: TVBoxConfig): LegacyWoggMigrationResult {
   const sites = config.sites;
-  if (!Array.isArray(sites)) return false;
+  if (!Array.isArray(sites)) return { changed: false, keyMigrations: [] };
 
   const legacyTargets = sites.filter(isLegacyWoggGuard);
   const legacyJarTargets = sites.filter(isLegacyWoggApiJarVariant);
@@ -134,7 +144,7 @@ export function applyLegacyWoggCompatibility(config: TVBoxConfig): boolean {
     && legacyJarTargets.length === 0
     && hardenedTargets.length === 0
     && keyTargets.length === 0
-  ) return false;
+  ) return { changed: false, keyMigrations: [] };
 
   const woggDonor =
     sites.find((site) =>
@@ -149,15 +159,17 @@ export function applyLegacyWoggCompatibility(config: TVBoxConfig): boolean {
       hasJarMd5(site, WOGG_JAR_MD5),
     ) ??
     sites.find((site) => hasWoggApi(site) && getExtSite(site));
-  if (!woggDonor) return false;
+  if (!woggDonor) return { changed: false, keyMigrations: [] };
 
   const donorSite = getExtSite(woggDonor);
-  if (!donorSite) return false;
+  if (!donorSite) return { changed: false, keyMigrations: [] };
 
   const donorJar = hasJarMd5(woggDonor, WOGG_JAR_MD5) ? woggDonor.jar! : WOGG_JAR_URL;
   let changed = false;
+  const keyMigrations: LegacyWoggMigration[] = [];
 
   for (const target of [...legacyTargets, ...legacyJarTargets, ...hardenedTargets, ...keyTargets]) {
+    const oldKey = target.key;
     const migrateLegacyJarKey = isLegacyWoggApiJarVariant(target);
     const migrateKey = isCurrentWoggNeedingKeyMigration(target);
     const targetExt = parseExt(target.ext);
@@ -181,10 +193,18 @@ export function applyLegacyWoggCompatibility(config: TVBoxConfig): boolean {
     } else if (migrateKey) {
       target.key = MIGRATED_WOGG_KEY;
     }
+    if (target.key !== oldKey) {
+      keyMigrations.push({ oldKey, newKey: target.key });
+    }
     changed = true;
   }
 
-  return changed;
+  return { changed, keyMigrations };
+}
+
+/** Backward-compatible boolean wrapper for existing callers. */
+export function applyLegacyWoggCompatibility(config: TVBoxConfig): boolean {
+  return migrateLegacyWoggCompatibility(config).changed;
 }
 
 /** Backward-compatible alias for existing callers. */
