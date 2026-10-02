@@ -727,17 +727,27 @@ const CREDENTIAL_CONFLICT_EXT_KEYS = new Set([
   'cloud-drive', 'clouddrive', 'ali-drive', 'alidrive',
 ]);
 
-function isProjectCredentialUrl(value: unknown, baseUrl: string): boolean {
+function isProjectCredentialUrl(
+  value: unknown,
+  baseUrl: string,
+  mechanism?: CredentialProtocol['mechanism'],
+): boolean {
   if (typeof value !== 'string' || !value.trim()) return false;
   const base = baseUrl.replace(/\/+$/, '');
   const url = value.trim();
   if (!url.startsWith(base + '/')) return false;
   const path = url.slice(base.length).split('?')[0].split('#')[0];
-  const match = path.match(/^(?:\/auth\/[^/]+)?\/credential\/([A-Za-z0-9_.-]+)$/);
-  if (!match) return false;
-  // 只保护 Pan.init 实际会消费的六个入口；token.json 等历史协议不是有效
-  // Cloud-drive 值，仍应作为抢占字段移除。
-  return PAN_INIT_FIELDS.some(({ field }) => field === match[1]);
+
+  // token-json-url 的契约入口就是 root token.json；Pan.init 协议则使用
+  // 六个 /credential/<field> 入口。两种协议必须分别保护，不能混用。
+  if (mechanism === 'token-json-url') {
+    return /^(?:\/auth\/[^/]+)?\/token\.json$/.test(path);
+  }
+  if (mechanism === 'pan-init-url') {
+    const match = path.match(/^(?:\/auth\/[^/]+)?\/credential\/([A-Za-z0-9_.-]+)$/);
+    return !!match && PAN_INIT_FIELDS.some(({ field }) => field === match[1]);
+  }
+  return false;
 }
 
 function normalizeCredentialConflictKey(key: string): string {
@@ -747,6 +757,7 @@ function normalizeCredentialConflictKey(key: string): string {
 function removeCredentialConflictEntries(
   ext: any,
   baseUrl?: string,
+  mechanism?: CredentialProtocol['mechanism'],
 ): { ext: any; changed: boolean } {
   const parsed = parseExt(ext);
   if (!parsed.injectable) return { ext, changed: false };
@@ -757,7 +768,7 @@ function removeCredentialConflictEntries(
     if (CREDENTIAL_CONFLICT_EXT_KEYS.has(normalizeCredentialConflictKey(key))) {
       // 本项目刚写入的凭证地址属于有效配置，不能被通用冲突清理误删。
       // 只有上游自带的抢占入口才应移除。
-      if (normalizedBaseUrl && isProjectCredentialUrl(next[key], normalizedBaseUrl)) {
+      if (normalizedBaseUrl && isProjectCredentialUrl(next[key], normalizedBaseUrl, mechanism)) {
         continue;
       }
       delete next[key];
@@ -788,7 +799,7 @@ function applyCredentialProtocol(
     credentials,
     baseUrl,
   );
-  const cleaned = removeCredentialConflictEntries(applied.ext, baseUrl);
+  const cleaned = removeCredentialConflictEntries(applied.ext, baseUrl, protocol.mechanism);
   return {
     ext: cleaned.ext,
     changed: applied.changed || cleaned.changed,

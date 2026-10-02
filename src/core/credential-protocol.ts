@@ -39,7 +39,6 @@ const JAR = {
   b63: 'b63a0eb8852bb7ab06500c424ccc3dae',
   d3: '3d161697458ecbcd2651a749db761ba1',
   mogg: '265301f463ec681dcbba91897f20f08b',
-  tokenJson2cc: '2cc088afa757ba8bafffcfbab4b73ccc',
 } as const;
 
 const PAN_INIT_PLATFORMS: readonly CloudPlatform[] = [
@@ -50,10 +49,12 @@ const PAN_SEARCH_PLATFORMS: readonly CloudPlatform[] = [
   'quark', 'uc', 'tianyi', 'baidu', 'pan123', 'thunder',
 ];
 
-// 2cc JAR 中已验证会继承 Pan.init URL 契约的 Guard API。每个字段都是 URL，
-// JAR 会主动拉取响应内容作为对应平台凭证；不能按 Guard 后缀泛化。
-// 只纳入已有字节码/同系 JAR 证据的 API，未验证的 Guard 保持 unknown。
-const PAN_INIT_2CC_APIS = new Set([
+const TOKEN_JSON_PLATFORMS: readonly CloudPlatform[] = [
+  'aliyun', 'quark', 'uc', 'pan115', 'thunder', 'pikpak', 'tianyi', 'baidu', 'pan123',
+];
+
+/** 2cc Guard 共享 token.json 的已验证 API 契约。 */
+const TOKEN_JSON_CLOUD_DRIVE_APIS = new Set([
   'csp_ypansoguard',
   'csp_bpansoguard',
   'csp_kkssguard',
@@ -95,8 +96,12 @@ function isMoggJar(jar?: string): boolean {
   return extractJarMd5(jar) === JAR.mogg;
 }
 
-function is2cc(jar?: string): boolean {
-  return extractJarMd5(jar) === JAR.tokenJson2cc;
+/** 2cc Guard 契约只在 ext 明确提供 Cloud-drive 入口时才成立。 */
+function hasCloudDriveTokenContract(site: TVBoxSite): boolean {
+  const ext = parseExtRecord(site.ext);
+  return !!ext
+    && typeof ext['Cloud-drive'] === 'string'
+    && ext['Cloud-drive'].trim().length > 0;
 }
 
 const PAN_SEARCH_PLATFORM_MAP: Record<string, CloudPlatform> = {
@@ -177,13 +182,17 @@ export function resolveCredentialProtocol(
     };
   }
 
-  if (PAN_INIT_2CC_APIS.has(api.toLowerCase()) && is2cc(effectiveJar)) {
+  if (
+    TOKEN_JSON_CLOUD_DRIVE_APIS.has(api.toLowerCase())
+    && /^2cc088afa757ba8bafffcfbab4b73ccc$/i.test(extractJarMd5(effectiveJar) || '')
+    && hasCloudDriveTokenContract(site)
+  ) {
     return {
-      mechanism: 'pan-init-url',
-      platforms: [...PAN_INIT_PLATFORMS],
+      mechanism: 'token-json-url',
+      platforms: [...TOKEN_JSON_PLATFORMS],
       credentialRequired: true,
       canInject: true,
-      reason: '2cc Pan.init URL contract',
+      reason: '2cc shared Cloud-drive token.json contract',
     };
   }
 
