@@ -1059,7 +1059,86 @@ export function generateTokenJson(
   ));
   if (!hasDistributableCredential) return {};
 
-  const token: Record<string, any> = {};
+  const token: Record<string, any> = {
+    // 2cc Guard 会先读取这份完整 schema，再判断服务端凭证是否可用于免扫码播放。
+    // 只返回当前用户命中的几个字段，会让 cookie 看起来有效但 Guard 仍回退扫码。
+    token: '',
+    open_token: '',
+    open_api_url: 'postparam|http://api.extscreen.com/aliyundrive/token',
+    oauth_client_id: '',
+    oauth_client_secret: '',
+    oauth_auth_url: '',
+    oauth_refresh_url: '',
+    is_vip: true,
+    vip_thread_limit: 32,
+    vip_thread_limit_night: '19-23=10',
+    vod_flags: '4kz|auto',
+    quark_thread_limit: 32,
+    quark_thread_limit_night: '19-23=10',
+    quark_is_guest: false,
+    quark_vip_thread_limit: 32,
+    quark_vip_thread_limit_night: '19-23=10',
+    quark_flags: '4kz|auto',
+    uc_thread_limit: 0,
+    uc_is_vip: false,
+    uc_vip_thread_limit: 0,
+    uc_flags: '4kz|auto',
+    thunder_thread_limit: 2,
+    thunder_is_vip: false,
+    thunder_vip_thread_limit: 2,
+    thunder_flags: '4kz',
+    aliproxy: '',
+    aliproxy_url: '',
+    proxy: '',
+    danmu: true,
+    quark_danmu: true,
+    quark_cookie: '',
+    uc_cookie: '',
+    thunder_username: '',
+    thunder_password: '',
+    thunder_captchatoken: '',
+    yd_auth: '',
+    yd_thread_limit: 4,
+    yd_flags: 'auto|4kz',
+    yd_danmu: true,
+    pikpak_username: '',
+    pikpak_password: '',
+    pikpak_flags: '4kz',
+    pikpak_thread_limit: 2,
+    pikpak_vip_thread_limit: 2,
+    pikpak_proxy: '',
+    pikpak_proxy_onlyapi: false,
+    pikpak_danmu: true,
+    wgcf_key: '',
+    wgcf_key2: '',
+    wgcf_ipport: '',
+    wgcf_xray_url: './xray.gz',
+    wgcf_geoip_url: './geoip.dat.gz',
+    wgcf_json_url: './wgcf.json',
+    wgcf_vless_id: '',
+    wgcf_vless_optname: 'singapore.com:443',
+    wgcf_vless_worker: '',
+    wgcf_vless_path: '/?ed=2048',
+    wgcf_vless_protocol: 'vless',
+    wgcf_vless_network: 'ws',
+    wgcf_vless_tls: false,
+    libxl_url: './libxl_thunder_sdk.so',
+    youtube_proxy: '',
+    singbox_url: './sing-box.gz',
+    singbox_subscribe_url: '',
+    singbox_clash2singbox_url: './clash2singbox.gz',
+    singbox_template_url: './singbox.json',
+    pan115_cookie: '',
+    pan115_thread_limit: 0,
+    pan115_vip_thread_limit: 0,
+    pan115_is_vip: false,
+    pan115_flags: '4kz',
+    pan115_speed_limit: 0,
+    pan115_speed_limit_mobile: 10485760,
+    pan115_auto_delete: true,
+    pan115_delete_code: '',
+    pan_order: 'ali|quark|uc|115|yd|thunder|pikpak',
+  };
   const allowed = neededPlatforms ? new Set(neededPlatforms) : null;
   const canUse = (platform: CloudPlatform): boolean => (
     (!allowed || allowed.has(platform)) && isCredentialDistributable(platform, credentials.get(platform))
@@ -1099,6 +1178,8 @@ export function generateTokenJson(
 
   if (canUse('pan115')) {
     const cookie = value('pan115', 'cookie');
+    set('pan115_cookie', cookie);
+    // 保留旧客户端/旧 Guard 使用的别名，规范字段始终优先生效。
     set('115_cookie', cookie);
     set('115Cookie', cookie);
   }
@@ -1112,6 +1193,7 @@ export function generateTokenJson(
       set('xunlei_username', username);
       set('xunlei_password', password);
     }
+    set('thunder_captchatoken', value('thunder', 'captchatoken') || value('thunder', 'thunder_captchatoken'));
     const thunderToken = value('thunder', 'token') || value('thunder', 'tuctoken');
     set('tuctoken', thunderToken);
     set('thunder_token', thunderToken);
@@ -1135,11 +1217,12 @@ export function generateTokenJson(
   if (canUse('tianyi')) {
     const username = value('tianyi', 'username');
     const password = value('tianyi', 'password');
+    const cookie = value('tianyi', 'cookie');
+    set('yd_auth', cookie);
     if (username && password) {
       set('tianyi_username', username);
       set('tianyi_password', password);
     }
-    const cookie = value('tianyi', 'cookie');
     set('tianyi_cookie', cookie);
     set('tianyiCookie', cookie);
     set('tyitoken', cookie);
