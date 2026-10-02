@@ -113,7 +113,7 @@ ${sharedStyles}
 .credential-help-warning{color:var(--yellow);margin-top:8px}
 
 /* Search source tables */
-.sq-table-wrap{max-height:420px;overflow:auto;border:1px solid var(--border);border-radius:6px;background:var(--surface)}
+.sq-table-wrap{max-height:420px;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;border:1px solid var(--border);border-radius:6px;background:var(--surface)}
 .sq-table-wrap.is-pinned{max-height:260px;margin-bottom:12px}
 .sq-table{width:100%;border-collapse:separate;border-spacing:0;font-size:0.8rem}
 .sq-table th{position:sticky;top:0;z-index:2;background:var(--surface-2);color:var(--text-secondary);text-align:left;font-weight:600;padding:7px 8px;border-bottom:1px solid var(--border);box-shadow:inset 0 -1px 0 var(--border)}
@@ -2631,6 +2631,55 @@ function renderQualityStats(d) {
 let sqAllSites = [];
 let sqExcludedSites = [];
 let sqCandidateCount = 0;
+let sqSearchRenderPending = false;
+let sqLastRenderedHtml = '';
+const sqScrollPositions = { pinned: null, candidate: null, excluded: null };
+
+function captureSearchTableScroll() {
+  document.querySelectorAll('.sq-table-wrap[data-sq-scroll]').forEach(function(el) {
+    const key = el.getAttribute('data-sq-scroll');
+    if (key) sqScrollPositions[key] = { top: el.scrollTop, left: el.scrollLeft };
+  });
+}
+
+function restoreSearchTableScroll() {
+  document.querySelectorAll('.sq-table-wrap[data-sq-scroll]').forEach(function(el) {
+    const pos = sqScrollPositions[el.getAttribute('data-sq-scroll')];
+    if (pos) {
+      el.scrollTop = pos.top;
+      el.scrollLeft = pos.left;
+    }
+  });
+}
+
+function bindSearchTableScroll() {
+  document.querySelectorAll('.sq-table-wrap[data-sq-scroll]').forEach(function(el) {
+    if (el.dataset.sqScrollBound === '1') return;
+    el.dataset.sqScrollBound = '1';
+    let scrollingTimer = null;
+    const markScrolling = function() {
+      sqSearchRenderPending = true;
+      if (scrollingTimer) clearTimeout(scrollingTimer);
+      scrollingTimer = setTimeout(function() {
+        scrollingTimer = null;
+        sqSearchRenderPending = false;
+        renderSearchSources();
+      }, 180);
+    };
+    el.addEventListener('scroll', markScrolling, { passive: true });
+    el.addEventListener('pointerdown', function() { sqSearchRenderPending = true; }, { passive: true });
+    el.addEventListener('pointerup', function() {
+      setTimeout(function() {
+        sqSearchRenderPending = false;
+        renderSearchSources();
+      }, 180);
+    }, { passive: true });
+    el.addEventListener('pointercancel', function() {
+      sqSearchRenderPending = false;
+      renderSearchSources();
+    }, { passive: true });
+  });
+}
 
 function qualityEntryByKey() {
   const map = new Map();
@@ -2693,6 +2742,8 @@ function qualitySpeedLabel(entry) {
 }
 
 function renderSearchSources() {
+  if (sqSearchRenderPending) return;
+  captureSearchTableScroll();
   const pinnedArr = [...sqPinnedKeys];
   const qualityMap = qualityEntryByKey();
   const input = $('sqSourceFilter');
@@ -2731,7 +2782,7 @@ function renderSearchSources() {
   if (pinnedFiltered.length > 0) {
     html += '<div style="margin-bottom:12px"><strong style="color:var(--primary)">' + t('sqPinned') + ' (' + pinnedFiltered.length + ')</strong>';
     html += ' <span style="font-size:0.75rem;color:var(--text-secondary)">— ' + t('sqPinnedDesc') + '</span></div>';
-    html += '<div class="sq-table-wrap is-pinned"><table class="sq-table">';
+    html += '<div class="sq-table-wrap is-pinned" data-sq-scroll="pinned"><table class="sq-table">';
     html += '<thead><tr><th style="width:30px">#</th><th>' + t('sqKey') + '</th><th>' + t('sqName') + '</th><th>' + t('sqGrade') + '</th><th>' + t('sqSpeedStatus') + '</th><th style="width:190px;text-align:right">' + t('sqAction') + '</th></tr></thead><tbody>';
     pinnedFiltered.forEach(function(key) {
       const s = sqAllSites.find(item => item.key === key) || { key: key, name: key };
@@ -2756,7 +2807,7 @@ function renderSearchSources() {
 
   html += '<div style="margin-top:16px;margin-bottom:8px"><strong>' + t('sqOtherSources') + ' (' + (sqCandidateCount || candidateSites.length) + ')</strong></div>';
   html += '<div style="margin-bottom:6px;font-size:0.75rem;color:var(--text-secondary)">' + t('sqCandidateDesc') + '</div>';
-  html += '<div class="sq-table-wrap"><table class="sq-table">';
+  html += '<div class="sq-table-wrap" data-sq-scroll="candidate"><table class="sq-table">';
   html += '<thead><tr><th>' + t('sqKey') + '</th><th>' + t('sqName') + '</th><th>' + t('sqGrade') + '</th><th>' + t('sqSpeedStatus') + '</th><th style="width:120px;text-align:right">' + t('sqAction') + '</th></tr></thead><tbody>';
   unpinned.forEach(function(s) {
     const isBlocked = sqBlockedKeys.has(s.key);
@@ -2782,7 +2833,7 @@ function renderSearchSources() {
     const excludedVisible = excludedFiltered.slice(0, visibleLimit);
     html += '<div style="margin-top:20px;margin-bottom:8px"><strong>' + t('sqExcludedSources') + ' (' + excludedFiltered.length + ')</strong></div>';
     html += '<div style="margin-bottom:6px;font-size:0.75rem;color:var(--text-secondary)">' + t('sqExcludedDesc') + '</div>';
-    html += '<div class="sq-table-wrap"><table class="sq-table">';
+    html += '<div class="sq-table-wrap" data-sq-scroll="excluded"><table class="sq-table">';
     html += '<thead><tr><th>' + t('sqKey') + '</th><th>' + t('sqName') + '</th><th>' + t('sqReason') + '</th><th>' + t('sqSpeedStatus') + '</th><th style="width:120px;text-align:right">' + t('sqAction') + '</th></tr></thead><tbody>';
     excludedVisible.forEach(function(s) {
       const isBlocked = sqBlockedKeys.has(s.key);
@@ -2801,7 +2852,15 @@ function renderSearchSources() {
     html += '</tbody></table></div>';
   }
 
+  // Polling should not replace an unchanged table. Replacing it would reset
+  // scroll position and interrupt a scrollbar drag even when nothing changed.
+  if (html === sqLastRenderedHtml) return;
+  sqLastRenderedHtml = html;
   $('sqSelectedTable').innerHTML = html;
+  // Restore first: setting scrollTop before binding avoids treating the
+  // programmatic restore as a user scroll and re-rendering in a loop.
+  restoreSearchTableScroll();
+  bindSearchTableScroll();
 }
 async function movePinned(index, direction) {
   const arr = [...sqPinnedKeys];
