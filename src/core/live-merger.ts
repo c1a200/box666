@@ -417,16 +417,44 @@ function canonicalAggregateChannelName(raw: string): string {
   const base = sanitizeTxtLabel(raw, '未命名').trim();
   if (!/^(?:CCTV|中央|央视)/i.test(base)) return base;
   const cleaned = base
-    .replace(/\s*(?:高清|超清|蓝光|4k|1080p?|720p?)$/i, '')
+    .replace(/\s*(?:高清|超清|蓝光|1080p?|720p?)$/i, '')
     .replace(/[-_\s]*(?:咪咕|移动)$/i, '')
     .trim();
+  // CCTV4K/8K 是独立超高清频道，不参与普通 CCTV 数字频道归一。
+  if (/^(?:CCTV|中央|央视)[-_\s]*(?:4k|8k)$/i.test(base)) return base;
+  // 兼容 CCTV-01广州、CCTV-13FYtv、CCTV-5+体育赛事、CCTV-7国防军事 等后缀。
   const match = cleaned.match(
-    /^(?:CCTV|中央|央视)[-_\s]*0*(\d{1,2})(\+)?(?:[-_\s]+\d+)?(?:[-_\s]*(综合|财经|中文国际|体育|电影|军事|电视剧|纪录|科教|戏曲|社会与法|新闻|少儿|音乐|奥林匹克|农业农村))?$/i,
+    /^(?:CCTV|中央|央视)[-_\s]*(?:0*(\d{1,2}))(\+)?(?:[-_\s]*(\d+(?:[A-Za-z]*|[\u4e00-\u9fa5]{1,8})?|[A-Za-z][A-Za-z0-9]*|[\u4e00-\u9fa5]{1,8}))?$/i,
   );
   if (!match) return cleaned;
   const number = Number(match[1]);
   if (!Number.isInteger(number) || number < 1 || number > 17) return cleaned;
   return `CCTV-${number}${match[2] ? '+' : ''}`;
+}
+
+const AGGREGATE_GROUP_ORDER = [
+  '央视',
+  '卫视',
+  '地方',
+  '港澳台',
+  '影视',
+  '电视剧',
+  '少儿',
+  '体育',
+  '音乐',
+  '纪录',
+  '新闻财经',
+  '教育',
+  '春晚',
+  '风景直播',
+  '4K/8K',
+  '一起看',
+  '其他',
+] as const;
+
+function aggregateGroupRank(group: string): number {
+  const index = AGGREGATE_GROUP_ORDER.indexOf(group as (typeof AGGREGATE_GROUP_ORDER)[number]);
+  return index >= 0 ? index : AGGREGATE_GROUP_ORDER.length;
 }
 
 /**
@@ -447,41 +475,70 @@ function normalizeAggregateChannelGroup(
   const compact = name.replace(/\s+/g, '').toLowerCase();
   if (!compact) return group;
 
-  // 主播/一起看、风景直播分组里频道名常是主播昵称，整组保留。
-  if (group === '一起看' || group === '风景直播') return group;
+  // 实时风景机位名称可能包含“中央”，必须先于央视兜底判断。
+  if (/熊猫直播|中央电视塔|直播中国|风景|景区/.test(compact)
+    || (/航拍/.test(compact) && !/航拍中国/.test(compact))) return '风景直播';
 
-  // 语义唯一、不会被地方台重名的频道，先于地方/卫视兜底归位。
-  if (/^(?:cctv)?(?:第一剧场|怀旧剧场|文化精品|风云剧场|兵器科技|电视指南|发现之旅|老故事)$/.test(compact)) return '影视';
+  // 央视付费频道中语义明确的类型先于“央视”兜底处理。
+  if (/^(?:cctv)?(?:第一剧场|怀旧剧场|文化精品|风云剧场|兵器科技|电视指南|发现之旅|老故事)$/.test(compact)
+    || /^chc/.test(compact)) return '影视';
+  if (/^(?:cctv|中央|央视)/.test(compact) && /台球|足球|网球/.test(compact)) return '体育';
+  if (/^(?:cctv|中央|央视)/.test(compact)) return '央视';
   if (/第一财经/.test(compact)) return '新闻财经';
-  if (/教育|学习/.test(compact)) return '教育';
+  if (/教育|教科|学习/.test(compact)) return '教育';
   if (/之江纪录|cgtn纪录|cgtn记录|飞碟之谜|航拍中国|中国村庄/.test(compact)) return '纪录';
   if (/卫视/.test(compact)) return '卫视';
   if (/^[\u4e00-\u9fa5]{1,8}(?:4k|8k)$/.test(compact.replace(/(?:频道)?超?$/, ''))) return '4K/8K';
 
-  // 地方频道组整体保留，避免把普通地方新闻/综合/生活台拆散。
-  const explicitLocalGroup = /地方频道|省频道|市频道|县频道/.test(rawGroupCompact);
-  if (explicitLocalGroup) return '地方';
+  // 地方频道组里的综合/公共/新闻台仍属于地方台；少儿、体育、音乐、教育
+  // 等语义明确的频道再按内容迁出，避免“新闻综合”被拆进新闻财经。
   const fromLocalGroup = group === '地方' || /地方频道|省频道|市频道|县频道|浙江频道|广州电信/.test(rawGroupCompact);
-  if (group === '少儿' || group === '体育' || group === '音乐' || group === '电视剧' || group === '春晚') return group;
-  if (fromLocalGroup && !/少儿|儿童|卡通|动漫|动画|体育|足球|篮球|网球|赛事|运动|音乐|歌曲|演唱会|港乐|dj|串烧/.test(compact)) return group;
+  if (group === '少儿' || group === '体育' || group === '音乐' || group === '电视剧' || group === '春晚' || group === '港澳台') return group;
+  if (fromLocalGroup && !/少儿|儿童|卡通|动漫|动画|青少|体育|足球|篮球|网球|台球|斯诺克|赛事|运动|音乐|歌曲|演唱会|港乐|dj|串烧|教育|教科|学习/.test(compact)) return group;
 
-  const explicitProvinceOrCity = /北京|上海|天津|重庆|河北|山西|辽宁|吉林|黑龙江|江苏|浙江|安徽|福建|江西|山东|河南|湖北|湖南|广东|广西|海南|四川|贵州|云南|陕西|甘肃|青海|宁夏|新疆|西藏|内蒙古|广州|深圳|杭州|南京|苏州|东阳|武汉|成都|西安|哈尔滨|长春|沈阳|济南|郑州|长沙|合肥|福州|南昌|昆明|贵阳|南宁|海口|太原|石家庄|兰州|西宁|银川|乌鲁木齐|拉萨|呼和浩特/.test(compact);
+  const explicitProvinceOrCity = /北京|上海|天津|重庆|河北|山西|辽宁|吉林|黑龙江|江苏|浙江|安徽|福建|江西|山东|河南|湖北|湖南|广东|广西|海南|四川|贵州|云南|陕西|甘肃|青海|宁夏|新疆|西藏|内蒙古|内蒙|广州|深圳|杭州|南京|苏州|东阳|武汉|成都|西安|哈尔滨|长春|沈阳|济南|郑州|长沙|合肥|福州|南昌|昆明|贵阳|南宁|海口|太原|石家庄|兰州|西宁|银川|乌鲁木齐|拉萨|呼和浩特/.test(compact);
 
-  if (/第一财经|财经|新闻|资讯/.test(compact)) {
-    if (group === '地方' && !/第一财经|财经|新闻|资讯/.test(rawGroupCompact)) return group;
+  if (/新闻综合|综合新闻/.test(compact)) return '地方';
+  if (/第一财经|财经|新闻|资讯|商业|财富天下/.test(compact)) {
+    if (group === '地方' && !/第一财经|财经|新闻|资讯|商业|财富天下/.test(rawGroupCompact)) return group;
     return '新闻财经';
   }
   if (/教育|学习/.test(compact)) return '教育';
   if (/生活|民生|都市/.test(compact)) return '地方';
-  if (/体育|足球|篮球|网球|赛事|运动/.test(compact)) return '体育';
-  if (/少儿|儿童|卡通|动漫|动画|猫和老鼠|七龙珠|中华小当家/.test(compact)) return '少儿';
+  if (/体育|足球|篮球|网球|台球|斯诺克|赛事|运动|竞技|格斗/.test(compact)) return '体育';
+  if (/少儿|儿童|卡通|动漫|动画|青少|猫和老鼠|七龙珠|中华小当家/.test(compact)) return '少儿';
   if (/音乐|歌曲|演唱会|港乐|dj|串烧|风云音乐|音乐现场/.test(compact)) return '音乐';
-  if (/电视剧|连续剧|剧集|港剧|美剧|韩剧|短剧|经典剧|射雕英雄传|倚天屠龙记|笑傲江湖|寻秦记|创世纪|大时代|楚汉骄雄|大唐双龙传|法政先锋|鉴证实录|妙手仁心|陀枪师姐|洗冤录|刑事侦缉档案|金枝欲孽|活佛济公|西游记|封神榜|倩女幽魂|龙门飞甲|甄嬛传|还珠格格|亮剑|流星花园|大地恩情|凡人修仙|粤经典/.test(compact)) return '电视剧';
+
+  if (group === '一起看') {
+    // 只迁移内容语义明确的频道；普通主播昵称继续留在“一起看”，
+    // 避免为了整理分类把主播错误归入影视/剧集等专题。
+    if (/少儿|儿童|卡通|动漫|动画|猫和老鼠|蜡笔小新|龙珠|叮当|海绵宝宝|樱桃小丸|米老鼠|数码宝贝|神奇宝贝|奥特曼|假面骑士/.test(compact)) return '少儿';
+    if (/说电影|评电影|看电影|电影解说|电影|影视|影院|放映|放映厅|大片|动作片|喜剧片|科幻片|恐怖片|战争片|武侠片|港片|成龙|古天乐|黄渤|李连杰|刘德华|林正英|周润发|周星驰|沈腾|王晶|甄子丹|洪金宝|强森|杰森斯坦|星爷|邵氏|动作|枪战|怪兽|黑帮|恐怖|喜剧|战争|悬疑|警匪/.test(compact)) return '影视';
+    if (/说剧|看剧|追剧|剧迷|电视剧|连续剧|剧集|短剧|港剧|美剧|韩剧|泰剧|剧场|小品|相声|戏剧|大剧|经典剧|古装|宫斗|爱情公寓|白鹿原|镖行天下|超异能族|陈情令|陈翔六点|楚汉骄雄|创世纪|炊事班|大染坊|大宋提刑|大唐双龙|盗墓|地下交通|谍战|法证先锋|风云雄霸|封神榜|父母爱情|活佛济公|家有儿女|将夜|金枝欲孽|精绝古城|绝代双娇|康熙微服|鹿鼎记|漫威|漫长季节|梦华录|妙手仁心|怒晴湘西|三国演义|扫黄先锋|神雕侠侣|神探狄仁|神医喜来|士兵突击|水月洞天|死神来了|铁齿铜牙|铁道游击|铁梨花|陀枪师姐|问心|我的团长|乌龙院|无心法师|五福星|西游记|洗冤录|小李飞刀|笑看风云|新楚留香|新三国|新水浒传|星汉灿烂|刑事侦缉|玄幻|寻秦记|野蛮奶奶|一代枭雄|医馆笑传|倚天屠龙|英叔|雍正王朝|永夜星河|御赐仵作|云南虫谷|长相思|征服|周海媚|罪犯/.test(compact)) return '电视剧';
+    if (/音乐|歌曲|演唱会|翻唱|串烧|港乐|dj/.test(compact)) return '音乐';
+    if (/体育|足球|篮球|网球|台球|斯诺克|赛事|运动|竞技|格斗|看球/.test(compact)) return '体育';
+    if (/纪录|纪实|探索|科普|地理|人文|自然|慢直播|监视/.test(compact)) return '纪录';
+    return group;
+  }
+
+  if (/电视剧|连续剧|剧集|港剧|美剧|韩剧|短剧|经典剧|大剧|戏剧|射雕|神雕|倚天屠龙|笑傲江湖|寻秦记|创世纪|大时代|楚汉骄雄|大唐双龙传|法政先锋|鉴证实录|妙手仁心|陀枪师姐|洗冤录|刑事侦缉档案|金枝欲孽|活佛济公|西游记|封神榜|倩女幽魂|龙门飞甲|甄嬛传|还珠格格|亮剑|雪豹|华山论剑|三国|流星花园|大地恩情|凡人修仙|粤经典|水浒传|天龙八部|鹿鼎记|绝代双娇|神探狄仁|铁齿铜牙|神医喜来|父母爱情|白鹿原|大染坊|炊事班|士兵突击|我的团长|雍正王朝|康熙微服|玫瑰故事|梦华录|星汉灿烂|永夜星河|问心|漫长的季节|爱情公寓|家有儿女|海绵宝宝|蜡笔小新|叮当|龙珠|柯南|圣斗士|四驱兄弟|头文字|足球小将|全职高手|一人之下|一人之上|笑看风云|庆余年|雪中悍刀行|延禧攻略|武林外传|仙剑奇侠传|新白娘子|我爱男保姆|我的前半生|传闻中的芊芊|第一滴血|火蓝刀锋|炮神|渗透|风筝|开端|流金岁月|少寒|如果岁月|电视轮播|电视轮|电视|轮播/.test(compact)) return '电视剧';
   const localComprehensiveChannel = /东丰|敦化一套|桦甸|靖宇|九台|柳河|龙井|磐石|双辽|通化县|汪清|白山公共|舒兰新闻|辉南新闻|珲春新闻/.test(compact);
   if (localComprehensiveChannel) return '地方';
   if (/纪录|纪实|探索|地理|人文|自然|飞碟之谜|航拍中国|中国村庄|之江纪录|cgtn纪录/.test(compact)) return '纪录';
-  if (explicitProvinceOrCity && /综合|公共|都市|生活|影视|新闻|经济|科教|文化|导视|频道|电视/.test(compact)) return '地方';
+  if (/spotv|sports?|football/.test(compact)) return '体育';
+  if (/港澳台|^凤凰|翡翠|无线|tvb|rthk|东森|民视|中视|中天|台视|三立|纬来|龙华|now|澳门|澳视|八度空间|astro|有线|华艺|tvbs|香港c|香港|ch[58u]|ch\d|elta|jet|rock娱乐|astr|欢喜|plus综合/.test(compact)) return '港澳台';
+  if (/football|sports?|全运.*(?:开幕|闭幕)|全运会?/.test(compact)) return '体育';
+  if (/广东珠江|广州南国|番薯综合|南国|珠江/.test(compact)) return '地方';
+  if (/动物星球|自然|地理|纪录|纪实|探索/.test(compact)) return '纪录';
+  if (/古装|妖魔|好片|经典怀旧|警匪悬疑|科幻梦工场|马年.*贺岁|速度与激情/.test(compact)) return '影视';
+  if (/红楼梦|鹊刀门传奇|传奇剧|雪豹|经典剧/.test(compact)) return '电视剧';
+  if (explicitProvinceOrCity && /综合|公共|都市|生活|影视|新闻|经济|经视|科教|文化|导视|频道|电视|乡村|农村|国际|旅游|资讯/.test(compact)) return '地方';
   if (/综合|公共/.test(compact) && /白山|东丰|敦化|桦甸|辉南|珲春|靖宇|九台|柳河|龙井|磐石|舒兰|双辽|通化|汪清|德惠|昌黎|朝天|定襄|汾西|古县|固镇|灌阳|广安|广元|甘南|海宁|邯郸|河源|衡水|衡阳|湖州|怀仁|黄山|嘉兴|嘉峪关|剑阁|津南|晋江|缙云|荆门|井研|靖江|句容|开化|可克达拉|来宾|兰溪|六安|龙泉|龙游/.test(compact)) return '地方';
+
+  if (/重温经典/.test(compact)) return '影视';
+  if (/电影|影院|影视|剧场|大片|动作片|喜剧片|科幻片|恐怖片|战争片|武侠片|港片|周星驰|成龙|林正英|周润发|邵氏|陈翔六点半|视觉/.test(compact)) return '影视';
+  if (/新闻|资讯|财经|商业/.test(compact)) return '新闻财经';
+  if (/女性时尚|时尚|咪视界|爱奇艺综|脱口秀|颁奖典礼|颁奖礼|红地毯|走红毯|广场舞/.test(compact)) return '其他';
 
   return group;
 }
@@ -492,8 +549,8 @@ function normalizeAggregateChannelGroup(
  * 这里只处理最终聚合输出，不影响 /live/<key> 的单源代理内容。
  *
  * 原则：
- * - 明确且内容量足够大的专题分类保留，避免把几百个频道硬塞进“其他”；
- * - 同义分类合并，极小且无明确归属的分类归入“其他”；
+ * - 只输出固定主分类，来源名和专题名不再作为独立分类；
+ * - 同义分类合并，无法判断内容时归入“其他”；
  * - 空分类不输出，频道线路仍按 URL 去重并保留多线路。
  */
 function normalizeAggregateGroupName(raw: string): string {
@@ -505,37 +562,48 @@ function normalizeAggregateGroupName(raw: string): string {
   if (!compact) return '其他';
 
   if (/cctv|央视|中央电视|央卫|咪咕|cg?tn/.test(compact)) {
-    if (/cctv第一剧场|cctv怀旧剧场|cctv文化精品|风云剧场|兵器科技|电视指南|发现之旅|老故事/.test(compact)) return '影视';
+    if (/第一剧场|怀旧剧场|文化精品|风云剧场|兵器科技|电视指南|发现之旅|老故事/.test(compact)) return '影视';
     return '央视';
   }
   if (/卫视/.test(compact)) return '卫视';
   if (/港澳台|港·澳·台|港台/.test(compact)) return '港澳台';
-  const provinceOrCity = /北京|上海|天津|重庆|河北|山西|辽宁|吉林|黑龙江|江苏|浙江|安徽|福建|江西|山东|河南|湖北|湖南|广东|广西|海南|四川|贵州|云南|陕西|甘肃|青海|宁夏|新疆|西藏|内蒙古|广州|深圳|杭州|南京|苏州|武汉|成都|西安|哈尔滨|长春|沈阳|济南|郑州|长沙|合肥|福州|南昌|昆明|贵阳|南宁|海口|太原|石家庄|兰州|西宁|银川|乌鲁木齐|拉萨|呼和浩特/.test(compact);
+  const provinceOrCity = /北京|上海|天津|重庆|河北|山西|辽宁|吉林|黑龙江|江苏|浙江|安徽|福建|江西|山东|河南|湖北|湖南|广东|广西|海南|四川|贵州|云南|陕西|甘肃|青海|宁夏|新疆|西藏|内蒙古|内蒙|广州|深圳|杭州|南京|苏州|武汉|成都|西安|哈尔滨|长春|沈阳|济南|郑州|长沙|合肥|福州|南昌|昆明|贵阳|南宁|海口|太原|石家庄|兰州|西宁|银川|乌鲁木齐|拉萨|呼和浩特/.test(compact);
   if ((/地方|省频道|市频道|县频道|频道/.test(compact) && provinceOrCity)
-    || /广州电信|电信频道/.test(compact)) {
+    || /广州电信|电信频道|地方频道/.test(compact)) {
     return '地方';
   }
-  if (/少儿|儿童|卡通|动漫|动画/.test(compact)) return '少儿';
-  if (/体育|足球|篮球|网球|赛事|运动/.test(compact)) return '体育';
+  if (/少儿|儿童|卡通|动漫|动画|青少|童年/.test(compact)) return '少儿';
+  if (/体育|足球|篮球|网球|台球|斯诺克|赛事|运动|竞技|全运/.test(compact)) return '体育';
   if (/纪录|纪实|探索|地理|人文/.test(compact)) return '纪录';
-  if (/新闻|资讯|财经/.test(compact)) return '新闻财经';
+  if (/新闻|资讯|财经|商业/.test(compact)) return '新闻财经';
   if (/音乐|歌曲|演唱会|港乐|dj|串烧|欣赏港乐|欣赏音乐/.test(compact)) return '音乐';
-  if (/电影|影院|影视|剧场|大片|动作|喜剧|科幻|恐怖|战争|武侠|视觉效果/.test(compact)) return '影视';
-  if (/电视剧|连续剧|剧集|港剧|美剧|韩剧|短剧|经典剧|甄嬛传|还珠格格|亮剑|流星花园|大地恩情|大时代|凡人修仙|粤经典/.test(compact)) return '电视剧';
-  if (/春晚|春节/.test(compact)) return '春晚';
+  if (/电影|影院|影视|剧场|大片|动作|喜剧|科幻|恐怖|战争|武侠|视觉效果|轮播/.test(compact)) return '影视';
+  if (/电视剧|连续剧|剧集|港剧|美剧|韩剧|短剧|经典剧|雪豹|华山论剑|三国|射雕|神雕|亮剑|流星花园|还珠格格|甄嬛传|大时代|大地恩情|凡人修仙|粤经典/.test(compact)) return '电视剧';
+  if (/春晚|春节|贺岁/.test(compact)) return '春晚';
   if (/直播中国|风景|景区|航拍/.test(compact)) return '风景直播';
-  if (/一起看|虎牙|斗鱼|b站|原创|zonghe|综合直播/.test(compact)) return '一起看';
+  if (/一起看|虎牙|斗鱼|b站|原创|zonghe|综合直播|抖音|快手/.test(compact)) return '一起看';
   if (/^(?:4k8k频道|4k频道|8k频道|超高清|高清频道)$/.test(compact)) return '4K/8K';
   if (/教育|学习/.test(compact)) return '教育';
-  if (/生活|民生|都市/.test(compact)) return '生活';
-  if (/欣赏频道/.test(compact)) return '其他';
-  if (/解说|数字|car|测试|备用/.test(compact)) return '其他';
+  if (/生活|民生|都市/.test(compact)) return '地方';
+  if (/欣赏频道|咪视界|数字频道|解说频道|car|测试|备用/.test(compact)) return '其他';
 
-  // 内容明确但名称不规范的专题分类保留原名称，避免破坏有效分类。
-  if (compact.length >= 3) return label;
   return '其他';
 }
 
+/**
+ * 聚合输出专用噪声过滤。
+ *
+ * 不直接放大全局 AD_KEYWORDS，避免误删单源或正常频道；
+ * 这里只处理网络直播里明确不是电视频道的推广/状态条目。
+ */
+function isAggregateNoiseChannel(name: string): boolean {
+  const label = sanitizeTxtLabel(name, '').trim();
+  const compact = label.replace(/\s+/g, '');
+  if (!compact) return true;
+  return /^[➡⬆⬇→←⬅↪↩️⭐✅❌❗]+/.test(compact)
+    || /支持作者|分享备用|更新时间|白嫖软件|免费观看|分享更新|互相搬助|大街网源|能看就行|不必纠结|爱扒随便/.test(compact)
+    || /^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}(?:[\sT]+\d{1,2}:\d{2}(?::\d{2})?)?$/.test(label);
+}
 /**
  * 将聚合直播分组转成 TVBox TXT。分类归一和频道线路去重只用于全局
  * /live；单源 /live/<key> 继续调用 formatLiveGroupsAsTxt。
@@ -545,6 +613,7 @@ export function formatAggregatedLiveGroupsAsTxt(groups: TVBoxLiveGroup[]): strin
   for (const group of groups) {
     const byGroup = new Map<string, TVBoxLiveChannel[]>();
     for (const channel of group.channels || []) {
+      if (isAggregateNoiseChannel(channel.name || '')) continue;
       const targetGroup = normalizeAggregateChannelGroup(group.group || '', channel.name || '');
       const list = byGroup.get(targetGroup) || [];
       list.push(channel);
@@ -554,6 +623,7 @@ export function formatAggregatedLiveGroupsAsTxt(groups: TVBoxLiveGroup[]): strin
       normalized.push({ group: targetGroup, channels });
     }
   }
+  normalized.sort((a, b) => aggregateGroupRank(a.group) - aggregateGroupRank(b.group));
   return formatLiveGroupsAsTxtInternal(normalized, true);
 }
 
@@ -567,16 +637,35 @@ export function parseLiveContent(content: string, source: string, sourceSpeedMs?
 
 // ─── 下载 m3u/txt ──────────────────────────────────────
 
-async function readLimitedText(resp: Response, maxBytes = LIVE_SOURCE_MAX_DOWNLOAD_BYTES): Promise<string> {
+async function readLimitedText(
+  resp: Response,
+  signal: AbortSignal,
+  maxBytes = LIVE_SOURCE_MAX_DOWNLOAD_BYTES,
+): Promise<string> {
   const body = resp.body;
   if (!body) return '';
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let total = 0;
   let text = '';
+  let removeAbortListener: (() => void) | undefined;
+  const abortPromise = new Promise<never>((_, reject) => {
+    const onAbort = () => {
+      void reader.cancel().catch(() => {});
+      const error = new Error('Live source response body timed out');
+      error.name = 'AbortError';
+      reject(error);
+    };
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener('abort', onAbort, { once: true });
+    removeAbortListener = () => signal.removeEventListener('abort', onAbort);
+  });
   try {
     while (total < maxBytes) {
-      const { done, value } = await reader.read();
+      const { done, value } = await Promise.race([reader.read(), abortPromise]);
       if (done) break;
       if (!value || value.byteLength === 0) continue;
       const remaining = maxBytes - total;
@@ -587,6 +676,7 @@ async function readLimitedText(resp: Response, maxBytes = LIVE_SOURCE_MAX_DOWNLO
     }
     if (total < maxBytes) text += decoder.decode();
   } finally {
+    removeAbortListener?.();
     try { await reader.cancel(); } catch { /* ignore */ }
   }
   return text;
@@ -637,7 +727,6 @@ async function downloadLive(
       if (cached?.lastModified) headers['If-Modified-Since'] = cached.lastModified;
 
       const resp = await fetch(input.url, { signal: controller.signal, headers });
-      clearTimeout(timer);
 
       if (resp.status === 304 && cached) {
         cached.cachedAt = now;
@@ -655,7 +744,7 @@ async function downloadLive(
       }
 
       const contentType = (resp.headers.get('content-type') || '').toLowerCase();
-      const text = await readLimitedText(resp);
+      const text = await readLimitedText(resp, controller.signal);
       if (looksLikeLivePayload(text, contentType)) {
         const entry: CachedLiveSource = {
           content: text,
@@ -672,10 +761,11 @@ async function downloadLive(
       lastFailure = 'invalid';
       lastReason = text ? 'unexpected content' : 'empty content';
     } catch (error: unknown) {
-      clearTimeout(timer);
       // 超时、DNS、连接中断和 Worker fetch 异常都视为暂时失败。
       lastFailure = 'transient';
       lastReason = error instanceof Error ? error.message : String(error);
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -1201,7 +1291,7 @@ export async function fetchAndParseLiveUrls(
           headers: { 'User-Agent': input.ua || TVBOX_UA, ...(input.header || {}) },
         });
         if (!resp.ok) return null;
-        const text = await readLimitedText(resp);
+        const text = await readLimitedText(resp, controller.signal);
         if (!text || text.length < 20) return null;
         return { content: text, name: input.name };
       } catch {
@@ -1678,7 +1768,7 @@ export async function filterLivesBySourceDetailed(
             return { content: '', name: input.name || 'source', failure: failureFromHttpStatus(resp.status), reason: `HTTP ${resp.status}` };
           }
           const contentType = (resp.headers.get('content-type') || '').toLowerCase();
-          const text = await readLimitedText(resp);
+          const text = await readLimitedText(resp, controller.signal);
           if (!looksLikeLivePayload(text, contentType)) {
             return { content: '', name: input.name || 'source', failure: 'invalid', reason: text ? 'unexpected content' : 'empty content' };
           }

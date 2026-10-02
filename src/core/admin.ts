@@ -889,7 +889,7 @@ const translations = {
     liveSourceAdded:'Live source added', removed:'Removed', disabledStatus:'Disabled', enable:'Enable', disable:'Disable', sourceDisabled:'Source disabled', sourceEnabled:'Source enabled',
     invalidJson:'Invalid JSON', mustBeArray:'Must be a JSON array',
     allFieldsRequired:'All fields required', importFailed:'Import failed',
-    aggregationStarted:'Aggregation started', refreshFailed:'Refresh failed',
+    aggregationStarted:'Aggregation started', aggregationCompleted:'Aggregation completed', aggregationAlreadyRunning:'Aggregation is already running', refreshTimedOut:'Aggregation is taking too long and may be stuck; status will keep updating', refreshFailed:'Refresh failed',
     importConfig:'Batch Import', backupRestore:'Source Backup & Restore', backupHelp:'Download Backup saves all movie sources. Restore replaces the current list, so download a backup first.', import:'Import', importing:'Importing...', restoreBackup:'Restore Backup', restoring:'Restoring...', chooseBackup:'Choose backup file', restoreFileLoaded:'Loaded backup:', restoreBackupConfirm:'Replace all current sources with this backup? This cannot be undone.', restored:'Backup restored', restoreFailed:'Restore failed', restoreInvalidJson:'This is not a valid source backup JSON file.',
     importPlaceholder:'One source per line: Name URL / URL Name / URL only; legacy JSON or remote config URL is also accepted.',
     sourceListHelp:'One source per line. Supports “Name URL”, “URL Name”, or URL only. A single URL without a name is still fetched as a remote TVBox config. Import merges by default and duplicate URLs are skipped.',
@@ -1024,7 +1024,7 @@ const translations = {
     liveSourceAdded:'直播源已添加', removed:'已删除', disabledStatus:'已关闭', enable:'启用', disable:'关闭', sourceDisabled:'源已关闭', sourceEnabled:'源已启用',
     invalidJson:'无效的 JSON', mustBeArray:'必须是 JSON 数组',
     allFieldsRequired:'所有字段必填', importFailed:'导入失败',
-    aggregationStarted:'聚合已开始', refreshFailed:'刷新失败',
+    aggregationStarted:'聚合已开始', aggregationCompleted:'聚合已完成', aggregationAlreadyRunning:'聚合正在运行', refreshTimedOut:'聚合耗时过长，可能已卡住；状态会继续更新', refreshFailed:'刷新失败',
     importConfig:'批量导入', backupRestore:'源备份与恢复', backupHelp:'下载备份会保存全部影视源；恢复备份会覆盖当前列表，操作前请先下载备份。', import:'导入', importing:'导入中...', restoreBackup:'恢复备份', restoring:'恢复中...', chooseBackup:'选择备份文件', restoreFileLoaded:'已载入备份：', restoreBackupConfirm:'恢复将覆盖当前全部影视源配置，且无法撤销。确定继续吗？', restored:'备份已恢复', restoreFailed:'恢复失败', restoreInvalidJson:'这不是有效的源备份 JSON 文件。',
     importPlaceholder:'每行一个源：源名 URL / URL 源名 / 仅 URL；也可粘贴旧版 JSON 或远程配置 URL。',
     sourceListHelp:'每行一个源，支持“源名 URL”“URL 源名”或仅 URL；仅 URL 的单行仍按远程 TVBox 配置抓取。导入默认合并，重复 URL 会跳过。',
@@ -2920,28 +2920,77 @@ async function toggleBlocked(key) {
 }
 
 // --- Refresh ---
-async function triggerRefresh() {
+function setRefreshButtonState(running) {
   const btn = $('refreshBtn');
-  btn.textContent = t('aggregateNowRunning');
-  btn.className = 'btn btn-sm loading';
+  if (!btn) return;
+  btn.textContent = running ? t('aggregateNowRunning') : t('aggregateNow');
+  btn.className = running ? 'btn btn-sm loading' : 'btn btn-sm';
+  btn.disabled = running;
+}
+
+async function pollAggregationStatus() {
+  let attempts = 0;
+  const poll = async () => {
+    attempts += 1;
+    try {
+      const res = await auth.authFetch('/admin/aggregation-status');
+      if (!res.ok) throw new Error('status unavailable');
+      const status = await res.json();
+      if (status.running) {
+        const elapsed = Math.round((status.elapsedMs || 0) / 1000);
+        const phase = status.phase ? ' (' + status.phase + ', ' + elapsed + 's)' : ' (' + elapsed + 's)';
+        const btn = $('refreshBtn');
+        if (btn) btn.textContent = t('aggregateNowRunning') + phase;
+        if (attempts < 600) setTimeout(poll, 2000);
+        return;
+      }
+      setRefreshButtonState(false);
+      await loadStatus();
+      const result = status.lastResult || status;
+      if (result.timedOut) toast(t('refreshTimedOut'), 'error');
+      else if (result.completed) toast(t('aggregationCompleted'));
+      else if (result.message) toast(result.message, 'error');
+      else toast(t('refreshFailed'), 'error');
+      return;
+    } catch {
+      if (attempts < 5) {
+        setTimeout(poll, 2000);
+      } else {
+        setRefreshButtonState(false);
+      }
+    }
+  };
+  void poll();
+}
+
+async function triggerRefresh() {
+  setRefreshButtonState(true);
 
   try {
     const res = await auth.authFetch('/refresh', { method: 'POST' });
-    const d = await res.json();
-    if (d.success) {
-      toast(t('aggregationStarted'));
-      setTimeout(loadStatus, 3000);
-    } else {
-      toast(t('refreshFailed'), 'error');
+    const d = await res.json().catch(() => ({}));
+    if (res.status === 409 || d.skipped) {
+      toast(t('aggregationAlreadyRunning'));
+      void pollAggregationStatus();
+      return;
     }
+    if (!res.ok || !d.success) {
+      setRefreshButtonState(false);
+      toast(d.error || t('refreshFailed'), 'error');
+      return;
+    }
+    if (d.started || d.timedOut) {
+      toast(t('aggregationStarted'));
+      void pollAggregationStatus();
+      return;
+    }
+    setRefreshButtonState(false);
+    toast(d.completed ? t('aggregationCompleted') : t('refreshFailed'), d.completed ? 'success' : 'error');
+    setTimeout(loadStatus, 1000);
   } catch {
+    setRefreshButtonState(false);
     toast(t('networkError'), 'error');
   }
-
-  setTimeout(() => {
-    btn.textContent = t('aggregateNow');
-    btn.className = 'btn btn-sm';
-  }, 3000);
 }
 
 // --- Cloud Credentials ---

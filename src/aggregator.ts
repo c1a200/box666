@@ -4,7 +4,7 @@ import type { Storage } from './storage/interface';
 import type { AppConfig, SourceEntry, SourcedConfig, MacCMSSourceEntry, SourceFetchResult, SourceHealthRecord, AggregationLog, AggLogFailedSource, AggLogSiteChange, TVBoxSite, TVBoxLive, SiteHealthMap } from './core/types';
 import { fetchConfigs } from './core/fetcher';
 import { mergeConfigs, cleanLocalRefs, cleanEmptyEntries } from './core/merger';
-import { applyLegacyWoggCompatibility } from './core/cf-compat';
+import { applyLegacyWoggCompatibility, migrateLegacyWoggCompatibility } from './core/cf-compat';
 import { batchSiteSpeedTest, appendSpeedToName, filterUnreachableSites, type SiteProbeResult } from './core/speedtest';
 import { isClientCredentialSite, getDirectPlatformFromApi } from './core/credential-risk';
 import { macCMSToTVBoxSites, processMacCMSForLocal } from './core/maccms';
@@ -76,6 +76,7 @@ export async function runAggregation(
       blacklistRemovedParses: 0,
       blacklistRemovedLives: 0,
     });
+    throw error;
   }
 }
 
@@ -253,8 +254,27 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
   // Deployment-agnostic compatibility: the deprecated WoGGGuard shell does
   // not honor the project's Pan.init credential protocol. Each deployment keeps
   // its own KV/config data; only this legacy entry is repaired in place.
-  if (applyLegacyWoggCompatibility(merged)) {
-    logger.infoFields('aggregation', 'legacy-woggguard-migrated', { key: '玩偶' });
+  const woggMigration = migrateLegacyWoggCompatibility(merged);
+  if (woggMigration.changed) {
+    logger.infoFields('aggregation', 'legacy-woggguard-migrated', {
+      key: '玩偶',
+      renamed: woggMigration.keyMigrations.length,
+    });
+  }
+  // 兼容迁移可能重命名 key；来源边界/来源映射必须跟随新 key，否则迁移后
+  // 的站点会在响应期被严格边界拒绝注入。
+  for (const migration of woggMigration.keyMigrations) {
+    const source = siteSourceMap.get(migration.oldKey);
+    if (source) {
+      siteSourceMap.set(migration.newKey, source);
+      siteSourceMap.delete(migration.oldKey);
+    }
+    const upstreams = siteUpstreamMap.get(migration.oldKey);
+    if (upstreams?.length) {
+      const mergedUpstreams = new Set([...(siteUpstreamMap.get(migration.newKey) || []), ...upstreams]);
+      siteUpstreamMap.set(migration.newKey, [...mergedUpstreams].filter(Boolean).sort());
+      siteUpstreamMap.delete(migration.oldKey);
+    }
   }
 
   // 服务端质量分级与凭证感知探测仍需读取凭证，但凭证不再写入聚合结果。

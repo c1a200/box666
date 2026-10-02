@@ -20,7 +20,8 @@ import * as dns from 'dns';
 import { createApp } from './routes';
 import { runAggregation } from './aggregator';
 import { collectJarEntriesForSites, prefetchJarBinaries } from './core/jar-proxy';
-import { runChannelProbe, isProbeEnabled } from './core/channel-probe';
+import { runChannelProbe, isProbeEnabled, loadStatus } from './core/channel-probe';
+import { currentAggregationPhase } from './core/logger';
 import {
   beginQualityRun,
   finishQualityRun,
@@ -219,52 +220,214 @@ async function main() {
   const port = parseInt(process.env.PORT || '') || 5678;
   const config = await buildConfig(port);
 
+  type AggregationTriggerResult = {
+    started: boolean;
+    running: boolean;
+    completed: boolean;
+    skipped?: boolean;
+    timedOut?: boolean;
+    abandoned?: boolean;
+    runId?: string;
+    startedAt?: string;
+    phase?: string;
+    elapsedMs?: number;
+    message?: string;
+  };
+
   let refreshRunning = false;
+  let refreshRunId = '';
+  let refreshStartedAt = 0;
+  let refreshTimedOut = false;
+  let refreshAbandoned = false;
+  let refreshLastPhase = '';
+  let refreshLastResult: AggregationTriggerResult | null = null;
   const aggregationTimeoutMs = Math.max(
     60_000,
     parseInt(process.env.AGGREGATION_TIMEOUT_MS || '') || 420_000,
   );
+  const aggregationAbandonGraceMs = Math.max(
+    60_000,
+    parseInt(process.env.AGGREGATION_ABANDON_GRACE_MS || '') || 180_000,
+  );
 
-  const runWithGuard = async () => {
-    if (refreshRunning) {
-      console.log('[aggregation] Already running, skipping');
-      return;
+  function aggregationStatus(): AggregationTriggerResult & { lastResult: AggregationTriggerResult | null } {
+    const now = Date.now();
+    const phase = currentAggregationPhase();
+    if (refreshRunning && phase.updatedAt > refreshStartedAt) {
+      refreshLastPhase = phase.phase;
     }
-    refreshRunning = true;
+    return {
+      started: false,
+      running: refreshRunning,
+      completed: false,
+      timedOut: refreshTimedOut || undefined,
+      abandoned: refreshAbandoned || undefined,
+      runId: refreshRunId || undefined,
+      startedAt: refreshStartedAt ? new Date(refreshStartedAt).toISOString() : undefined,
+      phase: refreshLastPhase || undefined,
+      elapsedMs: refreshStartedAt ? now - refreshStartedAt : undefined,
+      message: refreshRunning
+        ? `Aggregation is running${refreshLastPhase ? ` (phase: ${refreshLastPhase})` : ''}`
+        : 'Aggregation is idle',
+      lastResult: refreshLastResult,
+    };
+  }
 
-    // 超时只解除本次等待，底层聚合仍继续执行；必须等它真正结束后才能释放互斥，
-    // 否则超时后的下一次 cron/手动刷新会再启动一轮，形成并发聚合。
-    const aggregation = runAggregation(storage, config, {
-      writeBinary: createJarBinaryWriter(),
-    });
-    let timedOut = false;
-    const timeout = new Promise<never>((_, reject) => {
-      const timer = setTimeout(() => {
-        timedOut = true;
-        reject(new Error(`Aggregation timed out after ${aggregationTimeoutMs}ms (still running in background)`));
-      }, aggregationTimeoutMs);
-      aggregation.finally(() => clearTimeout(timer)).catch(() => {});
-    });
-
-    try {
-      await Promise.race([aggregation, timeout]);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[aggregation] Error: ${msg}`);
-      if (timedOut) {
-        aggregation.catch((backgroundErr: unknown) => {
-          const backgroundMsg = backgroundErr instanceof Error ? backgroundErr.message : String(backgroundErr);
-          console.error(`[aggregation] Background task failed: ${backgroundMsg}`);
-        }).finally(() => {
-          refreshRunning = false;
-          console.log('[aggregation] Background task finished; guard released');
-        });
-        return;
+  const runWithGuard = async (): Promise<AggregationTriggerResult> => {
+    if (refreshRunning) {
+      const elapsed = Date.now() - refreshStartedAt;
+      if (refreshTimedOut && elapsed > aggregationTimeoutMs + aggregationAbandonGraceMs) {
+        refreshAbandoned = true;
+        refreshRunning = false;
+        const abandonedResult: AggregationTriggerResult = {
+          started: false,
+          running: false,
+          completed: false,
+          abandoned: true,
+          timedOut: true,
+          runId: refreshRunId,
+          startedAt: new Date(refreshStartedAt).toISOString(),
+          phase: refreshLastPhase || undefined,
+          elapsedMs: elapsed,
+          message: 'Previous aggregation exceeded the hard timeout and was abandoned; starting a new run',
+        };
+        refreshLastResult = abandonedResult;
+        console.error('[aggregation] Previous run exceeded hard timeout; guard released for a new run');
+      } else {
+        const runningResult = aggregationStatus();
+        console.log(`[aggregation] Already running, skipping (phase: ${refreshLastPhase || 'unknown'})`);
+        return {
+          started: false,
+          running: true,
+          completed: false,
+          skipped: true,
+          timedOut: refreshTimedOut || undefined,
+          abandoned: refreshAbandoned || undefined,
+          runId: refreshRunId || undefined,
+          startedAt: refreshStartedAt ? new Date(refreshStartedAt).toISOString() : undefined,
+          phase: refreshLastPhase || undefined,
+          elapsedMs: runningResult.elapsedMs,
+          message: 'Aggregation is already running',
+        };
       }
     }
 
-    refreshRunning = false;
+    refreshRunning = true;
+    refreshTimedOut = false;
+    refreshAbandoned = false;
+    refreshStartedAt = Date.now();
+    refreshRunId = new Date(refreshStartedAt).toISOString();
+    refreshLastPhase = 'starting';
+    const runId = refreshRunId;
+    const startedAt = refreshStartedAt;
+
+    const aggregation = runAggregation(storage, config, {
+      writeBinary: createJarBinaryWriter(),
+    });
+
+    // 后台执行，不阻塞 HTTP 请求；状态接口负责报告真实完成/失败。
+    aggregation.then(() => {
+      if (refreshRunId !== runId) return;
+      refreshRunning = false;
+      refreshTimedOut = false;
+      refreshLastPhase = 'completed';
+      refreshLastResult = {
+        started: true,
+        running: false,
+        completed: true,
+        runId,
+        startedAt: new Date(startedAt).toISOString(),
+        phase: 'completed',
+        elapsedMs: Date.now() - startedAt,
+        message: 'Refresh completed',
+      };
+      console.log(`[aggregation] Completed in ${Date.now() - startedAt}ms`);
+    }).catch((error: unknown) => {
+      if (refreshRunId !== runId) return;
+      refreshRunning = false;
+      refreshTimedOut = false;
+      const msg = error instanceof Error ? error.message : String(error);
+      refreshLastResult = {
+        started: true,
+        running: false,
+        completed: false,
+        runId,
+        startedAt: new Date(startedAt).toISOString(),
+        phase: refreshLastPhase || undefined,
+        elapsedMs: Date.now() - startedAt,
+        message: msg,
+      };
+      console.error(`[aggregation] Background task failed: ${msg}`);
+    });
+
+    const timer = setTimeout(() => {
+      if (refreshRunId !== runId || !refreshRunning) return;
+      refreshTimedOut = true;
+      refreshLastPhase = refreshLastPhase || 'unknown';
+      refreshLastResult = {
+        started: true,
+        running: true,
+        completed: false,
+        timedOut: true,
+        runId,
+        startedAt: new Date(startedAt).toISOString(),
+        phase: refreshLastPhase || undefined,
+        elapsedMs: Date.now() - startedAt,
+        message: 'Aggregation is still running after the soft timeout',
+      };
+      console.error(`[aggregation] Soft timeout after ${aggregationTimeoutMs}ms; still running in background`);
+    }, aggregationTimeoutMs);
+    aggregation.finally(() => clearTimeout(timer)).catch(() => {});
+
+    return {
+      started: true,
+      running: true,
+      completed: false,
+      runId,
+      startedAt: new Date(startedAt).toISOString(),
+      phase: refreshLastPhase,
+      elapsedMs: 0,
+      message: 'Refresh started in background',
+    };
   };
+
+  let startupChannelProbeStarted = false;
+  const startupChannelProbeDelayMs = Math.max(
+    0,
+    parseInt(process.env.STARTUP_CHANNEL_PROBE_DELAY_MS || '') || 120_000,
+  );
+  const startupChannelProbeEnabled = process.env.STARTUP_CHANNEL_PROBE_ENABLED !== 'false';
+
+  async function scheduleStartupChannelProbe(): Promise<void> {
+    if (!startupChannelProbeEnabled || startupChannelProbeStarted) return;
+    startupChannelProbeStarted = true;
+    try {
+      if (!(await isProbeEnabled(storage))) {
+        console.log('[channel-probe] Startup probe skipped: disabled by user');
+        return;
+      }
+      const status = await loadStatus(storage);
+      if (status.state === 'running') {
+        console.log('[channel-probe] Startup probe skipped: already running');
+        return;
+      }
+      console.log('[channel-probe] Startup probe scheduled in ' + startupChannelProbeDelayMs + 'ms');
+      const startProbeWhenIdle = (): void => {
+        if (refreshRunning) {
+          // Main aggregation may still be running after its timeout. Recheck
+          // shortly instead of competing with it for upstream bandwidth.
+          setTimeout(startProbeWhenIdle, 30_000);
+          return;
+        }
+        void runChannelProbe(storage).catch((err: unknown) => {
+          console.error('[channel-probe] Startup probe failed:', err);
+        });
+      };
+      setTimeout(startProbeWhenIdle, startupChannelProbeDelayMs);
+    } catch (err) {
+      console.error('[channel-probe] Startup probe scheduling failed:', err);
+    }
+  }
 
   let qualityRunning = false;
   async function runQualityWithGuard(requestedMode?: SearchQualityRunMode): Promise<void> {
@@ -424,6 +587,7 @@ async function main() {
   async function scheduleStartupAggregation(): Promise<void> {
     if (!startupAggregationEnabled) {
       console.log('[aggregation] Automatic startup aggregation disabled');
+      void scheduleStartupChannelProbe();
       return;
     }
 
@@ -444,6 +608,7 @@ async function main() {
 
     if (hasFreshCache && startupAggregationWarmDelayMs === 0) {
       console.log('[aggregation] Fresh cached config found; skipping automatic startup aggregation');
+      void scheduleStartupChannelProbe();
       return;
     }
 
@@ -457,7 +622,9 @@ async function main() {
 
     setTimeout(() => {
       console.log('[aggregation] Triggering automatic startup aggregation...');
-      void runWithGuard();
+      void runWithGuard()
+        .catch((err: unknown) => { console.error('[aggregation] Startup run failed:', err); })
+        .finally(() => { void scheduleStartupChannelProbe(); });
     }, delayMs);
   }
 
@@ -469,6 +636,7 @@ async function main() {
     enableChannelProbe: true,
     enableBuilder: true,
     isSyncing: () => refreshRunning,
+    aggregationStatus,
     onCronIntervalChange: (intervalMinutes: number) => {
       const newCron = intervalToCron(intervalMinutes);
       console.log(`[cron] Interval changed to ${intervalLabel(intervalMinutes)} (${newCron})`);

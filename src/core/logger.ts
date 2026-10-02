@@ -13,12 +13,47 @@ export interface LogEntry {
 type LogSink = (entry: LogEntry) => void;
 const sinks = new Set<LogSink>();
 
+const AGG_PHASE_PATTERNS: Array<[RegExp, string]> = [
+  [/^Starting\.\.\.$/, 'starting'],
+  [/^Step 0:/, 'source-scrape'],
+  [/^Step 0\.5:/, 'maccms-scrape'],
+  [/^Step 1:/, 'load-sources'],
+  [/^Step 1\.5:/, 'maccms-process'],
+  [/^Step 2:/, 'fetch-configs'],
+  [/^Step 3:/, 'speed-filter'],
+  [/^Step 4:/, 'merge-configs'],
+  [/^Step 4\.5:/, 'blacklist'],
+  [/^Step 4\.6:/, 'clean-entries'],
+  [/^Step 5\.5:/, 'name-transform'],
+  [/^Step 5\.7:/, 'credential-defer'],
+  [/^Step 6:/, 'site-probe'],
+  [/^Step 6\.2:/, 'dedup'],
+  [/^Step 6\.5:/, 'live-merge'],
+  [/^Step 6\.8:/, 'group-order'],
+  [/^Step 6\.9:/, 'config-center'],
+  [/^Step 7:/, 'jar-rewrite'],
+  [/^done /, 'persist'],
+];
+
+let aggregationPhase = '';
+let aggregationPhaseUpdatedAt = 0;
+export function currentAggregationPhase(): { phase: string; updatedAt: number } {
+  return { phase: aggregationPhase, updatedAt: aggregationPhaseUpdatedAt };
+}
+
 export function subscribeLogSink(fn: LogSink): () => void {
   sinks.add(fn);
   return () => { sinks.delete(fn); };
 }
 
 function emitSink(entry: LogEntry): void {
+  if (entry.scope === 'aggregation') {
+    const matched = AGG_PHASE_PATTERNS.find(([pattern]) => pattern.test(entry.message));
+    if (matched) {
+      aggregationPhase = matched[1];
+      aggregationPhaseUpdatedAt = Date.now();
+    }
+  }
   for (const fn of sinks) {
     try {
       fn(entry);

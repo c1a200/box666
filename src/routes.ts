@@ -48,15 +48,34 @@ import { clearDirtyMarker, getDirtyMarker, setDirtyMarker } from './core/dirty-m
 import { createSourceManagementRouter } from './routes/source-management';
 import * as QRCode from 'qrcode';
 
+export interface AggregationTriggerResult {
+  started: boolean;
+  running: boolean;
+  completed: boolean;
+  skipped?: boolean;
+  timedOut?: boolean;
+  abandoned?: boolean;
+  runId?: string;
+  startedAt?: string;
+  phase?: string;
+  elapsedMs?: number;
+  message?: string;
+}
+
+export interface AggregationStatusResult extends AggregationTriggerResult {
+  lastResult?: AggregationTriggerResult | null;
+}
+
 export interface AppDeps {
   storage: Storage;
   config: AppConfig;
-  triggerRefresh: () => Promise<void>;
+  triggerRefresh: () => Promise<AggregationTriggerResult | void>;
   triggerQuality?: (mode: SearchQualityRunMode) => Promise<void>;   // Node/Docker 入口启用质量分级
   onCronIntervalChange?: (intervalMinutes: number) => void;
   enableChannelProbe?: boolean; // 仅 Node/Docker 入口启用
   enableBuilder?: boolean;      // 仅 Node/Docker 入口启用（配置构建器）
   isSyncing?: () => boolean;
+  aggregationStatus?: () => AggregationStatusResult;
 }
 
 const ALIST_PROXY_MAX_BYTES = 2 * 1024 * 1024;
@@ -284,8 +303,14 @@ export function createApp(deps: AppDeps): Hono {
 
   const origTriggerRefresh = deps.triggerRefresh;
   deps.triggerRefresh = async () => {
-    await origTriggerRefresh();
+    const result = await origTriggerRefresh();
     storage.clear();
+    return result ?? {
+      started: true,
+      running: false,
+      completed: true,
+      message: 'Refresh completed',
+    };
   };
 
   const { config } = deps;
@@ -1420,8 +1445,10 @@ export function createApp(deps: AppDeps): Hono {
       const ctx = resolved.context!;
 
       stage = 'read-full-config';
-      let cached = await storage.get(KV_MERGED_CONFIG_FULL)
-        || await storage.get(KV_MERGED_CONFIG);
+      // 客户端入口必须读取黑名单过滤后的最终配置。KV_MERGED_CONFIG_FULL
+      // 供管理端显示屏蔽源，包含不在最终来源边界内的站点，不能优先返回。
+      let cached = await storage.get(KV_MERGED_CONFIG)
+        || await storage.get(KV_MERGED_CONFIG_FULL);
       if (!cached) {
         return c.json({ error: 'No config available yet.' }, 503);
       }
@@ -3992,6 +4019,20 @@ export function createApp(deps: AppDeps): Hono {
   });
 
   // ─── 刷新 ─────────────────────────────────────────────
+  app.get('/admin/aggregation-status', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+    if (deps.aggregationStatus) {
+      return c.json(deps.aggregationStatus());
+    }
+    return c.json({
+      running: deps.isSyncing?.() === true,
+      completed: false,
+      message: deps.isSyncing?.() ? 'Aggregation is running' : 'Aggregation status is unavailable',
+    });
+  });
+
   app.post('/refresh', async (c) => {
     if (config.refreshToken || config.adminToken) {
       const auth = c.req.raw.headers.get('Authorization');
@@ -4013,11 +4054,40 @@ export function createApp(deps: AppDeps): Hono {
 
       if (hasCtx) {
         c.executionCtx.waitUntil(deps.triggerRefresh());
-        return c.json({ success: true, message: 'Refresh started in background' });
-      } else {
-        await deps.triggerRefresh();
-        return c.json({ success: true, message: 'Refresh completed' });
+        return c.json({ success: true, started: true, running: true, message: 'Refresh started in background' });
       }
+
+      const result = await deps.triggerRefresh();
+      const normalized: AggregationTriggerResult = result ?? {
+        started: true,
+        running: false,
+        completed: true,
+        message: 'Refresh completed',
+      };
+      if (normalized.skipped) {
+        return c.json({
+          success: false,
+          ...normalized,
+          error: normalized.message || 'Aggregation is already running',
+        }, 409);
+      }
+      if (normalized.started && normalized.running) {
+        return c.json({
+          success: true,
+          ...normalized,
+        }, 202);
+      }
+      if (normalized.completed) {
+        return c.json({
+          success: true,
+          ...normalized,
+        }, 200);
+      }
+      return c.json({
+        success: false,
+        ...normalized,
+        error: normalized.message || 'Refresh failed',
+      }, 500);
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
       return c.json({ success: false, error: msg }, 500);
