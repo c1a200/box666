@@ -499,6 +499,37 @@ function canInjectPanSearchCredential(
 }
 
 /**
+ * 2cc JAR 的 Guard 系列共用 Cloud-drive token.json 入口：该字段指向
+ * 一个 JSON 文件，JAR 会从其中读取网盘凭证。只替换这一个字段，保留
+ * siteUrl、from 等同一 ext 中的其他契约字段。
+ */
+function injectCloudDriveTokenUrl(
+  ext: any,
+  creds: Map<CloudPlatform, CloudCredential>,
+  baseUrl?: string,
+  platforms: CloudPlatform[] = [],
+): { ext: any; changed: boolean } {
+  const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
+  if (!normalizedBaseUrl) return { ext, changed: false };
+
+  const parsed = parseExt(ext);
+  if (!parsed.injectable) return { ext, changed: false };
+  const current = parsed.obj['Cloud-drive'];
+  if (typeof current !== 'string' || !current.trim()) return { ext, changed: false };
+  if (!platforms.some((platform) => isCredentialDistributable(platform, creds.get(platform)))) {
+    return { ext, changed: false };
+  }
+
+  const url = tokenJsonUrl(normalizedBaseUrl);
+  if (current === url) return { ext, changed: false };
+  const next = { ...parsed.obj, 'Cloud-drive': url };
+  return {
+    ext: restoreExt(next, parsed.wasString, parsed.wasJson),
+    changed: true,
+  };
+}
+
+/**
  * 3D YiSo 继承 Ali.init；只有 ext.from 含 tvfan 时，才会把
  * ext.Cloud-drive 指向的 JSON 中的 token 作为阿里云盘初始化凭证。
  */
@@ -769,6 +800,9 @@ function applyCredentialProtocolRaw(
   switch (protocol.mechanism) {
     case 'ali-token-url':
       return injectAliTokenUrl(site.ext, credentials, baseUrl);
+
+    case 'token-json-url':
+      return injectCloudDriveTokenUrl(site.ext, credentials, baseUrl, protocol.platforms);
 
     case 'pan-init-url':
       return injectPanInitUrls(site.ext, credentials, baseUrl);

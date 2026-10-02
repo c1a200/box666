@@ -7,6 +7,7 @@ import { extractJarMd5 } from './site-contract';
 
 export type CredentialMechanism =
   | 'ali-token-url'
+  | 'token-json-url'
   | 'pan-init-url'
   | 'pan-search-ext-pan'
   | 'pan-search-fixed-baidu'
@@ -38,6 +39,7 @@ const JAR = {
   b63: 'b63a0eb8852bb7ab06500c424ccc3dae',
   d3: '3d161697458ecbcd2651a749db761ba1',
   mogg: '265301f463ec681dcbba91897f20f08b',
+  tokenJson2cc: '2cc088afa757ba8bafffcfbab4b73ccc',
 } as const;
 
 const PAN_INIT_PLATFORMS: readonly CloudPlatform[] = [
@@ -47,6 +49,20 @@ const PAN_INIT_PLATFORMS: readonly CloudPlatform[] = [
 const PAN_SEARCH_PLATFORMS: readonly CloudPlatform[] = [
   'quark', 'uc', 'tianyi', 'baidu', 'pan123', 'thunder',
 ];
+
+const TOKEN_JSON_PLATFORMS: readonly CloudPlatform[] = [
+  'aliyun', 'quark', 'uc', 'pan115', 'thunder', 'pikpak', 'tianyi', 'baidu', 'pan123',
+];
+
+// 2cc JAR 中已验证会读取同一个 Cloud-drive token.json 契约的 Guard API。
+// 不能按 Guard 后缀泛化，其他同名风格 API 当前没有足够证据。
+const TOKEN_JSON_CLOUD_DRIVE_APIS = new Set([
+  'csp_ypansoguard',
+  'csp_bpansoguard',
+  'csp_kkssguard',
+  'csp_uussguard',
+  'csp_libvioguard',
+]);
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -80,6 +96,18 @@ function is3D(jar?: string): boolean {
 
 function isMoggJar(jar?: string): boolean {
   return extractJarMd5(jar) === JAR.mogg;
+}
+
+function isTokenJson2cc(jar?: string): boolean {
+  return extractJarMd5(jar) === JAR.tokenJson2cc;
+}
+
+/** 2cc Guard 契约只在 ext 明确提供 Cloud-drive 入口时才成立。 */
+function hasCloudDriveTokenContract(site: TVBoxSite): boolean {
+  const ext = parseExtRecord(site.ext);
+  return !!ext
+    && typeof ext['Cloud-drive'] === 'string'
+    && ext['Cloud-drive'].trim().length > 0;
 }
 
 const PAN_SEARCH_PLATFORM_MAP: Record<string, CloudPlatform> = {
@@ -157,6 +185,25 @@ export function resolveCredentialProtocol(
       credentialRequired: false,
       canInject: false,
       reason: 'AweSomeGuard without AList contract',
+    };
+  }
+
+  if (TOKEN_JSON_CLOUD_DRIVE_APIS.has(api.toLowerCase()) && isTokenJson2cc(effectiveJar)) {
+    if (!hasCloudDriveTokenContract(site)) {
+      return {
+        mechanism: 'unknown',
+        platforms: [],
+        credentialRequired: false,
+        canInject: false,
+        reason: '2cc token.json API without Cloud-drive contract',
+      };
+    }
+    return {
+      mechanism: 'token-json-url',
+      platforms: [...TOKEN_JSON_PLATFORMS],
+      credentialRequired: true,
+      canInject: true,
+      reason: '2cc shared Cloud-drive token.json contract',
     };
   }
 
