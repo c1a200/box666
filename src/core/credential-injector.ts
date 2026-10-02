@@ -357,6 +357,7 @@ function tokenJsonUrl(baseUrl: string, revision = ''): string {
   return baseUrl.replace(/\/$/, '') + '/token.json' + (revision ? '?v=' + revision : '');
 }
 
+
 function normalizeBaseUrl(baseUrl?: string): string {
   return typeof baseUrl === 'string' ? baseUrl.trim().replace(/\/$/, '') : '';
 }
@@ -1058,88 +1059,7 @@ export function generateTokenJson(
   ));
   if (!hasDistributableCredential) return {};
 
-  const token: Record<string, any> = {
-    // Keep the public lib/token.json shape. 2cc Guard reads these defaults
-    // before deciding whether a drive can be opened with server credentials;
-    // omitting them makes a correctly supplied cookie look unusable.
-    token: '',
-    open_token: '',
-    open_api_url: 'postparam|http://api.extscreen.com/aliyundrive/token',
-    oauth_client_id: '',
-    oauth_client_secret: '',
-    oauth_auth_url: '',
-    oauth_refresh_url: '',
-    is_vip: true,
-    vip_thread_limit: 32,
-    vip_thread_limit_night: '19-23=10',
-    vod_flags: '4kz|auto',
-    quark_thread_limit: 32,
-    quark_thread_limit_night: '19-23=10',
-    quark_is_guest: false,
-    quark_vip_thread_limit: 32,
-    quark_vip_thread_limit_night: '19-23=10',
-    quark_flags: '4kz|auto',
-    uc_thread_limit: 0,
-    uc_is_vip: false,
-    uc_vip_thread_limit: 0,
-    uc_flags: '4kz|auto',
-    thunder_thread_limit: 2,
-    thunder_is_vip: false,
-    thunder_vip_thread_limit: 2,
-    thunder_flags: '4kz',
-    aliproxy: '',
-    aliproxy_url: '',
-    proxy: '',
-    danmu: true,
-    quark_danmu: true,
-    quark_cookie: '',
-    uc_cookie: '',
-    thunder_username: '',
-    thunder_password: '',
-    thunder_captchatoken: '',
-    yd_auth: '',
-    yd_thread_limit: 4,
-    yd_flags: 'auto|4kz',
-    yd_danmu: true,
-    pikpak_username: '',
-    pikpak_password: '',
-    pikpak_flags: '4kz',
-    pikpak_thread_limit: 2,
-    pikpak_vip_thread_limit: 2,
-    pikpak_proxy: '',
-    pikpak_proxy_onlyapi: false,
-    pikpak_danmu: true,
-    wgcf_key: '',
-    wgcf_key2: '',
-    wgcf_ipport: '',
-    wgcf_xray_url: './xray.gz',
-    wgcf_geoip_url: './geoip.dat.gz',
-    wgcf_json_url: './wgcf.json',
-    wgcf_vless_id: '',
-    wgcf_vless_optname: 'singapore.com:443',
-    wgcf_vless_worker: '',
-    wgcf_vless_path: '/?ed=2048',
-    wgcf_vless_protocol: 'vless',
-    wgcf_vless_network: 'ws',
-    wgcf_vless_tls: false,
-    libxl_url: './libxl_thunder_sdk.so',
-    youtube_proxy: '',
-    singbox_url: './sing-box.gz',
-    singbox_subscribe_url: '',
-    singbox_clash2singbox_url: './clash2singbox.gz',
-    singbox_template_url: './singbox.json',
-    pan115_cookie: '',
-    pan115_thread_limit: 0,
-    pan115_vip_thread_limit: 0,
-    pan115_is_vip: false,
-    pan115_flags: '4kz',
-    pan115_speed_limit: 0,
-    pan115_speed_limit_mobile: 10485760,
-    pan115_auto_delete: true,
-    pan115_delete_code: '',
-    pan_order: 'ali|quark|uc|115|yd|thunder|pikpak',
-  };
-
+  const token: Record<string, any> = {};
   const allowed = neededPlatforms ? new Set(neededPlatforms) : null;
   const canUse = (platform: CloudPlatform): boolean => (
     (!allowed || allowed.has(platform)) && isCredentialDistributable(platform, credentials.get(platform))
@@ -1153,17 +1073,34 @@ export function generateTokenJson(
     if (text) token[field] = text;
   };
 
-  if (canUse('quark')) set('quark_cookie', value('quark', 'cookie'));
-  if (canUse('uc')) set('uc_cookie', value('uc', 'cookie'));
-  if (canUse('pan115')) set('pan115_cookie', value('pan115', 'cookie'));
-
   if (canUse('aliyun')) {
     const aliToken = value('aliyun', 'refresh_token')
       || value('aliyun', 'token')
       || value('aliyun', 'ali_token');
-    set('token', aliToken);
     set('refresh_token', aliToken);
+    set('token', aliToken);
+    set('ali_token', aliToken);
     set('open_token', value('aliyun', 'open_token'));
+  }
+
+  if (canUse('quark')) {
+    const cookie = value('quark', 'cookie');
+    set('quark_cookie', cookie);
+    set('quarkCookie', cookie);
+    set('cookie', cookie);
+  }
+
+  if (canUse('uc')) {
+    const cookie = value('uc', 'cookie');
+    set('uc_cookie', cookie);
+    set('ucCookie', cookie);
+    set('uccookie', cookie);
+  }
+
+  if (canUse('pan115')) {
+    const cookie = value('pan115', 'cookie');
+    set('115_cookie', cookie);
+    set('115Cookie', cookie);
   }
 
   if (canUse('thunder')) {
@@ -1172,8 +1109,12 @@ export function generateTokenJson(
     if (username && password) {
       set('thunder_username', username);
       set('thunder_password', password);
+      set('xunlei_username', username);
+      set('xunlei_password', password);
     }
-    set('thunder_captchatoken', value('thunder', 'captchatoken'));
+    const thunderToken = value('thunder', 'token') || value('thunder', 'tuctoken');
+    set('tuctoken', thunderToken);
+    set('thunder_token', thunderToken);
   }
 
   if (canUse('pikpak')) {
@@ -1185,24 +1126,44 @@ export function generateTokenJson(
     }
   }
 
-  if (canUse('bilibili')) set('bili_cookie', value('bilibili', 'cookie'));
-
-  if (canUse('tianyi')) {
-    const cookie = value('tianyi', 'cookie');
-    if (cookie) {
-      set('yd_auth', cookie);
-    } else {
-      const username = value('tianyi', 'username');
-      const password = value('tianyi', 'password');
-      if (username && password) {
-        set('tianyi_username', username);
-        set('tianyi_password', password);
-      }
-    }
+  if (canUse('bilibili')) {
+    const cookie = value('bilibili', 'cookie');
+    set('bili_cookie', cookie);
+    set('bilibili_cookie', cookie);
   }
 
-  if (canUse('baidu')) set('baidu_cookie', value('baidu', 'cookie'));
-  if (canUse('pan123')) set('123_token', value('pan123', 'token'));
+  if (canUse('tianyi')) {
+    const username = value('tianyi', 'username');
+    const password = value('tianyi', 'password');
+    if (username && password) {
+      set('tianyi_username', username);
+      set('tianyi_password', password);
+    }
+    const cookie = value('tianyi', 'cookie');
+    set('tianyi_cookie', cookie);
+    set('tianyiCookie', cookie);
+    set('tyitoken', cookie);
+  }
+
+  if (canUse('baidu')) {
+    const cookie = value('baidu', 'cookie');
+    set('baidu_cookie', cookie);
+    set('baiduCookie', cookie);
+    set('dutoken', cookie);
+  }
+
+  if (canUse('pan123')) {
+    const username = value('pan123', 'username');
+    const password = value('pan123', 'password');
+    if (username && password) {
+      set('p123_username', username);
+      set('p123_password', password);
+    }
+    const pan123Token = value('pan123', 'token');
+    set('123_token', pan123Token);
+    set('123token', pan123Token);
+    set('p123token', pan123Token);
+  }
 
   return token;
 }
