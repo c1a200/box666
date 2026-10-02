@@ -112,6 +112,14 @@ ${sharedStyles}
 .credential-pill-warning{background:rgba(255,184,77,0.14);color:var(--yellow)}
 .credential-help-warning{color:var(--yellow);margin-top:8px}
 
+/* Search source tables */
+.sq-table-wrap{max-height:420px;overflow:auto;border:1px solid var(--border);border-radius:6px;background:var(--surface)}
+.sq-table-wrap.is-pinned{max-height:260px;margin-bottom:12px}
+.sq-table{width:100%;border-collapse:separate;border-spacing:0;font-size:0.8rem}
+.sq-table th{position:sticky;top:0;z-index:2;background:var(--surface-2);color:var(--text-secondary);text-align:left;font-weight:600;padding:7px 8px;border-bottom:1px solid var(--border);box-shadow:inset 0 -1px 0 var(--border)}
+.sq-table td{padding:4px}
+.sq-table tbody tr:last-child td{border-bottom:0}
+
 /* Risk badges */
 .risk-badge{
   font-family:var(--mono);
@@ -501,7 +509,7 @@ ${sharedStyles}
         </select>
         <span id="sqSourceFilterCount" style="font-size:0.75rem;color:var(--text-secondary)"></span>
       </div>
-      <div id="sqSelectedTable" style="max-height:500px;overflow:auto">
+      <div id="sqSelectedTable">
         <div style="color:var(--text-secondary);font-size:0.85rem" data-i18n="sqNoData">Run aggregation to see results</div>
       </div>
     </div>
@@ -922,10 +930,10 @@ const translations = {
     tabSearchQuota:'Search',
     sqSelected:'Active Search Sources', sqQuality:'Quality grades', sqExcellent:'Excellent', sqGood:'Good', sqUsable:'Usable', sqCredentialReady:'Credential-ready', sqUntestable:'Client final check only', sqTimeout:'Timeout', sqUnusable:'Unusable', sqPoolTotal:'Candidate pool', sqNoData:'Run aggregation to see results',
     sqStatsCurrent:'Current actual counts', sqStatsSearchable:'searchable', sqStatsQuick:'quick-search', sqStatsQuickLimit:'auto cap', sqStatsPool:'candidate pool', sqStatsParsers:'Parsers', sqStatsKept:'kept', sqStatsProbed:'probed', sqStatsRemoved:'removed', sqStatsLimit:'limit', sqStatsUnlimited:'unlimited', sqStatsQuality:'Quality grades', sqStatsNoData:'Run aggregation to show quality grades and parser counts.',
-    sqKey:'Key', sqName:'Name', sqSource:'Source', sqReason:'Reason', sqAction:'Action',
+    sqKey:'Key', sqName:'Name', sqSource:'Source', sqReason:'Reason', sqGrade:'Grade', sqSpeedStatus:'Speed / Status', sqAction:'Action',
     sqPin:'Pin', sqUnpin:'Unpin',
     sqBlock:'Block', sqUnblock:'Unblock', sqBlocked:'Blocked', sqBlockedDesc:'Blocked sources are excluded from all client outputs but remain here so they can be restored.', sqSourceFilterPh:'Search source name or key...', sqFilterAll:'All grades', sqFilterMatched:'Matched', sqFilterNoMatch:'No matching sources',
-    sqPinned:'Pinned', sqPinnedDesc:'Drag to reorder. Top sources are searched first in TVBox.', sqOtherSources:'Candidate Sources', sqExcludedSources:'Not Selected', sqReasonJsUrlExcluded:'JS URL excluded', sqReasonTimeout:'Timeout', sqReasonUnusable:'Unusable', sqReasonNotInPool:'Not in quality pool', sqReasonNotCandidate:'Not a candidate',
+    sqPinned:'Pinned', sqPinnedDesc:'Drag to reorder. Top sources are searched first in TVBox.', sqOtherSources:'Candidate Sources', sqCandidateDesc:'Candidate sources passed quality filtering and are eligible for distribution. Pinned sources are searched first; blocked sources stay in this list but are excluded from every client output.', sqExcludedSources:'Not Selected', sqExcludedDesc:'Searchable sources outside the quality candidate pool (JS URL, timeout, unusable, or not selected) are not distributed to clients.', sqReasonJsUrlExcluded:'JS URL excluded', sqReasonTimeout:'Timeout', sqReasonUnusable:'Unusable', sqReasonNotInPool:'Not in quality pool', sqReasonNotCandidate:'Not a candidate',
     sqHttp:'http', sqMainJar:'main jar', sqIndepJar:'indep jar', sqLeanRemoved:'lean-removed',
     channelProbeTitle:'Channel Speed Probe (Node/Docker)',
     channelProbeEnable:'Enable scheduled channel speed test (every 12h)',
@@ -1057,10 +1065,10 @@ const translations = {
     tabSearchQuota:'搜索',
     sqSelected:'活跃搜索源', sqQuality:'质量分级', sqExcellent:'优', sqGood:'良', sqUsable:'可用', sqCredentialReady:'凭证就绪', sqUntestable:'仅客户端最终确认', sqTimeout:'超时', sqUnusable:'不可用', sqPoolTotal:'候选池', sqNoData:'执行聚合后查看结果',
     sqStatsCurrent:'当前实际数量', sqStatsSearchable:'可搜索源', sqStatsQuick:'快速搜索', sqStatsQuickLimit:'自动上限', sqStatsPool:'候选池', sqStatsParsers:'解析器', sqStatsKept:'最终保留', sqStatsProbed:'探测', sqStatsRemoved:'剔除', sqStatsLimit:'上限', sqStatsUnlimited:'不限制', sqStatsQuality:'质量分级', sqStatsNoData:'执行聚合后显示质量分级和解析器数量。',
-    sqKey:'Key', sqName:'名称', sqSource:'来源', sqReason:'原因', sqAction:'操作',
+    sqKey:'Key', sqName:'名称', sqSource:'来源', sqReason:'原因', sqGrade:'等级', sqSpeedStatus:'速度 / 状态', sqAction:'操作',
     sqPin:'置顶', sqUnpin:'取消置顶',
     sqBlock:'屏蔽', sqUnblock:'取消屏蔽', sqBlocked:'已屏蔽', sqBlockedDesc:'屏蔽源不会下发到任何客户端，但仍保留在管理列表中，可随时恢复。可按名称/Key 搜索，并按质量等级或“已屏蔽”筛选。', sqSourceFilterPh:'搜索源名称或 Key...', sqFilterAll:'全部等级', sqFilterMatched:'匹配', sqFilterNoMatch:'没有匹配的源',
-    sqPinned:'置顶源', sqPinnedDesc:'上下移动排序，排在前面的源在 TVBox 搜索时优先执行', sqOtherSources:'候选源', sqExcludedSources:'未入选源', sqReasonJsUrlExcluded:'JS URL 已排除', sqReasonTimeout:'超时', sqReasonUnusable:'不可用', sqReasonNotInPool:'不在质量池', sqReasonNotCandidate:'非候选源',
+    sqPinned:'置顶源', sqPinnedDesc:'上下移动排序，排在前面的源在 TVBox 搜索时优先执行', sqOtherSources:'候选源', sqCandidateDesc:'通过质量筛选、可参与下发的候选源。置顶源优先搜索；屏蔽后仍保留在此列表，但不会下发到任何客户端。', sqExcludedSources:'未入选源', sqExcludedDesc:'可搜索但未进入质量候选池的源（如 JS URL、超时、不可用或未入选），不会下发到客户端。', sqReasonJsUrlExcluded:'JS URL 已排除', sqReasonTimeout:'超时', sqReasonUnusable:'不可用', sqReasonNotInPool:'不在质量池', sqReasonNotCandidate:'非候选源',
     sqHttp:'HTTP', sqMainJar:'主 JAR', sqIndepJar:'独立 JAR', sqLeanRemoved:'轻量剔除',
     channelProbeTitle:'频道级测速（仅 Node/Docker）',
     channelProbeEnable:'启用定时频道测速（每 12 小时）',
@@ -2723,7 +2731,8 @@ function renderSearchSources() {
   if (pinnedFiltered.length > 0) {
     html += '<div style="margin-bottom:12px"><strong style="color:var(--primary)">' + t('sqPinned') + ' (' + pinnedFiltered.length + ')</strong>';
     html += ' <span style="font-size:0.75rem;color:var(--text-secondary)">— ' + t('sqPinnedDesc') + '</span></div>';
-    html += '<table style="width:100%;border-collapse:collapse;font-size:0.8rem">';
+    html += '<div class="sq-table-wrap is-pinned"><table class="sq-table">';
+    html += '<thead><tr><th style="width:30px">#</th><th>' + t('sqKey') + '</th><th>' + t('sqName') + '</th><th>' + t('sqGrade') + '</th><th>' + t('sqSpeedStatus') + '</th><th style="width:190px;text-align:right">' + t('sqAction') + '</th></tr></thead><tbody>';
     pinnedFiltered.forEach(function(key) {
       const s = sqAllSites.find(item => item.key === key) || { key: key, name: key };
       const entry = qualityMap.get(key);
@@ -2742,12 +2751,13 @@ function renderSearchSources() {
       html += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem;color:var(--red)" onclick="toggleBlocked(&quot;' + escHtml(key) + '&quot;)">' + t('sqBlock') + '</button>';
       html += '</td></tr>';
     });
-    html += '</table>';
+    html += '</tbody></table></div>';
   }
 
   html += '<div style="margin-top:16px;margin-bottom:8px"><strong>' + t('sqOtherSources') + ' (' + (sqCandidateCount || candidateSites.length) + ')</strong></div>';
-  html += '<div style="margin-bottom:6px;font-size:0.75rem;color:var(--text-secondary)">' + t('sqBlockedDesc') + '</div>';
-  html += '<table style="width:100%;border-collapse:collapse;font-size:0.8rem">';
+  html += '<div style="margin-bottom:6px;font-size:0.75rem;color:var(--text-secondary)">' + t('sqCandidateDesc') + '</div>';
+  html += '<div class="sq-table-wrap"><table class="sq-table">';
+  html += '<thead><tr><th>' + t('sqKey') + '</th><th>' + t('sqName') + '</th><th>' + t('sqGrade') + '</th><th>' + t('sqSpeedStatus') + '</th><th style="width:120px;text-align:right">' + t('sqAction') + '</th></tr></thead><tbody>';
   unpinned.forEach(function(s) {
     const isBlocked = sqBlockedKeys.has(s.key);
     const entry = qualityMap.get(s.key);
@@ -2765,14 +2775,15 @@ function renderSearchSources() {
   });
   if (unpinnedAll.length > visibleLimit) html += '<tr><td colspan="5" style="padding:4px;color:var(--text-secondary)">... +' + (unpinnedAll.length - visibleLimit) + ' more</td></tr>';
   if (unpinnedAll.length === 0) html += '<tr><td colspan="5" style="padding:8px;color:var(--text-secondary)">' + t('sqFilterNoMatch') + '</td></tr>';
-  html += '</table>';
+  html += '</tbody></table></div>';
 
   const excludedFiltered = sqExcludedSites.filter(matches);
   if (excludedFiltered.length > 0) {
     const excludedVisible = excludedFiltered.slice(0, visibleLimit);
     html += '<div style="margin-top:20px;margin-bottom:8px"><strong>' + t('sqExcludedSources') + ' (' + excludedFiltered.length + ')</strong></div>';
-    html += '<div style="margin-bottom:6px;font-size:0.75rem;color:var(--text-secondary)">' + t('sqBlockedDesc') + '</div>';
-    html += '<table style="width:100%;border-collapse:collapse;font-size:0.8rem">';
+    html += '<div style="margin-bottom:6px;font-size:0.75rem;color:var(--text-secondary)">' + t('sqExcludedDesc') + '</div>';
+    html += '<div class="sq-table-wrap"><table class="sq-table">';
+    html += '<thead><tr><th>' + t('sqKey') + '</th><th>' + t('sqName') + '</th><th>' + t('sqReason') + '</th><th>' + t('sqSpeedStatus') + '</th><th style="width:120px;text-align:right">' + t('sqAction') + '</th></tr></thead><tbody>';
     excludedVisible.forEach(function(s) {
       const isBlocked = sqBlockedKeys.has(s.key);
       const entry = qualityMap.get(s.key);
@@ -2787,7 +2798,7 @@ function renderSearchSources() {
       html += '</td></tr>';
     });
     if (excludedFiltered.length > visibleLimit) html += '<tr><td colspan="5" style="padding:4px;color:var(--text-secondary)">... +' + (excludedFiltered.length - visibleLimit) + ' more</td></tr>';
-    html += '</table>';
+    html += '</tbody></table></div>';
   }
 
   $('sqSelectedTable').innerHTML = html;
