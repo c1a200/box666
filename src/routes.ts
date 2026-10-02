@@ -75,7 +75,7 @@ export interface AppDeps {
   enableChannelProbe?: boolean; // 仅 Node/Docker 入口启用
   enableBuilder?: boolean;      // 仅 Node/Docker 入口启用（配置构建器）
   isSyncing?: () => boolean;
-  aggregationStatus?: () => AggregationStatusResult;
+  aggregationStatus?: () => AggregationStatusResult | Promise<AggregationStatusResult>;
 }
 
 const ALIST_PROXY_MAX_BYTES = 2 * 1024 * 1024;
@@ -4024,7 +4024,7 @@ export function createApp(deps: AppDeps): Hono {
       return c.json({ error: 'Unauthorized' }, 401);
     }
     if (deps.aggregationStatus) {
-      return c.json(deps.aggregationStatus());
+      return c.json(await deps.aggregationStatus());
     }
     return c.json({
       running: deps.isSyncing?.() === true,
@@ -4054,7 +4054,7 @@ export function createApp(deps: AppDeps): Hono {
 
       if (hasCtx) {
         c.executionCtx.waitUntil(deps.triggerRefresh());
-        return c.json({ success: true, started: true, running: true, message: 'Refresh started in background' });
+        return c.json({ success: true, started: true, running: true, message: 'Refresh started in background' }, 202);
       }
 
       const result = await deps.triggerRefresh();

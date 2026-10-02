@@ -4,7 +4,8 @@ import { createApp } from './routes';
 import { KVStorage } from './storage/kv';
 import { runAggregation } from './aggregator';
 import { probeLiveUrlsBounded } from './core/channel-probe';
-import { DEFAULT_SPEED_TIMEOUT_MS, DEFAULT_SITE_TIMEOUT_MS, DEFAULT_FETCH_TIMEOUT_MS, DEFAULT_SPEED_TEST_CONCURRENCY, DEFAULT_SPEED_TEST_BUDGET_MS, KV_CRON_INTERVAL, KV_LAST_UPDATE, DEFAULT_CRON_INTERVAL } from './core/config';
+import { DEFAULT_SPEED_TIMEOUT_MS, DEFAULT_SITE_TIMEOUT_MS, DEFAULT_FETCH_TIMEOUT_MS, DEFAULT_SPEED_TEST_CONCURRENCY, DEFAULT_SPEED_TEST_BUDGET_MS, KV_CRON_INTERVAL, KV_LAST_UPDATE, KV_AGGREGATION_STATUS, DEFAULT_CRON_INTERVAL } from './core/config';
+import { currentAggregationPhase } from './core/logger';
 import {
   beginQualityRun,
   finishQualityRun,
@@ -17,6 +18,7 @@ import {
   updateQualityStatus,
 } from './core/quality';
 import type { AppConfig, SearchQualityRunMode } from './core/types';
+import type { AggregationStatusResult, AggregationTriggerResult } from './routes';
 
 interface CfEnv {
   TVBOX_KV: KVNamespace;
@@ -50,6 +52,141 @@ function buildConfig(env: CfEnv): AppConfig {
 }
 
 const QUALITY_CHUNK_SIZE = 40;
+
+/**
+ * Worker 实例内的实时状态。KV 负责跨实例/冷启动恢复，内存状态负责轮询时
+ * 及时展示 phase，避免每次状态查询都读 KV、消耗额度。
+ */
+const liveAggregationStatus = new Map<string, AggregationTriggerResult>();
+const AGGREGATION_STALE_MS = 20 * 60 * 1000;
+
+function aggregationStatusKey(storage: KVStorage): string {
+  return KV_AGGREGATION_STATUS;
+}
+
+async function writeAggregationStatus(storage: KVStorage, status: AggregationStatusResult): Promise<void> {
+  liveAggregationStatus.set(aggregationStatusKey(storage), status);
+  try {
+    await storage.put(aggregationStatusKey(storage), JSON.stringify(status));
+  } catch (error) {
+    // 状态落盘是诊断能力，不能反过来阻断聚合本身。
+    console.warn('[aggregation] Failed to persist status:', error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function readAggregationStatus(storage: KVStorage): Promise<AggregationStatusResult> {
+  const inMemory = liveAggregationStatus.get(aggregationStatusKey(storage));
+  if (inMemory) {
+    const startedAt = inMemory.startedAt ? Date.parse(inMemory.startedAt) : Number.NaN;
+    if (inMemory.running && Number.isFinite(startedAt)) {
+      inMemory.elapsedMs = Math.max(0, Date.now() - startedAt);
+    }
+    const phase = inMemory.running ? currentAggregationPhase() : null;
+    if (phase && phase.updatedAt > startedAt && phase.phase !== inMemory.phase) {
+      inMemory.phase = phase.phase;
+      inMemory.message = `Aggregation is running (phase: ${phase.phase})`;
+    }
+    if (inMemory.running) {
+      liveAggregationStatus.set(aggregationStatusKey(storage), inMemory);
+    }
+    return { ...inMemory };
+  }
+
+  try {
+    const raw = await storage.get(aggregationStatusKey(storage));
+    if (!raw) {
+      return {
+        started: false,
+        running: false,
+        completed: false,
+        message: 'Aggregation status is unavailable',
+        lastResult: null,
+      };
+    }
+    const persisted = JSON.parse(raw) as AggregationStatusResult;
+    return persisted;
+  } catch (error) {
+    console.warn('[aggregation] Failed to read status:', error instanceof Error ? error.message : String(error));
+    return {
+      started: false,
+      running: false,
+      completed: false,
+      message: 'Aggregation status is unavailable',
+      lastResult: null,
+    };
+  }
+}
+
+async function runAggregationTracked(storage: KVStorage, config: AppConfig, ctx: ExecutionContext): Promise<void> {
+  const previous = await readAggregationStatus(storage);
+  const previousStartedAt = previous.startedAt ? Date.parse(previous.startedAt) : Number.NaN;
+  const previousAgeMs = Number.isFinite(previousStartedAt) ? Date.now() - previousStartedAt : Number.POSITIVE_INFINITY;
+  if (previous.running && previousAgeMs >= 0 && previousAgeMs < AGGREGATION_STALE_MS) {
+    console.log('[aggregation] Already running, skipping duplicate start');
+    return;
+  }
+
+  const runId = new Date().toISOString();
+  const startedAt = new Date().toISOString();
+  const runningStatus: AggregationTriggerResult = {
+    started: true,
+    running: true,
+    completed: false,
+    runId,
+    startedAt,
+    phase: 'starting',
+    elapsedMs: 0,
+    message: 'Aggregation is running (phase: starting)',
+  };
+  if (previous.running) {
+    const stale: AggregationTriggerResult = {
+      started: true,
+      running: false,
+      completed: false,
+      timedOut: true,
+      runId: previous.runId,
+      startedAt: previous.startedAt,
+      phase: previous.phase,
+      elapsedMs: previousAgeMs,
+      message: 'Previous aggregation exceeded the stale-run threshold; retrying',
+    };
+    await writeAggregationStatus(storage, { ...stale, lastResult: stale });
+    console.warn('[aggregation] Recovered stale running status; starting a new run');
+  }
+  await writeAggregationStatus(storage, runningStatus);
+
+  try {
+    await runAggregation(storage, config, {
+      waitUntil: (task) => ctx.waitUntil(task),
+    });
+    const completed: AggregationTriggerResult = {
+      started: true,
+      running: false,
+      completed: true,
+      runId,
+      startedAt,
+      phase: 'completed',
+      elapsedMs: Date.now() - Date.parse(startedAt),
+      message: 'Refresh completed',
+    };
+    await writeAggregationStatus(storage, { ...completed, lastResult: completed });
+    console.log(`[aggregation] Completed in ${completed.elapsedMs}ms`);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    const failed: AggregationTriggerResult = {
+      started: true,
+      running: false,
+      completed: false,
+      runId,
+      startedAt,
+      phase: currentAggregationPhase().phase || 'failed',
+      elapsedMs: Date.now() - Date.parse(startedAt),
+      message,
+    };
+    await writeAggregationStatus(storage, { ...failed, lastResult: failed });
+    console.error(`[aggregation] Background task failed: ${message}`);
+  }
+}
 
 /** CF 单次执行一个分片；到期时自动开始新的一轮，running 时继续游标。 */
 async function runQualityChunkWithStatus(storage: KVStorage, requestedMode?: SearchQualityRunMode, timezone = 'Asia/Shanghai'): Promise<void> {
@@ -95,10 +232,10 @@ export default {
     const app = createApp({
       storage,
       config,
-      triggerRefresh: () => runAggregation(storage, config, {
-        waitUntil: (task) => ctx.waitUntil(task),
-      }),
+      triggerRefresh: () => runAggregationTracked(storage, config, ctx),
       triggerQuality: (mode) => runQualityChunkWithStatus(storage, mode, config.qualityTimezone),
+      isSyncing: () => liveAggregationStatus.get(aggregationStatusKey(storage))?.running === true,
+      aggregationStatus: () => readAggregationStatus(storage),
     });
 
     return app.fetch(request, env, ctx);
@@ -125,9 +262,7 @@ export default {
 
     if (aggregationDue) {
       console.log('[scheduled] Running aggregation (interval: ' + intervalMinutes + 'min)');
-      ctx.waitUntil(runAggregation(storage, config, {
-        waitUntil: (task) => ctx.waitUntil(task),
-      }));
+      ctx.waitUntil(runAggregationTracked(storage, config, ctx));
       return;
     }
 

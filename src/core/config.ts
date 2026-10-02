@@ -22,6 +22,7 @@ export const KV_STARTUP_SITE_POOL = 'startup_site_pool'; // 根配置动态裁�
 export const KV_SOURCE_URLS = 'source_urls';
 export const KV_LAST_UPDATE = 'last_update';
 export const KV_LAST_UPDATE_ERROR = 'last_update_error';
+export const KV_AGGREGATION_STATUS = 'aggregation_status'; // 后台聚合状态检查点（running/completed/failed）
 export const KV_MANUAL_SOURCES = 'manual_sources';
 export const KV_MACCMS_SOURCES = 'maccms_sources';
 export const KV_LIVE_SOURCES = 'live_sources';
