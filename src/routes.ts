@@ -27,6 +27,7 @@ import {
   saveQualitySchedule,
   updateQualityStatus,
   excludedQualityKeys,
+  candidateKeysFromPool,
 } from './core/quality';
 import { isPanInitCredentialDistributable, loadCredentials, saveCredential, deleteCredential, loadCredentialPolicy, saveCredentialPolicy, normalizeCredentialInput, prepareQuarkCookie, credentialRevision, loadCredentialDistribution, saveCredentialDistribution, findCredentialAuthCode, normalizeCredentialDistributionConfig, CLOUD_PLATFORMS, createCredentialAuthCode } from './core/credential-store';
 import { isSiteProbeable } from './core/speedtest';
@@ -3508,6 +3509,31 @@ export function createApp(deps: AppDeps): Hono {
     const parseSet = new Set(blacklist.parses);
     const liveSet = new Set(blacklist.lives);
 
+    // 搜索页必须使用与搜索配额、质量池完全相同的候选集合。
+    // 这里不能简单按 searchable===1 统计：JS URL 等源会在质量分级前被排除，
+    // 直接统计会把“未入选源”混进候选源，导致数字与实际下发口径不一致。
+    const qualityPool = await loadQualityPool(storage);
+    const qualityEntryMap = new Map(
+      (qualityPool?.entries || []).map(entry => [entry.key, entry]),
+    );
+    const candidateKeySet = candidateKeysFromPool(qualityPool);
+    const searchableCandidateKeys = new Set(
+      (parsed.sites || [])
+        .filter(site => site.searchable === 1)
+        .map(site => site.key),
+    );
+    const candidateReason = (site: TVBoxSite): string => {
+      const entry = qualityEntryMap.get(site.key);
+      if (!entry) {
+        if (site.type === 3 && /^https?:\/\//.test(site.api || '')) return 'js-url-excluded';
+        if (site.searchable !== 1) return 'not-searchable';
+        return 'not-in-quality-pool';
+      }
+      if (entry.grade === 'timeout') return 'timeout';
+      if (entry.grade === 'unusable') return 'unusable';
+      return 'not-candidate';
+    };
+
     // 预编译正则规则用于标记 regexBlocked
     const activeRegexRules = blacklist.regexRules.filter(r => r.enabled);
     const compiledRegex: Array<{ re: RegExp; field: string }> = [];
@@ -3536,7 +3562,16 @@ export function createApp(deps: AppDeps): Hono {
           if (re.test(value)) { regexBlocked = true; regexPattern = re.source; break; }
         }
       }
-      sites.push({ ...site, fingerprint: fp, blocked: fpBlocked || regexBlocked, regexBlocked, regexPattern, group });
+      sites.push({
+        ...site,
+        fingerprint: fp,
+        blocked: fpBlocked || regexBlocked,
+        regexBlocked,
+        regexPattern,
+        group,
+        candidate: site.searchable === 1 && candidateKeySet.has(site.key),
+        candidateReason: candidateKeySet.has(site.key) ? undefined : candidateReason(site),
+      });
     }
 
     const parses = (parsed.parses || []).map(p => ({
@@ -3549,7 +3584,18 @@ export function createApp(deps: AppDeps): Hono {
       blocked: liveSet.has(l.url || l.api || ''),
     }));
 
-    return c.json({ sites, parses, lives });
+    return c.json({
+      sites,
+      parses,
+      lives,
+      searchQuality: {
+        candidateCount: candidateKeySet.size,
+        searchableCount: searchableCandidateKeys.size,
+        qualityPoolTotal: qualityPool?.grades?.poolTotal ?? 0,
+        qualitySnapshotTotal: qualityPool?.total ?? 0,
+        candidateKeys: [...candidateKeySet],
+      },
+    });
   });
 
   app.post('/admin/blacklist', async (c) => {

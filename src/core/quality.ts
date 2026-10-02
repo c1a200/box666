@@ -550,7 +550,7 @@ export function collectSearchableSites(sites: TVBoxSite[]): TVBoxSite[] {
   return result;
 }
 
-function candidateKeysFromPool(pool: SearchQualitySnapshot | null): Set<string> {
+export function candidateKeysFromPool(pool: SearchQualitySnapshot | null): Set<string> {
   const keys = new Set<string>();
   if (!pool || !Array.isArray(pool.entries)) return keys;
   for (const entry of pool.entries) {

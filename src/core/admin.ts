@@ -516,6 +516,27 @@ ${sharedStyles}
     </div>
 
     <div class="section">
+      <div class="section-title" data-i18n="cloudManualPaste">Manual Credential Paste</div>
+      <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+        <div style="flex:0 0 140px">
+          <label class="form-label" data-i18n="cloudPlatform">Platform</label>
+          <select id="manualPlatform" class="nt-input" style="width:100%"></select>
+        </div>
+        <div style="flex:1;min-width:200px">
+          <label class="form-label" data-i18n="cloudCredentialValue">Credential (cookie / token / JSON)</label>
+          <input id="manualCredValue" class="nt-input" style="width:100%" placeholder="cookie=xxx; token=yyy">
+        </div>
+        <button class="btn btn-sm" onclick="manualPasteCredential()" data-i18n="save">Save</button>
+      </div>
+      <div id="manualPasteStatus" class="status-text" style="margin-top:6px"></div>
+      <div class="cloud-helper-info" style="margin-top:12px;font-size:0.8rem;color:var(--text-secondary);background:rgba(255,255,255,0.03);padding:10px;border-radius:4px;border-left:3px solid var(--accent);line-height:1.5" data-i18n="cloudManualPasteHelp"></div>
+    </div>
+  </div>
+
+  <!-- Settings Tab -->
+  <div class="tab-panel" id="panelSettings">
+
+    <div class="section">
       <div class="section-title" data-i18n="credentialDistributionTitle">Credential Distribution &amp; Client Authentication</div>
       <div class="credential-help" data-i18n="credentialDistributionDesc"></div>
 
@@ -559,27 +580,6 @@ ${sharedStyles}
 
       <div class="credential-help" data-i18n="credentialSecurityHint"></div>
     </div>
-
-    <div class="section">
-      <div class="section-title" data-i18n="cloudManualPaste">Manual Credential Paste</div>
-      <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
-        <div style="flex:0 0 140px">
-          <label class="form-label" data-i18n="cloudPlatform">Platform</label>
-          <select id="manualPlatform" class="nt-input" style="width:100%"></select>
-        </div>
-        <div style="flex:1;min-width:200px">
-          <label class="form-label" data-i18n="cloudCredentialValue">Credential (cookie / token / JSON)</label>
-          <input id="manualCredValue" class="nt-input" style="width:100%" placeholder="cookie=xxx; token=yyy">
-        </div>
-        <button class="btn btn-sm" onclick="manualPasteCredential()" data-i18n="save">Save</button>
-      </div>
-      <div id="manualPasteStatus" class="status-text" style="margin-top:6px"></div>
-      <div class="cloud-helper-info" style="margin-top:12px;font-size:0.8rem;color:var(--text-secondary);background:rgba(255,255,255,0.03);padding:10px;border-radius:4px;border-left:3px solid var(--accent);line-height:1.5" data-i18n="cloudManualPasteHelp"></div>
-    </div>
-  </div>
-
-  <!-- Settings Tab -->
-  <div class="tab-panel" id="panelSettings">
     <!-- Storage Diagnostics -->
     <div class="section">
       <div class="section-title" data-i18n="storageStatus">存储状态</div>
@@ -925,7 +925,7 @@ const translations = {
     sqKey:'Key', sqName:'Name', sqSource:'Source', sqReason:'Reason', sqAction:'Action',
     sqPin:'Pin', sqUnpin:'Unpin',
     sqBlock:'Block', sqUnblock:'Unblock', sqBlocked:'Blocked', sqBlockedDesc:'Blocked sources are excluded from all client outputs but remain here so they can be restored.', sqSourceFilterPh:'Search source name or key...', sqFilterAll:'All grades', sqFilterMatched:'Matched', sqFilterNoMatch:'No matching sources',
-    sqPinned:'Pinned', sqPinnedDesc:'Drag to reorder. Top sources are searched first in TVBox.', sqOtherSources:'Other Sources',
+    sqPinned:'Pinned', sqPinnedDesc:'Drag to reorder. Top sources are searched first in TVBox.', sqOtherSources:'Candidate Sources', sqExcludedSources:'Not Selected', sqReasonJsUrlExcluded:'JS URL excluded', sqReasonTimeout:'Timeout', sqReasonUnusable:'Unusable', sqReasonNotInPool:'Not in quality pool', sqReasonNotCandidate:'Not a candidate',
     sqHttp:'http', sqMainJar:'main jar', sqIndepJar:'indep jar', sqLeanRemoved:'lean-removed',
     channelProbeTitle:'Channel Speed Probe (Node/Docker)',
     channelProbeEnable:'Enable scheduled channel speed test (every 12h)',
@@ -973,7 +973,7 @@ const translations = {
     credentialSelectedEmptyShort:'Selected: none (no credentials)',
     credentialSelectedEmpty:'No platform is selected. This auth code will distribute no credentials; the client can still log in locally.',
     credentialDefaultLabel:'Default client',
-    cloudLoginDesc:'Log in here once; the saved credential can be selectively distributed below. If a platform is not distributed, clients can still scan the QR code and log in themselves.',
+    cloudLoginDesc:'Log in here once; choose whether to distribute the saved credential in Settings. If a platform is not distributed, clients can still scan the QR code and log in themselves.',
     cloudManualPasteHelp:'<strong>💡 Manual login:</strong><br>' +
       '• <strong>Tianyi</strong>: Web QR is unstable. Sign in at <a href="https://h5.cloud.189.cn" target="_blank" style="color:var(--accent)">h5.cloud.189.cn</a> on a phone browser, copy the Cookie header value, select Tianyi above and paste.<br>' +
       '• <strong>123Pan</strong>: Third-party QR login is restricted. Generate a WebDAV password in 123Pan Web -> Tool Center -> Third-Party Mount, select 123Pan above and paste.',
@@ -1060,7 +1060,7 @@ const translations = {
     sqKey:'Key', sqName:'名称', sqSource:'来源', sqReason:'原因', sqAction:'操作',
     sqPin:'置顶', sqUnpin:'取消置顶',
     sqBlock:'屏蔽', sqUnblock:'取消屏蔽', sqBlocked:'已屏蔽', sqBlockedDesc:'屏蔽源不会下发到任何客户端，但仍保留在管理列表中，可随时恢复。可按名称/Key 搜索，并按质量等级或“已屏蔽”筛选。', sqSourceFilterPh:'搜索源名称或 Key...', sqFilterAll:'全部等级', sqFilterMatched:'匹配', sqFilterNoMatch:'没有匹配的源',
-    sqPinned:'置顶源', sqPinnedDesc:'上下移动排序，排在前面的源在 TVBox 搜索时优先执行', sqOtherSources:'其他源',
+    sqPinned:'置顶源', sqPinnedDesc:'上下移动排序，排在前面的源在 TVBox 搜索时优先执行', sqOtherSources:'候选源', sqExcludedSources:'未入选源', sqReasonJsUrlExcluded:'JS URL 已排除', sqReasonTimeout:'超时', sqReasonUnusable:'不可用', sqReasonNotInPool:'不在质量池', sqReasonNotCandidate:'非候选源',
     sqHttp:'HTTP', sqMainJar:'主 JAR', sqIndepJar:'独立 JAR', sqLeanRemoved:'轻量剔除',
     channelProbeTitle:'频道级测速（仅 Node/Docker）',
     channelProbeEnable:'启用定时频道测速（每 12 小时）',
@@ -1108,7 +1108,7 @@ const translations = {
     credentialRootLinkHint:'根链接状态',
     credentialCopied:'已复制',
     credentialDefaultLabel:'默认客户端',
-    cloudLoginDesc:'在这里登录一次即可，已保存凭证可在下方选择是否下发。未下发的平台，应用端仍可自行扫码登录。',
+    cloudLoginDesc:'在这里登录一次即可，已保存凭证可在“设置”页选择是否下发。未下发的平台，应用端仍可自行扫码登录。',
     cloudManualPasteHelp:'<strong>💡 手动配置指引：</strong><br>' +
       '• <strong>天翼云盘</strong>：扫码容易失效。用手机浏览器登录 <a href="https://h5.cloud.189.cn" target="_blank" style="color:var(--accent)">h5.cloud.189.cn</a>，复制 Cookie 请求头值，在上方选择“天翼云盘”后粘贴。<br>' +
       '• <strong>123网盘</strong>：第三方扫码登录受限。请在 123网盘官网“工具中心 → 第三方挂载”生成 WebDAV 授权密码，在上方选择“123 网盘”后粘贴。',
@@ -1136,8 +1136,8 @@ const tabLoaders = {
   maccms: () => loadMacCMS(),
   live: () => Promise.all([loadLives(), loadLiveDisabled(), loadLiveMergeMode(), loadIgnoreAggregatedLives(), loadChannelProbe()]),
   searchQuota: () => Promise.all([loadSearchQuota(), loadQualityReport()]),
-  cloud: () => Promise.all([loadCredentialDistribution(), loadCloudCredentials()]),
-  settings: () => Promise.all([loadNameTransform(), loadBgSettings(), loadCronInterval(), loadSpeedTest(), loadEdgeProxies(), loadDedupConfig(), loadGroupOrder(), loadStorageDiagnostics(), loadSmartBaseUrl(), loadProbeDepth(), loadAutoClean()]),
+  cloud: () => loadCloudCredentials(),
+  settings: () => Promise.all([loadCredentialDistribution(), loadNameTransform(), loadBgSettings(), loadCronInterval(), loadSpeedTest(), loadEdgeProxies(), loadDedupConfig(), loadGroupOrder(), loadStorageDiagnostics(), loadSmartBaseUrl(), loadProbeDepth(), loadAutoClean()]),
   aggLogs: () => loadAggLogs(),
 };
 const loadedTabs = new Set();
@@ -2338,8 +2338,22 @@ async function loadSearchQuotaReport() {
     const cfgRes = await auth.authFetch('/admin/config-data');
     if (!cfgRes.ok) return;
     const cfg = await cfgRes.json();
-    const allSites = (cfg.sites || []).filter(s => s.searchable === 1);
-    sqAllSites = allSites;
+    const allSites = Array.isArray(cfg.sites) ? cfg.sites : [];
+    const rawCandidateKeys = Array.isArray(cfg.searchQuality && cfg.searchQuality.candidateKeys)
+      ? cfg.searchQuality.candidateKeys
+      : allSites.filter(s => s.candidate === true).map(s => s.key);
+    sqCandidateCount = typeof (cfg.searchQuality && cfg.searchQuality.candidateCount) === 'number'
+      ? cfg.searchQuality.candidateCount
+      : rawCandidateKeys.length;
+    if (rawCandidateKeys.length > 0) {
+      const candidateKeys = new Set(rawCandidateKeys);
+      sqAllSites = allSites.filter(s => candidateKeys.has(s.key));
+      sqExcludedSites = allSites.filter(s => s.searchable === 1 && !candidateKeys.has(s.key));
+    } else {
+      // 质量池尚未生成时按旧口径展示可搜索源，避免把所有源都误判为“未入选”。
+      sqAllSites = allSites.filter(s => s.searchable === 1);
+      sqExcludedSites = [];
+    }
     renderSearchSources();
   } catch {}
 }
@@ -2607,6 +2621,8 @@ function renderQualityStats(d) {
 }
 
 let sqAllSites = [];
+let sqExcludedSites = [];
+let sqCandidateCount = 0;
 
 function qualityEntryByKey() {
   const map = new Map();
@@ -2627,6 +2643,14 @@ function qualityGradeLabel(grade) {
   if (grade === 'timeout') return t('sqTimeout');
   if (grade === 'unusable') return t('sqUnusable');
   return '-';
+}
+
+function qualityCandidateReasonLabel(reason) {
+  if (reason === 'js-url-excluded') return t('sqReasonJsUrlExcluded');
+  if (reason === 'timeout') return t('sqReasonTimeout');
+  if (reason === 'unusable') return t('sqReasonUnusable');
+  if (reason === 'not-in-quality-pool') return t('sqReasonNotInPool');
+  return t('sqReasonNotCandidate');
 }
 
 function qualityGradeColor(grade) {
@@ -2683,7 +2707,8 @@ function renderSearchSources() {
     const site = sqAllSites.find(s => s.key === key) || { key: key, name: key };
     return matches(site);
   });
-  const unpinnedAll = sqAllSites.filter(s => !sqPinnedKeys.has(s.key)).filter(matches);
+  const candidateSites = sqAllSites;
+  const unpinnedAll = candidateSites.filter(s => !sqPinnedKeys.has(s.key)).filter(matches);
   const visibleLimit = 1000;
   const unpinned = unpinnedAll.slice(0, visibleLimit);
 
@@ -2720,7 +2745,7 @@ function renderSearchSources() {
     html += '</table>';
   }
 
-  html += '<div style="margin-top:16px;margin-bottom:8px"><strong>' + t('sqOtherSources') + ' (' + unpinnedAll.length + ')</strong></div>';
+  html += '<div style="margin-top:16px;margin-bottom:8px"><strong>' + t('sqOtherSources') + ' (' + (sqCandidateCount || candidateSites.length) + ')</strong></div>';
   html += '<div style="margin-bottom:6px;font-size:0.75rem;color:var(--text-secondary)">' + t('sqBlockedDesc') + '</div>';
   html += '<table style="width:100%;border-collapse:collapse;font-size:0.8rem">';
   unpinned.forEach(function(s) {
@@ -2741,6 +2766,29 @@ function renderSearchSources() {
   if (unpinnedAll.length > visibleLimit) html += '<tr><td colspan="5" style="padding:4px;color:var(--text-secondary)">... +' + (unpinnedAll.length - visibleLimit) + ' more</td></tr>';
   if (unpinnedAll.length === 0) html += '<tr><td colspan="5" style="padding:8px;color:var(--text-secondary)">' + t('sqFilterNoMatch') + '</td></tr>';
   html += '</table>';
+
+  const excludedFiltered = sqExcludedSites.filter(matches);
+  if (excludedFiltered.length > 0) {
+    const excludedVisible = excludedFiltered.slice(0, visibleLimit);
+    html += '<div style="margin-top:20px;margin-bottom:8px"><strong>' + t('sqExcludedSources') + ' (' + excludedFiltered.length + ')</strong></div>';
+    html += '<div style="margin-bottom:6px;font-size:0.75rem;color:var(--text-secondary)">' + t('sqBlockedDesc') + '</div>';
+    html += '<table style="width:100%;border-collapse:collapse;font-size:0.8rem">';
+    excludedVisible.forEach(function(s) {
+      const isBlocked = sqBlockedKeys.has(s.key);
+      const entry = qualityMap.get(s.key);
+      const grade = entry ? entry.grade : null;
+      html += '<tr style="border-bottom:1px solid var(--border)' + (isBlocked ? ';opacity:0.55;text-decoration:line-through' : '') + '">';
+      html += '<td style="padding:4px;font-family:var(--mono);font-size:0.75rem">' + escHtml(s.key) + '</td>';
+      html += '<td style="padding:4px">' + escHtml(s.name || s.key) + (isBlocked ? ' <span style="color:var(--red);font-size:0.7rem">' + t('sqBlocked') + '</span>' : '') + '</td>';
+      html += '<td style="padding:4px;white-space:nowrap;color:var(--text-secondary)">' + escHtml(qualityCandidateReasonLabel(s.candidateReason)) + '</td>';
+      html += '<td style="padding:4px;white-space:nowrap;font-family:var(--mono);font-size:0.75rem">' + qualitySpeedLabel(entry) + '</td>';
+      html += '<td style="padding:4px;width:120px;text-align:right;white-space:nowrap">';
+      html += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem;color:var(--red)" onclick="toggleBlocked(&quot;' + escHtml(s.key) + '&quot;)">' + (isBlocked ? t('sqUnblock') : t('sqBlock')) + '</button>';
+      html += '</td></tr>';
+    });
+    if (excludedFiltered.length > visibleLimit) html += '<tr><td colspan="5" style="padding:4px;color:var(--text-secondary)">... +' + (excludedFiltered.length - visibleLimit) + ' more</td></tr>';
+    html += '</table>';
+  }
 
   $('sqSelectedTable').innerHTML = html;
 }
