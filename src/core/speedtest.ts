@@ -22,8 +22,12 @@ async function siteProbe(
   timeoutMs: number,
   deep: boolean,
   options: SiteProbeOptions = {},
+  externalSignal?: AbortSignal,
 ): Promise<{ speedMs: number | null; result: ProbeResult }> {
   const controller = new AbortController();
+  const abortFromExternal = () => controller.abort();
+  if (externalSignal?.aborted) controller.abort();
+  else externalSignal?.addEventListener('abort', abortFromExternal, { once: true });
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
@@ -51,6 +55,7 @@ async function siteProbe(
     return { speedMs: null, result: 'error' };
   } finally {
     clearTimeout(timer);
+    externalSignal?.removeEventListener('abort', abortFromExternal);
   }
 }
 
@@ -62,13 +67,16 @@ async function siteProbeWithRetry(
   deadline: number,
   retries = 1,
   options: SiteProbeOptions = {},
+  externalSignal?: AbortSignal,
 ): Promise<{ speedMs: number | null; result: ProbeResult }> {
   for (let attempt = 0; attempt <= retries; attempt++) {
+    // 外部硬预算已中止时立即退出，不再重试，避免拖住聚合。
+    if (externalSignal?.aborted) return { speedMs: null, result: 'not_probed' };
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) return { speedMs: null, result: 'not_probed' };
 
     const attemptTimeoutMs = Math.min(timeoutMs, remainingMs);
-    const result = await siteProbe(url, siteType, attemptTimeoutMs, deep, options);
+    const result = await siteProbe(url, siteType, attemptTimeoutMs, deep, options, externalSignal);
     if (result.result !== 'timeout' && result.result !== 'error') return result;
     if (attempt === retries || Date.now() >= deadline) return result;
 
@@ -140,6 +148,7 @@ export async function batchSiteSpeedTest(
 
   const probeMap = new Map<string, SiteProbeResult>();
   const deadline = Date.now() + budgetMs;
+  const batchController = new AbortController();
   let cursor = 0;
   let active = 0;
   let budgetExhausted = false;
@@ -167,7 +176,7 @@ export async function batchSiteSpeedTest(
         active++;
         updateCounter++;
 
-        siteProbeWithRetry(task.url, task.type, timeoutMs, deep, deadline, 1, { headers: task.headers }).then((probe) => {
+        siteProbeWithRetry(task.url, task.type, timeoutMs, deep, deadline, 1, { headers: task.headers }, batchController.signal).then((probe) => {
           if (settled) return;
           probeMap.set(task.key, { key: task.key, ...probe });
           active--;
@@ -176,6 +185,12 @@ export async function batchSiteSpeedTest(
             logger.infoFields('speedtest', 'progress', { completed: probeMap.size, total: tasks.length });
           }
 
+          scheduleNext();
+        }).catch((error: unknown) => {
+          if (settled) return;
+          probeMap.set(task.key, { key: task.key, speedMs: null, result: 'error' });
+          active--;
+          logger.warn('speedtest', 'probe rejected: ' + (error instanceof Error ? error.message : String(error)));
           scheduleNext();
         });
       }
@@ -186,6 +201,7 @@ export async function batchSiteSpeedTest(
     // 硬预算：即使个别探测未及时返回，也不让整个聚合无限等待。
     hardStopTimer = setTimeout(() => {
       budgetExhausted = true;
+      batchController.abort();
       finish();
     }, Math.max(1000, deadline - Date.now() + 1000));
 

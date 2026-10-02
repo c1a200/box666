@@ -1899,8 +1899,63 @@ export function createApp(deps: AppDeps): Hono {
   app.get('/admin/search-quota/report', async (c) => {
     if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
     const raw = await storage.get(KV_SEARCH_QUOTA_REPORT);
-    if (!raw) return c.json({ status: 'empty', searchable: null, message: 'No report yet. Run aggregation first.' });
-    const report = JSON.parse(raw) as Record<string, unknown>;
+    let report: Record<string, unknown> | null = null;
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw) as unknown;
+        if (parsed && typeof parsed === 'object') report = parsed as Record<string, unknown>;
+      } catch {
+        // 损坏的报告不能阻塞管理页；下面从已落盘的质量池和根配置重建只读报告。
+      }
+    }
+
+    if (!report) {
+      const [quota, qualityPool, fullRaw, mergedRaw] = await Promise.all([
+        loadSearchQuota(storage),
+        loadQualityPool(storage),
+        storage.get(KV_MERGED_CONFIG_FULL),
+        storage.get(KV_MERGED_CONFIG),
+      ]);
+      // 搜索页数字必须与客户端最终可见配置口径一致；KV_MERGED_CONFIG 是经过黑名单/配额处理后的最终版，优先使用它。
+      const configRaw = mergedRaw || fullRaw;
+      let sites: TVBoxSite[] = [];
+      if (configRaw) {
+        try {
+          const parsedConfig = JSON.parse(configRaw) as TVBoxConfig;
+          if (Array.isArray(parsedConfig.sites)) sites = parsedConfig.sites;
+        } catch {
+          // 根配置损坏时仍返回质量池统计，不伪装成报告为空。
+        }
+      }
+      // KV_MERGED_CONFIG 是黑名单 + applySearchQuota 之后的最终配置，直接统计
+      // searchable===1 即等价于上一次生效的配额报告口径，无需再与质量池求交。
+      const searchableKeys = new Set(sites.filter(site => site.searchable === 1).map(site => site.key));
+      const searchable = searchableKeys.size;
+      const quickSearchable = sites.filter(site => site.searchable === 1 && site.quickSearch !== 0).length;
+      const blockedCount = (quota.blockedKeys || []).length;
+      report = {
+        status: 'derived',
+        source: 'quality-snapshot-fallback',
+        derived: true,
+        updatedAt: qualityPool?.updatedAt,
+        totalSites: sites.length || qualityPool?.total || 0,
+        jsExcluded: 0,
+        searchable,
+        quickSearchable,
+        maxSearchable: quota.maxSearchable,
+        maxQuickSearch: quota.maxQuickSearch,
+        autoLimit: quota.autoLimit === true,
+        pinnedCount: (quota.pinnedKeys || []).filter(key => searchableKeys.has(key)).length,
+        blockedCount,
+        truncated: 0,
+        quickTruncated: 0,
+        speedSorted: quota.sortBySpeed !== false,
+        leanRemoved: 0,
+        qualityGrades: qualityPool?.grades ?? null,
+        message: raw ? 'Stored report is invalid; derived from current config and quality pool.' : 'No stored report yet; derived from current config and quality pool.',
+      };
+    }
+
     const parseRaw = await storage.get(KV_PARSE_HEALTH_REPORT);
     if (parseRaw) {
       try {
@@ -4314,4 +4369,3 @@ function verifyAdmin(request: Request, config: AppConfig): boolean {
   const auth = request.headers.get('Authorization');
   return auth === `Bearer ${token}`;
 }
-
