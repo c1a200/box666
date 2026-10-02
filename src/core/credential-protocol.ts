@@ -53,15 +53,8 @@ const TOKEN_JSON_PLATFORMS: readonly CloudPlatform[] = [
   'aliyun', 'quark', 'uc', 'pan115', 'thunder', 'pikpak', 'tianyi', 'baidu', 'pan123',
 ];
 
-/** 2cc Guard 共享 token.json 的已验证 API 契约。 */
-const TOKEN_JSON_CLOUD_DRIVE_APIS = new Set([
-  'csp_ypansoguard',
-  'csp_bpansoguard',
-  'csp_kkssguard',
-  'csp_uussguard',
-  'csp_libvioguard',
-]);
-
+/** 2cc Guard 共享 token.json 的 JAR 指纹。 */
+const TOKEN_JSON_2CC_JAR = '2cc088afa757ba8bafffcfbab4b73ccc';
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
@@ -183,8 +176,8 @@ export function resolveCredentialProtocol(
   }
 
   if (
-    TOKEN_JSON_CLOUD_DRIVE_APIS.has(api.toLowerCase())
-    && /^2cc088afa757ba8bafffcfbab4b73ccc$/i.test(extractJarMd5(effectiveJar) || '')
+    /^csp_.*Guard$/i.test(api)
+    && extractJarMd5(effectiveJar)?.toLowerCase() === TOKEN_JSON_2CC_JAR
     && hasCloudDriveTokenContract(site)
   ) {
     return {

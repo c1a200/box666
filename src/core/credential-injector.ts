@@ -353,8 +353,8 @@ function isCredentialFieldUrl(value: unknown, field: string, baseUrl?: string): 
   }
 }
 
-function tokenJsonUrl(baseUrl: string): string {
-  return baseUrl.replace(/\/$/, '') + '/token.json';
+function tokenJsonUrl(baseUrl: string, revision = ''): string {
+  return baseUrl.replace(/\/$/, '') + '/token.json' + (revision ? '?v=' + revision : '');
 }
 
 function normalizeBaseUrl(baseUrl?: string): string {
@@ -520,7 +520,8 @@ function injectCloudDriveTokenUrl(
     return { ext, changed: false };
   }
 
-  const url = tokenJsonUrl(normalizedBaseUrl);
+  const revision = platforms.map((platform) => credentialRevision(creds.get(platform))).filter(Boolean).sort().join('.');
+  const url = tokenJsonUrl(normalizedBaseUrl, revision);
   if (current === url) return { ext, changed: false };
   const next = { ...parsed.obj, 'Cloud-drive': url };
   return {
@@ -1051,132 +1052,157 @@ export function generateTokenJson(
   credentials: Map<CloudPlatform, CloudCredential>,
   neededPlatforms?: CloudPlatform[],
 ): Record<string, any> {
-  const token: Record<string, any> = {};
+  const selectedPlatforms = neededPlatforms || [...credentials.keys()];
+  const hasDistributableCredential = selectedPlatforms.some((platform) => (
+    isCredentialDistributable(platform, credentials.get(platform))
+  ));
+  if (!hasDistributableCredential) return {};
 
-  const platforms = neededPlatforms || [...credentials.keys()];
+  const token: Record<string, any> = {
+    // Keep the public lib/token.json shape. 2cc Guard reads these defaults
+    // before deciding whether a drive can be opened with server credentials;
+    // omitting them makes a correctly supplied cookie look unusable.
+    token: '',
+    open_token: '',
+    open_api_url: 'postparam|http://api.extscreen.com/aliyundrive/token',
+    oauth_client_id: '',
+    oauth_client_secret: '',
+    oauth_auth_url: '',
+    oauth_refresh_url: '',
+    is_vip: true,
+    vip_thread_limit: 32,
+    vip_thread_limit_night: '19-23=10',
+    vod_flags: '4kz|auto',
+    quark_thread_limit: 32,
+    quark_thread_limit_night: '19-23=10',
+    quark_is_guest: false,
+    quark_vip_thread_limit: 32,
+    quark_vip_thread_limit_night: '19-23=10',
+    quark_flags: '4kz|auto',
+    uc_thread_limit: 0,
+    uc_is_vip: false,
+    uc_vip_thread_limit: 0,
+    uc_flags: '4kz|auto',
+    thunder_thread_limit: 2,
+    thunder_is_vip: false,
+    thunder_vip_thread_limit: 2,
+    thunder_flags: '4kz',
+    aliproxy: '',
+    aliproxy_url: '',
+    proxy: '',
+    danmu: true,
+    quark_danmu: true,
+    quark_cookie: '',
+    uc_cookie: '',
+    thunder_username: '',
+    thunder_password: '',
+    thunder_captchatoken: '',
+    yd_auth: '',
+    yd_thread_limit: 4,
+    yd_flags: 'auto|4kz',
+    yd_danmu: true,
+    pikpak_username: '',
+    pikpak_password: '',
+    pikpak_flags: '4kz',
+    pikpak_thread_limit: 2,
+    pikpak_vip_thread_limit: 2,
+    pikpak_proxy: '',
+    pikpak_proxy_onlyapi: false,
+    pikpak_danmu: true,
+    wgcf_key: '',
+    wgcf_key2: '',
+    wgcf_ipport: '',
+    wgcf_xray_url: './xray.gz',
+    wgcf_geoip_url: './geoip.dat.gz',
+    wgcf_json_url: './wgcf.json',
+    wgcf_vless_id: '',
+    wgcf_vless_optname: 'singapore.com:443',
+    wgcf_vless_worker: '',
+    wgcf_vless_path: '/?ed=2048',
+    wgcf_vless_protocol: 'vless',
+    wgcf_vless_network: 'ws',
+    wgcf_vless_tls: false,
+    libxl_url: './libxl_thunder_sdk.so',
+    youtube_proxy: '',
+    singbox_url: './sing-box.gz',
+    singbox_subscribe_url: '',
+    singbox_clash2singbox_url: './clash2singbox.gz',
+    singbox_template_url: './singbox.json',
+    pan115_cookie: '',
+    pan115_thread_limit: 0,
+    pan115_vip_thread_limit: 0,
+    pan115_is_vip: false,
+    pan115_flags: '4kz',
+    pan115_speed_limit: 0,
+    pan115_speed_limit_mobile: 10485760,
+    pan115_auto_delete: true,
+    pan115_delete_code: '',
+    pan_order: 'ali|quark|uc|115|yd|thunder|pikpak',
+  };
 
-  for (const platform of platforms) {
-    const cred = credentials.get(platform);
-    if (!isCredentialDistributable(platform, cred)) continue;
+  const allowed = neededPlatforms ? new Set(neededPlatforms) : null;
+  const canUse = (platform: CloudPlatform): boolean => (
+    (!allowed || allowed.has(platform)) && isCredentialDistributable(platform, credentials.get(platform))
+  );
+  const value = (platform: CloudPlatform, field: string): string => {
+    const raw = credentials.get(platform)?.credential?.[field];
+    return typeof raw === 'string' ? raw.trim() : '';
+  };
+  const set = (field: string, raw: string | undefined) => {
+    const text = typeof raw === 'string' ? raw.trim() : '';
+    if (text) token[field] = text;
+  };
 
-    const value = (field: string): string => {
-      const raw = cred?.credential[field];
-      return typeof raw === 'string' ? raw.trim() : '';
-    };
+  if (canUse('quark')) set('quark_cookie', value('quark', 'cookie'));
+  if (canUse('uc')) set('uc_cookie', value('uc', 'cookie'));
+  if (canUse('pan115')) set('pan115_cookie', value('pan115', 'cookie'));
 
-    switch (platform) {
-      case 'aliyun': {
-        const refreshToken = value('refresh_token');
-        if (refreshToken) {
-          token.refresh_token = refreshToken;
-          token.token = refreshToken;
-          token.ali_token = refreshToken;
-        }
-        const openToken = value('open_token');
-        if (openToken) token.open_token = openToken;
-        break;
-      }
-      case 'quark': {
-        const cookie = value('cookie');
-        if (cookie) {
-          token.quark_cookie = cookie;
-          token.quarkCookie = cookie;
-          token.cookie = cookie;
-        }
-        break;
-      }
-      case 'uc': {
-        const cookie = value('cookie');
-        if (cookie) {
-          token.uc_cookie = cookie;
-          token.ucCookie = cookie;
-          token.uccookie = cookie;
-        }
-        break;
-      }
-      case 'pan115': {
-        const cookie = value('cookie');
-        if (cookie) {
-          token['115_cookie'] = cookie;
-          token['115Cookie'] = cookie;
-        }
-        break;
-      }
-      case 'thunder': {
-        const username = value('username');
-        const password = value('password');
-        if (username && password) {
-          token.thunder_username = username;
-          token.thunder_password = password;
-          token.xunlei_username = username;
-          token.xunlei_password = password;
-        }
-        const thunderToken = value('token') || value('tuctoken');
-        if (thunderToken) {
-          token.tuctoken = thunderToken;
-          token.thunder_token = thunderToken;
-        }
-        break;
-      }
-      case 'pikpak': {
-        const username = value('username');
-        const password = value('password');
-        if (username && password) {
-          token.pikpak_username = username;
-          token.pikpak_password = password;
-        }
-        break;
-      }
-      case 'bilibili': {
-        const cookie = value('cookie');
-        if (cookie) {
-          token.bili_cookie = cookie;
-          token.bilibili_cookie = cookie;
-        }
-        break;
-      }
-      case 'tianyi': {
-        const username = value('username');
-        const password = value('password');
-        // Pan.init 的 tianyi 接口返回 username/password；保留 cookie 别名供旧 JAR 兼容。
-        if (username && password) {
-          token.tianyi_username = username;
-          token.tianyi_password = password;
-        }
-        const cookie = value('cookie');
-        if (cookie) {
-          token.tianyi_cookie = cookie;
-          token.tianyiCookie = cookie;
-          token.tyitoken = cookie;
-        }
-        break;
-      }
-      case 'baidu': {
-        const cookie = value('cookie');
-        if (cookie) {
-          token.baidu_cookie = cookie;
-          token.baiduCookie = cookie;
-          token.dutoken = cookie;
-        }
-        break;
-      }
-      case 'pan123': {
-        const username = value('username');
-        const password = value('password');
-        if (username && password) {
-          token.p123_username = username;
-          token.p123_password = password;
-        }
-        const pan123Token = value('token');
-        if (pan123Token) {
-          token['123_token'] = pan123Token;
-          token['123token'] = pan123Token;
-          token.p123token = pan123Token;
-        }
-        break;
+  if (canUse('aliyun')) {
+    const aliToken = value('aliyun', 'refresh_token')
+      || value('aliyun', 'token')
+      || value('aliyun', 'ali_token');
+    set('token', aliToken);
+    set('refresh_token', aliToken);
+    set('open_token', value('aliyun', 'open_token'));
+  }
+
+  if (canUse('thunder')) {
+    const username = value('thunder', 'username');
+    const password = value('thunder', 'password');
+    if (username && password) {
+      set('thunder_username', username);
+      set('thunder_password', password);
+    }
+    set('thunder_captchatoken', value('thunder', 'captchatoken'));
+  }
+
+  if (canUse('pikpak')) {
+    const username = value('pikpak', 'username');
+    const password = value('pikpak', 'password');
+    if (username && password) {
+      set('pikpak_username', username);
+      set('pikpak_password', password);
+    }
+  }
+
+  if (canUse('bilibili')) set('bili_cookie', value('bilibili', 'cookie'));
+
+  if (canUse('tianyi')) {
+    const cookie = value('tianyi', 'cookie');
+    if (cookie) {
+      set('yd_auth', cookie);
+    } else {
+      const username = value('tianyi', 'username');
+      const password = value('tianyi', 'password');
+      if (username && password) {
+        set('tianyi_username', username);
+        set('tianyi_password', password);
       }
     }
   }
+
+  if (canUse('baidu')) set('baidu_cookie', value('baidu', 'cookie'));
+  if (canUse('pan123')) set('123_token', value('pan123', 'token'));
 
   return token;
 }
