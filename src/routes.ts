@@ -1145,14 +1145,18 @@ export function createApp(deps: AppDeps): Hono {
 
     // 优先返回聚合阶段预生成的 txt，避免每次请求都实时下载/合并直播源。
     const prebuiltTxt = await storage.get(KV_LIVE_MERGED_TXT);
-    // 空字符串也是有效结果（例如直播被禁用/没有可用频道），
-    // 必须直接返回，不能回退到慢速实时解析；但包含已屏蔽线路的旧缓存必须重建。
-    if (
-      prebuiltTxt !== null
+    const liveDisabled = (await storage.get(KV_LIVE_DISABLED)) === 'true';
+    // 空字符串通常表示直播被禁用或确实没有频道；但历史上也存在聚合输出写入
+    // 空 TXT、原生分组数据仍有效的部署。若直播未禁用，空预生成值不能遮蔽
+    // KV_LIVE_MERGED_DATA，否则会永久返回空内容或旧运行时缓存。
+    const hasUsablePrebuiltTxt = Boolean(prebuiltTxt && prebuiltTxt.trim())
       && prebuiltTxt !== KV_LIVE_MERGED_TXT_FALLBACK
-      && !containsBlockedLiveUrl(prebuiltTxt)
-    ) {
-      return c.body(renderLiveText(prebuiltTxt), 200, {
+      && !containsBlockedLiveUrl(prebuiltTxt!);
+    const prebuiltEmptyIsAuthoritative = prebuiltTxt !== null
+      && prebuiltTxt.trim() === ''
+      && liveDisabled;
+    if (hasUsablePrebuiltTxt || prebuiltEmptyIsAuthoritative) {
+      return c.body(renderLiveText(prebuiltTxt!), 200, {
         'Content-Type': 'text/plain; charset=utf-8',
         'Cache-Control': 'public, max-age=1800, stale-while-revalidate=86400',
         'Access-Control-Allow-Origin': '*',
@@ -1167,21 +1171,21 @@ export function createApp(deps: AppDeps): Hono {
     const runtimeTxt = await storage.get(KV_LIVE_RUNTIME_TXT);
     const runtimeVersionMatches = runtimeVersion !== null && runtimeVersion === (mergedVersion || 'legacy');
     const hasRuntimeTxt = Boolean(runtimeTxt && runtimeTxt.trim() && !containsBlockedLiveUrl(runtimeTxt));
-    if (hasRuntimeTxt && runtimeVersionMatches) {
+    if (hasRuntimeTxt && runtimeVersionMatches && !liveDisabled) {
       return c.body(renderLiveText(runtimeTxt!), 200, {
         'Content-Type': 'text/plain; charset=utf-8',
         'Cache-Control': 'public, max-age=1800, stale-while-revalidate=86400',
         'Access-Control-Allow-Origin': '*',
       });
     }
-    const runtimeCacheInvalidated = !runtimeVersionMatches || !hasRuntimeTxt;
+    const runtimeCacheInvalidated = liveDisabled || !runtimeVersionMatches || !hasRuntimeTxt;
 
     // CF 非聚合模式：解析为空通常是上游超时或内容格式不兼容。若不记录负缓存，
     // 客户端会反复触发同一批慢请求。这里保留 10 分钟冷却，配置变更时会主动清空。
     const runtimeEmptyAtRaw = await storage.get(KV_LIVE_RUNTIME_EMPTY_AT);
     const runtimeEmptyAt = runtimeEmptyAtRaw ? Number(runtimeEmptyAtRaw) : 0;
     const runtimeEmptyTtlMs = 10 * 60 * 1000;
-    if (isCfRuntime && runtimeEmptyAt > 0 && Date.now() - runtimeEmptyAt < runtimeEmptyTtlMs) {
+    if (!liveDisabled && isCfRuntime && runtimeEmptyAt > 0 && Date.now() - runtimeEmptyAt < runtimeEmptyTtlMs) {
       return c.body('', 200, {
         'Content-Type': 'text/plain; charset=utf-8',
         'Cache-Control': 'public, max-age=300',
