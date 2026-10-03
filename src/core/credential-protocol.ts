@@ -51,7 +51,7 @@ const PAN_SEARCH_PLATFORMS: readonly CloudPlatform[] = [
 ];
 
 const TOKEN_JSON_PLATFORMS: readonly CloudPlatform[] = [
-  'aliyun', 'quark', 'uc', 'pan115', 'thunder', 'pikpak', 'tianyi', 'baidu', 'pan123',
+  'aliyun', 'quark', 'uc', 'uc_tv', 'pan115', 'thunder', 'pikpak', 'tianyi', 'baidu', 'pan123',
 ];
 
 /** 2cc Guard 共享上游 tvfan/config 契约的 JAR 指纹。 */

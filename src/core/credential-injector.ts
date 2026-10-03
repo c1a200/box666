@@ -253,7 +253,7 @@ function injectAccountPasswordExt(
  * AList 的凭证位于 drive 对象内，而不是顶层。按 name/server 匹配后合并，
  * 保留 search、hidden、login、params 等原始字段。
  */
-const ALIST_PLATFORM_IDENTIFIERS: Record<CloudPlatform, string[]> = {
+const ALIST_PLATFORM_IDENTIFIERS: Partial<Record<CloudPlatform, string[]>> = {
   aliyun: ['aliyun', 'alipan', 'aliyundrive', '阿里云盘', '阿里'],
   bilibili: ['bilibili', 'b站'],
   quark: ['quark', '夸克'],
@@ -1103,8 +1103,10 @@ export function generateTvfanConfig(
   }
   if (canUse('uc')) {
     const cookie = value('uc', 'cookie');
-    const token = value('uc', 'token', 'ucToken');
     if (cookie) config.ucCookie = cookie;
+  }
+  if (canUse('uc_tv')) {
+    const token = value('uc_tv', 'token', 'refresh_token', 'ucToken');
     if (token) config.ucToken = token;
   }
 

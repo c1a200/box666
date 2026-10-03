@@ -149,6 +149,10 @@ export function isCredentialComplete(
       return !!(credentialValue(credential, 'cookie')
         || credentialValue(credential, 'token')
         || credentialValue(credential, 'ucToken'));
+    case 'uc_tv':
+      return !!(credentialValue(credential, 'token')
+        || credentialValue(credential, 'refresh_token')
+        || credentialValue(credential, 'ucToken'));
     case 'aliyun':
       return !!(credentialValue(credential, 'refresh_token')
         || credentialValue(credential, 'token')
@@ -472,7 +476,7 @@ export async function saveCredentialPolicy(storage: Storage, policy: CredentialP
 // ─── 凭证分发 / 鉴权配置 ────────────────────────────────
 
 export const CLOUD_PLATFORMS: CloudPlatform[] = [
-  'aliyun', 'bilibili', 'quark', 'uc', 'pan115',
+  'aliyun', 'bilibili', 'quark', 'uc', 'uc_tv', 'pan115',
   'tianyi', 'baidu', 'pan123', 'thunder', 'pikpak',
 ];
 

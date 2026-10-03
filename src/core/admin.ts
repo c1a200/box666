@@ -2995,11 +2995,11 @@ async function triggerRefresh() {
 
 // --- Cloud Credentials ---
 const PLATFORM_NAMES = {
-  aliyun:'阿里云盘', bilibili:'Bilibili', quark:'夸克网盘', uc:'UC 网盘',
+  aliyun:'阿里云盘', bilibili:'Bilibili', quark:'夸克网盘', uc:'UC 网盘', uc_tv:'UC TV',
   pan115:'115 网盘', tianyi:'天翼云盘', baidu:'百度网盘', pan123:'123 网盘',
   thunder:'迅雷', pikpak:'PikPak'
 };
-const QR_PLATFORMS = ['bilibili','aliyun','quark','uc','pan115','baidu'];
+const QR_PLATFORMS = ['bilibili','aliyun','quark','uc','uc_tv','pan115','baidu'];
 const MANUAL_ONLY_PLATFORMS = ['pan123','tianyi'];
 const PW_PLATFORMS = ['pan123','tianyi','thunder','pikpak'];
 let cloudCredentials = {};

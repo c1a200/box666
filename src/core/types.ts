@@ -244,7 +244,8 @@ export type CloudPlatform =
   | 'aliyun'      // 阿里云盘
   | 'bilibili'    // Bilibili
   | 'quark'       // 夸克网盘
-  | 'uc'          // UC 网盘
+  | 'uc'          // UC 网盘（Web Cookie）
+  | 'uc_tv'       // UC TV（独立 refresh token）
   | 'pan115'      // 115 网盘
   | 'tianyi'      // 天翼云盘
   | 'baidu'       // 百度网盘

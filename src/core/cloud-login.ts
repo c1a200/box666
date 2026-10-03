@@ -1,5 +1,6 @@
 // 网盘扫码登录 / 密码登录
 
+import { createHash } from 'node:crypto';
 import type { CloudPlatform } from './types';
 
 export type QRStatus = 'waiting' | 'scanned' | 'confirmed' | 'expired' | 'error';
@@ -450,6 +451,139 @@ const quarkHandler: PlatformLoginHandler = {
   },
 };
 
+// ─── UC TV（独立于 UC Web Cookie 的 TV OAuth refresh token）───
+
+const UC_TV_API = 'https://open-api-drive.uc.cn';
+const UC_TV_CLIENT_ID = '5acf882d27b74502b7040b0c65519aa7';
+const UC_TV_SIGN_KEY = 'l3srvtd7p42l0d0x1u8d7yc8ye9kki4d';
+const UC_TV_APP_VER = '1.6.5';
+const UC_TV_CHANNEL = 'UCTVOFFICIALWEB';
+const UC_TV_UA = 'Mozilla/5.0 (Linux; U; Android 13; zh-cn; M2004J7AC Build/UKQ1.231108.001) AppleWebKit/533.1 (KHTML, like Gecko) Mobile Safari/533.1';
+const UC_TV_DEVICE_ID = md5Hex(String(Date.now()));
+
+function md5Hex(input: string): string {
+  return createHash('md5').update(input).digest('hex');
+}
+
+function sha256Hex(input: string): string {
+  return createHash('sha256').update(input).digest('hex');
+}
+
+function ucTvSign(method: string, pathname: string): { timestamp: string; requestId: string; token: string } {
+  const timestamp = String(Date.now());
+  const requestId = md5Hex(UC_TV_DEVICE_ID + timestamp);
+  const token = sha256Hex(method + '&' + pathname + '&' + timestamp + '&' + UC_TV_SIGN_KEY);
+  return { timestamp, requestId, token };
+}
+
+function ucTvQuery(requestId: string): Record<string, string> {
+  return {
+    req_id: requestId,
+    app_ver: UC_TV_APP_VER,
+    device_id: UC_TV_DEVICE_ID,
+    device_brand: 'Xiaomi',
+    platform: 'tv',
+    device_name: 'M2004J7AC',
+    device_model: 'M2004J7AC',
+    build_device: 'M2004J7AC',
+    build_product: 'M2004J7AC',
+    device_gpu: 'Adreno (TM) 550',
+    activity_rect: '{}',
+    channel: UC_TV_CHANNEL,
+  };
+}
+
+function ucTvHeaders(ts: string, token: string): Record<string, string> {
+  return {
+    Accept: 'application/json, text/plain, */*',
+    'User-Agent': UC_TV_UA,
+    'x-pan-tm': ts,
+    'x-pan-token': token,
+    'x-pan-client-id': UC_TV_CLIENT_ID,
+  };
+}
+
+const ucTvHandler: PlatformLoginHandler = {
+  async generateQR() {
+    const pathname = '/oauth/authorize';
+    const sign = ucTvSign('GET', pathname);
+    const params = new URLSearchParams({
+      auth_type: 'code',
+      client_id: UC_TV_CLIENT_ID,
+      scope: 'netdisk',
+      qrcode: '1',
+      qr_width: '460',
+      qr_height: '460',
+      ...ucTvQuery(sign.requestId),
+    });
+    const resp = await fetch(UC_TV_API + pathname + '?' + params.toString(), {
+      headers: ucTvHeaders(sign.timestamp, sign.token),
+    });
+    const data = await resp.json() as any;
+    if (!resp.ok || data?.status !== 0 || !data?.query_token || !data?.qr_data) {
+      throw new Error(data?.error_info || data?.message || 'UC TV QR generate failed');
+    }
+    return {
+      qrUrl: data.qr_data,
+      token: data.query_token,
+      qrKind: 'content',
+    };
+  },
+
+  async pollStatus(queryToken) {
+    const pathname = '/oauth/code';
+    const sign = ucTvSign('GET', pathname);
+    const params = new URLSearchParams({
+      client_id: UC_TV_CLIENT_ID,
+      scope: 'netdisk',
+      query_token: queryToken,
+      ...ucTvQuery(sign.requestId),
+    });
+    const resp = await fetch(UC_TV_API + pathname + '?' + params.toString(), {
+      headers: ucTvHeaders(sign.timestamp, sign.token),
+    });
+    const data = await resp.json() as any;
+    if (!resp.ok || data?.status !== 0 || !data?.code) {
+      if (data?.errno === -1 || /未确认|等待/.test(String(data?.error_info || ''))) {
+        return { status: 'waiting' };
+      }
+      return { status: 'error', message: data?.error_info || data?.message || 'UC TV authorization failed' };
+    }
+
+    const tokenSign = ucTvSign('POST', '/token');
+    const tokenParams = new URLSearchParams(ucTvQuery(tokenSign.requestId));
+    const body = {
+      req_id: tokenSign.requestId,
+      app_ver: UC_TV_APP_VER,
+      device_id: UC_TV_DEVICE_ID,
+      device_brand: 'Xiaomi',
+      platform: 'tv',
+      device_name: 'M2004J7AC',
+      device_model: 'M2004J7AC',
+      build_device: 'M2004J7AC',
+      build_product: 'M2004J7AC',
+      device_gpu: 'Adreno (TM) 550',
+      activity_rect: '{}',
+      channel: UC_TV_CHANNEL,
+      code: data.code,
+    };
+    const tokenResp = await fetch(UC_TV_API + '/token?' + tokenParams.toString(), {
+      method: 'POST',
+      headers: {
+        ...ucTvHeaders(tokenSign.timestamp, tokenSign.token),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+    const tokenData = await tokenResp.json() as any;
+    const refreshToken = tokenData?.data?.refresh_token;
+    if (!tokenResp.ok || !refreshToken) {
+      return { status: 'error', message: tokenData?.error_info || tokenData?.message || 'UC TV token exchange failed' };
+    }
+    return { status: 'confirmed', credential: { token: String(refreshToken) } };
+  },
+};
+
 // ─── UC 网盘（与夸克类似，同属 UCWeb）────────────────────
 
 const UC_CLIENT_ID = '381';
@@ -811,6 +945,7 @@ const HANDLERS: Record<CloudPlatform, PlatformLoginHandler> = {
   aliyun: aliyunHandler,
   quark: quarkHandler,
   uc: ucHandler,
+  uc_tv: ucTvHandler,
   pan115: pan115Handler,
   tianyi: tianyiHandler,
   baidu: baiduHandler,
@@ -820,13 +955,14 @@ const HANDLERS: Record<CloudPlatform, PlatformLoginHandler> = {
 };
 
 export const PASSWORD_PLATFORMS: CloudPlatform[] = ['thunder', 'pikpak'];
-export const QR_PLATFORMS: CloudPlatform[] = ['bilibili', 'aliyun', 'quark', 'uc', 'pan115', 'baidu'];
+export const QR_PLATFORMS: CloudPlatform[] = ['bilibili', 'aliyun', 'quark', 'uc', 'uc_tv', 'pan115', 'baidu'];
 
 export const PLATFORM_NAMES: Record<CloudPlatform, string> = {
   aliyun: '阿里云盘',
   bilibili: 'Bilibili',
   quark: '夸克网盘',
   uc: 'UC 网盘',
+  uc_tv: 'UC TV',
   pan115: '115 网盘',
   tianyi: '天翼云盘',
   baidu: '百度网盘',
