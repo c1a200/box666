@@ -358,7 +358,11 @@ function tokenJsonUrl(baseUrl: string, revision = ''): string {
 }
 
 function tvfanConfigUrl(baseUrl: string, revision = ''): string {
-  return baseUrl.replace(/\/$/, '') + '/tvfan/config' + (revision ? '?v=' + revision : '');
+  // 2cc Guard reads the shared tvfan token from the `token` query parameter.
+  // Keep the revision as a cache-buster only; auth mode is still decided by
+  // the /auth/<code>/... path and handleTvfanConfig intentionally ignores query.
+  return baseUrl.replace(/\/$/, '') + '/tvfan/config'
+    + (revision ? '?token=' + encodeURIComponent(revision) : '');
 }
 
 

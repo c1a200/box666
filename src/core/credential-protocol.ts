@@ -56,6 +56,24 @@ const TOKEN_JSON_PLATFORMS: readonly CloudPlatform[] = [
 
 /** 2cc Guard 共享上游 tvfan/config 契约的 JAR 指纹。 */
 const TVFAN_CONFIG_2CC_JAR = '2cc088afa757ba8bafffcfbab4b73ccc';
+
+/**
+ * 只有已确认 ext.Cloud-drive 会交给上游 tvfan/config 的 2cc API 才能命中该协议。
+ * 同一 JAR 下还有 MyDrive、Push、S_zps 等完全不同的契约；继续按“所有 Guard”
+ * 匹配会把这些源一起改写，导致旧问题修好又引入新问题。
+ */
+const TVFAN_CONFIG_2CC_APIS = new Set([
+  'csp_ypansoguard',
+  'csp_bpansoguard',
+  'csp_panssoguard',
+  'csp_xzsoguard',
+  'csp_uussguard',
+  'csp_kkssguard',
+  'csp_mipansoguard',
+  'csp_libvioguard',
+  'csp_pansearchguard',
+  'csp_yisoguard',
+]);
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
@@ -177,7 +195,7 @@ export function resolveCredentialProtocol(
   }
 
   if (
-    /^csp_.*Guard$/i.test(api)
+    TVFAN_CONFIG_2CC_APIS.has(api.toLowerCase())
     && extractJarMd5(effectiveJar)?.toLowerCase() === TVFAN_CONFIG_2CC_JAR
     && hasCloudDriveTokenContract(site)
   ) {
