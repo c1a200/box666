@@ -141,11 +141,14 @@ export function isCredentialComplete(
   if (!credential?.credential) return false;
   switch (platform) {
     case 'quark':
-    case 'uc':
     case 'baidu':
     case 'pan115':
     case 'bilibili':
       return !!credentialValue(credential, 'cookie');
+    case 'uc':
+      return !!(credentialValue(credential, 'cookie')
+        || credentialValue(credential, 'token')
+        || credentialValue(credential, 'ucToken'));
     case 'aliyun':
       return !!(credentialValue(credential, 'refresh_token')
         || credentialValue(credential, 'token')

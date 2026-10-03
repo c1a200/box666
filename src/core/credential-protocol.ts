@@ -8,6 +8,7 @@ import { extractJarMd5 } from './site-contract';
 export type CredentialMechanism =
   | 'ali-token-url'
   | 'token-json-url'
+  | 'tvfan-config-url'
   | 'pan-init-url'
   | 'pan-search-ext-pan'
   | 'pan-search-fixed-baidu'
@@ -53,8 +54,8 @@ const TOKEN_JSON_PLATFORMS: readonly CloudPlatform[] = [
   'aliyun', 'quark', 'uc', 'pan115', 'thunder', 'pikpak', 'tianyi', 'baidu', 'pan123',
 ];
 
-/** 2cc Guard 共享 token.json 的 JAR 指纹。 */
-const TOKEN_JSON_2CC_JAR = '2cc088afa757ba8bafffcfbab4b73ccc';
+/** 2cc Guard 共享上游 tvfan/config 契约的 JAR 指纹。 */
+const TVFAN_CONFIG_2CC_JAR = '2cc088afa757ba8bafffcfbab4b73ccc';
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
@@ -177,15 +178,15 @@ export function resolveCredentialProtocol(
 
   if (
     /^csp_.*Guard$/i.test(api)
-    && extractJarMd5(effectiveJar)?.toLowerCase() === TOKEN_JSON_2CC_JAR
+    && extractJarMd5(effectiveJar)?.toLowerCase() === TVFAN_CONFIG_2CC_JAR
     && hasCloudDriveTokenContract(site)
   ) {
     return {
-      mechanism: 'token-json-url',
+      mechanism: 'tvfan-config-url',
       platforms: [...TOKEN_JSON_PLATFORMS],
       credentialRequired: true,
       canInject: true,
-      reason: '2cc shared Cloud-drive token.json contract',
+      reason: '2cc shared Cloud-drive tvfan/config contract',
     };
   }
 

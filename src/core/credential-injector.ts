@@ -357,6 +357,10 @@ function tokenJsonUrl(baseUrl: string, revision = ''): string {
   return baseUrl.replace(/\/$/, '') + '/token.json' + (revision ? '?v=' + revision : '');
 }
 
+function tvfanConfigUrl(baseUrl: string, revision = ''): string {
+  return baseUrl.replace(/\/$/, '') + '/tvfan/config' + (revision ? '?v=' + revision : '');
+}
+
 
 function normalizeBaseUrl(baseUrl?: string): string {
   return typeof baseUrl === 'string' ? baseUrl.trim().replace(/\/$/, '') : '';
@@ -500,9 +504,9 @@ function canInjectPanSearchCredential(
 }
 
 /**
- * 2cc JAR 的 Guard 系列共用 Cloud-drive token.json 入口：该字段指向
- * 一个 JSON 文件，JAR 会从其中读取网盘凭证。只替换这一个字段，保留
- * siteUrl、from 等同一 ext 中的其他契约字段。
+ * 2cc JAR 的 Guard 系列共用上游 Cloud-drive/tvfan 契约：该字段指向
+ * `/tvfan/config`，JAR 从其中读取 token、quarkCookie、bdCk、ucCookie、
+ * ucToken。只替换这一个字段，保留 siteUrl、from 等同一 ext 的字段。
  */
 function injectCloudDriveTokenUrl(
   ext: any,
@@ -522,7 +526,7 @@ function injectCloudDriveTokenUrl(
   }
 
   const revision = platforms.map((platform) => credentialRevision(creds.get(platform))).filter(Boolean).sort().join('.');
-  const url = tokenJsonUrl(normalizedBaseUrl, revision);
+  const url = tvfanConfigUrl(normalizedBaseUrl, revision);
   if (current === url) return { ext, changed: false };
   const next = { ...parsed.obj, 'Cloud-drive': url };
   return {
@@ -740,8 +744,12 @@ function isProjectCredentialUrl(
   if (!url.startsWith(base + '/')) return false;
   const path = url.slice(base.length).split('?')[0].split('#')[0];
 
-  // token-json-url 的契约入口就是 root token.json；Pan.init 协议则使用
-  // 六个 /credential/<field> 入口。两种协议必须分别保护，不能混用。
+  // tvfan 契约入口是 /tvfan/config；旧版 token-json 协议入口是 root
+  // token.json；Pan.init 协议使用六个 /credential/<field> 入口。三者必须
+  // 分别保护，不能混用。
+  if (mechanism === 'tvfan-config-url') {
+    return /^(?:\/auth\/[^/]+)?\/tvfan\/config$/.test(path);
+  }
   if (mechanism === 'token-json-url') {
     return /^(?:\/auth\/[^/]+)?\/token\.json$/.test(path);
   }
@@ -817,6 +825,9 @@ function applyCredentialProtocolRaw(
   switch (protocol.mechanism) {
     case 'ali-token-url':
       return injectAliTokenUrl(site.ext, credentials, baseUrl);
+
+    case 'tvfan-config-url':
+      return injectCloudDriveTokenUrl(site.ext, credentials, baseUrl, protocol.platforms);
 
     case 'token-json-url':
       return injectCloudDriveTokenUrl(site.ext, credentials, baseUrl, protocol.platforms);
@@ -1043,6 +1054,59 @@ export function injectCredentials(
 
 
   return { sites: result, report };
+}
+
+/**
+ * 生成上游 2cc Guard / AList TVBox `tvfan/config` 契约内容。
+ *
+ * 该契约只认五个正式字段，不能返回旧 token.json 的整套字段：
+ * - token: 阿里云盘 refresh token
+ * - quarkCookie: 夸克 cookie
+ * - bdCk: 百度网盘 cookie
+ * - ucCookie: UC cookie
+ * - ucToken: UC TV token
+ */
+export function generateTvfanConfig(
+  credentials: Map<CloudPlatform, CloudCredential>,
+  neededPlatforms?: CloudPlatform[],
+): Record<string, string> {
+  const selectedPlatforms = neededPlatforms || [...credentials.keys()];
+  const allowed = neededPlatforms ? new Set(neededPlatforms) : null;
+  const canUse = (platform: CloudPlatform): boolean => (
+    (!allowed || allowed.has(platform))
+    && isCredentialDistributable(platform, credentials.get(platform))
+  );
+  const value = (platform: CloudPlatform, ...fields: string[]): string => {
+    for (const field of fields) {
+      const raw = credentials.get(platform)?.credential?.[field];
+      if (typeof raw === 'string' && raw.trim()) return raw.trim();
+    }
+    return '';
+  };
+
+  const config: Record<string, string> = {};
+  if (canUse('aliyun')) {
+    const token = value('aliyun', 'refresh_token', 'token', 'ali_token');
+    if (token) config.token = token;
+  }
+  if (canUse('quark')) {
+    const cookie = value('quark', 'cookie');
+    if (cookie) config.quarkCookie = cookie;
+  }
+  if (canUse('baidu')) {
+    const cookie = value('baidu', 'cookie');
+    if (cookie) config.bdCk = cookie;
+  }
+  if (canUse('uc')) {
+    const cookie = value('uc', 'cookie');
+    const token = value('uc', 'token', 'ucToken');
+    if (cookie) config.ucCookie = cookie;
+    if (token) config.ucToken = token;
+  }
+
+  // 只要调用方限定了平台但没有任何正式字段，仍视为不可下发。
+  if (selectedPlatforms.length > 0 && Object.keys(config).length === 0) return {};
+  return config;
 }
 
 /**

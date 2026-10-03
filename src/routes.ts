@@ -33,7 +33,7 @@ import { isPanInitCredentialDistributable, loadCredentials, saveCredential, dele
 import { isSiteProbeable } from './core/speedtest';
 import { generateQR, pollQRStatus, passwordLogin, PLATFORM_NAMES, QR_PLATFORMS, PASSWORD_PLATFORMS } from './core/cloud-login';
 import { assessAllSources, isClientCredentialSite } from './core/credential-risk';
-import { generateTokenJson, injectAListDriveCredentials, injectCredentials } from './core/credential-injector';
+import { generateTokenJson, generateTvfanConfig, injectAListDriveCredentials, injectCredentials } from './core/credential-injector';
 import type { SiteContract } from './core/types';
 import { stripInjectedCredentialsFromConfig, stripUpstreamCredentialEntries } from './core/credential-sanitizer';
 import { formatAggregatedLiveGroupsAsTxt, formatLiveGroupsAsTxt, filterLivesBySource, filterLivesBySourceDetailed, sortLiveGroupsForOutput } from './core/live-merger';
@@ -2528,6 +2528,25 @@ export function createApp(deps: AppDeps): Hono {
     return c.json({ token }, 200, tokenResponseHeaders);
   }
 
+  async function handleTvfanConfig(c: any) {
+    const baseUrl = await resolveBaseUrl(c);
+    if (baseUrl instanceof Response) return baseUrl;
+    const resolved = await resolveClientAuthContext(c, baseUrl);
+    if (resolved.failure) return credentialAuthFailureResponse(c, resolved.failure);
+    const context = resolved.context!;
+    if (context.mode === 'none') {
+      return c.json({ error: 'credential distribution disabled' }, 404, tokenResponseHeaders);
+    }
+    const credentials = selectCredentialsForContext(await loadCredentials(storage), context);
+    const config = generateTvfanConfig(credentials);
+    // 正式 2cc 契约只接受五个凭证字段。空响应会被误判为服务端凭证模式
+    // 已启用并跳过扫码，必须返回 404 让客户端回退本地登录。
+    if (Object.keys(config).length === 0) {
+      return c.json({ error: 'no credential available' }, 404, tokenResponseHeaders);
+    }
+    return c.json(config, 200, tokenResponseHeaders);
+  }
+
   async function handleTokenJson(c: any) {
     const baseUrl = await resolveBaseUrl(c);
     if (baseUrl instanceof Response) return baseUrl;
@@ -2558,6 +2577,7 @@ export function createApp(deps: AppDeps): Hono {
     app.get(prefix + '/credential/aliyun.json', handleAliyunTokenJson);
     app.get(prefix + '/credential/token.json', handleTokenJson);
     app.get(prefix + '/token.json', handleTokenJson);
+    app.get(prefix + '/tvfan/config', handleTvfanConfig);
   }
 
   // ─── 背景设置公共接口（必须放在 /api/:key 之前以避免路由拦截） ────────

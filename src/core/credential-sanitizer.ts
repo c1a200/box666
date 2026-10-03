@@ -49,7 +49,7 @@ function isProjectCredentialUrl(value: unknown, baseUrl: string): boolean {
     const base = new URL(baseUrl);
     if (parsed.origin !== base.origin) return false;
     const path = parsed.pathname.replace(/\/+$/, '');
-    return /^(?:\/auth\/[^/]+)?\/(?:credential\/[A-Za-z0-9_.-]+|token\.json)$/.test(path);
+    return /^(?:\/auth\/[^/]+)?\/(?:credential\/[A-Za-z0-9_.-]+|token\.json|tvfan\/config)$/.test(path);
   } catch {
     return false;
   }
