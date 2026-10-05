@@ -54,8 +54,11 @@ const TOKEN_JSON_PLATFORMS: readonly CloudPlatform[] = [
   'aliyun', 'quark', 'uc', 'uc_tv', 'pan115', 'thunder', 'pikpak', 'tianyi', 'baidu', 'pan123',
 ];
 
-/** 2cc Guard 共享上游 tvfan/config 契约的 JAR 指纹。 */
-const TVFAN_CONFIG_2CC_JAR = '2cc088afa757ba8bafffcfbab4b73ccc';
+/** 2cc Guard 共享上游 tvfan/config 契约的已确认 JAR 指纹。 */
+const TVFAN_CONFIG_2CC_JARS = new Set([
+  '2cc088afa757ba8bafffcfbab4b73ccc',
+  'f782cdee81118405176fd260be9ca5cd',
+]);
 
 /**
  * 只有已确认 ext.Cloud-drive 会交给上游 tvfan/config 的 2cc API 才能命中该协议。
@@ -196,7 +199,7 @@ export function resolveCredentialProtocol(
 
   if (
     TVFAN_CONFIG_2CC_APIS.has(api.toLowerCase())
-    && extractJarMd5(effectiveJar)?.toLowerCase() === TVFAN_CONFIG_2CC_JAR
+    && TVFAN_CONFIG_2CC_JARS.has(extractJarMd5(effectiveJar)?.toLowerCase() || '')
     && hasCloudDriveTokenContract(site)
   ) {
     return {
