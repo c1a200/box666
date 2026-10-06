@@ -54,18 +54,22 @@ const TOKEN_JSON_PLATFORMS: readonly CloudPlatform[] = [
   'aliyun', 'quark', 'uc', 'uc_tv', 'pan115', 'thunder', 'pikpak', 'tianyi', 'baidu', 'pan123',
 ];
 
-/** 2cc Guard 共享上游 tvfan/config 契约的已确认 JAR 指纹。 */
-const TVFAN_CONFIG_2CC_JARS = new Set([
-  '2cc088afa757ba8bafffcfbab4b73ccc',
-  'f782cdee81118405176fd260be9ca5cd',
-]);
+/**
+ * 已验证的 2cc Guard 重打包指纹。两者虽然复用了同一批 Guard 类名，
+ * 但内层实现读取的响应契约不同：
+ * - 2cc 版本依赖完整 token.json schema（quark_cookie 等下划线别名）。
+ * - f782 版本依赖上游 /tvfan/config 五字段契约。
+ * 绝不能再做“JAR 集合 × API 集合”的笛卡尔积盲匹配。
+ */
+const JAR_2CC = '2cc088afa757ba8bafffcfbab4b73ccc';
+const JAR_F782 = 'f782cdee81118405176fd260be9ca5cd';
 
 /**
- * 只有已确认 ext.Cloud-drive 会交给上游 tvfan/config 的 2cc API 才能命中该协议。
- * 同一 JAR 下还有 MyDrive、Push、S_zps 等完全不同的契约；继续按“所有 Guard”
- * 匹配会把这些源一起改写，导致旧问题修好又引入新问题。
+ * 只有已验证会通过 ext.Cloud-drive 消费凭证的 Guard API 才登记。
+ * 同一 JAR 下还有 MyDrive、Push、S_zps 等完全不同的契约；未登记的
+ * API|JAR 组合一律拒绝注入，避免旧问题修好又引入新问题。
  */
-const TVFAN_CONFIG_2CC_APIS = new Set([
+const CLOUD_DRIVE_GUARD_APIS = [
   'csp_ypansoguard',
   'csp_bpansoguard',
   'csp_panssoguard',
@@ -76,6 +80,12 @@ const TVFAN_CONFIG_2CC_APIS = new Set([
   'csp_libvioguard',
   'csp_pansearchguard',
   'csp_yisoguard',
+] as const;
+
+/** 精确的 API|JAR -> 响应契约映射，不生成任何未验证组合。 */
+const CLOUD_DRIVE_GUARD_CONTRACTS = new Map<string, CredentialMechanism>([
+  ...CLOUD_DRIVE_GUARD_APIS.map((guardApi) => [`${guardApi}|${JAR_2CC}`, 'token-json-url'] as const),
+  ...CLOUD_DRIVE_GUARD_APIS.map((guardApi) => [`${guardApi}|${JAR_F782}`, 'tvfan-config-url'] as const),
 ]);
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -197,17 +207,18 @@ export function resolveCredentialProtocol(
     };
   }
 
-  if (
-    TVFAN_CONFIG_2CC_APIS.has(api.toLowerCase())
-    && TVFAN_CONFIG_2CC_JARS.has(extractJarMd5(effectiveJar)?.toLowerCase() || '')
-    && hasCloudDriveTokenContract(site)
-  ) {
+  const cloudDriveContract = CLOUD_DRIVE_GUARD_CONTRACTS.get(
+    `${api.toLowerCase()}|${extractJarMd5(effectiveJar)?.toLowerCase() || ''}`,
+  );
+  if (cloudDriveContract && hasCloudDriveTokenContract(site)) {
     return {
-      mechanism: 'tvfan-config-url',
+      mechanism: cloudDriveContract,
       platforms: [...TOKEN_JSON_PLATFORMS],
       credentialRequired: true,
       canInject: true,
-      reason: '2cc shared Cloud-drive tvfan/config contract',
+      reason: cloudDriveContract === 'token-json-url'
+        ? '2cc Guard Cloud-drive token.json contract'
+        : 'f782 Guard Cloud-drive tvfan/config contract',
     };
   }
 

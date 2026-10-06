@@ -508,15 +508,17 @@ function canInjectPanSearchCredential(
 }
 
 /**
- * 2cc JAR 的 Guard 系列共用上游 Cloud-drive/tvfan 契约：该字段指向
- * `/tvfan/config`，JAR 从其中读取 token、quarkCookie、bdCk、ucCookie、
- * ucToken。只替换这一个字段，保留 siteUrl、from 等同一 ext 的字段。
+ * 2cc/f782 Guard 的 Cloud-drive 入口。端点必须跟 JAR 版本严格对应：
+ * - token-json-url: 写 root `/token.json`，返回完整 token schema（下划线别名）。
+ * - tvfan-config-url: 写 `/tvfan/config`，返回上游五字段及其兼容别名。
+ * 只替换 Cloud-drive 一个字段，保留 siteUrl、from 等同一 ext 的字段。
  */
 function injectCloudDriveTokenUrl(
   ext: any,
   creds: Map<CloudPlatform, CloudCredential>,
   baseUrl?: string,
   platforms: CloudPlatform[] = [],
+  mechanism: 'token-json-url' | 'tvfan-config-url' = 'tvfan-config-url',
 ): { ext: any; changed: boolean } {
   const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
   if (!normalizedBaseUrl) return { ext, changed: false };
@@ -530,7 +532,9 @@ function injectCloudDriveTokenUrl(
   }
 
   const revision = platforms.map((platform) => credentialRevision(creds.get(platform))).filter(Boolean).sort().join('.');
-  const url = tvfanConfigUrl(normalizedBaseUrl, revision);
+  const url = mechanism === 'token-json-url'
+    ? tokenJsonUrl(normalizedBaseUrl, revision)
+    : tvfanConfigUrl(normalizedBaseUrl, revision);
   if (current === url) return { ext, changed: false };
   const next = { ...parsed.obj, 'Cloud-drive': url };
   return {
@@ -831,10 +835,10 @@ function applyCredentialProtocolRaw(
       return injectAliTokenUrl(site.ext, credentials, baseUrl);
 
     case 'tvfan-config-url':
-      return injectCloudDriveTokenUrl(site.ext, credentials, baseUrl, protocol.platforms);
+      return injectCloudDriveTokenUrl(site.ext, credentials, baseUrl, protocol.platforms, 'tvfan-config-url');
 
     case 'token-json-url':
-      return injectCloudDriveTokenUrl(site.ext, credentials, baseUrl, protocol.platforms);
+      return injectCloudDriveTokenUrl(site.ext, credentials, baseUrl, protocol.platforms, 'token-json-url');
 
     case 'pan-init-url':
       return injectPanInitUrls(site.ext, credentials, baseUrl);
@@ -1061,14 +1065,18 @@ export function injectCredentials(
 }
 
 /**
- * 生成上游 2cc Guard / AList TVBox `tvfan/config` 契约内容。
+ * 生成上游 Guard 的 `tvfan/config` 响应。
  *
- * 该契约只认五个正式字段，不能返回旧 token.json 的整套字段：
+ * 五个正式字段是上游契约本体：
  * - token: 阿里云盘 refresh token
  * - quarkCookie: 夸克 cookie
  * - bdCk: 百度网盘 cookie
  * - ucCookie: UC cookie
  * - ucToken: UC TV token
+ *
+ * 同时补上旧版 Guard 会读取的下划线/短别名（quark_cookie、uc_cookie、
+ * baidu_cookie 等）。只增加别名、不改变正式字段，避免再出现“某几个源能播、
+ * 另一些源仍回退扫码”的分裂现象。
  */
 export function generateTvfanConfig(
   credentials: Map<CloudPlatform, CloudCredential>,
@@ -1095,15 +1103,25 @@ export function generateTvfanConfig(
   }
   if (canUse('quark')) {
     const cookie = value('quark', 'cookie');
-    if (cookie) config.quarkCookie = cookie;
+    if (cookie) {
+      config.quarkCookie = cookie;
+      config.quark_cookie = cookie;
+      config.cookie = cookie;
+    }
   }
   if (canUse('baidu')) {
     const cookie = value('baidu', 'cookie');
-    if (cookie) config.bdCk = cookie;
+    if (cookie) {
+      config.bdCk = cookie;
+      config.baidu_cookie = cookie;
+    }
   }
   if (canUse('uc')) {
     const cookie = value('uc', 'cookie');
-    if (cookie) config.ucCookie = cookie;
+    if (cookie) {
+      config.ucCookie = cookie;
+      config.uc_cookie = cookie;
+    }
   }
   if (canUse('uc_tv')) {
     const token = value('uc_tv', 'token', 'refresh_token', 'ucToken');
