@@ -3380,7 +3380,15 @@ function showQRModal(platform, qrUrl, token, qrKind) {
   overlay.id = 'qrModalOverlay';
   overlay.onclick = function(e) { if(e.target===overlay) closeQRModal(); };
 
-  const qrImgUrl = qrKind === 'image' ? qrUrl : '/qr.svg?data=' + encodeURIComponent(qrUrl) + '&_=' + Date.now();
+  const rawQrUrl = String(qrUrl || '').trim();
+  const isImageDataUrl = /^data:image\\//i.test(rawQrUrl);
+  const looksLikeBase64Image = !isImageDataUrl
+    && rawQrUrl.length > 2048
+    && /^[A-Za-z0-9+/\\r\\n]+={0,2}$/.test(rawQrUrl)
+    && /^(iVBORw0KGgo|\\/9j\\/|R0lGOD)/.test(rawQrUrl);
+  const qrImgUrl = qrKind === 'image' || isImageDataUrl || looksLikeBase64Image
+    ? (isImageDataUrl ? rawQrUrl : 'data:image/png;base64,' + rawQrUrl.replace(/\\s+/g, ''))
+    : '/qr.svg?data=' + encodeURIComponent(rawQrUrl) + '&_=' + Date.now();
 
   overlay.innerHTML =
     '<div class="qr-modal">' +

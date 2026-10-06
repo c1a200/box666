@@ -454,12 +454,13 @@ const quarkHandler: PlatformLoginHandler = {
 // ─── UC TV（独立于 UC Web Cookie 的 TV OAuth refresh token）───
 
 const UC_TV_API = 'https://open-api-drive.uc.cn';
+const UC_TV_CODE_API = 'http://api.extscreen.com/ucdrive';
 const UC_TV_CLIENT_ID = '5acf882d27b74502b7040b0c65519aa7';
 const UC_TV_SIGN_KEY = 'l3srvtd7p42l0d0x1u8d7yc8ye9kki4d';
-const UC_TV_APP_VER = '1.6.5';
+const UC_TV_APP_VER = '1.6.8';
 const UC_TV_CHANNEL = 'UCTVOFFICIALWEB';
 const UC_TV_UA = 'Mozilla/5.0 (Linux; U; Android 13; zh-cn; M2004J7AC Build/UKQ1.231108.001) AppleWebKit/533.1 (KHTML, like Gecko) Mobile Safari/533.1';
-const UC_TV_DEVICE_ID = md5Hex(String(Date.now()));
+const UC_TV_DEVICE_ID = '07b48aaba8a739356ab8107b5e230ad4';
 
 function md5Hex(input: string): string {
   return createHash('md5').update(input).digest('hex');
@@ -470,15 +471,17 @@ function sha256Hex(input: string): string {
 }
 
 function ucTvSign(method: string, pathname: string): { timestamp: string; requestId: string; token: string } {
-  const timestamp = String(Date.now());
-  const requestId = md5Hex(UC_TV_DEVICE_ID + timestamp);
+  // TV Guard 使用秒级时间戳再补 000；毫秒时间戳虽然能生成二维码，但与原协议不一致。
+  const timestamp = String(Math.floor(Date.now() / 1000) + 1) + '000';
+  const requestId = md5Hex(UC_TV_DEVICE_ID + timestamp).substring(0, 16);
   const token = sha256Hex(method + '&' + pathname + '&' + timestamp + '&' + UC_TV_SIGN_KEY);
   return { timestamp, requestId, token };
 }
 
-function ucTvQuery(requestId: string): Record<string, string> {
+function ucTvQuery(requestId: string, accessToken = ''): Record<string, string> {
   return {
     req_id: requestId,
+    access_token: accessToken,
     app_ver: UC_TV_APP_VER,
     device_id: UC_TV_DEVICE_ID,
     device_brand: 'Xiaomi',
@@ -488,7 +491,7 @@ function ucTvQuery(requestId: string): Record<string, string> {
     build_device: 'M2004J7AC',
     build_product: 'M2004J7AC',
     device_gpu: 'Adreno (TM) 550',
-    activity_rect: '{}',
+    activity_rect: '%7B%7D',
     channel: UC_TV_CHANNEL,
   };
 }
@@ -523,15 +526,23 @@ const ucTvHandler: PlatformLoginHandler = {
     if (!resp.ok || data?.status !== 0 || !data?.query_token || !data?.qr_data) {
       throw new Error(data?.error_info || data?.message || 'UC TV QR generate failed');
     }
+    // UC TV 的 qr_data 实际是 PNG 的 Base64，不是二维码内容文本。
+    // 若按 content 再交给 /qr.svg，会因长度超过 2048 被拒绝，前端只显示空白。
+    const qrData = String(data.qr_data).trim();
+    const qrUrl = /^data:image\//i.test(qrData)
+      ? qrData
+      : `data:image/png;base64,${qrData}`;
     return {
-      qrUrl: data.qr_data,
+      qrUrl,
       token: data.query_token,
-      qrKind: 'content',
+      qrKind: 'image',
     };
   },
 
   async pollStatus(queryToken) {
     const pathname = '/oauth/code';
+    // 换 token 的 POST 必须复用轮询请求的签名和时间戳；
+    // 直接对 /token 重新签名会命中 UC 的“签名验证失败”。
     const sign = ucTvSign('GET', pathname);
     const params = new URLSearchParams({
       client_id: UC_TV_CLIENT_ID,
@@ -544,16 +555,16 @@ const ucTvHandler: PlatformLoginHandler = {
     });
     const data = await resp.json() as any;
     if (!resp.ok || data?.status !== 0 || !data?.code) {
-      if (data?.errno === -1 || /未确认|等待/.test(String(data?.error_info || ''))) {
+      if (data?.errno === -1 || data?.errno === 400 || /未确认|等待|扫码/.test(String(data?.error_info || ''))) {
         return { status: 'waiting' };
       }
       return { status: 'error', message: data?.error_info || data?.message || 'UC TV authorization failed' };
     }
 
-    const tokenSign = ucTvSign('POST', '/token');
-    const tokenParams = new URLSearchParams(ucTvQuery(tokenSign.requestId));
+    // 与 2cc/多多 Guard 的原实现保持一致：授权码换取 token 的请求仍使用
+    // /oauth/code 的签名头，目标接口是 codeApi，而不是 open-api-drive/token。
     const body = {
-      req_id: tokenSign.requestId,
+      req_id: sign.requestId,
       app_ver: UC_TV_APP_VER,
       device_id: UC_TV_DEVICE_ID,
       device_brand: 'Xiaomi',
@@ -563,27 +574,49 @@ const ucTvHandler: PlatformLoginHandler = {
       build_device: 'M2004J7AC',
       build_product: 'M2004J7AC',
       device_gpu: 'Adreno (TM) 550',
-      activity_rect: '{}',
+      activity_rect: '%7B%7D',
       channel: UC_TV_CHANNEL,
       code: data.code,
     };
-    const tokenResp = await fetch(UC_TV_API + '/token?' + tokenParams.toString(), {
+    const tokenInit: RequestInit = {
       method: 'POST',
       headers: {
-        ...ucTvHeaders(tokenSign.timestamp, tokenSign.token),
-        'Content-Type': 'application/json',
+        ...ucTvHeaders(sign.timestamp, sign.token),
+        'Content-Type': 'application/json; charset=utf-8',
       },
       body: JSON.stringify(body),
-    });
-    const tokenData = await tokenResp.json() as any;
-    const refreshToken = tokenData?.data?.refresh_token;
-    if (!tokenResp.ok || !refreshToken) {
+    };
+    // 原协议固定为 HTTP。CF Worker 对明文 HTTP 有平台限制，因此优先保持
+    // 原版行为；只有在请求本身失败时才尝试 HTTPS 同签名兼容端点，绝不改变
+    // 正常可达环境下的协议和签名。
+    let tokenResp: Response;
+    let tokenData: any;
+    try {
+      tokenResp = await fetch(UC_TV_CODE_API + '/token', tokenInit);
+      tokenData = await tokenResp.json() as any;
+    } catch {
+      const httpsApi = UC_TV_CODE_API.replace(/^http:/, 'https:');
+      tokenResp = await fetch(httpsApi + '/token', tokenInit);
+      tokenData = await tokenResp.json() as any;
+    }
+    const payload = tokenData?.data || tokenData;
+    const accessToken = payload?.access_token || payload?.token;
+    const refreshToken = payload?.refresh_token;
+    if (!tokenResp.ok || !accessToken) {
       return { status: 'error', message: tokenData?.error_info || tokenData?.message || 'UC TV token exchange failed' };
     }
-    return { status: 'confirmed', credential: { token: String(refreshToken) } };
+    // Guard 会把 access_token 保存为 uctoken 并在后续 /oauth/code 中作为
+    // access_token 使用；refresh_token 只作为兼容备份，不能替代正式值。
+    return {
+      status: 'confirmed',
+      credential: {
+        token: String(accessToken),
+        access_token: String(accessToken),
+        ...(refreshToken ? { refresh_token: String(refreshToken) } : {}),
+      },
+    };
   },
 };
-
 // ─── UC 网盘（与夸克类似，同属 UCWeb）────────────────────
 
 const UC_CLIENT_ID = '381';
