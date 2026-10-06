@@ -491,9 +491,18 @@ function ucTvQuery(requestId: string, accessToken = ''): Record<string, string> 
     build_device: 'M2004J7AC',
     build_product: 'M2004J7AC',
     device_gpu: 'Adreno (TM) 550',
-    activity_rect: '%7B%7D',
+    activity_rect: '{}',
     channel: UC_TV_CHANNEL,
   };
+}
+
+function ucTvQueryString(params: Record<string, string>): string {
+  // Guard assembles the query string manually and applies URL encoding once.
+  // URLSearchParams would re-encode values such as activity_rect=%7B%7D to
+  // %257B%257D, which changes what the UC edge receives.
+  return Object.entries(params)
+    .map(([key, value]) => encodeURIComponent(key) + '=' + encodeURIComponent(value))
+    .join('&');
 }
 
 function ucTvHeaders(ts: string, token: string): Record<string, string> {
@@ -510,7 +519,7 @@ const ucTvHandler: PlatformLoginHandler = {
   async generateQR() {
     const pathname = '/oauth/authorize';
     const sign = ucTvSign('GET', pathname);
-    const params = new URLSearchParams({
+    const params = {
       auth_type: 'code',
       client_id: UC_TV_CLIENT_ID,
       scope: 'netdisk',
@@ -518,8 +527,8 @@ const ucTvHandler: PlatformLoginHandler = {
       qr_width: '460',
       qr_height: '460',
       ...ucTvQuery(sign.requestId),
-    });
-    const resp = await fetch(UC_TV_API + pathname + '?' + params.toString(), {
+    };
+    const resp = await fetch(UC_TV_API + pathname + '?' + ucTvQueryString(params), {
       headers: ucTvHeaders(sign.timestamp, sign.token),
     });
     const data = await resp.json() as any;
@@ -544,13 +553,13 @@ const ucTvHandler: PlatformLoginHandler = {
     // 换 token 的 POST 必须复用轮询请求的签名和时间戳；
     // 直接对 /token 重新签名会命中 UC 的“签名验证失败”。
     const sign = ucTvSign('GET', pathname);
-    const params = new URLSearchParams({
+    const params = {
       client_id: UC_TV_CLIENT_ID,
       scope: 'netdisk',
       query_token: queryToken,
       ...ucTvQuery(sign.requestId),
-    });
-    const resp = await fetch(UC_TV_API + pathname + '?' + params.toString(), {
+    };
+    const resp = await fetch(UC_TV_API + pathname + '?' + ucTvQueryString(params), {
       headers: ucTvHeaders(sign.timestamp, sign.token),
     });
     const data = await resp.json() as any;
@@ -574,7 +583,7 @@ const ucTvHandler: PlatformLoginHandler = {
       build_device: 'M2004J7AC',
       build_product: 'M2004J7AC',
       device_gpu: 'Adreno (TM) 550',
-      activity_rect: '%7B%7D',
+      activity_rect: '{}',
       channel: UC_TV_CHANNEL,
       code: data.code,
     };
@@ -589,21 +598,43 @@ const ucTvHandler: PlatformLoginHandler = {
     // 原协议固定为 HTTP。CF Worker 对明文 HTTP 有平台限制，因此优先保持
     // 原版行为；只有在请求本身失败时才尝试 HTTPS 同签名兼容端点，绝不改变
     // 正常可达环境下的协议和签名。
-    let tokenResp: Response;
+    let tokenResp: Response | null = null;
     let tokenData: any;
-    try {
-      tokenResp = await fetch(UC_TV_CODE_API + '/token', tokenInit);
-      tokenData = await tokenResp.json() as any;
-    } catch {
-      const httpsApi = UC_TV_CODE_API.replace(/^http:/, 'https:');
-      tokenResp = await fetch(httpsApi + '/token', tokenInit);
-      tokenData = await tokenResp.json() as any;
+    let tokenStage = 'token-exchange';
+    const tokenUrls = [UC_TV_CODE_API + '/token'];
+    // Cloudflare cannot issue plain-HTTP subrequests reliably. Render can use
+    // HTTP directly, but the HTTPS endpoint is protocol-equivalent and is the
+    // first choice when the original HTTP attempt fails with a signature or
+    // transport error. Keep the same signed headers and body for both attempts.
+    const httpsApi = UC_TV_CODE_API.replace(/^http:/, 'https:');
+    if (httpsApi !== UC_TV_CODE_API) tokenUrls.push(httpsApi + '/token');
+    for (let i = 0; i < tokenUrls.length; i++) {
+      try {
+        tokenResp = await fetch(tokenUrls[i], tokenInit);
+        tokenData = await tokenResp.json() as any;
+        const payloadProbe = tokenData?.data || tokenData;
+        const errorProbe = tokenData?.error_info || payloadProbe?.error_info || tokenData?.message || payloadProbe?.message;
+        tokenStage = /签名|sign/i.test(String(errorProbe || '')) ? 'token-sign' : 'token-exchange';
+        // A successful HTTP response with a valid access token is terminal.
+        if (tokenResp.ok && (payloadProbe?.access_token || payloadProbe?.token)) break;
+        // Only fall through on a signature failure; other API errors are
+        // definitive and should not be masked by a second attempt.
+        if (!/签名|sign/i.test(String(errorProbe || '')) || i === tokenUrls.length - 1) break;
+      } catch {
+        if (i === tokenUrls.length - 1) {
+          return { status: 'error', message: 'UC TV token exchange failed: network error' };
+        }
+      }
+    }
+    if (!tokenResp) {
+      return { status: 'error', message: 'UC TV token exchange failed: network error' };
     }
     const payload = tokenData?.data || tokenData;
     const accessToken = payload?.access_token || payload?.token;
     const refreshToken = payload?.refresh_token;
     if (!tokenResp.ok || !accessToken) {
-      return { status: 'error', message: tokenData?.error_info || tokenData?.message || 'UC TV token exchange failed' };
+      const errorInfo = tokenData?.error_info || payload?.error_info || tokenData?.message || payload?.message;
+      return { status: 'error', message: errorInfo || `UC TV token exchange failed (${tokenStage}, HTTP ${tokenResp.status})` };
     }
     // Guard 会把 access_token 保存为 uctoken 并在后续 /oauth/code 中作为
     // access_token 使用；refresh_token 只作为兼容备份，不能替代正式值。
