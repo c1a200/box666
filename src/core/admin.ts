@@ -98,6 +98,12 @@ ${sharedStyles}
 .cloud-badge.none{background:rgba(136,136,136,0.15);color:var(--text-dim)}
 .cloud-card-actions{display:flex;gap:6px;flex-wrap:wrap}
 .cloud-card-time{font-family:var(--mono);font-size:0.7rem;color:var(--text-dim)}
+.cloud-card-row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px}
+.cloud-card-row-info{display:flex;flex-direction:column;gap:2px;min-width:0}
+.cloud-card-row-name{font-size:0.82rem;color:var(--text-bright);font-weight:600}
+.cloud-card-row-status{font-family:var(--mono);font-size:0.65rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.05em}
+.cloud-card-row-status.valid{color:var(--green)}
+.cloud-card-row-status.expired{color:var(--red)}
 .credential-policy-box{padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:6px}
 .credential-inline{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .credential-help{font-size:0.78rem;color:var(--text-secondary);line-height:1.55;margin-top:8px}
@@ -3317,10 +3323,49 @@ async function loadCloudCredentials() {
   } catch {}
 }
 
+function cloudCardState(platform) {
+  const cred = cloudCredentials[platform];
+  const isLoggedIn = cred && cred.hasCredential;
+  const statusClass = isLoggedIn ? (cred.status === 'expired' ? 'expired' : 'valid') : 'none';
+  const statusText = isLoggedIn ? (cred.status === 'expired' ? 'EXPIRED' : 'ACTIVE') : 'NOT SET';
+  const timeStr = cred?.obtainedAt ? new Date(cred.obtainedAt).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}) : '';
+  return { cred, isLoggedIn, statusClass, statusText, timeStr };
+}
+
 function renderCloudCards() {
   const grid = $('cloudLoginGrid');
   grid.innerHTML = '';
-  const allPlatforms = [...new Set([...QR_PLATFORMS, ...MANUAL_ONLY_PLATFORMS, ...PW_PLATFORMS])];
+
+  // UC Web Cookie and UC TV Token are different credential protocols.
+  // Keep them as two explicit actions inside one UC card so neither value is
+  // mistaken for the other while the UI stays compact.
+  const ucCard = document.createElement('div');
+  ucCard.className = 'cloud-card';
+  const ucEntries = [
+    { platform: 'uc', label: 'UC 网盘（Cookie）', button: '扫码登录' },
+    { platform: 'uc_tv', label: 'UC TV（Token）', button: '扫码登录' },
+  ];
+  ucCard.innerHTML =
+    '<div class="cloud-card-header">' +
+      '<span class="cloud-card-name">UC</span>' +
+    '</div>' +
+    ucEntries.map((entry) => {
+      const state = cloudCardState(entry.platform);
+      return '<div class="cloud-card-row">' +
+        '<div class="cloud-card-row-info">' +
+          '<span class="cloud-card-row-name">' + entry.label + '</span>' +
+          '<span class="cloud-card-row-status ' + state.statusClass + '">' + state.statusText + (state.timeStr ? ' · ' + state.timeStr : '') + '</span>' +
+        '</div>' +
+        '<div class="cloud-card-actions">' +
+          '<button class="btn btn-sm" onclick="startQRLogin(\\'' + entry.platform + '\\')">' + entry.button + '</button>' +
+          (state.isLoggedIn ? '<button class="btn btn-sm btn-danger" onclick="logoutPlatform(\\'' + entry.platform + '\\')">退出</button>' : '') +
+        '</div>' +
+      '</div>';
+    }).join('');
+  grid.appendChild(ucCard);
+
+  const allPlatforms = [...new Set([...QR_PLATFORMS, ...MANUAL_ONLY_PLATFORMS, ...PW_PLATFORMS])]
+    .filter((platform) => platform !== 'uc' && platform !== 'uc_tv');
 
   for (const p of allPlatforms) {
     const cred = cloudCredentials[p];
