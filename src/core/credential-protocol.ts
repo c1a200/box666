@@ -70,7 +70,6 @@ const JAR_F782 = 'f782cdee81118405176fd260be9ca5cd';
  * API|JAR 组合一律拒绝注入，避免旧问题修好又引入新问题。
  */
 const CLOUD_DRIVE_GUARD_APIS = [
-  'csp_ypansoguard',
   'csp_bpansoguard',
   'csp_panssoguard',
   'csp_xzsoguard',
@@ -81,6 +80,16 @@ const CLOUD_DRIVE_GUARD_APIS = [
   'csp_pansearchguard',
   'csp_yisoguard',
 ] as const;
+
+/**
+ * 盘她（YpanSo）与盘他/抠抠不同：它消费 Pan.init 的平台 URL 契约，
+ * 而不是 Cloud-drive token JSON 入口。只按已验证的 API|JAR 组合登记，
+ * 不能并入上面的 Cloud-drive 集合。
+ */
+const PAN_INIT_GUARD_CONTRACTS = new Map<string, CredentialMechanism>([
+  [`csp_ypansoguard|${JAR_2CC}`, 'pan-init-url'],
+  [`csp_ypansoguard|${JAR_F782}`, 'pan-init-url'],
+]);
 
 /** 精确的 API|JAR -> 响应契约映射，不生成任何未验证组合。 */
 const CLOUD_DRIVE_GUARD_CONTRACTS = new Map<string, CredentialMechanism>([
@@ -207,9 +216,20 @@ export function resolveCredentialProtocol(
     };
   }
 
-  const cloudDriveContract = CLOUD_DRIVE_GUARD_CONTRACTS.get(
-    `${api.toLowerCase()}|${extractJarMd5(effectiveJar)?.toLowerCase() || ''}`,
-  );
+  const apiJarKey = `${api.toLowerCase()}|${extractJarMd5(effectiveJar)?.toLowerCase() || ''}`;
+
+  const panInitContract = PAN_INIT_GUARD_CONTRACTS.get(apiJarKey);
+  if (panInitContract) {
+    return {
+      mechanism: panInitContract,
+      platforms: [...PAN_INIT_PLATFORMS],
+      credentialRequired: true,
+      canInject: true,
+      reason: 'YpanSo Guard Pan.init platform URL contract',
+    };
+  }
+
+  const cloudDriveContract = CLOUD_DRIVE_GUARD_CONTRACTS.get(apiJarKey);
   if (cloudDriveContract && hasCloudDriveTokenContract(site)) {
     return {
       mechanism: cloudDriveContract,
