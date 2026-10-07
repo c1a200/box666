@@ -653,8 +653,15 @@ export function createApp(deps: AppDeps): Hono {
     );
     // 先清除历史注入的凭证/地址；本次允许的值保留，随后重新按策略注入。
     const allowedSecrets = context.mode === 'none' ? new Set<string>() : credentialSecretSet(effective);
-    const stripped = stripInjectedCredentialsFromConfig(parsed, context.effectiveBaseUrl, allCredentials, allowedSecrets);
-    const { sites } = injectCredentials(
+    // 控制边界只使用实际被选中并下发的站点；每个站点是否注入仍由
+    // 已验证 JAR/API/ext 契约和当前凭证决定，不做总源级模式拦截。
+    const stripped = stripInjectedCredentialsFromConfig(
+      parsed,
+      context.effectiveBaseUrl,
+      allCredentials,
+      allowedSecrets,
+    );
+    const { sites, report } = injectCredentials(
       stripped.sites || [],
       effective,
       policy,
@@ -667,15 +674,16 @@ export function createApp(deps: AppDeps): Hono {
     );
     // 注入结果必须写回响应配置，否则凭证计算完成但客户端仍收到原 ext。
     parsed.sites = sites;
-    // 顶层 token 与本次下发的平台绑定：有凭证才下发，none/无可用凭证时移除，
-    // 避免旧根地址残留导致客户端在未授权时仍尝试拉取凭证。
+    // 顶层 token 与本次实际注入结果绑定：none 或没有任何站点真正注入时
+    // 不下发，避免客户端继续请求项目凭证端点；上游字段不受此影响。
     const tokenUrl = `${context.effectiveBaseUrl}/token.json`;
-    if (context.mode === 'none' || effective.size === 0) {
+    if (context.mode === 'none' || effective.size === 0 || report.injected === 0) {
       delete parsed.token;
     } else {
       parsed.token = tokenUrl;
     }
 
+    // Wogg 兼容迁移可能改 key/JAR，必须在注入结果写回后执行；它不会写入凭证。
     applyLegacyWoggCompatibility(parsed);
     return JSON.stringify(parsed);
   }
