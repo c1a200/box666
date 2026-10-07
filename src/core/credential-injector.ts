@@ -544,6 +544,102 @@ function injectCloudDriveTokenUrl(
 }
 
 /**
+ * 3D Pan 派生 Spiders 的 Cloud-drive JSON 契约。
+ *
+ * WoGG/PanSearch 经 Pan.init 依次初始化 Ali/Quark/Uc；对应 init 在
+ * ext.from 包含 tvfan 时读取 ext.Cloud-drive 指向的 JSON。该 JSON 只认：
+ * - quarkCookie: 夸克 Cookie
+ * - ucCookie: UC Cookie
+ * - token: 阿里云盘 refresh token
+ *
+ * 该契约不是 Pan.init 的 /credential/<field> URL 契约，禁止向 ext 写入
+ * quark/uc/baidu 等字段，否则会再次出现跨 JAR 行为漂移。
+ */
+function d3CloudFieldValues(
+  creds: Map<CloudPlatform, CloudCredential>,
+  neededPlatforms?: CloudPlatform[],
+): Record<string, string> {
+  const allowed = neededPlatforms ? new Set(neededPlatforms) : null;
+  const canUse = (platform: CloudPlatform): boolean => {
+    if (allowed && !allowed.has(platform)) return false;
+    // 夸克 Pan.init 只有带 __pus/__puus 的 Cookie 才能直接免扫码；
+    // 普通 Cookie 写进 3d.json 会让 JAR 认为初始化已成功，随后仍弹扫码。
+    if (platform === 'quark') {
+      return isPanInitCredentialDistributable('quark', creds.get('quark'));
+    }
+    return isCredentialDistributable(platform, creds.get(platform));
+  };
+  const values: Record<string, string> = {};
+  if (canUse('quark')) {
+    const cookie = getCredValue(creds, 'quark', 'cookie');
+    if (cookie) values.quarkCookie = cookie;
+  }
+  if (canUse('uc')) {
+    const cookie = getCredValue(creds, 'uc', 'cookie');
+    if (cookie) values.ucCookie = cookie;
+  }
+  if (canUse('aliyun')) {
+    const token = getCredValue(creds, 'aliyun', 'refresh_token')
+      || getCredValue(creds, 'aliyun', 'token')
+      || getCredValue(creds, 'aliyun', 'ali_token');
+    if (token) values.token = token;
+  }
+  return values;
+}
+
+export function generate3DCloudJson(
+  credentials: Map<CloudPlatform, CloudCredential>,
+  neededPlatforms?: CloudPlatform[],
+): Record<string, string> {
+  return d3CloudFieldValues(credentials, neededPlatforms);
+}
+
+function inject3DCloudDriveJson(
+  ext: any,
+  creds: Map<CloudPlatform, CloudCredential>,
+  baseUrl?: string,
+  neededPlatforms?: CloudPlatform[],
+): { ext: any; changed: boolean } {
+  const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
+  if (!normalizedBaseUrl) return { ext, changed: false };
+  const values = d3CloudFieldValues(creds, neededPlatforms);
+  if (Object.keys(values).length === 0) return { ext, changed: false };
+
+  const parsed = parseExt(ext);
+  if (!parsed.injectable) return { ext, changed: false };
+
+  const revision = ['aliyun', 'quark', 'uc']
+    .filter((platform) => !neededPlatforms || neededPlatforms.includes(platform as CloudPlatform))
+    .map((platform) => credentialRevision(creds.get(platform as CloudPlatform)))
+    .filter(Boolean)
+    .sort()
+    .join('.');
+  const query = revision ? `?v=${revision}` : '';
+  const url = `${normalizedBaseUrl}/credential/3d.json${query}`;
+  const next = { ...parsed.obj };
+  let changed = false;
+  if (next['Cloud-drive'] !== url) {
+    next['Cloud-drive'] = url;
+    changed = true;
+  }
+
+  const from = typeof next.from === 'string' ? next.from : '';
+  const fromParts = from.split('|').map((part: string) => part.trim()).filter(Boolean);
+  if (!fromParts.some((part: string) => part.toLowerCase() === 'tvfan')) {
+    fromParts.push('tvfan');
+  }
+  const normalizedFrom = fromParts.join('|');
+  if (next.from !== normalizedFrom) {
+    next.from = normalizedFrom;
+    changed = true;
+  }
+
+  return changed
+    ? { ext: restoreExt(next, parsed.wasString, parsed.wasJson), changed: true }
+    : { ext, changed: false };
+}
+
+/**
  * 3D YiSo 继承 Ali.init；只有 ext.from 含 tvfan 时，才会把
  * ext.Cloud-drive 指向的 JSON 中的 token 作为阿里云盘初始化凭证。
  */
@@ -591,6 +687,54 @@ function injectAliTokenUrl(
  * p123/xunlei/tianyi 返回 username+password JSON，其余返回原始 cookie 文本。
  * 因此不能把 cookie 直接塞进 ext，只能下发项目自托管初始化 URL。
  */
+/**
+ * B63 Cloud.init 的内联凭证契约。
+ *
+ * 反汇编确认其字段名和值语义：
+ * - cookie       -> 夸克 Cookie 原始值
+ * - uccookie     -> UC Cookie 原始值
+ * - tianyicookie -> 天翼 Cookie 原始值
+ * - token        -> 阿里云盘 refresh token 原始值
+ *
+ * 该 JAR 不读取 quark/uc/baidu/p123 等 URL 字段；写 URL 会导致客户端
+ * 忽略凭证并回退扫码。这里只写入原字段，保留 site 等上游配置。
+ */
+function injectB63CloudInline(
+  ext: any,
+  creds: Map<CloudPlatform, CloudCredential>,
+): { ext: any; changed: boolean } {
+  const parsed = parseExt(ext);
+  if (!parsed.injectable) return { ext, changed: false };
+
+  const next = { ...parsed.obj };
+  let changed = false;
+  const setField = (field: string, value: string) => {
+    if (!value || next[field] === value) return;
+    next[field] = value;
+    changed = true;
+  };
+
+  if (isCredentialDistributable('quark', creds.get('quark'))) {
+    setField('cookie', getCredValue(creds, 'quark', 'cookie'));
+  }
+  if (isCredentialDistributable('uc', creds.get('uc'))) {
+    setField('uccookie', getCredValue(creds, 'uc', 'cookie'));
+  }
+  if (isCredentialDistributable('tianyi', creds.get('tianyi'))) {
+    setField('tianyicookie', getCredValue(creds, 'tianyi', 'cookie'));
+  }
+  if (isCredentialDistributable('aliyun', creds.get('aliyun'))) {
+    const token = getCredValue(creds, 'aliyun', 'refresh_token')
+      || getCredValue(creds, 'aliyun', 'token')
+      || getCredValue(creds, 'aliyun', 'ali_token');
+    setField('token', token);
+  }
+
+  return changed
+    ? { ext: restoreExt(next, parsed.wasString, parsed.wasJson), changed: true }
+    : { ext, changed: false };
+}
+
 function injectPanInitUrls(
   ext: any,
   creds: Map<CloudPlatform, CloudCredential>,
@@ -733,66 +877,128 @@ function injectDirectField(
 }
 
 /**
- * 已确认会消费 Pan.init/搜索凭证的协议，仍可能被上游 ext 中的
- * Cloud-drive/Ali-drive 登录入口抢先。项目凭证成功写入后必须移除这些
- * 抢占字段；未确认协议或本次未写入时不触碰，避免误删上游有效配置。
+ * 已确认协议的 ext 凭证入口必须互斥。
+ *
+ * 上游原 ext 里可能同时残留项目此前生成的两套入口。客户端 JAR 读取
+ * 字段的顺序不可控，双入口会让“已选机制”被另一套旧机制抢先，表现为
+ * 明明写入了凭证却仍然扫码。这里只清理明确指向本项目地址的旧入口，
+ * 不删除上游真正自带的第三方初始化地址。
  */
-const CREDENTIAL_CONFLICT_EXT_KEYS = new Set([
+const CLOUD_DRIVE_CONFLICT_FIELDS = new Set([
   'cloud-drive', 'clouddrive', 'ali-drive', 'alidrive',
 ]);
 
-function isProjectCredentialUrl(
-  value: unknown,
-  baseUrl: string,
-  mechanism?: CredentialProtocol['mechanism'],
-): boolean {
-  if (typeof value !== 'string' || !value.trim()) return false;
-  const base = baseUrl.replace(/\/+$/, '');
-  const url = value.trim();
-  if (!url.startsWith(base + '/')) return false;
-  const path = url.slice(base.length).split('?')[0].split('#')[0];
-
-  // tvfan 契约入口是 /tvfan/config；旧版 token-json 协议入口是 root
-  // token.json；Pan.init 协议使用六个 /credential/<field> 入口。三者必须
-  // 分别保护，不能混用。
-  if (mechanism === 'tvfan-config-url') {
-    return /^(?:\/auth\/[^/]+)?\/tvfan\/config$/.test(path);
-  }
-  if (mechanism === 'token-json-url') {
-    return /^(?:\/auth\/[^/]+)?\/token\.json$/.test(path);
-  }
-  if (mechanism === 'pan-init-url') {
-    const match = path.match(/^(?:\/auth\/[^/]+)?\/credential\/([A-Za-z0-9_.-]+)$/);
-    return !!match && PAN_INIT_FIELDS.some(({ field }) => field === match[1]);
-  }
-  return false;
-}
+const PAN_INIT_CONFLICT_FIELDS = new Set([
+  'p123', 'xunlei', 'quark', 'uc', 'tianyi', 'baidu',
+]);
 
 function normalizeCredentialConflictKey(key: string): string {
   return key.trim().toLowerCase().replace(/[_\s]+/g, '-');
 }
 
+function isProjectUrlOnBase(value: unknown, baseUrl: string): boolean {
+  if (typeof value !== 'string' || !value.trim()) return false;
+  const base = baseUrl.replace(/\/+$/, '');
+  return value.trim().startsWith(base + '/');
+}
+
+function isProjectCredentialUrl(
+  value: unknown,
+  baseUrl: string,
+  mechanism: CredentialProtocol['mechanism'],
+): boolean {
+  if (!isProjectUrlOnBase(value, baseUrl)) return false;
+  const base = baseUrl.replace(/\/+$/, '');
+  const path = String(value).trim().slice(base.length).split('?')[0].split('#')[0];
+  const authPrefix = '(?:\/auth\/[^/]+)?';
+
+  if (mechanism === 'tvfan-config-url') {
+    return new RegExp(`^${authPrefix}\/tvfan\/config$`).test(path);
+  }
+  if (mechanism === 'token-json-url') {
+    return new RegExp(`^${authPrefix}\/token\.json$`).test(path);
+  }
+  if (mechanism === 'd3-cloud-drive-json') {
+    return new RegExp(`^${authPrefix}\/credential\/3d\.json$`).test(path);
+  }
+  if (mechanism === 'ali-token-url') {
+    return new RegExp(`^${authPrefix}\/credential\/aliyun\.json$`).test(path);
+  }
+  if (mechanism === 'pan-init-url' || mechanism === 'pan-search-fixed-baidu' || mechanism === 'pan-search-ext-pan') {
+    const match = path.match(new RegExp(`^${authPrefix}\/credential\/([A-Za-z0-9_.-]+)$`));
+    return !!match && PAN_INIT_FIELDS.some(({ field }) => field === match[1]);
+  }
+  return false;
+}
+
+/**
+ * 按当前机制清理本项目遗留的旧凭证入口。
+ *
+ * - Cloud-drive / Ali-drive 类机制：清掉本项目旧的 Pan.init 平台 URL。
+ * - Pan.init 类机制：清掉本项目旧的 Cloud-drive/Ali-drive 入口。
+ * - B63 inline：清掉本项目两种旧 URL 入口。
+ */
 function removeCredentialConflictEntries(
   ext: any,
   baseUrl?: string,
   mechanism?: CredentialProtocol['mechanism'],
 ): { ext: any; changed: boolean } {
+  if (!mechanism || mechanism === 'none' || mechanism === 'unknown') {
+    return { ext, changed: false };
+  }
   const parsed = parseExt(ext);
   if (!parsed.injectable) return { ext, changed: false };
-  const next = { ...parsed.obj };
   const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
+  if (!normalizedBaseUrl) return { ext, changed: false };
+
+  const next = { ...parsed.obj };
   let changed = false;
-  for (const key of Object.keys(next)) {
-    if (CREDENTIAL_CONFLICT_EXT_KEYS.has(normalizeCredentialConflictKey(key))) {
-      // 本项目刚写入的凭证地址属于有效配置，不能被通用冲突清理误删。
-      // 只有上游自带的抢占入口才应移除。
-      if (normalizedBaseUrl && isProjectCredentialUrl(next[key], normalizedBaseUrl, mechanism)) {
-        continue;
-      }
+  const removeProjectValue = (key: string) => {
+    if (!(key in next)) return;
+    if (isProjectUrlOnBase(next[key], normalizedBaseUrl)) {
       delete next[key];
       changed = true;
     }
+  };
+
+  // Pan.init 与 Cloud-drive 是两套互斥入口。上游常见的相对值
+  // `tvfan/Cloud-drive.txt` 同样会被某些 JAR 当作登录入口；切换到
+  // Pan.init 时必须移除，否则客户端初始化结果取决于字段读取顺序。
+  const removePanSearchCloudDriveEntry = (key: string) => {
+    if (!(key in next)) return;
+    const raw = next[key];
+    if (typeof raw !== 'string') return;
+    const value = raw.trim();
+    if (!value) return;
+    if (
+      isProjectUrlOnBase(value, normalizedBaseUrl)
+      || /^tvfan\/cloud-drive\.txt(?:[?#].*)?$/i.test(value)
+      || /^\/?cloud-drive\.txt(?:[?#].*)?$/i.test(value)
+    ) {
+      delete next[key];
+      changed = true;
+    }
+  };
+
+  const cloudDriveMechanism = mechanism === 'token-json-url'
+    || mechanism === 'tvfan-config-url'
+    || mechanism === 'd3-cloud-drive-json'
+    || mechanism === 'ali-token-url';
+
+  if (cloudDriveMechanism || mechanism === 'b63-cloud-inline') {
+    for (const key of Object.keys(next)) {
+      if (!PAN_INIT_CONFLICT_FIELDS.has(normalizeCredentialConflictKey(key))) continue;
+      removeProjectValue(key);
+    }
   }
+
+  if (mechanism === 'pan-init-url' || mechanism === 'pan-search-fixed-baidu' || mechanism === 'pan-search-ext-pan') {
+    for (const key of Object.keys(next)) {
+      if (!CLOUD_DRIVE_CONFLICT_FIELDS.has(normalizeCredentialConflictKey(key))) continue;
+      removePanSearchCloudDriveEntry(key);
+    }
+  }
+
   return changed
     ? { ext: restoreExt(next, parsed.wasString, parsed.wasJson), changed: true }
     : { ext, changed: false };
@@ -802,6 +1008,40 @@ function removeCredentialConflictEntries(
  * 唯一的协议执行入口。风险判断与正式下发都必须经过这里，避免两边规则漂移。
  * 返回 changed=false 时不允许计为已下发。
  */
+function hasAppliedCredentialMechanism(
+  ext: any,
+  baseUrl: string,
+  mechanism: CredentialProtocol['mechanism'],
+  platforms: CloudPlatform[],
+  credentials: Map<CloudPlatform, CloudCredential>,
+): boolean {
+  const parsed = parseExt(ext);
+  if (!parsed.injectable) return false;
+
+  if (
+    mechanism === 'token-json-url'
+    || mechanism === 'tvfan-config-url'
+    || mechanism === 'd3-cloud-drive-json'
+    || mechanism === 'ali-token-url'
+  ) {
+    return isProjectCredentialUrl(parsed.obj['Cloud-drive'], baseUrl, mechanism);
+  }
+
+  if (
+    mechanism === 'pan-init-url'
+    || mechanism === 'pan-search-fixed-baidu'
+    || mechanism === 'pan-search-ext-pan'
+  ) {
+    const allowed = new Set(platforms);
+    return PAN_INIT_FIELDS.some(({ field, platform }) => (
+      allowed.has(platform)
+      && hasPanInitCredential(credentials, platform)
+      && isProjectCredentialUrl(parsed.obj[field], baseUrl, mechanism)
+    ));
+  }
+
+  return false;
+}
 function applyCredentialProtocol(
   site: TVBoxSite,
   protocol: CredentialProtocol,
@@ -817,10 +1057,22 @@ function applyCredentialProtocol(
     credentials,
     baseUrl,
   );
+  // 只有目标机制真正写入（或 ext 已包含本项目的目标 URL）时，才允许清理互斥入口。
+  // 否则会在本次未成功下发凭证时误删上游自带的初始化入口。
+  const active = applied.changed || hasAppliedCredentialMechanism(
+    applied.ext,
+    baseUrl,
+    protocol.mechanism,
+    protocol.platforms,
+    credentials,
+  );
+  if (!active) {
+    return { ext: applied.ext, changed: applied.changed };
+  }
   const cleaned = removeCredentialConflictEntries(applied.ext, baseUrl, protocol.mechanism);
   return {
     ext: cleaned.ext,
-    changed: applied.changed || cleaned.changed,
+    changed: true,
   };
 }
 
@@ -834,6 +1086,9 @@ function applyCredentialProtocolRaw(
     case 'ali-token-url':
       return injectAliTokenUrl(site.ext, credentials, baseUrl);
 
+    case 'd3-cloud-drive-json':
+      return inject3DCloudDriveJson(site.ext, credentials, baseUrl, protocol.platforms);
+
     case 'tvfan-config-url':
       return injectCloudDriveTokenUrl(site.ext, credentials, baseUrl, protocol.platforms, 'tvfan-config-url');
 
@@ -842,6 +1097,9 @@ function applyCredentialProtocolRaw(
 
     case 'pan-init-url':
       return injectPanInitUrls(site.ext, credentials, baseUrl);
+
+    case 'b63-cloud-inline':
+      return injectB63CloudInline(site.ext, credentials);
 
     case 'pan-search-fixed-baidu':
       return injectPanInitUrls(site.ext, credentials, baseUrl, ['baidu']);

@@ -10,6 +10,8 @@ export type CredentialMechanism =
   | 'token-json-url'
   | 'tvfan-config-url'
   | 'pan-init-url'
+  | 'd3-cloud-drive-json'
+  | 'b63-cloud-inline'
   | 'pan-search-ext-pan'
   | 'pan-search-fixed-baidu'
   | 'alist'
@@ -69,24 +71,49 @@ const JAR_F782 = 'f782cdee81118405176fd260be9ca5cd';
  * 同一 JAR 下还有 MyDrive、Push、S_zps 等完全不同的契约；未登记的
  * API|JAR 组合一律拒绝注入，避免旧问题修好又引入新问题。
  */
-const CLOUD_DRIVE_GUARD_APIS = [
-  'csp_ypansoguard',
-  'csp_bpansoguard',
-  'csp_panssoguard',
-  'csp_xzsoguard',
-  'csp_uussguard',
-  'csp_kkssguard',
-  'csp_mipansoguard',
-  'csp_libvioguard',
-  'csp_pansearchguard',
-  'csp_yisoguard',
-] as const;
-
-/** 精确的 API|JAR -> 响应契约映射，不生成任何未验证组合。 */
-const CLOUD_DRIVE_GUARD_CONTRACTS = new Map<string, CredentialMechanism>([
-  ...CLOUD_DRIVE_GUARD_APIS.map((guardApi) => [`${guardApi}|${JAR_2CC}`, 'token-json-url'] as const),
-  ...CLOUD_DRIVE_GUARD_APIS.map((guardApi) => [`${guardApi}|${JAR_F782}`, 'tvfan-config-url'] as const),
+/**
+ * 精确的 API|JAR -> 响应契约映射。
+ *
+ * 这里只登记已经通过反编译或现场回归确认的组合，绝不再做
+ * “API 集合 × JAR 集合”的笛卡尔积。没有证据的组合保持 unknown，
+ * 即使 ext 里存在 Cloud-drive 也不注入，避免把一个源修好后污染其它源。
+ */
+/**
+ * YpanSo 的实测契约与同批 Guard API 不同：它消费 Pan.init 的
+ * /credential/<field> 平台 URL，而不是 Cloud-drive token JSON。
+ * 只按已验证的 API|JAR 精确登记，不能并入 Cloud-drive 集合。
+ */
+const PAN_INIT_GUARD_CONTRACTS = new Map<string, CredentialMechanism>([
+  [`csp_ypansoguard|${JAR_2CC}`, 'pan-init-url'],
+  [`csp_ypansoguard|${JAR_F782}`, 'pan-init-url'],
+  [`csp_woggguard|${JAR_F782}`, 'pan-init-url'],
+  [`csp_woggguard|4ce29ce27eeff6a73a230dd92d98ba0c`, 'pan-init-url'],
 ]);
+const CLOUD_DRIVE_GUARD_CONTRACTS = new Map<string, CredentialMechanism>([
+  // CF 当前 JAR：Cloud-drive -> token.json（完整 token schema）。
+  [`csp_bpansoguard|${JAR_2CC}`, 'token-json-url'],
+  [`csp_panssoguard|${JAR_2CC}`, 'token-json-url'],
+  [`csp_xzsoguard|${JAR_2CC}`, 'token-json-url'],
+  [`csp_uussguard|${JAR_2CC}`, 'token-json-url'],
+  [`csp_kkssguard|${JAR_2CC}`, 'token-json-url'],
+  [`csp_mipansoguard|${JAR_2CC}`, 'token-json-url'],
+  [`csp_libvioguard|${JAR_2CC}`, 'token-json-url'],
+  [`csp_pansearchguard|${JAR_2CC}`, 'token-json-url'],
+  [`csp_yisoguard|${JAR_2CC}`, 'token-json-url'],
+
+  // Render 当前 JAR：Cloud-drive -> tvfan/config（五字段及兼容别名）。
+  [`csp_bpansoguard|${JAR_F782}`, 'tvfan-config-url'],
+  [`csp_panssoguard|${JAR_F782}`, 'tvfan-config-url'],
+  [`csp_xzsoguard|${JAR_F782}`, 'tvfan-config-url'],
+  [`csp_uussguard|${JAR_F782}`, 'tvfan-config-url'],
+  [`csp_kkssguard|${JAR_F782}`, 'tvfan-config-url'],
+  [`csp_mipansoguard|${JAR_F782}`, 'tvfan-config-url'],
+  [`csp_libvioguard|${JAR_F782}`, 'tvfan-config-url'],
+  [`csp_pansearchguard|${JAR_F782}`, 'tvfan-config-url'],
+  [`csp_yisoguard|${JAR_F782}`, 'tvfan-config-url'],
+]);
+
+
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
@@ -145,7 +172,7 @@ const PAN_SEARCH_PLATFORM_MAP: Record<string, CloudPlatform> = {
   '迅雷': 'thunder',
 };
 
-const PAN_INIT_API_RE = /^csp_(?:Wo[bg]g|Mogg|MIPanSo|KkSs|PanSso)(?:Guard)?/i;
+const PAN_INIT_API_RE = /^csp_(?:Wo[bg]g|Mogg|MIPanSo|KkSs|PanSso|PanSou)(?:Guard)?/i;
 const ALI_TOKEN_API_RE = /^csp_YiSo$/i;
 
 function directFieldProtocol(
@@ -209,6 +236,17 @@ export function resolveCredentialProtocol(
 
   const apiJarKey = `${api.toLowerCase()}|${extractJarMd5(effectiveJar)?.toLowerCase() || ''}`;
 
+
+  const panInitContract = PAN_INIT_GUARD_CONTRACTS.get(apiJarKey);
+  if (panInitContract) {
+    return {
+      mechanism: panInitContract,
+      platforms: [...PAN_INIT_PLATFORMS],
+      credentialRequired: true,
+      canInject: true,
+      reason: 'YpanSo Guard Pan.init platform URL contract',
+    };
+  }
   const cloudDriveContract = CLOUD_DRIVE_GUARD_CONTRACTS.get(apiJarKey);
   if (cloudDriveContract && hasCloudDriveTokenContract(site)) {
     return {
@@ -222,32 +260,15 @@ export function resolveCredentialProtocol(
     };
   }
 
-  if (/^csp_PanSearch(?:Guard)?/i.test(api) && isB63(effectiveJar)) {
+  if (/^csp_PanSearch(?:Guard)?/i.test(api) && is3D(effectiveJar)) {
+    // 3D PanSearch 继承 Pan；Pan.init 已确认读取 ext.Cloud-drive 指向的 JSON。
+    // ext.pan 只是搜索目标，不能拿它选择凭证字段或平台。
     return {
-      mechanism: 'pan-search-fixed-baidu',
-      platforms: ['baidu'],
+      mechanism: 'd3-cloud-drive-json',
+      platforms: ['aliyun', 'quark', 'uc'],
       credentialRequired: true,
       canInject: true,
-      fixedPlatform: 'baidu',
-      panField: 'pan',
-      reason: 'PanSearch B63 fixed baidu',
-    };
-  }
-
-  if (/^csp_PanSearch(?:Guard)?/i.test(api) && is3D(effectiveJar)) {
-    // 只有 ext.pan 能明确映射到 Pan.init 已支持的六类平台时才注入；
-    // 缺失或不支持的 ext.pan 必须保持未知，不能按站点名称猜测。
-    const platform = getPanSearchPlatform(site);
-    return {
-      mechanism: 'pan-search-ext-pan',
-      platforms: platform ? [platform] : [...PAN_SEARCH_PLATFORMS],
-      credentialRequired: true,
-      canInject: !!platform,
-      fixedPlatform: platform || undefined,
-      panField: 'pan',
-      reason: platform
-        ? `PanSearch 3D ext.pan=${platform}`
-        : 'PanSearch 3D missing/unsupported ext.pan',
+      reason: '3D PanSearch Cloud-drive JSON contract',
     };
   }
 
@@ -263,24 +284,37 @@ export function resolveCredentialProtocol(
     };
   }
 
+  // B63 的 Wogg/WoGG/Mogg 均继承 Pan.init：Pan.init 会把 ext 中
+  // quark/uc/tianyi/baidu 等值当作 URL 下载，再把响应交给对应平台 init。
+  // Quark/UC 只接受带 __pus 的 Cookie，Baidu 接受 Cookie 文本，因此必须
+  // 下发 /credential/<field> URL，不能把 Cookie 内联到 ext。
   if (PAN_INIT_API_RE.test(api) && (isB63(effectiveJar) || isMoggJar(effectiveJar))) {
-    const isWogg = /^csp_Wo[bg]g/i.test(api);
     return {
       mechanism: 'pan-init-url',
       platforms: [...PAN_INIT_PLATFORMS],
       credentialRequired: true,
       canInject: true,
-      reason: isWogg ? 'Wogg/Wobg Pan.init URL contract' : 'Mogg Pan.init URL contract',
+      reason: 'B63/Mogg Pan.init platform URL contract',
+    };
+  }
+
+  if (/^csp_PanSearch(?:Guard)?/i.test(api) && isB63(effectiveJar)) {
+    return {
+      mechanism: 'pan-init-url',
+      platforms: ['quark', 'uc', 'tianyi', 'baidu', 'pan123', 'thunder'],
+      credentialRequired: true,
+      canInject: true,
+      reason: 'PanSearch B63 Pan.init platform URL contract',
     };
   }
 
   if (PAN_INIT_API_RE.test(api) && is3D(effectiveJar)) {
     return {
-      mechanism: 'pan-init-url',
-      platforms: [...PAN_INIT_PLATFORMS],
+      mechanism: 'd3-cloud-drive-json',
+      platforms: ['aliyun', 'quark', 'uc'],
       credentialRequired: true,
       canInject: true,
-      reason: '3D Pan-derived Pan.init URL contract',
+      reason: '3D Pan-derived Cloud-drive JSON contract',
     };
   }
 

@@ -33,7 +33,7 @@ import { isPanInitCredentialDistributable, loadCredentials, saveCredential, dele
 import { isSiteProbeable } from './core/speedtest';
 import { generateQR, pollQRStatus, passwordLogin, PLATFORM_NAMES, QR_PLATFORMS, PASSWORD_PLATFORMS } from './core/cloud-login';
 import { assessAllSources, isClientCredentialSite } from './core/credential-risk';
-import { generateTokenJson, generateTvfanConfig, injectAListDriveCredentials, injectCredentials } from './core/credential-injector';
+import { generate3DCloudJson, generateTokenJson, generateTvfanConfig, injectAListDriveCredentials, injectCredentials } from './core/credential-injector';
 import type { SiteContract } from './core/types';
 import { stripInjectedCredentialsFromConfig, stripUpstreamCredentialEntries } from './core/credential-sanitizer';
 import { formatAggregatedLiveGroupsAsTxt, formatLiveGroupsAsTxt, filterLivesBySource, filterLivesBySourceDetailed, sortLiveGroupsForOutput } from './core/live-merger';
@@ -617,9 +617,9 @@ export function createApp(deps: AppDeps): Hono {
     return { allowedSiteKeys, contractsBySiteKey };
   }
 
-  /** none 策略下必须剥离已验证的上游凭证入口，否则 JAR 会绕过策略直接登录。 */
+  /** 仅显式策略开关允许剥离上游凭证入口；none 只代表本项目不下发。 */
   function shouldStripUpstreamCredentialEntries(context: ClientAuthContext): boolean {
-    return context.mode === 'none' || context.distribution.stripUpstreamCredentialEntries === true;
+    return context.distribution.stripUpstreamCredentialEntries === true;
   }
 
   /** 按当前上下文重新注入凭证地址。 */
@@ -638,12 +638,12 @@ export function createApp(deps: AppDeps): Hono {
     }
     if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.sites)) return raw;
 
-    // none 策略必须剥离上游公开凭证入口；显式开关在 all/selected 下同样生效。
+    // 只有显式 stripUpstreamCredentialEntries=true 才剥离上游自带的登录入口；
+    // none 只表示项目不下发凭证，不等于替上游剥离凭证。
     if (shouldStripUpstreamCredentialEntries(context)) {
       parsed = stripUpstreamCredentialEntries(
         parsed,
         typeof parsed.spider === 'string' ? parsed.spider : undefined,
-        context.mode === 'none',
       );
     }
 
@@ -2528,6 +2528,25 @@ export function createApp(deps: AppDeps): Hono {
     return c.json({ token }, 200, tokenResponseHeaders);
   }
 
+  async function handle3DCloudJson(c: any) {
+    const baseUrl = await resolveBaseUrl(c);
+    if (baseUrl instanceof Response) return baseUrl;
+    const resolved = await resolveClientAuthContext(c, baseUrl);
+    if (resolved.failure) return credentialAuthFailureResponse(c, resolved.failure);
+    const context = resolved.context!;
+    if (context.mode === 'none') {
+      return c.json({ error: 'credential distribution disabled' }, 404, tokenResponseHeaders);
+    }
+    const credentials = selectCredentialsForContext(await loadCredentials(storage), context);
+    const config = generate3DCloudJson(credentials, ['aliyun', 'quark', 'uc']);
+    // 3D JAR 把空 JSON 视为已启用服务端凭证，随后跳过扫码；没有实际字段
+    // 时必须让端点表现为不存在，才能回退客户端本地登录。
+    if (Object.keys(config).length === 0) {
+      return c.json({ error: 'no credential available' }, 404, tokenResponseHeaders);
+    }
+    return c.json(config, 200, tokenResponseHeaders);
+  }
+
   async function handleTvfanConfig(c: any) {
     const baseUrl = await resolveBaseUrl(c);
     if (baseUrl instanceof Response) return baseUrl;
@@ -2575,6 +2594,7 @@ export function createApp(deps: AppDeps): Hono {
     app.get(prefix + '/credential/xunlei', (c) => handleAccountCredential(c, 'thunder'));
     app.get(prefix + '/credential/alist', handleAListCredential);
     app.get(prefix + '/credential/aliyun.json', handleAliyunTokenJson);
+    app.get(prefix + '/credential/3d.json', handle3DCloudJson);
     app.get(prefix + '/credential/token.json', handleTokenJson);
     app.get(prefix + '/token.json', handleTokenJson);
     app.get(prefix + '/tvfan/config', handleTvfanConfig);
