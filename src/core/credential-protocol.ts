@@ -172,6 +172,7 @@ const PAN_SEARCH_PLATFORM_MAP: Record<string, CloudPlatform> = {
 };
 
 const PAN_INIT_API_RE = /^csp_(?:Wo[bg]g|Mogg|MIPanSo|KkSs|PanSso|PanSou)(?:Guard)?/i;
+const D3_CLOUD_DRIVE_API_RE = /^csp_(?:Wo[bg]g|Mogg|MIPanSo|KkSs|PanSso|PanSou|Libvio)(?:Guard)?$/i;
 const ALI_TOKEN_API_RE = /^csp_YiSo$/i;
 
 function directFieldProtocol(
@@ -305,7 +306,10 @@ export function resolveCredentialProtocol(
     };
   }
 
-  if (PAN_INIT_API_RE.test(api) && is3D(effectiveJar)) {
+  // 3D JAR 的 Pan 派生 Spider 共享 Pan.init：真正读取的是 ext.Cloud-drive
+  // 指向的 JSON。Libvio 等类虽不叫 PanSearch，也继承 Pan，不能漏掉。
+  // 只接受已验证会提供该入口的 API，避免把普通 Libvio 网页源误判。
+  if (D3_CLOUD_DRIVE_API_RE.test(api) && is3D(effectiveJar) && hasCloudDriveTokenContract(site)) {
     return {
       mechanism: 'd3-cloud-drive-json',
       platforms: ['aliyun', 'quark', 'uc'],
