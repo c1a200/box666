@@ -57,49 +57,52 @@ const TOKEN_JSON_PLATFORMS: readonly CloudPlatform[] = [
 ];
 
 /**
- * 已验证的重打包指纹。2cc/f782 外层壳相同，差异只在加密 Guard 内层；
- * 现场回归表明 Pan/WoGG 系列应统一通过 Cloud-drive 消费
- * `/tvfan/config` 五字段契约。此处仍按精确 API|JAR 登记，避免退化为
+ * 已验证的 Guard JAR 指纹。2cc/f782 外层壳相同，但内层实现可能不同；
+ * 因此这里只按已确认的 API|JAR 组合登记，绝不做
  * “API 集合 × JAR 集合”的笛卡尔积盲匹配。
  */
 const JAR_2CC = '2cc088afa757ba8bafffcfbab4b73ccc';
 const JAR_F782 = 'f782cdee81118405176fd260be9ca5cd';
 
 /**
- * 只有已验证会通过 ext.Cloud-drive 消费凭证的 Guard API 才登记。
- * 同一 JAR 下还有 MyDrive、Push、S_zps 等完全不同的契约；未登记的
- * API|JAR 组合一律拒绝注入，避免旧问题修好又引入新问题。
- */
-/**
  * 精确的 API|JAR -> 响应契约映射。
  *
- * 这里只登记已经通过反编译或现场回归确认的组合，绝不再做
- * “API 集合 × JAR 集合”的笛卡尔积。没有证据的组合保持 unknown，
+ * 只登记已经通过反编译或现场回归确认的组合；没有证据的组合保持 unknown，
  * 即使 ext 里存在 Cloud-drive 也不注入，避免把一个源修好后污染其它源。
+ * 同一 JAR 下还有 MyDrive、Push、S_zps 等完全不同的契约。
  */
 /**
- * 只有已通过现场回归证明走 Pan.init 平台 URL 的 Guard 组合才登记。
- * YpanSoGuard 已确认使用 Cloud-drive 契约，不能再放回这里，否则会删除
- * Cloud-drive 并只留下部分平台字段。
+ * YpanSo/WoGG 的实测契约与同批 Cloud-drive Guard 不同：它们消费 Pan.init
+ * 的 /credential/<field> 平台 URL，而不是 Cloud-drive token JSON。
  */
-const PAN_INIT_GUARD_CONTRACTS = new Map<string, CredentialMechanism>();
-const CLOUD_DRIVE_GUARD_APIS = [
-  'csp_ypansoguard',
-  'csp_bpansoguard',
-  'csp_panssoguard',
-  'csp_xzsoguard',
-  'csp_uussguard',
-  'csp_kkssguard',
-  'csp_mipansoguard',
-  'csp_libvioguard',
-  'csp_pansearchguard',
-  'csp_yisoguard',
-  'csp_woggguard',
-] as const;
+const PAN_INIT_GUARD_CONTRACTS = new Map<string, CredentialMechanism>([
+  [`csp_ypansoguard|${JAR_2CC}`, 'pan-init-url'],
+  [`csp_ypansoguard|${JAR_F782}`, 'pan-init-url'],
+  [`csp_woggguard|${JAR_F782}`, 'pan-init-url'],
+  ['csp_woggguard|4ce29ce27eeff6a73a230dd92d98ba0c', 'pan-init-url'],
+]);
 const CLOUD_DRIVE_GUARD_CONTRACTS = new Map<string, CredentialMechanism>([
-  ...CLOUD_DRIVE_GUARD_APIS.map((api) => [`${api}|${JAR_2CC}`, 'tvfan-config-url'] as const),
-  ...CLOUD_DRIVE_GUARD_APIS.map((api) => [`${api}|${JAR_F782}`, 'tvfan-config-url'] as const),
-  ['csp_woggguard|4ce29ce27eeff6a73a230dd92d98ba0c', 'tvfan-config-url'],
+  // CF 当前 JAR：Cloud-drive -> token.json（完整 token schema）。
+  [`csp_bpansoguard|${JAR_2CC}`, 'token-json-url'],
+  [`csp_panssoguard|${JAR_2CC}`, 'token-json-url'],
+  [`csp_xzsoguard|${JAR_2CC}`, 'token-json-url'],
+  [`csp_uussguard|${JAR_2CC}`, 'token-json-url'],
+  [`csp_kkssguard|${JAR_2CC}`, 'token-json-url'],
+  [`csp_mipansoguard|${JAR_2CC}`, 'token-json-url'],
+  [`csp_libvioguard|${JAR_2CC}`, 'token-json-url'],
+  [`csp_pansearchguard|${JAR_2CC}`, 'token-json-url'],
+  [`csp_yisoguard|${JAR_2CC}`, 'token-json-url'],
+
+  // Render 当前 JAR：Cloud-drive -> tvfan/config（五字段及兼容别名）。
+  [`csp_bpansoguard|${JAR_F782}`, 'tvfan-config-url'],
+  [`csp_panssoguard|${JAR_F782}`, 'tvfan-config-url'],
+  [`csp_xzsoguard|${JAR_F782}`, 'tvfan-config-url'],
+  [`csp_uussguard|${JAR_F782}`, 'tvfan-config-url'],
+  [`csp_kkssguard|${JAR_F782}`, 'tvfan-config-url'],
+  [`csp_mipansoguard|${JAR_F782}`, 'tvfan-config-url'],
+  [`csp_libvioguard|${JAR_F782}`, 'tvfan-config-url'],
+  [`csp_pansearchguard|${JAR_F782}`, 'tvfan-config-url'],
+  [`csp_yisoguard|${JAR_F782}`, 'tvfan-config-url'],
 ]);
 
 
@@ -143,16 +146,6 @@ function hasCloudDriveTokenContract(site: TVBoxSite): boolean {
   return !!ext
     && typeof ext['Cloud-drive'] === 'string'
     && ext['Cloud-drive'].trim().length > 0;
-}
-
-/**
- * 精确登记的 API|JAR 组合已经证明会消费 Cloud-drive。入口字段可能是上游
- * 已提供的 tvfan/Cloud-drive.txt，也可能完全不存在（例如部分 WoGGGuard
- * 只有 siteUrl/from）。此时由注入器创建入口，不能再要求原 ext 预先含该字段，
- * 否则会出现“协议已识别但永远不下发”的静默失败。
- */
-function hasVerifiedCloudDriveGuardContract(apiJarKey: string): boolean {
-  return CLOUD_DRIVE_GUARD_CONTRACTS.has(apiJarKey);
 }
 
 const PAN_SEARCH_PLATFORM_MAP: Record<string, CloudPlatform> = {
@@ -248,13 +241,18 @@ export function resolveCredentialProtocol(
     };
   }
   const cloudDriveContract = CLOUD_DRIVE_GUARD_CONTRACTS.get(apiJarKey);
-  if (cloudDriveContract && (hasVerifiedCloudDriveGuardContract(apiJarKey) || hasCloudDriveTokenContract(site))) {
+  if (cloudDriveContract) {
+    // 精确登记的 API|JAR 组合已经证明会消费 Cloud-drive；入口字段可能由
+    // 上游提供，也可能完全不存在（例如部分 WoGGGuard 只有 siteUrl/from），
+    // 因此由注入器按该 JAR 的响应 schema 创建入口。
     return {
       mechanism: cloudDriveContract,
       platforms: [...TOKEN_JSON_PLATFORMS],
       credentialRequired: true,
       canInject: true,
-      reason: `${apiJarKey.split('|')[1].slice(0, 8)} Guard Cloud-drive tvfan/config contract`,
+      reason: cloudDriveContract === 'token-json-url'
+        ? '2cc Guard Cloud-drive token.json contract'
+        : 'f782 Guard Cloud-drive tvfan/config contract',
     };
   }
 
