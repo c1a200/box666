@@ -525,12 +525,12 @@ function injectCloudDriveTokenUrl(
 
   const parsed = parseExt(ext);
   if (!parsed.injectable) return { ext, changed: false };
-  const current = parsed.obj['Cloud-drive'];
-  if (typeof current !== 'string' || !current.trim()) return { ext, changed: false };
+  const current = typeof parsed.obj['Cloud-drive'] === 'string'
+    ? parsed.obj['Cloud-drive'].trim()
+    : '';
   if (!platforms.some((platform) => isCredentialDistributable(platform, creds.get(platform)))) {
     return { ext, changed: false };
   }
-
   const revision = platforms.map((platform) => credentialRevision(creds.get(platform))).filter(Boolean).sort().join('.');
   const url = mechanism === 'token-json-url'
     ? tokenJsonUrl(normalizedBaseUrl, revision)
