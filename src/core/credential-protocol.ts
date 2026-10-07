@@ -76,24 +76,23 @@ const JAR_F782 = 'f782cdee81118405176fd260be9ca5cd';
  * 的 /credential/<field> 平台 URL，而不是 Cloud-drive token JSON。
  */
 const PAN_INIT_GUARD_CONTRACTS = new Map<string, CredentialMechanism>([
-  [`csp_ypansoguard|${JAR_2CC}`, 'pan-init-url'],
-  [`csp_ypansoguard|${JAR_F782}`, 'pan-init-url'],
   [`csp_woggguard|${JAR_F782}`, 'pan-init-url'],
   ['csp_woggguard|4ce29ce27eeff6a73a230dd92d98ba0c', 'pan-init-url'],
 ]);
 const CLOUD_DRIVE_GUARD_CONTRACTS = new Map<string, CredentialMechanism>([
-  // CF 当前 JAR：Cloud-drive -> token.json（完整 token schema）。
-  [`csp_bpansoguard|${JAR_2CC}`, 'token-json-url'],
-  [`csp_panssoguard|${JAR_2CC}`, 'token-json-url'],
-  [`csp_xzsoguard|${JAR_2CC}`, 'token-json-url'],
-  [`csp_uussguard|${JAR_2CC}`, 'token-json-url'],
-  [`csp_kkssguard|${JAR_2CC}`, 'token-json-url'],
-  [`csp_mipansoguard|${JAR_2CC}`, 'token-json-url'],
-  [`csp_libvioguard|${JAR_2CC}`, 'token-json-url'],
-  [`csp_pansearchguard|${JAR_2CC}`, 'token-json-url'],
-  [`csp_yisoguard|${JAR_2CC}`, 'token-json-url'],
+  // 2cc 与 f782 的 tvfan Guard 共享 Cloud-drive -> /tvfan/config 契约。
+  [`csp_ypansoguard|${JAR_2CC}`, 'tvfan-config-url'],
+  [`csp_bpansoguard|${JAR_2CC}`, 'tvfan-config-url'],
+  [`csp_panssoguard|${JAR_2CC}`, 'tvfan-config-url'],
+  [`csp_xzsoguard|${JAR_2CC}`, 'tvfan-config-url'],
+  [`csp_uussguard|${JAR_2CC}`, 'tvfan-config-url'],
+  [`csp_kkssguard|${JAR_2CC}`, 'tvfan-config-url'],
+  [`csp_mipansoguard|${JAR_2CC}`, 'tvfan-config-url'],
+  [`csp_libvioguard|${JAR_2CC}`, 'tvfan-config-url'],
+  [`csp_pansearchguard|${JAR_2CC}`, 'tvfan-config-url'],
+  [`csp_yisoguard|${JAR_2CC}`, 'tvfan-config-url'],
 
-  // Render 当前 JAR：Cloud-drive -> tvfan/config（五字段及兼容别名）。
+  // f782 与 2cc 同契约，保留独立分组便于后续 JAR 升级审计。
   [`csp_bpansoguard|${JAR_F782}`, 'tvfan-config-url'],
   [`csp_panssoguard|${JAR_F782}`, 'tvfan-config-url'],
   [`csp_xzsoguard|${JAR_F782}`, 'tvfan-config-url'],
@@ -103,6 +102,7 @@ const CLOUD_DRIVE_GUARD_CONTRACTS = new Map<string, CredentialMechanism>([
   [`csp_libvioguard|${JAR_F782}`, 'tvfan-config-url'],
   [`csp_pansearchguard|${JAR_F782}`, 'tvfan-config-url'],
   [`csp_yisoguard|${JAR_F782}`, 'tvfan-config-url'],
+  [`csp_ypansoguard|${JAR_F782}`, 'tvfan-config-url'],
 ]);
 
 
