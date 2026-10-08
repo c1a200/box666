@@ -1,7 +1,7 @@
 // 聚合流程编排
 
 import type { Storage } from './storage/interface';
-import type { AppConfig, SourceEntry, SourcedConfig, MacCMSSourceEntry, SourceFetchResult, SourceHealthRecord, AggregationLog, AggLogFailedSource, AggLogSiteChange, TVBoxSite, TVBoxLive, SiteHealthMap } from './core/types';
+import type { AppConfig, SourceEntry, SourcedConfig, MacCMSSourceEntry, SourceFetchResult, SourceHealthRecord, AggregationLog, AggLogFailedSource, AggLogSiteChange, TVBoxSite, TVBoxLive, SiteHealthMap, SiteContract } from './core/types';
 import { fetchConfigs } from './core/fetcher';
 import { mergeConfigs, cleanLocalRefs, cleanEmptyEntries } from './core/merger';
 import { applyLegacyWoggCompatibility, migrateLegacyWoggCompatibility } from './core/cf-compat';
@@ -17,7 +17,7 @@ import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_STARTUP_SITE_POOL, KV_SOURC
 import { loadBlacklist, applyBlacklist, pruneBlacklist, saveBlacklist, siteFingerprint } from './core/blacklist';
 import { transformSiteNames } from './core/cleaner';
 import { parseConfigJson, type FetchProxyConfig } from './core/fetcher';
-import { buildSiteContract, stripInternalSiteMarkers } from './core/site-contract';
+import { buildSiteContractMap, stripInternalSiteMarkers } from './core/site-contract';
 import { stableJsonEqual } from './core/stable-json';
 import { scrapeSourceList, scrapeMacCMSSources, type ScrapeSourceConfig, type ScrapeMacCMSConfig } from './core/source-scraper';
 import { loadSearchQuota, applySearchQuota, excludeJsUrlSites, probeAndPruneParses } from './core/search-quota';
@@ -26,7 +26,7 @@ import { loadGroupOrder, applyGroupOrder } from './core/group-order';
 import { deduplicateClientCredentialSites, deduplicateSimilarNames } from './core/dedup';
 import { logger } from './core/logger';
 import { clearDirtyMarker } from './core/dirty-marker';
-import { loadQualityPool, runQualityGrading, batchCredentialAwareSpeedTest } from './core/quality';
+import { loadQualityPool, runQualityGrading, batchCredentialAwareSpeedTest, type QualityCredentialContext } from './core/quality';
 import type { NameTransformConfig, EdgeProxyConfig } from './core/types';
 
 export interface AggregationRunOptions {
@@ -426,6 +426,19 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     // “优 > 良 > 可用 > 未探测 > 不可用”排序并持久化，根配置只读该顺序。
     try {
       const healthMap = await loadSiteHealthMap(storage);
+      // 质量分级必须和最终落库使用同一批实例契约。这里以 preProbeSites 为
+      // 身份基准（后续过滤只会减少站点，不会改变 still-present 站点的 key）。
+      const preQualityUpstreams = new Map<string, string[]>();
+      for (const site of preProbeSites) {
+        const upstreams = (site.__upstreamNames?.length ? site.__upstreamNames : siteUpstreamMap.get(site.key)) || [];
+        if (upstreams.length > 0) preQualityUpstreams.set(site.key, [...new Set(upstreams)].filter(Boolean).sort());
+      }
+      const preQualitySpider = typeof merged.spider === 'string' ? merged.spider : undefined;
+      const preQualityContracts = buildSiteContractMap(preProbeSites, preQualitySpider, preQualityUpstreams);
+      const credentialContext: QualityCredentialContext = {
+        contractsBySiteKey: new Map(Object.entries(preQualityContracts)),
+        globalSpider: preQualitySpider,
+      };
       // 普通站点沿用 Step 6 的结果；客户端凭证源必须用统一凭证感知探测覆盖，
       // 否则外部传入 probeMap 会让它们跳过带 Cookie 的真实补测。
       const qualityProbeMap = new Map(siteProbeMap);
@@ -437,6 +450,7 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
           config.siteTimeoutMs,
           config.speedTestConcurrency,
           config.speedTestBudgetMs,
+          credentialContext,
         );
         for (const [key, probe] of credentialProbeMap) qualityProbeMap.set(key, probe);
       }
@@ -445,6 +459,7 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
         healthMap,
         markRun: false,
         timezone: config.qualityTimezone,
+        credentialContext,
       });
       logger.infoFields('aggregation', 'quality-grading', {
         total: snapshot.total,
@@ -994,14 +1009,17 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
   }
 
   // 契约指纹独立落库，响应期用于防止不同 JAR/API/ext 形态之间误共用注入模板。
-  const finalSiteContracts: Record<string, unknown> = {};
-  for (const site of merged.sites || []) {
-    // 必须在所有站点过滤/兼容迁移完成后重建，不能用合并阶段的旧指纹。
-    finalSiteContracts[site.key] = buildSiteContract(
-      site,
-      typeof merged.spider === 'string' ? merged.spider : undefined,
-    );
-  }
+  // 每个最终实例都固化自己的凭证机制和平台白名单，响应期不再按通用规则猜测。
+  // 与质量分级共用同一个纯构造函数，避免两处指纹算法漂移。
+  const finalSpider = typeof merged.spider === 'string' ? merged.spider : undefined;
+  const finalUpstreamMap = new Map<string, string[]>(
+    Object.entries(finalSiteUpstreams).map(([key, values]) => [key, [...values]]),
+  );
+  const finalSiteContracts: Record<string, SiteContract> = buildSiteContractMap(
+    merged.sites || [],
+    finalSpider,
+    finalUpstreamMap,
+  );
   try {
     const previousRaw = await storage.get(KV_SITE_CONTRACT_MAP);
     const previous = previousRaw ? JSON.parse(previousRaw) : null;

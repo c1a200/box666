@@ -9,6 +9,7 @@ import type {
   CloudCredential,
   CloudPlatform,
   SearchQualityEntry,
+  SiteContract,
   SearchQualityRunMode,
   SearchQualitySchedule,
   SearchQualitySnapshot,
@@ -21,12 +22,12 @@ import type {
 } from './types';
 import type { Storage } from '../storage/interface';
 import { isCredentialDistributable, isPanInitCredentialDistributable, loadCredentials } from './credential-store';
-import { getCredentialPlatformsForSite } from './credential-risk';
 import { batchSiteSpeedTest, isSiteProbeable, type SiteProbeResult } from './speedtest';
 import { canDistributeCredentialsToSite } from './credential-injector';
-import { stripInternalSiteMarkers } from './site-contract';
+import { stripInternalSiteMarkers, loadSiteContractMap } from './site-contract';
 import { preflightSourcesBatch } from './source-preflight';
 import {
+  KV_MERGED_CONFIG,
   DEFAULT_QUALITY_PROBE_CHUNK_SIZE,
   DEFAULT_QUALITY_PROBE_CONCURRENCY,
   DEFAULT_QUALITY_PROBE_TIMEOUT_MS,
@@ -76,6 +77,25 @@ const QUALITY_PREFLIGHT_CONCURRENCY = 8;
 const QUALITY_PREFLIGHT_BUDGET_MS = 25000;
 // 候选池日常刷新时，已通过预检的源在 TTL 内直接复用结果，避免每天重复下载 JAR。
 const QUALITY_PREFLIGHT_TTL_MS = 20 * 60 * 60 * 1000;
+
+export interface QualityCredentialContext {
+  contractsBySiteKey: Map<string, SiteContract>;
+  globalSpider?: string;
+}
+
+async function loadQualityCredentialContext(storage: Storage, globalSpider?: string): Promise<QualityCredentialContext> {
+  let spider = globalSpider;
+  if (!spider) {
+    try {
+      const raw = await storage.get(KV_MERGED_CONFIG);
+      const parsed = raw ? JSON.parse(raw) as { spider?: unknown } : null;
+      spider = parsed && typeof parsed.spider === 'string' ? parsed.spider : undefined;
+    } catch {
+      spider = undefined;
+    }
+  }
+  return { contractsBySiteKey: await loadSiteContractMap(storage), globalSpider: spider };
+}
 
 function isNodeRuntime(): boolean {
   return typeof process !== 'undefined' && !!process.env.PORT;
@@ -570,8 +590,11 @@ export function candidateKeysFromPool(pool: SearchQualitySnapshot | null): Set<s
 function probeHeadersForSite(
   site: TVBoxSite,
   credentials: Map<CloudPlatform, CloudCredential>,
+  context: QualityCredentialContext,
 ): Record<string, string> | null {
-  const platforms = getCredentialPlatformsForSite(site);
+  const contract = context.contractsBySiteKey.get(site.key);
+  if (!contract || contract.credentialMechanism === 'none' || contract.credentialMechanism === 'unknown') return null;
+  const platforms = [...new Set(contract.credentialPlatforms || [])];
   if (platforms.length === 0) return null;
   // 多平台源只要求任意一个平台可用即可；用户已登录夸克时，不应因为
   // 同时声明 UC/天翼等未登录平台而完全放弃服务端真实探测。
@@ -600,11 +623,12 @@ export async function batchCredentialAwareSpeedTest(
   timeoutMs = CREDENTIAL_PROBE_TIMEOUT_MS,
   concurrency = DEFAULT_QUALITY_PROBE_CONCURRENCY,
   budgetMs = 25000,
+  context: QualityCredentialContext = { contractsBySiteKey: new Map() },
 ): Promise<Map<string, SiteProbeResult>> {
   const headers = new Map<string, Record<string, string>>();
   for (const site of sites) {
     if (!isSiteProbeable(site)) continue;
-    const h = probeHeadersForSite(site, credentials);
+    const h = probeHeadersForSite(site, credentials, context);
     if (h) headers.set(site.key, h);
   }
   return batchSiteSpeedTest(sites, timeoutMs, false, concurrency, budgetMs, headers);
@@ -639,8 +663,10 @@ export async function runQualityGrading(
     markRun?: boolean;
     timezone?: string;
     onProgress?: (processed: number, total: number) => Promise<void> | void;
+    credentialContext?: QualityCredentialContext;
   } = {},
 ): Promise<SearchQualitySnapshot> {
+  const credentialContext = options.credentialContext ?? await loadQualityCredentialContext(storage);
   const allSearchable = collectSearchableSites(sites);
   const previous = await loadQualityPool(storage);
   const previousEntries = new Map((previous?.entries || []).map((entry) => [entry.key, entry]));
@@ -666,6 +692,7 @@ export async function runQualityGrading(
         options.timeoutMs ?? DEFAULT_QUALITY_PROBE_TIMEOUT_MS,
         options.concurrency ?? DEFAULT_QUALITY_PROBE_CONCURRENCY,
         options.budgetMs ?? 25000,
+        credentialContext,
       );
       for (const [key, value] of partial) collected.set(key, value);
       if (options.onProgress) await options.onProgress(collected.size, target.length);
@@ -673,8 +700,8 @@ export async function runQualityGrading(
     probeMap = collected;
   }
 
-  const preflightMap = await collectPreflightResults(target, credentials, previousEntries, mode);
-  const entries = buildQualityEntries(allSearchable, probeMap, previousEntries, healthMap, credentials, preflightMap);
+  const preflightMap = await collectPreflightResults(target, credentials, previousEntries, mode, credentialContext);
+  const entries = buildQualityEntries(allSearchable, probeMap, previousEntries, healthMap, credentials, preflightMap, credentialContext);
   const snapshot = buildSnapshot(allSearchable.length, entries, allSearchable);
   await persistQualitySnapshot(storage, snapshot);
   await persistQualityCandidates(storage, allSearchable);
@@ -693,7 +720,10 @@ function credentialStatusForSite(
   site: TVBoxSite,
   platforms: CloudPlatform[],
   credentials: Map<CloudPlatform, CloudCredential>,
+  context: QualityCredentialContext,
 ): SearchQualityEntry['credentialStatus'] {
+  const contract = context.contractsBySiteKey.get(site.key);
+  if (!contract) return 'invalid';
   if (platforms.length === 0) return 'not-required';
   const configured = platforms.filter((platform) => hasNonEmptyCredentialValue(credentials.get(platform)));
   const valid = platforms.filter((platform) => (
@@ -705,7 +735,13 @@ function credentialStatusForSite(
   if (configured.length === 0) return 'missing';
   // 只有真实注入路径会让 ext 发生变化时才算 ready；仅保存了凭证但源不支持该平台
   // 不能伪装成可下发。多平台源只需一个平台能注入。
-  if (valid.length > 0 && canDistributeCredentialsToSite(site, credentials)) return 'ready';
+  if (valid.length > 0 && canDistributeCredentialsToSite(
+    site,
+    credentials,
+    'https://credential.invalid',
+    context.globalSpider,
+    contract,
+  )) return 'ready';
   if (configured.length === platforms.length) return 'invalid';
   return 'partial';
 }
@@ -750,6 +786,7 @@ async function collectPreflightResults(
   credentials: Map<CloudPlatform, CloudCredential>,
   previousEntries: Map<string, SearchQualityEntry>,
   mode: SearchQualityRunMode,
+  context: QualityCredentialContext,
 ): Promise<Map<string, SourcePreflightResult>> {
   const out = new Map<string, SourcePreflightResult>();
   const pending: TVBoxSite[] = [];
@@ -779,6 +816,8 @@ async function collectPreflightResults(
     timeoutMs: QUALITY_PREFLIGHT_TIMEOUT_MS,
     concurrency: QUALITY_PREFLIGHT_CONCURRENCY,
     budgetMs: QUALITY_PREFLIGHT_BUDGET_MS,
+    contractsBySiteKey: context.contractsBySiteKey,
+    globalSpider: context.globalSpider,
   });
   for (const [key, value] of settled) out.set(key, value);
   for (const site of pending) {
@@ -794,11 +833,13 @@ function buildQualityEntries(
   healthMap: SiteHealthMap,
   credentials: Map<CloudPlatform, CloudCredential>,
   preflightMap: Map<string, SourcePreflightResult> = new Map(),
+  context: QualityCredentialContext = { contractsBySiteKey: new Map() },
 ): SearchQualitySnapshot['entries'] {
   const now = new Date().toISOString();
   return searchable.map((site) => {
-    const credentialPlatforms = [...new Set(getCredentialPlatformsForSite(site))];
-    const credentialStatus = credentialStatusForSite(site, credentialPlatforms, credentials);
+    const contract = context.contractsBySiteKey.get(site.key);
+    const credentialPlatforms = [...new Set(contract?.credentialPlatforms || [])];
+    const credentialStatus = credentialStatusForSite(site, credentialPlatforms, credentials, context);
     if (!isSiteProbeable(site)) {
       // 先模拟客户端行为做服务端预检，再决定分级；不再无条件判为“客户端登录/JAR”。
       const previousEntry = previousEntries.get(site.key);
@@ -835,7 +876,7 @@ function buildQualityEntries(
       : previousEntry
         ? { key: site.key, speedMs: previousEntry.speedMs, result: previousEntry.result }
         : probe;
-    const hasCredentialProbe = !!probeHeadersForSite(site, credentials);
+    const hasCredentialProbe = !!probeHeadersForSite(site, credentials, context);
     let grade: SiteQualityGrade;
     let entryProbe: SiteProbeResult | undefined;
     if (credentialPlatforms.length > 0 && !hasCredentialProbe) {
@@ -1001,7 +1042,9 @@ export async function runQualityGradingChunk(
   batchSize = 40,
   requestedMode: SearchQualityRunMode = 'candidate',
   timezone = QUALITY_TIMEZONE,
+  credentialContext?: QualityCredentialContext,
 ): Promise<{ done: boolean; cursor: number; processed: number; targetTotal: number; mode: SearchQualityRunMode; snapshot?: SearchQualitySnapshot }> {
+  const context = credentialContext ?? await loadQualityCredentialContext(storage);
   const allSearchable = collectSearchableSites(sites);
   const previous = await loadQualityPool(storage);
   const previousEntries = new Map((previous?.entries || []).map((entry) => [entry.key, entry]));
@@ -1014,7 +1057,7 @@ export async function runQualityGradingChunk(
   }
   const start = Math.max(0, Math.floor(cursor));
   if (start >= target.length) {
-    const entries = buildQualityEntries(allSearchable, new Map(), previousEntries, await loadHealthMap(storage), credentials, new Map());
+    const entries = buildQualityEntries(allSearchable, new Map(), previousEntries, await loadHealthMap(storage), credentials, new Map(), context);
     const snapshot = buildSnapshot(allSearchable.length, entries, allSearchable);
     await persistQualitySnapshot(storage, snapshot);
     await persistQualityCandidates(storage, allSearchable);
@@ -1029,10 +1072,11 @@ export async function runQualityGradingChunk(
     DEFAULT_QUALITY_PROBE_TIMEOUT_MS,
     DEFAULT_QUALITY_PROBE_CONCURRENCY,
     Math.max(10000, DEFAULT_QUALITY_PROBE_TIMEOUT_MS * DEFAULT_QUALITY_PROBE_CONCURRENCY),
+    context,
   );
   const healthMap = await loadHealthMap(storage);
-  const preflightMap = await collectPreflightResults(batch, credentials, previousEntries, mode);
-  const entries = buildQualityEntries(allSearchable, probeMap, previousEntries, healthMap, credentials, preflightMap);
+  const preflightMap = await collectPreflightResults(batch, credentials, previousEntries, mode, context);
+  const entries = buildQualityEntries(allSearchable, probeMap, previousEntries, healthMap, credentials, preflightMap, context);
   const snapshot = buildSnapshot(allSearchable.length, entries, allSearchable);
   await persistQualitySnapshot(storage, snapshot);
   const done = start + batch.length >= target.length;

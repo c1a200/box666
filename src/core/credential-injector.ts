@@ -277,14 +277,17 @@ function alistDrivePlatform(drive: Record<string, any>): CloudPlatform | null {
 export function injectAListDriveCredentials(
   drives: unknown[],
   creds: Map<CloudPlatform, CloudCredential>,
+  allowedPlatforms?: CloudPlatform[],
 ): { drives: unknown[]; changed: boolean; matched: number } {
+  const allowed = allowedPlatforms ? new Set(allowedPlatforms) : null;
   let changed = false;
   let matched = 0;
   const nextDrives = drives.map((drive) => {
     if (!drive || typeof drive !== 'object' || Array.isArray(drive)) return drive;
     const current = { ...(drive as Record<string, any>) };
     const platform = alistDrivePlatform(current);
-    if (!platform || !isCredentialDistributable(platform, creds.get(platform))) return drive;
+    if (!platform || (allowed && !allowed.has(platform))) return drive;
+    if (!isCredentialDistributable(platform, creds.get(platform))) return drive;
     let driveChanged = false;
 
     for (const rule of ALIST_DRIVE_FIELD_MAP) {
@@ -702,7 +705,10 @@ function injectAliTokenUrl(
 function injectB63CloudInline(
   ext: any,
   creds: Map<CloudPlatform, CloudCredential>,
+  allowedPlatforms?: CloudPlatform[],
 ): { ext: any; changed: boolean } {
+  const allowed = allowedPlatforms ? new Set(allowedPlatforms) : null;
+  const canUse = (platform: CloudPlatform) => !allowed || allowed.has(platform);
   const parsed = parseExt(ext);
   if (!parsed.injectable) return { ext, changed: false };
 
@@ -714,16 +720,16 @@ function injectB63CloudInline(
     changed = true;
   };
 
-  if (isCredentialDistributable('quark', creds.get('quark'))) {
+  if (canUse('quark') && isCredentialDistributable('quark', creds.get('quark'))) {
     setField('cookie', getCredValue(creds, 'quark', 'cookie'));
   }
-  if (isCredentialDistributable('uc', creds.get('uc'))) {
+  if (canUse('uc') && isCredentialDistributable('uc', creds.get('uc'))) {
     setField('uccookie', getCredValue(creds, 'uc', 'cookie'));
   }
-  if (isCredentialDistributable('tianyi', creds.get('tianyi'))) {
+  if (canUse('tianyi') && isCredentialDistributable('tianyi', creds.get('tianyi'))) {
     setField('tianyicookie', getCredValue(creds, 'tianyi', 'cookie'));
   }
-  if (isCredentialDistributable('aliyun', creds.get('aliyun'))) {
+  if (canUse('aliyun') && isCredentialDistributable('aliyun', creds.get('aliyun'))) {
     const token = getCredValue(creds, 'aliyun', 'refresh_token')
       || getCredValue(creds, 'aliyun', 'token')
       || getCredValue(creds, 'aliyun', 'ali_token');
@@ -1096,16 +1102,22 @@ function applyCredentialProtocolRaw(
       return injectCloudDriveTokenUrl(site.ext, credentials, baseUrl, protocol.platforms, 'token-json-url');
 
     case 'pan-init-url':
-      return injectPanInitUrls(site.ext, credentials, baseUrl);
+      return injectPanInitUrls(
+        site.ext,
+        credentials,
+        baseUrl,
+        protocol.platforms.filter(isPanInitPlatform),
+      );
 
     case 'b63-cloud-inline':
-      return injectB63CloudInline(site.ext, credentials);
+      return injectB63CloudInline(site.ext, credentials, protocol.platforms);
 
     case 'pan-search-fixed-baidu':
       return injectPanInitUrls(site.ext, credentials, baseUrl, ['baidu']);
 
     case 'pan-search-ext-pan': {
-      const platform = protocol.fixedPlatform || getPanSearchPlatform(site);
+      const candidate = protocol.fixedPlatform || getPanSearchPlatform(site);
+      const platform = candidate && protocol.platforms.includes(candidate) ? candidate : undefined;
       if (!platform || !isPanInitPlatform(platform)) return { ext: site.ext, changed: false };
       return injectPanInitUrls(site.ext, credentials, baseUrl, [platform]);
     }
@@ -1119,7 +1131,7 @@ function applyCredentialProtocolRaw(
       // 能识别 AList，配置里的 drive 凭证仍为空。
       const parsed = parseExt(site.ext);
       if (parsed.injectable && Array.isArray(parsed.obj.drives)) {
-        const merged = injectAListDriveCredentials(parsed.obj.drives, credentials);
+        const merged = injectAListDriveCredentials(parsed.obj.drives, credentials, protocol.platforms);
         if (merged.changed) {
           return {
             ext: restoreExt({ ...parsed.obj, drives: merged.drives }, parsed.wasString, parsed.wasJson),
@@ -1131,7 +1143,7 @@ function applyCredentialProtocolRaw(
       return injectPlatformFields(
         site.ext,
         credentials,
-        ALIST_PLATFORMS,
+        protocol.platforms,
         ALIST_DEFAULT_FIELDS,
       );
     }
@@ -1145,6 +1157,22 @@ function applyCredentialProtocolRaw(
     default:
       return { ext: site.ext, changed: false };
   }
+}
+
+
+/** 将持久化契约中的凭证绑定转为解析器输入，避免响应期重新猜测机制。 */
+function credentialBindingFromContract(contract: SiteContract): {
+  mechanism?: string;
+  platforms?: string[];
+  contractHash?: string;
+} {
+  return {
+    mechanism: contract.credentialMechanism,
+    platforms: Array.isArray(contract.credentialPlatforms)
+      ? contract.credentialPlatforms.filter((platform): platform is CloudPlatform => typeof platform === 'string')
+      : [],
+    contractHash: contract.contractHash,
+  };
 }
 
 /** 响应期契约预检：API 与 JAR MD5 均为 O(1)/轻量提取，不读取 ext。 */
@@ -1196,9 +1224,14 @@ export function canDistributeCredentialsToSite(
   credentials: Map<CloudPlatform, CloudCredential>,
   baseUrl = 'https://credential.invalid',
   globalSpider?: string,
+  expectedContract?: SiteContract | null,
 ): boolean {
+  if (expectedContract && !matchesContractBaseline(site, expectedContract, globalSpider)) return false;
+  if (expectedContract && !matchesFullContract(site, expectedContract, globalSpider)) return false;
+
   const protocol = resolveCredentialProtocol(site, {
     effectiveJar: getEffectiveJar(site, globalSpider),
+    binding: expectedContract ? credentialBindingFromContract(expectedContract) : null,
   });
   if (!protocol.credentialRequired || !protocol.canInject) return false;
 
@@ -1268,8 +1301,25 @@ export function injectCredentials(
       return site;
     }
 
+    // 源实例绑定必须先校验，再解析协议。否则同一 API/JAR 的旧模板会在
+    // 上游换壳或 ext 漂移时抢先注入，造成“有的源能播、有的仍要扫码”。
+    const expectedContract = contractsBySiteKey?.get(site.key);
+    if (requireContractMap && !expectedContract) {
+      report.skippedContractMismatch++;
+      return site;
+    }
+    if (expectedContract && !matchesContractBaseline(site, expectedContract, globalSpider)) {
+      report.skippedContractMismatch++;
+      return site;
+    }
+    if (expectedContract && !matchesFullContract(site, expectedContract, globalSpider)) {
+      report.skippedContractMismatch++;
+      return site;
+    }
+
     const protocol = resolveCredentialProtocol(site, {
       effectiveJar: getEffectiveJar(site, globalSpider),
+      binding: expectedContract ? credentialBindingFromContract(expectedContract) : null,
     });
 
     // 没有已验证凭证协议，或源本身不需要客户端凭证。
@@ -1284,20 +1334,6 @@ export function injectCredentials(
 
     if (!protocol.platforms.some((platform) => isCredentialDistributable(platform, credentials.get(platform)))) {
       report.skippedNoCredential++;
-      return site;
-    }
-
-    // 契约安全阀放在“确认协议可注入且存在凭证”之后执行：
-    // 不改变拒绝结果，但避免对整库无需注入的站点做 ext 解析/排序。
-    const expectedContract = contractsBySiteKey?.get(site.key);
-    if (expectedContract && !matchesContractBaseline(site, expectedContract, globalSpider)) {
-      report.skippedContractMismatch++;
-      return site;
-    }
-
-    // 到这里才支付详细契约校验的成本；ext 漂移会被拒绝，防止跨 JAR/形态误注入。
-    if (expectedContract && !matchesFullContract(site, expectedContract, globalSpider)) {
-      report.skippedContractMismatch++;
       return site;
     }
 

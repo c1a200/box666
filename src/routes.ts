@@ -2503,7 +2503,10 @@ export function createApp(deps: AppDeps): Hono {
       const parsed = await fetchAListJson(target.toString());
       if (Array.isArray(parsed.drives)) {
         const credentials = selectCredentialsForContext(await loadCredentials(storage), context);
-        const merged = injectAListDriveCredentials(parsed.drives, credentials);
+        const allowedPlatforms = context.platforms.filter((platform): platform is CloudPlatform =>
+          ['aliyun', 'quark', 'uc', 'pan115', 'thunder', 'pikpak', 'tianyi', 'baidu', 'pan123'].includes(platform),
+        );
+        const merged = injectAListDriveCredentials(parsed.drives, credentials, allowedPlatforms);
         if (merged.changed) parsed.drives = merged.drives;
       }
       return c.json(parsed, 200, {

@@ -7,12 +7,12 @@
 import type {
   CloudCredential,
   CloudPlatform,
+  SiteContract,
   SourcePreflightResult,
   TVBoxSite,
 } from './types';
 import { TVBOX_UA } from './config';
 import { parseSpiderString } from './jar-proxy';
-import { isAListSite } from './credential-risk';
 import {
   canDistributeCredentialsToSite,
   injectAListDriveCredentials,
@@ -568,14 +568,41 @@ async function preflightCredentialConfig(
   credentials: Map<CloudPlatform, CloudCredential>,
   timeoutMs: number,
   signal?: AbortSignal,
+  contract?: SiteContract,
+  globalSpider?: string,
 ): Promise<SourcePreflightResult | null> {
-  if (credentials.size === 0 || !canDistributeCredentialsToSite(site, credentials)) return null;
+  if (
+    credentials.size === 0
+    || !contract
+    || !contract.credentialMechanism
+    || contract.credentialMechanism === 'none'
+    || contract.credentialMechanism === 'unknown'
+  ) return null;
+
+  if (!canDistributeCredentialsToSite(
+    site,
+    credentials,
+    'https://credential.invalid',
+    globalSpider,
+    contract,
+  )) return null;
 
   let injectedSite: TVBoxSite;
   try {
-    const injected = injectCredentials([site], credentials, { allowedHighRiskKeys: [], deniedKeys: [] });
+    const injected = injectCredentials(
+      [site],
+      credentials,
+      { allowedHighRiskKeys: [], deniedKeys: [] },
+      undefined,
+      new Set([site.key]),
+      new Map([[site.key, contract]]),
+      true,
+      true,
+      globalSpider,
+    );
     injectedSite = injected.sites[0];
-    if (!injectedSite || JSON.stringify(injectedSite) === JSON.stringify(site)) return null;
+    if (injected.report.injected !== 1 || !injectedSite) return null;
+    if (JSON.stringify(injectedSite) === JSON.stringify(site)) return null;
   } catch {
     return null;
   }
@@ -620,14 +647,36 @@ async function preflightAList(
   credentials: Map<CloudPlatform, CloudCredential>,
   timeoutMs: number,
   signal?: AbortSignal,
+  contract?: SiteContract,
+  globalSpider?: string,
 ): Promise<SourcePreflightResult> {
   const startedAt = Date.now();
+  if (!contract || contract.credentialMechanism !== 'alist') {
+    return result('client-jar-unverified', 'alist-contract-missing', '未找到该 AList 源实例的可信凭证契约，服务端不注入', {
+      durationMs: elapsed(startedAt),
+    });
+  }
+  if (!canDistributeCredentialsToSite(
+    site,
+    credentials,
+    'https://credential.invalid',
+    globalSpider,
+    contract,
+  )) {
+    return result('client-jar-unverified', 'alist-credential-disallowed', '当前凭证不满足该 AList 源实例的契约，服务端不注入', {
+      durationMs: elapsed(startedAt),
+    });
+  }
+  const allowedPlatforms = new Set(contract.credentialPlatforms || []);
+  const allowedCredentials = new Map(
+    [...credentials].filter(([platform]) => allowedPlatforms.has(platform)),
+  );
   const extObj = parseExtObject(site.ext);
   let injected = false;
   let candidateExt: unknown = site.ext;
-  if (extObj && Array.isArray(extObj.drives) && credentials.size > 0) {
+  if (extObj && Array.isArray(extObj.drives) && allowedCredentials.size > 0) {
     try {
-      const res = injectAListDriveCredentials(extObj.drives, credentials);
+      const res = injectAListDriveCredentials(extObj.drives, allowedCredentials);
       if (res.changed) {
         injected = true;
         candidateExt = { ...extObj, drives: res.drives };
@@ -697,6 +746,8 @@ export interface PreflightOptions {
   budgetMs?: number;
   signal?: AbortSignal;
   baseUrl?: string;
+  contractsBySiteKey?: Map<string, SiteContract>;
+  globalSpider?: string;
 }
 
 /**
@@ -710,6 +761,7 @@ export async function preflightSource(
   const timeoutMs = Math.max(1000, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   const signal = options.signal;
   const startedAt = Date.now();
+  const contract = options.contractsBySiteKey?.get(site.key);
 
   if (signal?.aborted) {
     return result('timeout', 'preflight-budget-exhausted', '服务端预检超出本轮时间预算，下一轮继续', {
@@ -717,10 +769,19 @@ export async function preflightSource(
     });
   }
 
-  if (isAListSite(site)) return preflightAList(site, credentials, timeoutMs, signal);
+  if (contract?.credentialMechanism === 'alist') {
+    return preflightAList(site, credentials, timeoutMs, signal, contract, options.globalSpider);
+  }
 
   // 1) 凭证注入后的配置请求（优先级最高：证明“凭证 + 源”真的可用）。
-  const credentialResult = await preflightCredentialConfig(site, credentials, timeoutMs, signal);
+  const credentialResult = await preflightCredentialConfig(
+    site,
+    credentials,
+    timeoutMs,
+    signal,
+    contract,
+    options.globalSpider,
+  );
   if (credentialResult && credentialResult.status === 'credential-ready') return credentialResult;
   if (signal?.aborted) {
     return result('timeout', 'preflight-budget-exhausted', '服务端预检超出本轮时间预算，下一轮继续', {

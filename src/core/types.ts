@@ -1,6 +1,10 @@
 // TVBox JSON 配置完整类型定义
 
 export interface SiteContract {
+  /** 最终源实例标识；仅用于审计/回归，不写入客户端配置。 */
+  siteKey?: string;
+  /** 贡献该最终实例的顶层总源，用于验证实例边界。 */
+  upstreamNames?: string[];
   /** JAR 内容 MD5；同一 api 在不同 JAR 中协议可能不同。 */
   jarMd5?: string;
   /** 站点 API/Spider 类名。 */
@@ -15,6 +19,10 @@ export interface SiteContract {
   /** PanSearch 等从 ext 读取的语义平台值；仅记录，不参与字段名集合。 */
   extPan?: string;
   pan?: string;
+  /** 已验证的凭证注入机制；仅由聚合/审计阶段写入，响应期据此精确选择协议。 */
+  credentialMechanism?: string;
+  /** 该机制允许下发的平台白名单，避免按 API/JAR 扩大注入范围。 */
+  credentialPlatforms?: CloudPlatform[];
   /** 聚合阶段一次计算的稳定契约哈希；响应期只比较该值。 */
   contractHash?: string;
 }

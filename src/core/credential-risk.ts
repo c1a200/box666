@@ -133,13 +133,13 @@ export function isClientCredentialApi(api: string): boolean {
 }
 
 /** 判断源是否需要下发客户端网盘凭证。 */
-export function isClientCredentialSite(site: TVBoxSite): boolean {
-  return resolveCredentialProtocol(site).credentialRequired;
+export function isClientCredentialSite(site: TVBoxSite, effectiveJar?: string): boolean {
+  return resolveCredentialProtocol(site, { effectiveJar }).credentialRequired;
 }
 
 /** 返回源所需的网盘平台；不发起任何网络请求。 */
-export function getCredentialPlatformsForSite(site: TVBoxSite): CloudPlatform[] {
-  return resolveCredentialProtocol(site).platforms;
+export function getCredentialPlatformsForSite(site: TVBoxSite, effectiveJar?: string): CloudPlatform[] {
+  return resolveCredentialProtocol(site, { effectiveJar }).platforms;
 }
 
 /** 只保留已审计直连协议的平台解析；未知 API 返回 null，绝不做名称猜测。 */

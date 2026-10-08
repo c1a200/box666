@@ -3,6 +3,7 @@
 import type { TVBoxConfig, TVBoxSite, SourcedConfig } from './types';
 import { normalizeConfig, extractSpiderJarUrl } from './parser';
 import { isClientCredentialSite } from './credential-risk';
+import { credentialSiteInstanceId, credentialSiteInstanceKey } from './site-contract';
 import {
   deduplicateSites,
   deduplicateParses,
@@ -40,9 +41,12 @@ export function mergeConfigs(sourcedConfigs: SourcedConfig[]): MergeResult {
   const globalSpider = selectGlobalSpider(normalized);
   const globalSpiderFull = globalSpider ? findFullSpiderString(normalized, globalSpider) : null;
 
-  // Step 3: 收集并合并所有字段
+  // Step 3: 收集站点并记录每个实例实际生效的 JAR。站点自身 JAR 优先，
+  // 其次是非全局的顶层 spider，最后才是合并配置的全局 spider。
   const allSites: TVBoxSite[] = [];
   const siteUpstreamsByObject = new WeakMap<TVBoxSite, Set<string>>();
+  const sourceBySiteObject = new WeakMap<TVBoxSite, string>();
+  const effectiveJarByObject = new WeakMap<TVBoxSite, string | undefined>();
   const allParses: TVBoxConfig['parses'] = [];
   const allLives: TVBoxConfig['lives'] = [];
   const allHosts: string[] = [];
@@ -53,22 +57,37 @@ export function mergeConfigs(sourcedConfigs: SourcedConfig[]): MergeResult {
 
   for (const sourced of normalized) {
     const config = sourced.config;
+    const sourceSpider = config.spider;
+    const sourceSpiderJar = extractSpiderJarUrl(sourceSpider);
+    const upstreams = sourced.upstreamNames?.length ? sourced.upstreamNames : [sourced.sourceName];
+    const upstreamList = [...new Set(upstreams)].filter(Boolean).sort();
 
     // Sites: 给 type:3 站点分配 jar 字段
     if (config.sites) {
       for (const site of config.sites) {
         const siteCopy = { ...site };
 
-        if (site.type === 3 && !site.jar) {
-          const spiderJar = extractSpiderJarUrl(config.spider);
-          if (spiderJar && spiderJar !== globalSpider) {
-            siteCopy.jar = config.spider;
-          }
+        // 非全局 spider 必须固化到站点，否则合并后会错误地改用另一个总源的全局 JAR。
+        if (
+          site.type === 3
+          && !site.jar
+          && sourceSpiderJar
+          && sourceSpiderJar !== globalSpider
+        ) {
+          siteCopy.jar = sourceSpider;
         }
 
-        const upstreams = sourced.upstreamNames?.length ? sourced.upstreamNames : [sourced.sourceName];
-        siteUpstreamsByObject.set(siteCopy, new Set(upstreams));
-        siteCopy.__upstreamNames = [...upstreams].filter(Boolean).sort();
+        const effectiveJar =
+          siteCopy.jar
+          || sourceSpider
+          || globalSpiderFull
+          || globalSpider
+          || undefined;
+
+        siteUpstreamsByObject.set(siteCopy, new Set(upstreamList));
+        sourceBySiteObject.set(siteCopy, sourced.sourceName);
+        effectiveJarByObject.set(siteCopy, effectiveJar);
+        siteCopy.__upstreamNames = upstreamList;
         allSites.push(siteCopy);
       }
     }
@@ -97,56 +116,94 @@ export function mergeConfigs(sourcedConfigs: SourcedConfig[]): MergeResult {
     if (config.flags) allFlags.push(...config.flags);
   }
 
-  // 用 dedupKey(key|api) 建来源映射（dedup 可能改 key 但不改 api）
-  const sourceByDedupKey = new Map<string, string>();
-  for (const sourced of normalized) {
-    for (const site of sourced.config.sites || []) {
-      const dk = `${site.key}|${site.api}`;
-      if (!sourceByDedupKey.has(dk)) {
-        sourceByDedupKey.set(dk, sourced.sourceName);
-      }
-    }
-  }
-
-  // Step 4: 按稳定顺序去重，同时保留对象身份以关联顶层总源。
-  // 不能直接用 deduplicateSites(allSites)，因为它在 key 冲突时会原地改 key。
-  const order = new Map<string, number>();
+  // Step 4: 按稳定顺序去重，同时保留“最终对象 -> 实例信息来源”的显式映射。
+  // 凭证源属于某个总源下的实例，不能让不同总源的完全同构源共用一个去重键。
   const seenDedupKeys = new Map<string, TVBoxSite>();
+  const siteInstanceIdByObject = new WeakMap<TVBoxSite, string>();
+  const upstreamsByInstanceId = new Map<string, Set<string>>();
+  const sourceByInstanceId = new Map<string, string>();
   for (const site of allSites) {
-    const dk = `${site.key}|${site.api}`;
+    const upstreamList = [...(siteUpstreamsByObject.get(site) || [])].filter(Boolean).sort();
+    const effectiveJar = effectiveJarByObject.get(site);
+    const isCredential = isClientCredentialSite(site, effectiveJar);
+    const boundary = upstreamList[0] || sourceBySiteObject.get(site) || '';
+    const dk = isCredential
+      ? 'cred:' + boundary + ':' + credentialSiteInstanceId(site, effectiveJar)
+      : site.key + '|' + site.api;
     const existing = seenDedupKeys.get(dk);
     if (existing) {
-      const mergedUpstreams = siteUpstreamsByObject.get(existing) || new Set<string>();
-      for (const upstream of siteUpstreamsByObject.get(site) || []) mergedUpstreams.add(upstream);
-      siteUpstreamsByObject.set(existing, mergedUpstreams);
-      existing.__upstreamNames = [...mergedUpstreams].filter(Boolean).sort();
+      const instanceId = siteInstanceIdByObject.get(existing) || dk;
+      const mergedUpstreams = upstreamsByInstanceId.get(instanceId) || new Set<string>();
+      for (const upstream of upstreamList) mergedUpstreams.add(upstream);
+      upstreamsByInstanceId.set(instanceId, mergedUpstreams);
+      if (mergedUpstreams.size > 0) existing.__upstreamNames = [...mergedUpstreams].sort();
       continue;
     }
     seenDedupKeys.set(dk, site);
-    order.set(dk, order.size);
+    siteInstanceIdByObject.set(site, dk);
+    upstreamsByInstanceId.set(dk, new Set(upstreamList));
+    sourceByInstanceId.set(dk, sourceBySiteObject.get(site) || '');
+    if (upstreamList.length > 0) site.__upstreamNames = upstreamList;
   }
 
-  const dedupedSites = deduplicateSites([...seenDedupKeys.values()]);
+  const collectedSites = [...seenDedupKeys.values()];
+  const credentialSites = collectedSites.filter((site) =>
+    isClientCredentialSite(site, effectiveJarByObject.get(site)),
+  );
+  const ordinarySites = collectedSites.filter((site) =>
+    !isClientCredentialSite(site, effectiveJarByObject.get(site)),
+  );
+  const dedupedOrdinarySites = deduplicateSites(ordinarySites);
 
-  // dedup 后用实际 key 构建 siteSourceMap 与顶层总源映射。
+  // deduplicateSites 可能改写普通站点 key；对象身份和实例映射不受影响。
+  for (const site of dedupedOrdinarySites) {
+    const instanceId = siteInstanceIdByObject.get(site) || site.key + '|' + site.api;
+    siteInstanceIdByObject.set(site, instanceId);
+  }
+
+  const dedupedSites = [...dedupedOrdinarySites, ...credentialSites];
+
+  // 最终 key 必须全局唯一，否则契约表会覆盖、响应期会错投凭证。
+  // 保留第一个实例的原 key，只给后续冲突实例加稳定后缀，减少客户端历史抖动。
+  const keyTotals = new Map<string, number>();
+  for (const site of dedupedSites) keyTotals.set(site.key, (keyTotals.get(site.key) || 0) + 1);
+  const keyOccurrences = new Map<string, number>();
+  const usedKeys = new Set<string>();
   for (const site of dedupedSites) {
-    const dk = `${site.key}|${site.api}`;
-    const source = sourceByDedupKey.get(dk);
-    if (source) {
-      siteSourceMap.set(site.key, source);
-    } else {
-      // key 被改名（加了后缀），用 api 反查
-      for (const [mapDk, mapSource] of sourceByDedupKey) {
-        if (mapDk.endsWith(`|${site.api}`)) {
-          siteSourceMap.set(site.key, mapSource);
-          break;
-        }
+    const baseKey = site.key;
+    const occurrence = (keyOccurrences.get(baseKey) || 0) + 1;
+    keyOccurrences.set(baseKey, occurrence);
+
+    if ((keyTotals.get(baseKey) || 0) > 1 && occurrence > 1) {
+      const newKey = credentialSiteInstanceKey(
+        { ...site, key: baseKey },
+        effectiveJarByObject.get(site) || globalSpiderFull || globalSpider || undefined,
+      );
+      if (newKey !== baseKey) site.key = newKey;
+      if (site.name && newKey.startsWith(baseKey + '__')) {
+        const suffix = newKey.slice(baseKey.length + 2);
+        if (suffix && !site.name.includes('(' + suffix + ')')) site.name = site.name + '(' + suffix + ')';
       }
     }
 
-    const upstreams = siteUpstreamsByObject.get(site);
-    if (upstreams && upstreams.size > 0) {
-      siteUpstreamMap.set(site.key, [...upstreams].filter(Boolean).sort());
+    let candidate = site.key;
+    let n = 2;
+    while (usedKeys.has(candidate)) candidate = site.key + '_' + n++;
+    site.key = candidate;
+    usedKeys.add(site.key);
+  }
+
+  // 用最终对象的内部实例 ID 构建来源/上游映射。
+  for (const site of dedupedSites) {
+    const instanceId = siteInstanceIdByObject.get(site);
+    const upstreamList = [...(instanceId ? upstreamsByInstanceId.get(instanceId) || [] : site.__upstreamNames || [])]
+      .filter(Boolean)
+      .sort();
+    const source = instanceId ? sourceByInstanceId.get(instanceId) : undefined;
+    if (source) siteSourceMap.set(site.key, source);
+    if (upstreamList.length > 0) {
+      siteUpstreamMap.set(site.key, upstreamList);
+      site.__upstreamNames = upstreamList;
     }
   }
 

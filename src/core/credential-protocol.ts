@@ -36,6 +36,12 @@ export interface CredentialProtocol {
 
 export interface CredentialProtocolContext {
   effectiveJar?: string;
+  /** 聚合阶段按源实例固化的凭证绑定；存在时优先于 API/JAR 通用规则。 */
+  binding?: {
+    mechanism?: string;
+    platforms?: string[];
+    contractHash?: string;
+  } | null;
 }
 
 const JAR = {
@@ -61,6 +67,16 @@ const TOKEN_JSON_PLATFORMS: readonly CloudPlatform[] = [
  * 因此这里只按已确认的 API|JAR 组合登记，绝不做
  * “API 集合 × JAR 集合”的笛卡尔积盲匹配。
  */
+const ALL_PLATFORMS = new Set<CloudPlatform>([
+  'aliyun', 'bilibili', 'quark', 'uc', 'uc_tv', 'pan115',
+  'tianyi', 'baidu', 'pan123', 'thunder', 'pikpak',
+]);
+
+const VALID_MECHANISMS = new Set<CredentialMechanism>([
+  'ali-token-url', 'token-json-url', 'tvfan-config-url', 'pan-init-url',
+  'd3-cloud-drive-json', 'b63-cloud-inline', 'pan-search-ext-pan',
+  'pan-search-fixed-baidu', 'alist', 'direct-ext-field', 'none', 'unknown',
+]);
 const JAR_2CC = '2cc088afa757ba8bafffcfbab4b73ccc';
 const JAR_F782 = 'f782cdee81118405176fd260be9ca5cd';
 
@@ -168,6 +184,16 @@ const PAN_INIT_API_RE = /^csp_(?:Wo[bg]g|Mogg|MIPanSo|KkSs|PanSso|PanSou)(?:Guar
 const D3_CLOUD_DRIVE_API_RE = /^csp_(?:Wo[bg]g|Mogg|MIPanSo|KkSs|PanSso|PanSou|Libvio)(?:Guard)?$/i;
 const ALI_TOKEN_API_RE = /^csp_YiSo$/i;
 
+function unknownProtocol(reason: string): CredentialProtocol {
+  return {
+    mechanism: 'unknown',
+    platforms: [],
+    credentialRequired: false,
+    canInject: false,
+    reason,
+  };
+}
+
 function directFieldProtocol(
   platform: CloudPlatform,
   reason: string,
@@ -189,12 +215,50 @@ function directFieldProtocol(
  */
 export function resolveCredentialProtocol(
   site: TVBoxSite,
-  context: { effectiveJar?: string } = {},
+  context: CredentialProtocolContext = {},
 ): CredentialProtocol {
   const api = String(site.api || '');
   const effectiveJar = extractJarMd5(site.jar)
     ? (site.jar || '')
     : (context.effectiveJar || '');
+
+  // 源实例绑定必须自洽。绑定一旦存在，就不允许回退到通用 API/JAR 规则：
+  // 否则 JAR 升级、上游换壳或契约漂移时会把“不能确认”误判成“可以注入”。
+  const binding = context.binding;
+  if (binding) {
+    const mechanism = typeof binding.mechanism === 'string'
+      ? binding.mechanism as CredentialMechanism
+      : undefined;
+    const platforms = Array.isArray(binding.platforms)
+      ? binding.platforms.filter((p): p is CloudPlatform => ALL_PLATFORMS.has(p as CloudPlatform))
+      : [];
+
+    if (!mechanism || !VALID_MECHANISMS.has(mechanism)) {
+      return unknownProtocol('invalid or missing site credential mechanism binding');
+    }
+    if (mechanism === 'unknown') {
+      return unknownProtocol('site contract binding marked mechanism unknown');
+    }
+    if (mechanism === 'none') {
+      return {
+        mechanism: 'none',
+        platforms: [],
+        credentialRequired: false,
+        canInject: false,
+        reason: 'site contract explicitly marks no credential injection',
+      };
+    }
+    if (platforms.length === 0) {
+      return unknownProtocol(`site contract binding ${mechanism} has no supported platforms`);
+    }
+    return {
+      mechanism,
+      platforms,
+      credentialRequired: true,
+      canInject: true,
+      reason: `site contract binding: ${mechanism}`,
+    };
+  }
 
   if (/^csp_AList/i.test(api)) {
     return {

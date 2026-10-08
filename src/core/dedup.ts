@@ -1,7 +1,7 @@
 // 去重逻辑
 
 import type { TVBoxSite, TVBoxParse, TVBoxLive, TVBoxDoh, TVBoxRule } from './types';
-import { getCredentialPlatformsForSite, isClientCredentialSite } from './credential-risk';
+import { isClientCredentialSite } from './credential-risk';
 
 /**
  * 站点去重
@@ -150,97 +150,17 @@ export function deduplicateStrings(arr: string[]): string[] {
 }
 
 /**
- * 客户端凭证源身份去重。
+ * 客户端凭证源不做跨实例去重。
  *
- * 只处理已知需要客户端网盘/JAR 的源。身份键同时包含规范化后的 jar、api、
- * type 和网盘平台集合，因此不会把“共用同一 JAR 但 API 不同”的源误合并。
- * 同身份优先保留：探测成功且更快 > ext 更完整 > 原始顺序更早。
+ * 凭证绑定属于“最终源实例”，而不是 key/API/JAR 的公共属性。不同顶层总源
+ * 可能提供同名、同 API 甚至同 JAR 的源，但它们在客户端仍是独立条目，必须
+ * 各自保留 key 与契约，避免响应期契约表按 key 覆盖后串用凭证。
  */
 export function deduplicateClientCredentialSites(
   sites: TVBoxSite[],
-  speedMap: Map<string, number | null>,
+  _speedMap: Map<string, number | null>,
 ): TVBoxSite[] {
-  const normalizeUrl = (value?: string): string => {
-    const raw = (value || '').trim();
-    if (!raw) return '';
-    try {
-      const parsed = new URL(raw);
-      parsed.hash = '';
-      return parsed.toString().replace(/\/$/, '').toLowerCase();
-    } catch {
-      return raw.replace(/\/$/, '').toLowerCase();
-    }
-  };
-
-  const extScore = (site: TVBoxSite): number => {
-    if (site.ext === undefined || site.ext === null || site.ext === '') return 0;
-    if (typeof site.ext === 'object') {
-      try { return Object.keys(site.ext as Record<string, unknown>).length + 1; } catch { return 1; }
-    }
-    return String(site.ext).length;
-  };
-
-  const scoreOf = (site: TVBoxSite): number => {
-    const speed = speedMap.get(site.key);
-    if (typeof speed === 'number' && Number.isFinite(speed)) return speed;
-    return Number.POSITIVE_INFINITY;
-  };
-
-  const identity = (site: TVBoxSite): string => {
-    const platforms = [...getCredentialPlatformsForSite(site)].sort().join(',');
-    return [
-      normalizeUrl(site.jar),
-      normalizeUrl(site.api),
-      String(site.type ?? 0),
-      platforms,
-    ].join('|');
-  };
-
-  const result: TVBoxSite[] = [];
-  const indexByIdentity = new Map<string, number>();
-
-  for (const site of sites) {
-    if (!isClientCredentialSite(site)) {
-      result.push(site);
-      continue;
-    }
-
-    const key = identity(site);
-    const existingIndex = indexByIdentity.get(key);
-    if (existingIndex === undefined) {
-      indexByIdentity.set(key, result.length);
-      result.push(site);
-      continue;
-    }
-
-    const existing = result[existingIndex];
-    const existingSpeed = scoreOf(existing);
-    const currentSpeed = scoreOf(site);
-    const betterProbe = currentSpeed < existingSpeed;
-    const sameProbe = currentSpeed === existingSpeed;
-    const betterExt = extScore(site) > extScore(existing);
-    const mergedUpstreamNames = [
-      ...new Set([
-        ...(existing.__upstreamNames || []),
-        ...(site.__upstreamNames || []),
-      ]),
-    ].filter(Boolean).sort();
-
-    if (betterProbe || (sameProbe && betterExt)) {
-      result[existingIndex] = {
-        ...site,
-        __upstreamNames: mergedUpstreamNames,
-      };
-    } else if (mergedUpstreamNames.length > 0) {
-      // 去重只改变站点数量，不应丢失它由哪些总源贡献这一边界信息。
-      result[existingIndex] = {
-        ...existing,
-        __upstreamNames: mergedUpstreamNames,
-      };
-    }
-  }
-
-  return result;
+  return sites;
 }
 
 /**
@@ -264,6 +184,8 @@ export function deduplicateSimilarNames(
 
   for (let i = 0; i < sites.length; i++) {
     for (let j = i + 1; j < sites.length; j++) {
+      // 凭证实例禁止跨实例按名称合并；否则不同总源的同名源会再次丢失边界。
+      if (isClientCredentialSite(sites[i]) || isClientCredentialSite(sites[j])) continue;
       const na = sites[i].name || sites[i].key;
       const nb = sites[j].name || sites[j].key;
       if (nameSimilarity(na, nb) >= threshold) {
