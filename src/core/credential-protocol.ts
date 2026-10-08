@@ -225,6 +225,45 @@ function directFieldProtocol(
  * 返回 unknown 表示没有足够证据证明该 JAR/API 会消费何种凭证；调用方
  * 必须拒绝注入，而不是退化为按平台名猜测。
  */
+function resolvePreciseGuardContract(api: string, effectiveJar?: string): CredentialProtocol | null {
+  const apiJarKey = `${api.toLowerCase()}|${extractJarMd5(effectiveJar)?.toLowerCase() || ''}`;
+
+  const panInitContract = PAN_INIT_GUARD_CONTRACTS.get(apiJarKey);
+  if (panInitContract) {
+    return {
+      mechanism: panInitContract,
+      platforms: [...PAN_INIT_PLATFORMS],
+      credentialRequired: true,
+      canInject: true,
+      reason: 'YpanSo Guard Pan.init platform URL contract',
+    };
+  }
+
+  const cloudDriveContract = CLOUD_DRIVE_GUARD_CONTRACTS.get(apiJarKey);
+  if (cloudDriveContract) {
+    // 精确登记的 API|JAR 组合已经证明会消费 Cloud-drive；入口字段可能由
+    // 上游提供，也可能完全不存在（例如部分 WoGGGuard 只有 siteUrl/from），
+    // 因此由注入器按该 JAR 的响应 schema 创建入口。
+    return {
+      mechanism: cloudDriveContract,
+      platforms: [...TOKEN_JSON_PLATFORMS],
+      credentialRequired: true,
+      canInject: true,
+      reason: cloudDriveContract === 'token-json-url'
+        ? '2cc Guard Cloud-drive token.json contract'
+        : 'Precise Guard Cloud-drive tvfan/config contract',
+    };
+  }
+
+  return null;
+}
+
+/**
+ * 解析一个源实际使用的凭证协议。
+ *
+ * 返回 unknown 表示没有足够证据证明该 JAR/API 会消费何种凭证；调用方
+ * 必须拒绝注入，而不是退化为按平台名猜测。
+ */
 export function resolveCredentialProtocol(
   site: TVBoxSite,
   context: CredentialProtocolContext = {},
@@ -234,10 +273,12 @@ export function resolveCredentialProtocol(
     ? (site.jar || '')
     : (context.effectiveJar || '');
 
-  // 源实例绑定必须自洽。绑定一旦存在，就不允许回退到通用 API/JAR 规则：
-  // 否则 JAR 升级、上游换壳或契约漂移时会把“不能确认”误判成“可以注入”。
+  // 聚合契约表可能比当前代码旧；当前代码已经按 API|JAR 精确登记时，必须以
+  // 当前规则为准，否则旧表中的 unknown/错误 mechanism 会永久压住新契约，
+  // 表现就是“代码已修但线上仍要扫码”。没有精确规则时才允许使用实例绑定。
+  const preciseGuardContract = resolvePreciseGuardContract(api, effectiveJar);
   const binding = context.binding;
-  if (binding) {
+  if (binding && !preciseGuardContract) {
     const mechanism = typeof binding.mechanism === 'string'
       ? binding.mechanism as CredentialMechanism
       : undefined;
@@ -272,6 +313,8 @@ export function resolveCredentialProtocol(
     };
   }
 
+  if (preciseGuardContract) return preciseGuardContract;
+
   if (/^csp_AList/i.test(api)) {
     return {
       mechanism: 'alist',
@@ -300,35 +343,6 @@ export function resolveCredentialProtocol(
       credentialRequired: false,
       canInject: false,
       reason: 'AweSomeGuard without AList contract',
-    };
-  }
-
-  const apiJarKey = `${api.toLowerCase()}|${extractJarMd5(effectiveJar)?.toLowerCase() || ''}`;
-
-
-  const panInitContract = PAN_INIT_GUARD_CONTRACTS.get(apiJarKey);
-  if (panInitContract) {
-    return {
-      mechanism: panInitContract,
-      platforms: [...PAN_INIT_PLATFORMS],
-      credentialRequired: true,
-      canInject: true,
-      reason: 'YpanSo Guard Pan.init platform URL contract',
-    };
-  }
-  const cloudDriveContract = CLOUD_DRIVE_GUARD_CONTRACTS.get(apiJarKey);
-  if (cloudDriveContract) {
-    // 精确登记的 API|JAR 组合已经证明会消费 Cloud-drive；入口字段可能由
-    // 上游提供，也可能完全不存在（例如部分 WoGGGuard 只有 siteUrl/from），
-    // 因此由注入器按该 JAR 的响应 schema 创建入口。
-    return {
-      mechanism: cloudDriveContract,
-      platforms: [...TOKEN_JSON_PLATFORMS],
-      credentialRequired: true,
-      canInject: true,
-      reason: cloudDriveContract === 'token-json-url'
-        ? '2cc Guard Cloud-drive token.json contract'
-        : 'f782 Guard Cloud-drive tvfan/config contract',
     };
   }
 

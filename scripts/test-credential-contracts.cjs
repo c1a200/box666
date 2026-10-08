@@ -5,12 +5,27 @@ const esbuild = require('esbuild');
 const ROOT = path.resolve(__dirname, '..');
 const BUNDLE = path.join(ROOT, '.tmp-credential-contract-regression.cjs');
 const BASE = 'https://base.example';
-const JAR_2386 = '2386c62eb5f0b84dd53e27ad0fe9db49';
+const JAR_2CC = '2cc088afa757ba8bafffcfbab4b73ccc';
 const JAR_F782 = 'f782cdee81118405176fd260be9ca5cd';
+const JAR_2386 = '2386c62eb5f0b84dd53e27ad0fe9db49';
 const JAR_4CE29 = '4ce29ce27eeff6a73a230dd92d98ba0c';
 
 function site(api, jar, ext = { 'Cloud-drive': 'tvfan/Cloud-drive.txt' }) {
   return { key: `${api}_${jar.slice(0, 6)}`, name: api, type: 3, api, searchable: 1, jar: `https://jar.example/${jar};md5;${jar}`, ext };
+}
+
+function oldUnknownContract(source) {
+  return {
+    api: source.api,
+    jarMd5: source.jar.slice(-source.jar.split(';md5;')[1].length),
+    extShape: 'object',
+    extKeys: ['Cloud-drive'],
+    injectableExtKeys: ['Cloud-drive'],
+    contractHash: `${source.jar.slice(-source.jar.split(';md5;')[1].length)}|${source.api}|object|Cloud-drive||`,
+    siteKey: source.key,
+    credentialMechanism: 'unknown',
+    credentialPlatforms: [],
+  };
 }
 
 function parseExt(value) {
@@ -26,8 +41,18 @@ function credentials(platforms = ['quark']) {
   return new Map(platforms.map((platform) => [platform, all.get(platform)]));
 }
 
-function inject(source, creds = credentials(), baseUrl = BASE) {
-  const result = injectCredentials([source], creds, { deniedKeys: [] }, baseUrl, null, null, false, false);
+function inject(source, creds = credentials(), baseUrl = BASE, contract = null) {
+  const contracts = contract ? new Map([[source.key, contract]]) : null;
+  const result = injectCredentials(
+    [source],
+    creds,
+    { deniedKeys: [] },
+    baseUrl,
+    null,
+    contracts,
+    false,
+    Boolean(contract),
+  );
   return { source: result.sites[0], ext: parseExt(result.sites[0].ext), report: result.report };
 }
 
@@ -72,9 +97,15 @@ async function main() {
     'csp_MyDriveGuard',
   ];
   for (const api of tvfanGuards) {
-    const result = inject(site(api, JAR_2386));
+    const source = site(api, JAR_2386);
+    const result = inject(source);
     if (result.report.injected !== 1) fail(`${api}: expected one injection, got ${result.report.injected}`);
     expectedTvfanConfig(result.ext);
+
+    const legacySource = site(api, JAR_2386);
+    const legacy = inject(legacySource, credentials(), BASE, oldUnknownContract(legacySource));
+    if (legacy.report.injected !== 1) fail(`${api}: stale KV contract expected one injection, got ${legacy.report.injected}`);
+    expectedTvfanConfig(legacy.ext);
   }
 
   for (const api of ['csp_AiDjGuard', 'csp_BiliGuard', 'csp_S_zpsGuard', 'csp_SeedhubGuard']) {
@@ -86,9 +117,15 @@ async function main() {
   }
 
   for (const jar of [JAR_F782, JAR_4CE29]) {
-    const result = inject(site('csp_WoGGGuard', jar));
+    const source = site('csp_WoGGGuard', jar);
+    const result = inject(source);
     if (result.report.injected !== 1) fail(`${jar}: expected Pan.init injection`);
     expectedPanInit(result.ext);
+
+    const legacySource = site('csp_WoGGGuard', jar);
+    const legacy = inject(legacySource, credentials(), BASE, oldUnknownContract(legacySource));
+    if (legacy.report.injected !== 1) fail(`${jar}: stale KV contract expected Pan.init injection`);
+    expectedPanInit(legacy.ext);
   }
 
   const noCredentialSource = site('csp_YpanSoGuard', JAR_2386);
@@ -103,7 +140,7 @@ async function main() {
   if (noBase.report.injected !== 0) fail('empty-base-url case must not inject');
   if (JSON.stringify(noBase.ext) !== noBaseBefore) fail('empty-base-url case changed ext');
 
-  console.log('RESULT=PASS: 2386 tvfan contracts, Pan.init isolation, and negative cases verified');
+  console.log('RESULT=PASS: precise Guard contracts override stale KV binding; Pan.init isolation and negative cases verified');
 }
 
 main().catch((error) => {
