@@ -79,6 +79,7 @@ const VALID_MECHANISMS = new Set<CredentialMechanism>([
 ]);
 const JAR_2CC = '2cc088afa757ba8bafffcfbab4b73ccc';
 const JAR_F782 = 'f782cdee81118405176fd260be9ca5cd';
+const JAR_2386 = '2386c62eb5f0b84dd53e27ad0fe9db49';
 
 /**
  * 精确的 API|JAR -> 响应契约映射。
@@ -119,6 +120,17 @@ const CLOUD_DRIVE_GUARD_CONTRACTS = new Map<string, CredentialMechanism>([
   [`csp_pansearchguard|${JAR_F782}`, 'tvfan-config-url'],
   [`csp_yisoguard|${JAR_F782}`, 'tvfan-config-url'],
   [`csp_ypansoguard|${JAR_F782}`, 'tvfan-config-url'],
+
+  // 2386 是饭太硬 Guard 的另一代契约，外层壳与 2cc/f782 相同但内层实现不同。
+  // 只登记线上已确认携带 Cloud-drive 入口的 Guard；同 JAR 的 AiDj/Bili/
+  // S_zps/Seedhub 等不能按 JAR 扩散，否则会写入它们不消费的字段。
+  [`csp_uussguard|${JAR_2386}`, 'tvfan-config-url'],
+  [`csp_ypansoguard|${JAR_2386}`, 'tvfan-config-url'],
+  [`csp_woggguard|${JAR_2386}`, 'tvfan-config-url'],
+  [`csp_bpansoguard|${JAR_2386}`, 'tvfan-config-url'],
+  [`csp_kkssguard|${JAR_2386}`, 'tvfan-config-url'],
+  [`csp_libvioguard|${JAR_2386}`, 'tvfan-config-url'],
+  [`csp_mydriveguard|${JAR_2386}`, 'tvfan-config-url'],
 ]);
 
 
