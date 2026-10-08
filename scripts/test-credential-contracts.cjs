@@ -28,6 +28,13 @@ function oldUnknownContract(source) {
   };
 }
 
+function oldWrongTvfanContract(source) {
+  const contract = oldUnknownContract(source);
+  contract.credentialMechanism = 'tvfan-config-url';
+  contract.credentialPlatforms = ['quark', 'uc', 'baidu'];
+  return contract;
+}
+
 function parseExt(value) {
   if (typeof value !== 'string') return value;
   return JSON.parse(value);
@@ -56,14 +63,6 @@ function inject(source, creds = credentials(), baseUrl = BASE, contract = null) 
   return { source: result.sites[0], ext: parseExt(result.sites[0].ext), report: result.report };
 }
 
-function expectedTvfanConfig(ext) {
-  if (!ext || typeof ext['Cloud-drive'] !== 'string') fail('missing tvfan Cloud-drive URL');
-  if (!/^https:\/\/base\.example\/tvfan\/config\?token=[^#]+$/.test(ext['Cloud-drive'])) {
-    fail(`unexpected tvfan Cloud-drive URL: ${ext['Cloud-drive']}`);
-  }
-  if (Object.prototype.hasOwnProperty.call(ext, 'quark')) fail('tvfan contract must not add ext.quark');
-}
-
 function expectedPanInit(ext) {
   if (!ext || typeof ext.quark !== 'string') fail('missing Pan.init ext.quark URL');
   if (!/^https:\/\/base\.example\/credential\/quark\?v=/.test(ext.quark)) fail(`unexpected Pan.init URL: ${ext.quark}`);
@@ -87,25 +86,34 @@ async function main() {
   });
   ({ injectCredentials } = require(BUNDLE));
 
-  const tvfanGuards = [
-    'csp_UuSsGuard',
-    'csp_YpanSoGuard',
-    'csp_WoGGGuard',
-    'csp_BpanSoGuard',
-    'csp_KkSsGuard',
-    'csp_LibvioGuard',
-    'csp_MyDriveGuard',
+  const panInitGuardsByJar = [
+    [JAR_2CC, [
+      'csp_YpanSoGuard', 'csp_BpanSoGuard', 'csp_PanSsoGuard', 'csp_XzSoGuard',
+      'csp_UuSsGuard', 'csp_KkSsGuard', 'csp_MIPanSoGuard', 'csp_LibvioGuard',
+      'csp_PanSearchGuard',
+    ]],
+    [JAR_F782, [
+      'csp_YpanSoGuard', 'csp_BpanSoGuard', 'csp_PanSsoGuard', 'csp_XzSoGuard',
+      'csp_UuSsGuard', 'csp_KkSsGuard', 'csp_MIPanSoGuard', 'csp_LibvioGuard',
+      'csp_PanSearchGuard', 'csp_WoGGGuard',
+    ]],
+    [JAR_2386, [
+      'csp_UuSsGuard', 'csp_YpanSoGuard', 'csp_WoGGGuard',
+      'csp_BpanSoGuard', 'csp_KkSsGuard', 'csp_LibvioGuard',
+    ]],
   ];
-  for (const api of tvfanGuards) {
-    const source = site(api, JAR_2386);
-    const result = inject(source);
-    if (result.report.injected !== 1) fail(`${api}: expected one injection, got ${result.report.injected}`);
-    expectedTvfanConfig(result.ext);
+  for (const [jar, guardApis] of panInitGuardsByJar) {
+    for (const api of guardApis) {
+      const source = site(api, jar);
+      const result = inject(source);
+      if (result.report.injected !== 1) fail(`${api}/${jar}: expected one injection, got ${result.report.injected}`);
+      expectedPanInit(result.ext);
 
-    const legacySource = site(api, JAR_2386);
-    const legacy = inject(legacySource, credentials(), BASE, oldUnknownContract(legacySource));
-    if (legacy.report.injected !== 1) fail(`${api}: stale KV contract expected one injection, got ${legacy.report.injected}`);
-    expectedTvfanConfig(legacy.ext);
+      const legacySource = site(api, jar);
+      const legacy = inject(legacySource, credentials(), BASE, oldWrongTvfanContract(legacySource));
+      if (legacy.report.injected !== 1) fail(`${api}/${jar}: stale KV contract expected one injection, got ${legacy.report.injected}`);
+      expectedPanInit(legacy.ext);
+    }
   }
 
   for (const api of ['csp_AiDjGuard', 'csp_BiliGuard', 'csp_S_zpsGuard', 'csp_SeedhubGuard']) {
@@ -114,6 +122,19 @@ async function main() {
     const result = inject(original);
     if (result.report.injected !== 0) fail(`${api}: unrelated 2386 Guard was injected`);
     if (JSON.stringify(result.ext) !== before) fail(`${api}: unrelated 2386 Guard ext changed`);
+  }
+
+  const revokedBindings = [
+    ['csp_MyDriveGuard', JAR_2386],
+    ['csp_YiSoGuard', JAR_2CC],
+    ['csp_YiSoGuard', JAR_F782],
+  ];
+  for (const [api, jar] of revokedBindings) {
+    const source = site(api, jar);
+    const before = JSON.stringify(source.ext);
+    const result = inject(source, credentials(), BASE, oldWrongTvfanContract(source));
+    if (result.report.injected !== 0) fail(`${api}/${jar}: revoked binding was injected`);
+    if (JSON.stringify(result.ext) !== before) fail(`${api}/${jar}: revoked binding changed ext`);
   }
 
   for (const jar of [JAR_F782, JAR_4CE29]) {
@@ -128,6 +149,17 @@ async function main() {
     expectedPanInit(legacy.ext);
   }
 
+  const switchedSource = site('csp_YpanSoGuard', JAR_2386, {
+    quark: `${BASE}/credential/quark?v=old`,
+    uc: `${BASE}/credential/uc?v=old`,
+    upstream: 'keep-me',
+  });
+  const switched = inject(switchedSource, credentials(['quark']));
+  if (switched.report.injected !== 1) fail('partial-policy case expected one injection');
+  expectedPanInit(switched.ext);
+  if (Object.prototype.hasOwnProperty.call(switched.ext, 'uc')) fail('partial policy retained old project UC URL');
+  if (switched.ext.upstream !== 'keep-me') fail('partial policy removed upstream field');
+
   const noCredentialSource = site('csp_YpanSoGuard', JAR_2386);
   const noCredentialBefore = JSON.stringify(noCredentialSource.ext);
   const noCredential = inject(noCredentialSource, new Map());
@@ -140,7 +172,7 @@ async function main() {
   if (noBase.report.injected !== 0) fail('empty-base-url case must not inject');
   if (JSON.stringify(noBase.ext) !== noBaseBefore) fail('empty-base-url case changed ext');
 
-  console.log('RESULT=PASS: precise Guard contracts override stale KV binding; Pan.init isolation and negative cases verified');
+  console.log('RESULT=PASS: verified audited Pan.init Guard families, revoked bindings, partial cleanup, and isolation');
 }
 
 main().catch((error) => {

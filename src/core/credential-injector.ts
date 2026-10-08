@@ -773,8 +773,9 @@ function injectPanInitUrls(
   let changed = false;
   const allowed = allowedPlatforms ? new Set(allowedPlatforms) : null;
   for (const { field, platform } of PAN_INIT_FIELDS) {
-    if (allowed && !allowed.has(platform)) continue;
-    if (hasPanInitCredential(creds, platform)) {
+    const canUseThisPlatform = hasPanInitCredential(creds, platform)
+      && (!allowed || allowed.has(platform));
+    if (canUseThisPlatform) {
       const revision = credentialRevision(creds.get(platform));
       const query = revision ? `?v=${revision}` : '';
       const url = `${normalizedBaseUrl}/credential/${field}${query}`;
@@ -783,7 +784,8 @@ function injectPanInitUrls(
         changed = true;
       }
     } else if (isCredentialFieldUrl(next[field], field, normalizedBaseUrl)) {
-      // 只清理指向本项目凭证接口的旧 URL，避免把用户自己的第三方初始化地址误删。
+      // 鉴权码切换为 none/partial 后，旧 URL 必须移除；只删本项目生成的地址，
+      // 上游自带或用户自己的第三方初始化地址保持不变。
       delete next[field];
       changed = true;
     }
