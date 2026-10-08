@@ -904,41 +904,65 @@ function normalizeCredentialConflictKey(key: string): string {
   return key.trim().toLowerCase().replace(/[_\s]+/g, '-');
 }
 
-function isProjectUrlOnBase(value: unknown, baseUrl: string): boolean {
-  if (typeof value !== 'string' || !value.trim()) return false;
-  const base = baseUrl.replace(/\/+$/, '');
-  return value.trim().startsWith(base + '/');
+function projectCredentialPath(value: unknown, baseUrl: string): string | null {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  try {
+    const parsed = new URL(value.trim());
+    const base = new URL(baseUrl);
+    if (parsed.origin !== base.origin) return null;
+    let rootPath = base.pathname.replace(/\/+$/, '');
+    // 项目可能部署在子路径；鉴权码只改变路由前缀，不改变项目根路径。
+    rootPath = rootPath.replace(/\/auth\/[^/]+$/, '');
+    if (rootPath && parsed.pathname !== rootPath && !parsed.pathname.startsWith(rootPath + '/')) {
+      return null;
+    }
+    return rootPath ? parsed.pathname.slice(rootPath.length) : parsed.pathname;
+  } catch {
+    return null;
+  }
 }
 
+/**
+ * 识别本项目生成的凭证端点。未传 mechanism 时匹配全部已知端点，用于切换
+ * 协议时清除旧入口；传入 mechanism 时只匹配当前协议目标端点。
+ */
 function isProjectCredentialUrl(
   value: unknown,
   baseUrl: string,
-  mechanism: CredentialProtocol['mechanism'],
+  mechanism?: CredentialProtocol['mechanism'],
 ): boolean {
-  if (!isProjectUrlOnBase(value, baseUrl)) return false;
-  const base = baseUrl.replace(/\/+$/, '');
-  const path = String(value).trim().slice(base.length).split('?')[0].split('#')[0];
-  const authPrefix = '(?:\/auth\/[^/]+)?';
+  const path = projectCredentialPath(value, baseUrl);
+  if (!path) return false;
+  const authPrefix = '(?:/auth/[^/]+)?';
 
   if (mechanism === 'tvfan-config-url') {
-    return new RegExp(`^${authPrefix}\/tvfan\/config$`).test(path);
+    return new RegExp(`^${authPrefix}/tvfan/config$`).test(path);
   }
   if (mechanism === 'token-json-url') {
-    return new RegExp(`^${authPrefix}\/token\.json$`).test(path);
+    return new RegExp(`^${authPrefix}/token\\.json$`).test(path);
   }
   if (mechanism === 'd3-cloud-drive-json') {
-    return new RegExp(`^${authPrefix}\/credential\/3d\.json$`).test(path);
+    return new RegExp(`^${authPrefix}/credential/3d\\.json$`).test(path);
   }
   if (mechanism === 'ali-token-url') {
-    return new RegExp(`^${authPrefix}\/credential\/aliyun\.json$`).test(path);
+    return new RegExp(`^${authPrefix}/credential/aliyun\\.json$`).test(path);
   }
   if (mechanism === 'pan-init-url' || mechanism === 'pan-search-fixed-baidu' || mechanism === 'pan-search-ext-pan') {
-    const match = path.match(new RegExp(`^${authPrefix}\/credential\/([A-Za-z0-9_.-]+)$`));
+    const match = path.match(new RegExp(`^${authPrefix}/credential/([A-Za-z0-9_.-]+)$`));
     return !!match && PAN_INIT_FIELDS.some(({ field }) => field === match[1]);
   }
-  return false;
-}
+  if (mechanism) return false;
 
+  const credentialMatch = path.match(new RegExp(`^${authPrefix}/credential/([A-Za-z0-9_.-]+)$`));
+  if (credentialMatch) {
+    const name = credentialMatch[1];
+    return name === 'token.json'
+      || name === 'aliyun.json'
+      || name === '3d.json'
+      || PAN_INIT_FIELDS.some(({ field }) => field === name);
+  }
+  return new RegExp(`^${authPrefix}/(?:token\\.json|tvfan/config)$`).test(path);
+}
 /**
  * 按当前机制清理本项目遗留的旧凭证入口。
  *
@@ -963,31 +987,26 @@ function removeCredentialConflictEntries(
   let changed = false;
   const removeProjectValue = (key: string) => {
     if (!(key in next)) return;
-    if (isProjectUrlOnBase(next[key], normalizedBaseUrl)) {
+    if (isProjectCredentialUrl(next[key], normalizedBaseUrl)) {
       delete next[key];
       changed = true;
     }
   };
 
-  // Pan.init 与 Cloud-drive 是两套互斥入口。上游常见的相对值
-  // `tvfan/Cloud-drive.txt` 同样会被某些 JAR 当作登录入口；切换到
-  // Pan.init 时必须移除，否则客户端初始化结果取决于字段读取顺序。
+  // Pan.init 与 Cloud-drive 是两套互斥入口，但只能清理本项目生成的旧入口。
+  // 上游相对路径 `tvfan/Cloud-drive.txt`、`/Cloud-drive.txt` 和第三方 URL
+  // 可能正是上游自带凭证；切换到 Pan.init 时必须原样保留。
   const removePanSearchCloudDriveEntry = (key: string) => {
     if (!(key in next)) return;
     const raw = next[key];
     if (typeof raw !== 'string') return;
     const value = raw.trim();
     if (!value) return;
-    if (
-      isProjectUrlOnBase(value, normalizedBaseUrl)
-      || /^tvfan\/cloud-drive\.txt(?:[?#].*)?$/i.test(value)
-      || /^\/?cloud-drive\.txt(?:[?#].*)?$/i.test(value)
-    ) {
+    if (isProjectCredentialUrl(value, normalizedBaseUrl)) {
       delete next[key];
       changed = true;
     }
   };
-
   const cloudDriveMechanism = mechanism === 'token-json-url'
     || mechanism === 'tvfan-config-url'
     || mechanism === 'd3-cloud-drive-json'

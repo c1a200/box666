@@ -2,23 +2,6 @@ import type { TVBoxConfig, CloudPlatform, CloudCredential, TVBoxSite } from './t
 import { resolveCredentialProtocol } from './credential-protocol';
 import { extractJarMd5 } from './site-contract';
 
-const PROJECT_CREDENTIAL_FIELDS = new Set<string>([
-  'cookie',
-  'quark_cookie', 'quarkCookie',
-  'uc_cookie', 'ucCookie', 'uccookie',
-  '115_cookie', '115Cookie',
-  'tyitoken', 'tianyi_cookie', 'tianyiCookie',
-  'dutoken', 'baidu_cookie', 'baiduCookie',
-  'p123token', '123_token', '123token',
-  'p123_username', 'p123_password',
-  'tuctoken', 'thunder_token', 'thunder_username', 'thunder_password',
-  'xunlei_username', 'xunlei_password',
-  'pikpak_username', 'pikpak_password',
-  'bili_cookie', 'bilibili_cookie',
-  'refresh_token', 'open_token', 'ali_token',
-  'token',
-]);
-
 /**
  * 已确认会被 Pan.init/搜索协议消费的上游“抢占登录入口”。
  * 这些键的值通常是远端登录脚本，JAR 若先看到它们就不会走项目凭证。
@@ -32,16 +15,6 @@ const UPSTREAM_CREDENTIAL_CONFLICT_FIELDS = new Set<string>([
   'ali-drive',
   'alidrive',
 ]);
-const ACCOUNT_SECRET_FIELDS = new Set<string>([
-  'username', 'password', 'pass', 'user', 'account', 'email', 'phone',
-]);
-
-const NESTED_CREDENTIAL_KEYS = new Set<string>([
-  'p123', 'xunlei', 'quark', 'uc', 'tianyi', 'baidu', '115', 'aliyun',
-  'pan123', 'thunder', 'bilibili', 'pikpak', 'drives', 'drive', 'credential',
-  'credentials',
-]);
-
 function isProjectCredentialUrl(value: unknown, baseUrl: string): boolean {
   if (typeof value !== 'string' || !value.trim()) return false;
   try {
@@ -85,7 +58,6 @@ function cleanStringValue(
   baseUrl: string,
   secrets: Set<string>,
   allowedSecrets: Set<string>,
-  strictCredentialField = false,
 ): string | null {
   const trimmed = value.trim();
   if (!trimmed) return value;
@@ -97,10 +69,8 @@ function cleanStringValue(
   }
 
   if (isProjectCredentialUrl(trimmed, baseUrl)) return null;
-  // In strict mode the caller has identified this as a project credential
-  // field. Remove it unless it is explicitly allowed for this request. This
-  // also removes stale plaintext values whose credential was deleted from KV.
-  if (strictCredentialField && !allowedSecrets.has(trimmed)) return null;
+  // 只删除可确认由本项目生成/注入的精确值。字段名不能作为删除依据：
+  // 上游自带 cookie、quark、uc、baidu、Cloud-drive 等也必须原样保留。
   if (secrets.has(trimmed) && !allowedSecrets.has(trimmed)) return null;
   return value;
 }
@@ -135,24 +105,13 @@ function cleanCredentialNode(
 
   for (const [key, rawValue] of Object.entries(node)) {
     const lowerKey = key.toLowerCase();
-    const isCredentialField = PROJECT_CREDENTIAL_FIELDS.has(key) || PROJECT_CREDENTIAL_FIELDS.has(lowerKey);
-    const isAccountField = ACCOUNT_SECRET_FIELDS.has(lowerKey);
-    const nestedKey = NESTED_CREDENTIAL_KEYS.has(lowerKey);
 
     if (typeof rawValue === 'string') {
       const isProjectUrl = isProjectCredentialUrl(rawValue, baseUrl) || !!isAListProxyUrl(rawValue, baseUrl);
-      // 平台名键（quark/uc/baidu 等）既可能是凭证，也可能是上游初始化 URL。
-      // 不能仅凭键名删除字符串，否则上游 URL 会被误删并触发契约漂移。
-      // 只有明确的凭证/账号字段，或已确认的项目凭证 URL，才启用严格删除语义。
-      const strictCredentialValue = isCredentialField || isAccountField || isProjectUrl;
-      if (strictCredentialValue || nestedKey || lowerKey === 'ext' || lowerKey === 'extend') {
-        const cleaned = cleanStringValue(
-          rawValue,
-          baseUrl,
-          secrets,
-          allowedSecrets,
-          strictCredentialValue,
-        );
+      // 无论字段名是什么，只处理字符串值本身。字段名不能决定是否删除，
+      // 否则上游自带 quark/uc/baidu/cookie 会被 none 误删。
+      if (isProjectUrl || secrets.size > 0 || lowerKey === 'ext' || lowerKey === 'extend') {
+        const cleaned = cleanStringValue(rawValue, baseUrl, secrets, allowedSecrets);
         if (cleaned === null) {
           delete next[key];
           changed = true;

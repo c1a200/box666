@@ -103,12 +103,14 @@ const PAN_INIT_GUARD_CONTRACTS = new Map<string, CredentialMechanism>([
  */
 const REVOKED_GUARD_BINDINGS = new Map<string, string>([
   [`csp_mydriveguard|${JAR_2386}`, 'MyDrive is not a Pan.init Guard contract'],
-  [`csp_yisoguard|${JAR_2CC}`, '2cc YiSo is not a Pan.init Guard contract'],
-  [`csp_yisoguard|${JAR_F782}`, 'f782 YiSo is not a Pan.init Guard contract'],
+
+  [`csp_yisoguard|${JAR_2CC}`, 'YiSo Guard credential contract is not verified'],
+  [`csp_yisoguard|${JAR_F782}`, 'YiSo Guard credential contract is not verified'],
 ]);
 
 const CLOUD_DRIVE_GUARD_CONTRACTS = new Map<string, CredentialMechanism>([
-  // 2cc 与 f782 的 tvfan Guard 共享 Cloud-drive -> /tvfan/config 契约。
+  // 2cc 与 f782 的 tvfan Guard 已由 DEX/现场回归确认 Cloud-drive 入口。
+  // 只登记有证据的 API|JAR 组合，不做“API 集合 × JAR 集合”笛卡尔积。
   [`csp_ypansoguard|${JAR_2CC}`, 'tvfan-config-url'],
   [`csp_bpansoguard|${JAR_2CC}`, 'tvfan-config-url'],
   [`csp_panssoguard|${JAR_2CC}`, 'tvfan-config-url'],
@@ -118,7 +120,6 @@ const CLOUD_DRIVE_GUARD_CONTRACTS = new Map<string, CredentialMechanism>([
   [`csp_mipansoguard|${JAR_2CC}`, 'tvfan-config-url'],
   [`csp_libvioguard|${JAR_2CC}`, 'tvfan-config-url'],
   [`csp_pansearchguard|${JAR_2CC}`, 'tvfan-config-url'],
-  [`csp_yisoguard|${JAR_2CC}`, 'tvfan-config-url'],
 
   // f782 与 2cc 同契约，保留独立分组便于后续 JAR 升级审计。
   [`csp_bpansoguard|${JAR_F782}`, 'tvfan-config-url'],
@@ -129,20 +130,12 @@ const CLOUD_DRIVE_GUARD_CONTRACTS = new Map<string, CredentialMechanism>([
   [`csp_mipansoguard|${JAR_F782}`, 'tvfan-config-url'],
   [`csp_libvioguard|${JAR_F782}`, 'tvfan-config-url'],
   [`csp_pansearchguard|${JAR_F782}`, 'tvfan-config-url'],
-  [`csp_yisoguard|${JAR_F782}`, 'tvfan-config-url'],
   [`csp_ypansoguard|${JAR_F782}`, 'tvfan-config-url'],
 
-  // 2386 是饭太硬 Guard 的另一代契约，外层壳与 2cc/f782 相同但内层实现不同。
-  // 只登记线上已确认携带 Cloud-drive 入口的 Guard；同 JAR 的 AiDj/Bili/
-  // S_zps/Seedhub 等不能按 JAR 扩散，否则会写入它们不消费的字段。
-  [`csp_uussguard|${JAR_2386}`, 'tvfan-config-url'],
-  [`csp_ypansoguard|${JAR_2386}`, 'tvfan-config-url'],
-  [`csp_woggguard|${JAR_2386}`, 'tvfan-config-url'],
-  [`csp_bpansoguard|${JAR_2386}`, 'tvfan-config-url'],
-  [`csp_kkssguard|${JAR_2386}`, 'tvfan-config-url'],
-  [`csp_libvioguard|${JAR_2386}`, 'tvfan-config-url'],
-  [`csp_mydriveguard|${JAR_2386}`, 'tvfan-config-url'],
+  // 2386 系列没有可用的内层 DEX 证据；不再登记任何猜测组合。
+  // 这些源如果未来能恢复内层实现，应把对应 API|JAR 单独加入白名单。
 ]);
+
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
@@ -250,6 +243,12 @@ function resolvePreciseGuardContract(api: string, effectiveJar?: string): Creden
       canInject: true,
       reason: 'YpanSo Guard Pan.init platform URL contract',
     };
+  }
+
+  // 2386 内层 DEX 没有可验证实现。显式返回 unknown，确保旧 KV 契约表
+  // 不能把已撤销的 tvfan-config-url 重新注入到 2386 Guard。
+  if (jarMd5 === JAR_2386 && /^csp_.*guard$/i.test(api)) {
+    return unknownProtocol('2386 Guard inner contract is not verified');
   }
 
   const cloudDriveContract = CLOUD_DRIVE_GUARD_CONTRACTS.get(apiJarKey);
