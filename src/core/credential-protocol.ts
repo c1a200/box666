@@ -89,46 +89,13 @@ const JAR_2386 = '2386c62eb5f0b84dd53e27ad0fe9db49';
  * 同一 JAR 下还有 MyDrive、Push、S_zps 等完全不同的契约。
  */
 /**
- * 这些 Guard 的已反编译基类均为 Pan：Pan.init 只把 ext 中的平台名
- * （quark/uc/tianyi/baidu/p123/xunlei）当 URL 拉取，再交给对应网盘类。
- * 因此必须逐 API|JAR 下发 /credential/<field>，不能写 Cloud-drive。
- *
- * 2cc/f782/2386 的外层 Guard 壳虽然相似，但同 JAR 内还有完全不同的实现；
- * 这里只列已确认继承 Pan 的组合，不做 API 集合 × JAR 集合的扩散。
+ * YpanSo/WoGG 的实测契约与同批 Cloud-drive Guard 不同：它们消费 Pan.init
+ * 的 /credential/<field> 平台 URL，而不是 Cloud-drive token JSON。
  */
 const PAN_INIT_GUARD_CONTRACTS = new Map<string, CredentialMechanism>([
-  [`csp_ypansoguard|${JAR_2CC}`, 'pan-init-url'],
-  [`csp_bpansoguard|${JAR_2CC}`, 'pan-init-url'],
-  [`csp_panssoguard|${JAR_2CC}`, 'pan-init-url'],
-  [`csp_xzsoguard|${JAR_2CC}`, 'pan-init-url'],
-  [`csp_uussguard|${JAR_2CC}`, 'pan-init-url'],
-  [`csp_kkssguard|${JAR_2CC}`, 'pan-init-url'],
-  [`csp_mipansoguard|${JAR_2CC}`, 'pan-init-url'],
-  [`csp_libvioguard|${JAR_2CC}`, 'pan-init-url'],
-  [`csp_pansearchguard|${JAR_2CC}`, 'pan-init-url'],
-
   [`csp_woggguard|${JAR_F782}`, 'pan-init-url'],
-  [`csp_bpansoguard|${JAR_F782}`, 'pan-init-url'],
-  [`csp_panssoguard|${JAR_F782}`, 'pan-init-url'],
-  [`csp_xzsoguard|${JAR_F782}`, 'pan-init-url'],
-  [`csp_uussguard|${JAR_F782}`, 'pan-init-url'],
-  [`csp_kkssguard|${JAR_F782}`, 'pan-init-url'],
-  [`csp_mipansoguard|${JAR_F782}`, 'pan-init-url'],
-  [`csp_libvioguard|${JAR_F782}`, 'pan-init-url'],
-  [`csp_pansearchguard|${JAR_F782}`, 'pan-init-url'],
-  [`csp_ypansoguard|${JAR_F782}`, 'pan-init-url'],
-
-  [`csp_uussguard|${JAR_2386}`, 'pan-init-url'],
-  [`csp_ypansoguard|${JAR_2386}`, 'pan-init-url'],
-  [`csp_woggguard|${JAR_2386}`, 'pan-init-url'],
-  [`csp_bpansoguard|${JAR_2386}`, 'pan-init-url'],
-  [`csp_kkssguard|${JAR_2386}`, 'pan-init-url'],
-  [`csp_libvioguard|${JAR_2386}`, 'pan-init-url'],
-  [`csp_woggguard|4ce29ce27eeff6a73a230dd92d98ba0c`, 'pan-init-url'],
+  ['csp_woggguard|4ce29ce27eeff6a73a230dd92d98ba0c', 'pan-init-url'],
 ]);
-
-const CLOUD_DRIVE_GUARD_CONTRACTS = new Map<string, CredentialMechanism>([]);
-
 /**
  * 这些 API|JAR 曾被错误登记为 tvfan-config-url，但反编译已确认它们并不消费
  * 该契约。显式返回 unknown 而不是依赖“没有精确规则”，这样旧 KV 绑定也不会
@@ -140,7 +107,42 @@ const REVOKED_GUARD_BINDINGS = new Map<string, string>([
   [`csp_yisoguard|${JAR_F782}`, 'f782 YiSo is not a Pan.init Guard contract'],
 ]);
 
+const CLOUD_DRIVE_GUARD_CONTRACTS = new Map<string, CredentialMechanism>([
+  // 2cc 与 f782 的 tvfan Guard 共享 Cloud-drive -> /tvfan/config 契约。
+  [`csp_ypansoguard|${JAR_2CC}`, 'tvfan-config-url'],
+  [`csp_bpansoguard|${JAR_2CC}`, 'tvfan-config-url'],
+  [`csp_panssoguard|${JAR_2CC}`, 'tvfan-config-url'],
+  [`csp_xzsoguard|${JAR_2CC}`, 'tvfan-config-url'],
+  [`csp_uussguard|${JAR_2CC}`, 'tvfan-config-url'],
+  [`csp_kkssguard|${JAR_2CC}`, 'tvfan-config-url'],
+  [`csp_mipansoguard|${JAR_2CC}`, 'tvfan-config-url'],
+  [`csp_libvioguard|${JAR_2CC}`, 'tvfan-config-url'],
+  [`csp_pansearchguard|${JAR_2CC}`, 'tvfan-config-url'],
+  [`csp_yisoguard|${JAR_2CC}`, 'tvfan-config-url'],
 
+  // f782 与 2cc 同契约，保留独立分组便于后续 JAR 升级审计。
+  [`csp_bpansoguard|${JAR_F782}`, 'tvfan-config-url'],
+  [`csp_panssoguard|${JAR_F782}`, 'tvfan-config-url'],
+  [`csp_xzsoguard|${JAR_F782}`, 'tvfan-config-url'],
+  [`csp_uussguard|${JAR_F782}`, 'tvfan-config-url'],
+  [`csp_kkssguard|${JAR_F782}`, 'tvfan-config-url'],
+  [`csp_mipansoguard|${JAR_F782}`, 'tvfan-config-url'],
+  [`csp_libvioguard|${JAR_F782}`, 'tvfan-config-url'],
+  [`csp_pansearchguard|${JAR_F782}`, 'tvfan-config-url'],
+  [`csp_yisoguard|${JAR_F782}`, 'tvfan-config-url'],
+  [`csp_ypansoguard|${JAR_F782}`, 'tvfan-config-url'],
+
+  // 2386 是饭太硬 Guard 的另一代契约，外层壳与 2cc/f782 相同但内层实现不同。
+  // 只登记线上已确认携带 Cloud-drive 入口的 Guard；同 JAR 的 AiDj/Bili/
+  // S_zps/Seedhub 等不能按 JAR 扩散，否则会写入它们不消费的字段。
+  [`csp_uussguard|${JAR_2386}`, 'tvfan-config-url'],
+  [`csp_ypansoguard|${JAR_2386}`, 'tvfan-config-url'],
+  [`csp_woggguard|${JAR_2386}`, 'tvfan-config-url'],
+  [`csp_bpansoguard|${JAR_2386}`, 'tvfan-config-url'],
+  [`csp_kkssguard|${JAR_2386}`, 'tvfan-config-url'],
+  [`csp_libvioguard|${JAR_2386}`, 'tvfan-config-url'],
+  [`csp_mydriveguard|${JAR_2386}`, 'tvfan-config-url'],
+]);
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
@@ -232,13 +234,6 @@ function directFieldProtocol(
  * 返回 unknown 表示没有足够证据证明该 JAR/API 会消费何种凭证；调用方
  * 必须拒绝注入，而不是退化为按平台名猜测。
  */
-const AUDITED_PAN_INIT_GUARD_JARS = new Set<string>([
-  JAR_2CC,
-  JAR_F782,
-  JAR_2386,
-  '4ce29ce27eeff6a73a230dd92d98ba0c',
-]);
-
 function resolvePreciseGuardContract(api: string, effectiveJar?: string): CredentialProtocol | null {
   const jarMd5 = extractJarMd5(effectiveJar)?.toLowerCase() || '';
   const apiJarKey = `${api.toLowerCase()}|${jarMd5}`;
@@ -254,19 +249,6 @@ function resolvePreciseGuardContract(api: string, effectiveJar?: string): Creden
       credentialRequired: true,
       canInject: true,
       reason: 'YpanSo Guard Pan.init platform URL contract',
-    };
-  }
-
-  // 旧 KV 契约表里可能还保存着错误的 tvfan-config-url。已审计 Guard 家族
-  // 只要 API 属于已确认的 Pan.init 集合且 JAR 在审计集合内，就强制纠正，
-  // 防止“新代码已修但旧绑定又把错误协议注入回来”。未知新 JAR 不放行。
-  if (PAN_INIT_API_RE.test(api) && jarMd5 && AUDITED_PAN_INIT_GUARD_JARS.has(jarMd5)) {
-    return {
-      mechanism: 'pan-init-url',
-      platforms: [...PAN_INIT_PLATFORMS],
-      credentialRequired: true,
-      canInject: true,
-      reason: 'Audited Guard Pan.init platform URL contract',
     };
   }
 
