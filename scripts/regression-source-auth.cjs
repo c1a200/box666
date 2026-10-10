@@ -102,9 +102,48 @@ const custom = normalizeClientDistributionConfig({ authCodes: [{ code: 'custom-a
 assert(custom.authCodes[0].sourceMode === 'custom', 'custom source mode should persist');
 assert(custom.authCodes[0].selectedKeys.join(',') === 'key-a,key-b', 'selectedKeys should trim and deduplicate');
 assert(custom.authCodes[0].pinnedKeys.join(',') === 'key-b', 'pinnedKeys should trim and deduplicate');
-assert(custom.authCodes[0].maxSites === 0 && custom.authCodes[0].maxSearchable === 0, 'numeric limits should default safely');
+assert(custom.authCodes[0].maxSites === -1 && custom.authCodes[0].maxSearchable === -1, 'numeric limits should default to all');
 assert(findClientAuthCode(cfg, 'code-a').sourceMode === 'search', 'code-a policy should persist');
 assert(findClientAuthCode(cfg, 'code-b').maxSearchable === 5, 'code-b policy should persist');
 assert(!findClientAuthCode(cfg, 'missing'), 'unknown auth code must not resolve');
 
-console.log('regression: source merge and client auth policy checks passed');
+const threeState = normalizeClientDistributionConfig({
+  authCodes: [{
+    code: 'three-state',
+    maxSites: 0,
+    maxSearchable: -1,
+    bucketLimits: {
+      quality: { excellent: -1, good: 0, usable: 3, untestable: 100 },
+      type: { 0: -1, 1: 0, 3: 7, 9: 2 },
+    },
+  }],
+});
+assert(threeState.authCodes[0].maxSites === 0, 'maxSites=0 must be preserved');
+assert(threeState.authCodes[0].maxSearchable === -1, 'maxSearchable=-1 must be preserved');
+assert(threeState.authCodes[0].bucketLimits.quality.excellent === -1, 'bucket -1 must be preserved');
+assert(threeState.authCodes[0].bucketLimits.quality.good === 0, 'bucket 0 must be preserved');
+assert(threeState.authCodes[0].bucketLimits.quality.usable === 3, 'bucket positive limit must be preserved');
+assert(threeState.authCodes[0].bucketLimits.type['3'] === 7, 'type bucket positive limit must be preserved');
+assert(threeState.authCodes[0].bucketLimits.type['9'] === 2, 'unknown type bucket must be preserved');
+
+(async () => {
+  bundle('src/core/quality.ts', 'quality.cjs', 'true');
+  const { runQualityGrading } = require(path.join(outDir, 'quality.cjs'));
+  const persisted = new Map();
+  const storage = {
+    async get(key) { return persisted.has(key) ? persisted.get(key) : null; },
+    async put(key, value) { persisted.set(key, String(value)); },
+  };
+  const probeMap = new Map([
+    ['quality-key', { key: 'quality-key', result: 'ok', speedMs: 120, status: 200 }],
+  ]);
+  await runQualityGrading(storage, [{ key: 'quality-key', name: '质量池测试源', type: 0, api: 'https://quality.example/api', searchable: 1 }], { mode: 'full', probeMap, markRun: false });
+  assert(persisted.has('search_quality_pool'), 'quality grading must persist the quality pool');
+  assert(persisted.has('search_quality_candidates'), 'quality grading must persist candidate sites');
+  const snapshot = JSON.parse(persisted.get('search_quality_pool'));
+  assert(snapshot.entries[0].key === 'quality-key', 'persisted quality pool must contain graded site');
+  console.log('regression: source merge and client auth policy checks passed');
+})().catch((error) => {
+  console.error(error && error.stack ? error.stack : error);
+  process.exit(1);
+});

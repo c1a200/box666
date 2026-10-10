@@ -1,6 +1,6 @@
 // 搜索配额控制（复用站点测速结果）
 
-import type { TVBoxParse, TVBoxSite, SearchQuotaConfig, SearchQuotaReport, SiteHealthMap, SiteQualityGrade, SiteQualityGrades, SearchQualitySnapshot } from './types';
+import type { ClientAuthCode, SiteBucketLimits, TVBoxParse, TVBoxSite, SearchQuotaConfig, SearchQuotaReport, SiteHealthMap, SiteQualityGrade, SiteQualityGrades, SearchQualitySnapshot } from './types';
 import { isSiteProbeable, type SiteProbeResult } from './speedtest';
 import type { Storage } from '../storage/interface';
 import { KV_SEARCH_QUOTA } from './config';
@@ -54,6 +54,35 @@ function normalizeLimit(value: unknown): number {
     : 0;
 }
 
+function parseThreeStateLimit(value: unknown): number | undefined {
+  const number = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(number) || !Number.isInteger(number)) return undefined;
+  if (number === -1 || number >= 0) return number;
+  return undefined;
+}
+
+export function normalizeSiteBucketLimits(value: unknown): SiteBucketLimits | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const source = value as Record<string, unknown>;
+  const normalizeMap = (raw: unknown, allowed?: Set<string>): Partial<Record<string, number>> => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+    const out: Record<string, number> = {};
+    for (const [key, item] of Object.entries(raw as Record<string, unknown>)) {
+      if (!key || (allowed && !allowed.has(key))) continue;
+      const limit = parseThreeStateLimit(item);
+      if (limit !== undefined) out[key] = limit;
+    }
+    return out;
+  };
+  const quality = normalizeMap(source.quality, new Set(['excellent', 'good', 'usable', 'untestable']));
+  const type = normalizeMap(source.type);
+  if (Object.keys(quality).length === 0 && Object.keys(type).length === 0) return undefined;
+  return {
+    ...(Object.keys(quality).length ? { quality: quality as SiteBucketLimits['quality'] } : {}),
+    ...(Object.keys(type).length ? { type: type as SiteBucketLimits['type'] } : {}),
+  };
+}
+
 /** 从 KV 加载搜索配额配置，并兼容旧版本缺少字段的数据。 */
 export async function loadSearchQuota(storage: Storage): Promise<SearchQuotaConfig> {
   const raw = await storage.get(KV_SEARCH_QUOTA);
@@ -76,6 +105,7 @@ export async function loadSearchQuota(storage: Storage): Promise<SearchQuotaConf
         maxParses: legacy
           ? fallback.maxParses
           : normalizeLimit(parsed.maxParses),
+        bucketLimits: normalizeSiteBucketLimits(parsed.bucketLimits),
         autoLimit: false,
         pinnedKeys: Array.isArray(parsed.pinnedKeys)
           ? parsed.pinnedKeys.filter((key): key is string => typeof key === 'string')
@@ -102,6 +132,7 @@ export async function saveSearchQuota(storage: Storage, config: SearchQuotaConfi
     maxStartupQuickSearch: fallback.maxStartupQuickSearch,
     startupSiteLimit: 0,
     maxParses: normalizeLimit(config.maxParses),
+    bucketLimits: normalizeSiteBucketLimits(config.bucketLimits),
     autoLimit: false,
     pinnedKeys: Array.isArray(config.pinnedKeys) ? config.pinnedKeys : [],
     sortBySpeed: config.sortBySpeed === true,
@@ -153,6 +184,43 @@ export function excludeJsUrlSites(sites: TVBoxSite[]): { sites: TVBoxSite[]; jsE
     return site;
   });
   return { sites: next, jsExcluded };
+}
+
+
+// 对已排序的源应用质量等级/站点类型分桶上限。
+// 未配置=不限制；0=该桶明确不选；正数=桶内保留前 N 个；-1=全选/不限制。
+// 置顶源不能绕过 0 的明确排除；正数上限中置顶源占用名额，不会突破上限。
+export function applySiteBucketLimits(
+  sites: TVBoxSite[],
+  limits: SearchQuotaConfig['bucketLimits'] | ClientAuthCode['bucketLimits'],
+  gradeForSite: (site: TVBoxSite) => SiteQualityGrade,
+  pinnedKeys: Set<string> = new Set(),
+): TVBoxSite[] {
+  if (!limits) return sites;
+  const qualityLimits = limits.quality || {};
+  const typeLimits = limits.type || {};
+  const qualityCounts: Record<string, number> = {};
+  const typeCounts: Record<string, number> = {};
+  return sites.filter((site) => {
+    const pinned = pinnedKeys.has(site.key);
+    const grade = gradeForSite(site);
+    const qualityLimit = qualityLimits[grade as keyof typeof qualityLimits];
+    if (qualityLimit === 0) return false;
+    if (typeof qualityLimit === 'number' && qualityLimit > 0) {
+      const count = qualityCounts[grade] || 0;
+      if (count >= qualityLimit) return false;
+    }
+    const typeKey = String(site.type);
+    const typeLimit = typeLimits[typeKey];
+    if (typeLimit === 0) return false;
+    if (typeof typeLimit === 'number' && typeLimit > 0) {
+      const count = typeCounts[String(site.type)] || 0;
+      if (count >= typeLimit) return false;
+    }
+    if (typeof qualityLimit === 'number' && qualityLimit > 0) qualityCounts[grade] = (qualityCounts[grade] || 0) + 1;
+    if (typeof typeLimit === 'number' && typeLimit > 0) typeCounts[String(site.type)] = (typeCounts[String(site.type)] || 0) + 1;
+    return true;
+  });
 }
 
 const QUALITY_EXCELLENT_MS = 1000;
@@ -272,6 +340,17 @@ export function applySearchQuota(
     if (persisted) return persisted.grade;
     return getSiteQualityGrade(site, options.probeMap, options.healthMap);
   };
+
+  // 显式分桶在配额内部应用，保证聚合结果、根启动配置和 /config-full.json
+  // 使用同一套规则：0=该桶不选，-1=全选，正数=保留前 N 个。
+  if (config.bucketLimits) {
+    sites = applySiteBucketLimits(
+      sites,
+      config.bucketLimits,
+      gradeForSite,
+      new Set(config.pinnedKeys || []),
+    );
+  }
 
   // 置顶源按 pinnedKeys 顺序排到最前，重复 key 只保留一次。
   const siteByKey = new Map(sites.map(site => [site.key, site]));

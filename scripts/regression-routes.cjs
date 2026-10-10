@@ -68,6 +68,13 @@ const mergedConfig = {
       searchable: 0,
       quickSearch: 1,
     },
+    {
+      key: 'source-custom-type',
+      name: '自定义类型源',
+      type: 9,
+      api: 'https://source.example/custom-type',
+      searchable: 1,
+    },
   ],
   lives: [
     {
@@ -83,6 +90,7 @@ const qualityPool = {
     { key: 'source-excellent', name: '优秀源', grade: 'excellent', speedMs: 100, result: 'ok', consecutiveFailures: 0 },
     { key: 'source-good', name: '良好源', grade: 'good', speedMs: 2000, result: 'ok', consecutiveFailures: 0 },
     { key: 'source-plugin', name: '插件源', grade: 'untestable', speedMs: null, result: 'not_probed', consecutiveFailures: 0 },
+    { key: 'source-custom-type', name: '自定义类型源', grade: 'good', speedMs: 1500, result: 'ok', consecutiveFailures: 0 },
   ],
 };
 
@@ -95,8 +103,8 @@ const distribution = {
       code: 'code-a',
       enabled: true,
       sourceMode: 'all',
-      maxSites: 0,
-      maxSearchable: 0,
+      maxSites: -1,
+      maxSearchable: -1,
       includeGrades: ['excellent'],
       siteTypes: [],
       pinnedKeys: [],
@@ -109,8 +117,8 @@ const distribution = {
       code: 'code-b',
       enabled: true,
       sourceMode: 'all',
-      maxSites: 0,
-      maxSearchable: 0,
+      maxSites: -1,
+      maxSearchable: -1,
       includeGrades: [],
       siteTypes: [3],
       pinnedKeys: [],
@@ -176,7 +184,7 @@ async function readSites(response) {
     const rootResponse = await app.request('https://local.example/');
     assert(rootResponse.status === 200, 'local base URL should serve root when worker base URL is empty');
     const body = await rootResponse.json();
-    assert(Array.isArray(body.sites) && body.sites.length === 3, 'local base URL should serve sources');
+    assert(Array.isArray(body.sites) && body.sites.some((site) => site.key === 'source-custom-type'), 'local base URL should serve sources');
   }
 
   {
@@ -241,8 +249,8 @@ async function readSites(response) {
         code: 'search-only',
         enabled: true,
         sourceMode: 'search',
-        maxSites: 0,
-        maxSearchable: 0,
+        maxSites: -1,
+        maxSearchable: -1,
         includeGrades: [],
         siteTypes: [],
         pinnedKeys: [],
@@ -253,7 +261,7 @@ async function readSites(response) {
     const { app } = makeApp({ distribution: searchModeDistribution });
     const searchable = await readSites(await app.request('https://box.example/auth/search-only/'));
     const keys = searchable.map((site) => site.key).sort().join(',');
-    assert(keys === 'source-excellent,source-good', 'search mode should include only searchable sites, got ' + keys);
+    assert(keys === 'source-custom-type,source-excellent,source-good', 'search mode should include only searchable sites, got ' + keys);
   }
 
   {
@@ -265,7 +273,7 @@ async function readSites(response) {
         code: 'limit-search',
         enabled: true,
         sourceMode: 'all',
-        maxSites: 0,
+        maxSites: -1,
         maxSearchable: 1,
         includeGrades: [],
         siteTypes: [],
@@ -278,6 +286,54 @@ async function readSites(response) {
     const limited = await readSites(await app.request('https://box.example/auth/limit-search/'));
     assert(limited.filter((site) => site.searchable === 1).length === 1, 'maxSearchable should count actual searchable sites only');
     assert(limited.filter((site) => site.searchable === 1).length === 1, 'maxSearchable must apply only to searchable sites');
+    assert(limited.some((site) => site.key === 'source-plugin'), 'maxSearchable should keep non-searchable sites when maxSites is all');
+  }
+
+  {
+    const zeroSearchDistribution = {
+      requireAuth: false,
+      authCodes: [{
+        id: 'auth-zero-search',
+        label: '不下发可搜索源',
+        code: 'zero-search',
+        enabled: true,
+        sourceMode: 'all',
+        maxSites: -1,
+        maxSearchable: 0,
+        includeGrades: [],
+        siteTypes: [],
+        pinnedKeys: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }],
+    };
+    const { app } = makeApp({ distribution: zeroSearchDistribution });
+    const sites = await readSites(await app.request('https://box.example/auth/zero-search/'));
+    assert(sites.every((site) => site.searchable !== 1), 'maxSearchable=0 must exclude every searchable site');
+    assert(sites.some((site) => site.key === 'source-plugin'), 'maxSearchable=0 must keep non-searchable sites');
+  }
+
+  {
+    const zeroTotalDistribution = {
+      requireAuth: false,
+      authCodes: [{
+        id: 'auth-zero-total',
+        label: '不下发任何源',
+        code: 'zero-total',
+        enabled: true,
+        sourceMode: 'all',
+        maxSites: 0,
+        maxSearchable: -1,
+        includeGrades: [],
+        siteTypes: [],
+        pinnedKeys: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }],
+    };
+    const { app } = makeApp({ distribution: zeroTotalDistribution });
+    const sites = await readSites(await app.request('https://box.example/auth/zero-total/'));
+    assert(sites.length === 0, 'maxSites=0 must exclude every source');
   }
 
   {
@@ -289,8 +345,8 @@ async function readSites(response) {
         code: 'custom-a',
         enabled: true,
         sourceMode: 'custom',
-        maxSites: 0,
-        maxSearchable: 0,
+        maxSites: -1,
+        maxSearchable: -1,
         includeGrades: [],
         siteTypes: [],
         selectedKeys: ['source-good'],
@@ -330,9 +386,34 @@ async function readSites(response) {
   }
 
   {
+    const dynamicTypeDistribution = {
+      requireAuth: false,
+      authCodes: [{
+        id: 'auth-dynamic-type',
+        label: '动态类型桶',
+        code: 'dynamic-type',
+        enabled: true,
+        sourceMode: 'all',
+        maxSites: -1,
+        maxSearchable: -1,
+        bucketLimits: { type: { '9': 0, '0': -1 } },
+        includeGrades: [],
+        siteTypes: [],
+        pinnedKeys: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }],
+    };
+    const { app } = makeApp({ distribution: dynamicTypeDistribution });
+    const sites = await readSites(await app.request('https://box.example/auth/dynamic-type/'));
+    assert(!sites.some((site) => site.key === 'source-custom-type'), 'unknown type bucket 0 must exclude that type');
+    assert(sites.some((site) => site.key === 'source-excellent'), 'unknown neighboring type bucket must not block type 0');
+  }
+
+  {
     const { app } = makeApp();
     const root = await readSites(await app.request('https://box.example/'));
-    assert(root.length === 3, 'root link must not be filtered by auth-code policy');
+    assert(root.some((site) => site.key === 'source-custom-type'), 'root link must not be filtered by auth-code policy');
     const auth = await readSites(await app.request('https://box.example/auth/code-a/'));
     assert(auth.length < root.length, 'auth link must be independently filtered');
   }

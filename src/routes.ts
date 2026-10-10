@@ -16,7 +16,7 @@ import { adminHtml } from './core/admin';
 import { dashboardHtml } from './core/dashboard';
 import { configEditorHtml } from './core/config-editor';
 import { siteFingerprint, loadBlacklist, saveBlacklist, saveRegexRule, deleteRegexRule, updateRegexRule, validateRegexRule, testRegexAgainstSites, applyBlacklist } from './core/blacklist';
-import { loadSearchQuota, saveSearchQuota } from './core/search-quota';
+import { loadSearchQuota, saveSearchQuota, applySiteBucketLimits, normalizeSiteBucketLimits } from './core/search-quota';
 import {
   loadQualityCandidates,
   loadQualityPool,
@@ -525,19 +525,46 @@ export function createApp(deps: AppDeps): Hono {
       sites = sites.filter((site) => pinned.has(site.key) || allowedTypes.has(site.type));
     }
 
-    const maxSearchable = Math.max(0, Math.floor(code.maxSearchable || 0));
-    if (maxSearchable > 0) {
+    // 分桶限制：0=不选该桶，-1=该桶全选，正数=按当前质量顺序保留前 N 个。
+    // 等级/类型过滤之后、总量上限之前应用，避免被 maxSites 截断后分桶统计失真。
+    if (code.bucketLimits) {
+      let gradeByKey = new Map<string, SiteQualityGrade>();
+      try {
+        const pool = await loadQualityPool(storage);
+        gradeByKey = new Map((pool?.entries || []).map((entry) => [entry.key, entry.grade]));
+      } catch {
+        // 质量池缺失时只能按 untestable 归类；不阻止明确的分桶策略。
+      }
+      sites = applySiteBucketLimits(
+        sites,
+        code.bucketLimits,
+        (site) => gradeByKey.get(site.key) || 'untestable',
+        pinned,
+      );
+    }
+
+    const maxSearchable = typeof code.maxSearchable === 'number' && Number.isFinite(code.maxSearchable)
+      ? Math.floor(code.maxSearchable)
+      : -1;
+    if (maxSearchable === 0) {
+      sites = sites.filter((site) => site.searchable !== 1);
+    } else if (maxSearchable > 0) {
       let searchable = 0;
       sites = sites.filter((site) => {
-        if (pinned.has(site.key)) return true;
         if (site.searchable !== 1) return true;
+        if (searchable >= maxSearchable) return false;
         searchable++;
-        return searchable <= maxSearchable;
+        return true;
       });
     }
 
-    const maxSites = Math.max(0, Math.floor(code.maxSites || 0));
-    if (maxSites > 0 && sites.length > maxSites) {
+    // 未分类数量语义：0=所有源都不下发；-1=全部；正数=保留前 N 个。
+    const maxSites = typeof code.maxSites === 'number' && Number.isFinite(code.maxSites)
+      ? Math.floor(code.maxSites)
+      : -1;
+    if (maxSites === 0) {
+      sites = [];
+    } else if (maxSites > 0 && sites.length > maxSites) {
       const pinnedSites = sites.filter((site) => pinned.has(site.key));
       const rest = sites.filter((site) => !pinned.has(site.key));
       sites = [...pinnedSites, ...rest.slice(0, Math.max(0, maxSites - pinnedSites.length))];
@@ -735,7 +762,16 @@ export function createApp(deps: AppDeps): Hono {
     }
 
     const pinnedKeySet = new Set(pinnedSites.map((site) => site.key));
-    const rest = orderedSites.filter((site) => !pinnedKeySet.has(site.key) && !blockedKeys.has(site.key));
+    let rest = orderedSites.filter((site) => !pinnedKeySet.has(site.key) && !blockedKeys.has(site.key));
+    if (quota.bucketLimits) {
+      rest = [...pinnedSites, ...rest];
+      rest = applySiteBucketLimits(
+        rest,
+        quota.bucketLimits,
+        (site) => qualityGradeByKey.get(site.key) || 'untestable',
+        pinnedKeySet,
+      ).filter((site) => !pinnedKeySet.has(site.key));
+    }
 
     // 轻量启动要等远程 JAR 已落到本部署缓存后再下发，避免客户端逐个等待
     // 慢速上游；完整启动模式不做这层裁剪。客户端插件 type=3 源始终保留，
@@ -1551,6 +1587,9 @@ export function createApp(deps: AppDeps): Hono {
     if (typeof body.leanStartup === 'boolean') current.leanStartup = body.leanStartup;
     if (body.startupMode === 'lean' || body.startupMode === 'full') current.startupMode = body.startupMode;
     if (typeof body.pruneDeadParses === 'boolean') current.pruneDeadParses = body.pruneDeadParses;
+    if (body.bucketLimits !== undefined) {
+      current.bucketLimits = normalizeSiteBucketLimits(body.bucketLimits);
+    }
     if (Array.isArray(body.pinnedKeys)) {
       const blocked = new Set(current.blockedKeys || []);
       current.pinnedKeys = [...new Set(body.pinnedKeys.filter((key): key is string => typeof key === 'string'))]
@@ -2924,16 +2963,22 @@ export function createApp(deps: AppDeps): Hono {
       return c.json({ error: 'Unauthorized' }, 401);
     }
 
-    // 读取过滤前的完整配置（含被屏蔽的项），降级到已过滤配置
+    // 管理页需要看到“所有历史源”，包括被黑名单屏蔽的源，因此列表数据以
+    // 黑名单过滤前的完整快照为主。候选资格、屏蔽状态和最终是否真实下发
+    // 分别通过 inFinal / blocked / candidate 字段计算，避免把完整快照的
+    // 源数量误当成最终下发数量。
     const full = await storage.get(KV_MERGED_CONFIG_FULL);
-    const cached = full || await storage.get(KV_MERGED_CONFIG);
-    if (!cached) {
+    const finalRaw = await storage.get(KV_MERGED_CONFIG);
+    const listingRaw = full || finalRaw;
+    if (!listingRaw) {
       return c.json({ sites: [], parses: [], lives: [] });
     }
 
-    let parsed: TVBoxConfig;
+    let listingParsed: TVBoxConfig;
+    let finalParsed: TVBoxConfig;
     try {
-      parsed = JSON.parse(cached);
+      listingParsed = JSON.parse(listingRaw);
+      finalParsed = finalRaw ? JSON.parse(finalRaw) : listingParsed;
     } catch {
       return c.json({ error: 'Config parse error' }, 500);
     }
@@ -2944,31 +2989,27 @@ export function createApp(deps: AppDeps): Hono {
     const liveSet = new Set(blacklist.lives);
 
     // 搜索页必须使用与搜索配额、质量池完全相同的候选集合。
-    // 这里不能简单按 searchable===1 统计：JS URL 等源会在质量分级前被排除，
-    // 直接统计会把“未入选源”混进候选源，导致数字与实际下发口径不一致。
+    // JS HTTP 入口参与服务端可达性/速度分级；timeout/unusable 不下发。
     const qualityPool = await loadQualityPool(storage);
     const qualityEntryMap = new Map(
       (qualityPool?.entries || []).map(entry => [entry.key, entry]),
     );
     const candidateKeySet = candidateKeysFromPool(qualityPool);
-    const searchableCandidateKeys = new Set(
-      (parsed.sites || [])
-        .filter(site => site.searchable === 1)
-        .map(site => site.key),
-    );
-    const candidateReason = (site: TVBoxSite): string => {
+    const finalKeys = new Set((finalParsed.sites || []).map(site => site.key));
+
+    const candidateReason = (site: TVBoxSite, blocked: boolean, inFinal: boolean): string => {
+      if (blocked) return 'blocked';
       const entry = qualityEntryMap.get(site.key);
-      if (!entry) {
-        if (site.type === 3 && /^https?:\/\//.test(site.api || '')) return 'js-url-excluded';
-        if (site.searchable !== 1) return 'not-searchable';
-        return 'not-in-quality-pool';
-      }
-      if (entry.grade === 'timeout') return 'timeout';
-      if (entry.grade === 'unusable') return 'unusable';
-      return 'not-candidate';
+      if (entry?.grade === 'timeout') return 'timeout';
+      if (entry?.grade === 'unusable') return 'unusable';
+      if (!inFinal) return 'not-in-final';
+      if (site.searchable !== 1) return 'not-searchable';
+      if (!entry) return 'not-in-quality-pool';
+      if (!candidateKeySet.has(site.key)) return 'not-candidate';
+      return '';
     };
 
-    // 预编译正则规则用于标记 regexBlocked
+    // 预编译正则规则用于标记 regexBlocked。
     const activeRegexRules = blacklist.regexRules.filter(r => r.enabled);
     const compiledRegex: Array<{ re: RegExp; field: string }> = [];
     for (const rule of activeRegexRules) {
@@ -2976,9 +3017,12 @@ export function createApp(deps: AppDeps): Hono {
     }
     const overrideSet = new Set(blacklist.regexBlockOverrides);
 
-    // Build sites with fingerprint + blocked status + group
+    // Build sites with fingerprint + blocked status + group.
     const sites = [];
-    for (const site of parsed.sites || []) {
+    const seenSiteKeys = new Set<string>();
+    for (const site of listingParsed.sites || []) {
+      if (seenSiteKeys.has(site.key)) continue;
+      seenSiteKeys.add(site.key);
       const fp = await siteFingerprint(site);
       const api = site.api || '';
       let group = '其他';
@@ -2996,38 +3040,53 @@ export function createApp(deps: AppDeps): Hono {
           if (re.test(value)) { regexBlocked = true; regexPattern = re.source; break; }
         }
       }
+      const blocked = fpBlocked || regexBlocked;
+      const inFinal = finalKeys.has(site.key);
+      const isJs = site.type === 3 && /^https?:\/\//.test(site.api || '');
+      const isJar = site.type === 3 || /^https?:\/\//.test(site.jar || '') || /^https?:\/\//.test(typeof site.ext === 'string' ? site.ext : '');
+      const candidate = inFinal && !blocked && site.searchable === 1 && candidateKeySet.has(site.key);
       sites.push({
         ...site,
         fingerprint: fp,
-        blocked: fpBlocked || regexBlocked,
+        blocked,
         regexBlocked,
         regexPattern,
         group,
-        candidate: site.searchable === 1 && candidateKeySet.has(site.key),
-        candidateReason: candidateKeySet.has(site.key) ? undefined : candidateReason(site),
+        inFinal,
+        isJs,
+        isJar,
+        candidate,
+        candidateReason: candidate ? undefined : candidateReason(site, blocked, inFinal),
       });
     }
 
-    const parses = (parsed.parses || []).map(p => ({
+    const parses = (listingParsed.parses || []).map(p => ({
       ...p,
       blocked: parseSet.has(p.url),
     }));
 
-    const lives = (parsed.lives || []).map(l => ({
+    const lives = (listingParsed.lives || []).map(l => ({
       ...l,
       blocked: liveSet.has(l.url || l.api || ''),
     }));
+
+    const currentCandidateKeys = sites
+      .filter(site => site.candidate === true)
+      .map(site => site.key);
+    const searchableKeys = sites
+      .filter(site => site.inFinal && !site.blocked && site.searchable === 1)
+      .map(site => site.key);
 
     return c.json({
       sites,
       parses,
       lives,
       searchQuality: {
-        candidateCount: candidateKeySet.size,
-        searchableCount: searchableCandidateKeys.size,
+        candidateCount: currentCandidateKeys.length,
+        searchableCount: searchableKeys.length,
         qualityPoolTotal: qualityPool?.grades?.poolTotal ?? 0,
         qualitySnapshotTotal: qualityPool?.total ?? 0,
-        candidateKeys: [...candidateKeySet],
+        candidateKeys: currentCandidateKeys,
       },
     });
   });

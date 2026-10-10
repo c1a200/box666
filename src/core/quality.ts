@@ -17,6 +17,7 @@ import type {
 } from './types';
 import type { Storage } from '../storage/interface';
 import { batchSiteSpeedTest, isSiteProbeable, type SiteProbeResult } from './speedtest';
+import { probeJarHealth, applyJarProbeToEntry, isRemoteJarSite, type JarProbeResult } from './jar-health';
 import {
   KV_SEARCH_QUALITY_CANDIDATES,
   KV_SEARCH_QUALITY_POOL,
@@ -476,7 +477,7 @@ export function candidateKeysFromPool(pool: SearchQualitySnapshot | null): Set<s
   if (!pool || !Array.isArray(pool.entries)) return keys;
   for (const entry of pool.entries) {
     const grade = normalizeGrade(entry.grade);
-    if (SERVER_PROBE_GRADES.has(grade)) keys.add(entry.key);
+    if (CANDIDATE_GRADES.has(grade)) keys.add(entry.key);
   }
   return keys;
 }
@@ -543,7 +544,8 @@ export async function runQualityGrading(
   }
 
   const healthMap = options.healthMap ?? await loadHealthMap(storage);
-  const entries = buildQualityEntries(allSearchable, probeMap, previousEntries, healthMap);
+  const jarProbeMap = await probeJarHealth(storage, allSearchable, previousEntries);
+  const entries = buildQualityEntries(allSearchable, probeMap, previousEntries, healthMap, jarProbeMap);
   const snapshot = buildSnapshot(allSearchable.length, entries, allSearchable);
   await persistQualitySnapshot(storage, snapshot);
   await persistQualityCandidates(storage, allSearchable);
@@ -556,6 +558,7 @@ function buildQualityEntries(
   probeMap: Map<string, SiteProbeResult>,
   previousEntries: Map<string, SearchQualitySnapshot['entries'][number]>,
   healthMap: SiteHealthMap,
+  jarProbeMap: Map<string, JarProbeResult> = new Map(),
 ): SearchQualitySnapshot['entries'] {
   const now = new Date().toISOString();
   return searchable.map((site) => {
@@ -588,7 +591,7 @@ function buildQualityEntries(
       : previousEntry
         ? { key: site.key, speedMs: previousEntry.speedMs, result: previousEntry.result }
         : probe;
-    return {
+    const entry: SearchQualitySnapshot['entries'][number] = {
       key: site.key,
       name: site.name || site.key,
       grade: gradeForProbe(effectiveProbe, consecutiveFailures),
@@ -597,6 +600,9 @@ function buildQualityEntries(
       probedAt: freshProbe ? now : previousEntry?.probedAt,
       consecutiveFailures,
     };
+    const jarProbe = jarProbeMap.get(site.key);
+    if (jarProbe) entry.jarProbeResult = jarProbe.result;
+    return isRemoteJarSite(site) ? applyJarProbeToEntry(entry, jarProbe) : entry;
   });
 }
 
@@ -726,7 +732,7 @@ export async function runQualityGradingChunk(
   }
   const start = Math.max(0, Math.floor(cursor));
   if (start >= target.length) {
-    const entries = buildQualityEntries(allSearchable, new Map(), previousEntries, await loadHealthMap(storage));
+    const entries = buildQualityEntries(allSearchable, new Map(), previousEntries, await loadHealthMap(storage), await probeJarHealth(storage, allSearchable, previousEntries));
     const snapshot = buildSnapshot(allSearchable.length, entries, allSearchable);
     await persistQualitySnapshot(storage, snapshot);
     await persistQualityCandidates(storage, allSearchable);

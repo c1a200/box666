@@ -5,6 +5,7 @@ import type { Storage } from '../storage/interface';
 import type {
   ClientAuthCode,
   ClientDistributionConfig,
+  SiteBucketLimits,
   SiteQualityGrade,
   SourceDistributionMode,
 } from './types';
@@ -50,10 +51,11 @@ function randomAuthId(): string {
   return 'auth_' + randomToken(12);
 }
 
-function nonNegativeInteger(value: unknown, fallback = 0): number {
+function parseThreeStateInteger(value: unknown, fallback = 0): number {
   const number = typeof value === 'number' ? value : Number(value);
-  if (!Number.isFinite(number) || number < 0) return fallback;
-  return Math.floor(number);
+  if (!Number.isFinite(number) || !Number.isInteger(number)) return fallback;
+  if (number === -1 || number >= 0) return number;
+  return fallback;
 }
 
 function normalizeStringArray(value: unknown, max = 500): string[] {
@@ -80,6 +82,32 @@ function normalizeSiteTypes(value: unknown): number[] {
       .map((item) => typeof item === 'number' ? item : Number(item))
       .filter((item) => Number.isInteger(item) && item >= 0 && item <= 4),
   )].sort((a, b) => a - b);
+}
+
+function normalizeNumberMap(value: unknown, allowedKeys?: Set<string>): Partial<Record<string, number>> {
+  const source = asRecord(value);
+  const result: Record<string, number> = {};
+  for (const [key, raw] of Object.entries(source)) {
+    if (allowedKeys && !allowedKeys.has(key)) continue;
+    const number = parseThreeStateInteger(raw, Number.NaN);
+    if (!Number.isFinite(number)) continue;
+    // -1 = 全选/不限制；0 = 明确不选；正数 = 保留前 N 个。
+    result[key] = number === -1 ? -1 : Math.max(0, number);
+  }
+  return result;
+}
+
+function normalizeBucketLimits(value: unknown): SiteBucketLimits | undefined {
+  const source = asRecord(value);
+  const quality = normalizeNumberMap(source.quality, new Set(['excellent', 'good', 'usable', 'untestable']));
+  const type = normalizeNumberMap(source.type);
+  const hasQuality = Object.keys(quality).length > 0;
+  const hasType = Object.keys(type).length > 0;
+  if (!hasQuality && !hasType) return undefined;
+  return {
+    ...(hasQuality ? { quality: quality as SiteBucketLimits['quality'] } : {}),
+    ...(hasType ? { type: type as SiteBucketLimits['type'] } : {}),
+  };
 }
 
 function normalizeSourceMode(value: unknown): SourceDistributionMode {
@@ -111,8 +139,9 @@ function normalizeAuthCode(raw: unknown, usedCodes: Set<string>, usedIds: Set<st
     code,
     enabled: entry.enabled !== false,
     sourceMode: normalizeSourceMode(entry.sourceMode),
-    maxSites: nonNegativeInteger(entry.maxSites, 0),
-    maxSearchable: nonNegativeInteger(entry.maxSearchable, 0),
+    maxSites: parseThreeStateInteger(entry.maxSites, -1),
+    maxSearchable: parseThreeStateInteger(entry.maxSearchable, -1),
+    bucketLimits: normalizeBucketLimits(entry.bucketLimits),
     includeGrades: normalizeGrades(entry.includeGrades),
     siteTypes: normalizeSiteTypes(entry.siteTypes),
     selectedKeys: normalizeStringArray(entry.selectedKeys, 2000),
@@ -151,8 +180,9 @@ export function createClientAuthCode(raw: Partial<ClientAuthCode> = {}): ClientA
     code,
     enabled: raw.enabled !== false,
     sourceMode: normalizeSourceMode(raw.sourceMode),
-    maxSites: nonNegativeInteger(raw.maxSites, 0),
-    maxSearchable: nonNegativeInteger(raw.maxSearchable, 0),
+    maxSites: parseThreeStateInteger(raw.maxSites, -1),
+    maxSearchable: parseThreeStateInteger(raw.maxSearchable, -1),
+    bucketLimits: normalizeBucketLimits(raw.bucketLimits),
     includeGrades: normalizeGrades(raw.includeGrades),
     siteTypes: normalizeSiteTypes(raw.siteTypes),
     selectedKeys: normalizeStringArray(raw.selectedKeys, 2000),

@@ -833,9 +833,10 @@ const translations = {
     credentialSourceModeSearch:'Searchable sources only',
     credentialSourceModeSelected:'Selected quality-pool sources only',
     credentialSourceModeCustom:'Custom key whitelist only',
-    credentialMaxSites:'Total sources',
-    credentialMaxSearchable:'Searchable sources',
-    credentialSiteTypes:'Site types',
+    credentialMaxSites:'Total source limit',
+    credentialMaxSearchable:'Searchable source limit',
+    credentialSiteTypes:'Allowed site types',
+    credentialSiteTypesHint:'Leave all unchecked to allow every site type. Checked types are the only site types served.',
     credentialPinnedKeys:'Pinned keys',
     credentialIncludeGrades:'Quality grades',
     credentialRequireAuth:'Require an auth code; root link returns 401',
@@ -859,6 +860,17 @@ const translations = {
     credentialDefaultLabel:'Client',
     credentialRootPolicyFree:'Root link enabled',
     credentialSelectedKeysRequired:'Custom source mode requires at least one selected key.',
+    credentialBucketLimits:'Per-category limits',
+    credentialBucketLimitsHint:'Quality grades and site types can each be set to all, none, or a custom N. Custom keeps the first N in the final quality order; unconfigured entries add no extra limit.',
+    credentialBucketAll:'All / no limit',
+    credentialBucketNone:'Do not serve',
+    credentialBucketCustom:'Custom N',
+    credentialType0:'XML site',
+    credentialType1:'JSON site (MacCMS)',
+    credentialType3:'JAR / extension source',
+    credentialType4:'Remote site',
+    credentialTypeUnknown:'Other type',
+    credentialUncategorizedZero:'Total and searchable source limits use the same all / none / custom choices.',
     footer:'TVBox Source Aggregator &middot; Admin Console',
   },
   zh: {
@@ -964,9 +976,10 @@ const translations = {
     credentialSourceModeSearch:'仅可搜索源',
     credentialSourceModeSelected:'仅质量池精选源',
     credentialSourceModeCustom:'仅自定义 Key 白名单',
-    credentialMaxSites:'总源数量',
-    credentialMaxSearchable:'可搜索源数量',
-    credentialSiteTypes:'站点类型',
+    credentialMaxSites:'总源数量上限',
+    credentialMaxSearchable:'可搜索源数量上限',
+    credentialSiteTypes:'允许的站点类型',
+    credentialSiteTypesHint:'全部不勾选表示允许所有站点类型；勾选后只下发所选的站点类型。',
     credentialPinnedKeys:'置顶 Key',
     credentialIncludeGrades:'质量等级',
     credentialRequireAuth:'强制鉴权（根链接返回 401）',
@@ -990,6 +1003,17 @@ const translations = {
     credentialDefaultLabel:'客户端',
     credentialRootPolicyFree:'根链接已启用',
     credentialSelectedKeysRequired:'“自定义 Key 白名单”模式至少需要填写一个源 Key。',
+    credentialBucketLimits:'分类源数量',
+    credentialBucketLimitsHint:'质量等级和站点类型均可设置为全选、不选或自定义 N；自定义按最终质量顺序保留前 N 个，未设置的项目不额外限制。',
+    credentialBucketAll:'全选 / 不限',
+    credentialBucketNone:'不选',
+    credentialBucketCustom:'自定义 N',
+    credentialType0:'XML 站点',
+    credentialType1:'JSON 站点（MacCMS）',
+    credentialType3:'JAR / 扩展源',
+    credentialType4:'远程站点',
+    credentialTypeUnknown:'其他类型',
+    credentialUncategorizedZero:'总源和可搜索源上限也使用相同的全选、不选或自定义 N 选项。',
     footer:'TVBox 源聚合器 &middot; 管理控制台',
   }
 };
@@ -2214,16 +2238,17 @@ async function loadSearchQuotaReport() {
     if (!cfgRes.ok) return;
     const cfg = await cfgRes.json();
     const allSites = Array.isArray(cfg.sites) ? cfg.sites : [];
+    rememberCredentialSiteTypes(allSites, [...credentialSiteTypes]);
     const rawCandidateKeys = Array.isArray(cfg.searchQuality && cfg.searchQuality.candidateKeys)
       ? cfg.searchQuality.candidateKeys
       : allSites.filter(s => s.candidate === true).map(s => s.key);
-    sqCandidateCount = typeof (cfg.searchQuality && cfg.searchQuality.candidateCount) === 'number'
-      ? cfg.searchQuality.candidateCount
-      : rawCandidateKeys.length;
     if (rawCandidateKeys.length > 0) {
       const candidateKeys = new Set(rawCandidateKeys);
-      sqAllSites = allSites.filter(s => candidateKeys.has(s.key));
-      sqExcludedSites = allSites.filter(s => s.searchable === 1 && !candidateKeys.has(s.key));
+      // 候选源必须同时满足 searchable===1 且存在于当前质量候选池。
+      // 表头和表格统一使用这个交集，避免质量池残留旧 key 时数字不一致。
+      sqAllSites = allSites.filter(s => s.searchable === 1 && candidateKeys.has(s.key));
+      sqExcludedSites = allSites.filter(s => s.searchable === 1 && !candidateKeys.has(s.key)); // 同属最终配置口径
+      sqCandidateCount = sqAllSites.length;
     } else {
       // 质量池尚未生成时按旧口径展示可搜索源，避免把所有源都误判为“未入选”。
       sqAllSites = allSites.filter(s => s.searchable === 1);
@@ -2498,7 +2523,7 @@ let sqExcludedSites = [];
 let sqCandidateCount = 0;
 let sqSearchRenderPending = false;
 let sqLastRenderedHtml = '';
-const sqScrollPositions = { pinned: null, candidate: null, excluded: null };
+const sqScrollPositions = {};
 
 function captureSearchTableScroll() {
   document.querySelectorAll('.sq-table-wrap[data-sq-scroll]').forEach(function(el) {
@@ -2567,9 +2592,12 @@ function qualityGradeLabel(grade) {
 }
 
 function qualityCandidateReasonLabel(reason) {
+  if (reason === 'blocked') return t('sqReasonBlocked');
   if (reason === 'js-url-excluded') return t('sqReasonJsUrlExcluded');
   if (reason === 'timeout') return t('sqReasonTimeout');
   if (reason === 'unusable') return t('sqReasonUnusable');
+  if (reason === 'not-in-final') return t('sqReasonNotInFinal');
+  if (reason === 'not-searchable') return t('sqReasonNotSearchable');
   if (reason === 'not-in-quality-pool') return t('sqReasonNotInPool');
   return t('sqReasonNotCandidate');
 }
@@ -2590,6 +2618,50 @@ function qualitySpeedLabel(entry) {
   return '-';
 }
 
+function isJarSearchSite(site) {
+  return site && (
+    site.type === 3
+    || /^https?:\/\//i.test(String(site.jar || ''))
+    || /^https?:\/\//i.test(typeof site.ext === 'string' ? site.ext : '')
+  );
+}
+
+function isUnavailableSearchSite(site, entry) {
+  return site && (
+    site.unavailable === true
+    || (entry && (entry.grade === 'timeout' || entry.grade === 'unusable'))
+  );
+}
+
+function isUsableSearchSite(site, entry) {
+  if (!site || site.blocked === true || site.searchable !== 1 || site.candidate !== true) return false;
+  if (isUnavailableSearchSite(site, entry)) return false;
+  if (isJarSearchSite(site)) return false;
+  return true;
+}
+
+function searchSiteGradeRank(site, entry) {
+  const grade = entry ? entry.grade : null;
+  if (grade === 'excellent') return 0;
+  if (grade === 'good') return 1;
+  if (grade === 'usable') return 2;
+  if (grade === 'untestable') return 3;
+  if (grade === 'timeout') return 4;
+  if (grade === 'unusable') return 5;
+  return 3;
+}
+
+function compareSearchSites(a, b, qualityMap) {
+  const aEntry = qualityMap.get(a.key);
+  const bEntry = qualityMap.get(b.key);
+  const rankDiff = searchSiteGradeRank(a, aEntry) - searchSiteGradeRank(b, bEntry);
+  if (rankDiff !== 0) return rankDiff;
+  const aSpeed = aEntry && typeof aEntry.speedMs === 'number' && isFinite(aEntry.speedMs) ? aEntry.speedMs : Number.POSITIVE_INFINITY;
+  const bSpeed = bEntry && typeof bEntry.speedMs === 'number' && isFinite(bEntry.speedMs) ? bEntry.speedMs : Number.POSITIVE_INFINITY;
+  if (aSpeed !== bSpeed) return aSpeed - bSpeed;
+  return String(a.name || a.key).localeCompare(String(b.name || b.key), getLang() === 'zh' ? 'zh-CN' : 'en');
+}
+
 function renderSearchSources() {
   if (sqSearchRenderPending) return;
   captureSearchTableScroll();
@@ -2602,7 +2674,7 @@ function renderSearchSources() {
   const matches = function(s) {
     const entry = qualityMap.get(s.key);
     if (gradeFilter === 'blocked') {
-      if (!sqBlockedKeys.has(s.key)) return false;
+      if (!sqBlockedKeys.has(s.key) && s.blocked !== true) return false;
     } else if (gradeFilter !== 'all') {
       if (!entry || entry.grade !== gradeFilter) return false;
     }
@@ -2611,21 +2683,81 @@ function renderSearchSources() {
       || String(s.name || '').toLowerCase().includes(query);
   };
 
-  const pinnedFiltered = pinnedArr.filter(key => {
-    const site = sqAllSites.find(s => s.key === key) || { key: key, name: key };
-    return matches(site);
+  const allSites = sqAllSites.slice().sort(function(a, b) {
+    return compareSearchSites(a, b, qualityMap);
   });
-  const candidateSites = sqAllSites;
-  const unpinnedAll = candidateSites.filter(s => !sqPinnedKeys.has(s.key)).filter(matches);
-  const visibleLimit = 1000;
-  const unpinned = unpinnedAll.slice(0, visibleLimit);
+  const pinnedFiltered = pinnedArr.map(function(key) {
+    return allSites.find(s => s.key === key) || { key: key, name: key };
+  }).filter(matches);
+  const pinnedKeys = new Set(pinnedFiltered.map(s => s.key));
+  const unpinned = allSites.filter(s => !pinnedKeys.has(s.key));
+
+  const blocked = unpinned.filter(s => sqBlockedKeys.has(s.key) || s.blocked === true).filter(matches);
+  const js = unpinned.filter(s => !(sqBlockedKeys.has(s.key) || s.blocked === true) && s.isJs === true).filter(matches);
+  const unavailable = unpinned.filter(s => {
+    const entry = qualityMap.get(s.key);
+    return !(sqBlockedKeys.has(s.key) || s.blocked === true) && s.isJs !== true && isUnavailableSearchSite(s, entry);
+  }).filter(matches);
+  const jar = unpinned.filter(s => {
+    const entry = qualityMap.get(s.key);
+    return !(sqBlockedKeys.has(s.key) || s.blocked === true) && s.isJs !== true
+      && !isUnavailableSearchSite(s, entry) && isJarSearchSite(s);
+  }).filter(matches);
+  const usable = unpinned.filter(s => {
+    const entry = qualityMap.get(s.key);
+    return isUsableSearchSite(s, entry);
+  }).filter(matches);
+  const other = unpinned.filter(s => {
+    const entry = qualityMap.get(s.key);
+    return !(sqBlockedKeys.has(s.key) || s.blocked === true) && s.isJs !== true
+      && !isUnavailableSearchSite(s, entry) && !isJarSearchSite(s) && !isUsableSearchSite(s, entry);
+  }).filter(matches);
 
   const count = $('sqSourceFilterCount');
   if (count) {
     count.textContent = (query || gradeFilter !== 'all')
-      ? t('sqFilterMatched') + ': ' + (pinnedFiltered.length + unpinnedAll.length)
+      ? t('sqFilterMatched') + ': ' + (pinnedFiltered.length + blocked.length + js.length + unavailable.length + jar.length + usable.length + other.length)
       : '';
   }
+
+  const visibleLimit = 1000;
+  const tableHeader = function() {
+    return '<thead><tr><th>' + t('sqKey') + '</th><th>' + t('sqName') + '</th><th>' + t('sqGrade') + '</th><th>' + t('sqSpeedStatus') + '</th><th style="width:120px;text-align:right">' + t('sqAction') + '</th></tr></thead><tbody>';
+  };
+  const tableHeaderWithReason = function() {
+    return '<thead><tr><th>' + t('sqKey') + '</th><th>' + t('sqName') + '</th><th>' + t('sqReason') + '</th><th>' + t('sqSpeedStatus') + '</th><th style="width:120px;text-align:right">' + t('sqAction') + '</th></tr></thead><tbody>';
+  };
+  const row = function(s, withReason) {
+    const isBlocked = sqBlockedKeys.has(s.key) || s.blocked === true;
+    const entry = qualityMap.get(s.key);
+    const grade = entry ? entry.grade : null;
+    let rowHtml = '<tr style="border-bottom:1px solid var(--border)' + (isBlocked ? ';opacity:0.55;text-decoration:line-through' : '') + '">';
+    rowHtml += '<td style="padding:4px;font-family:var(--mono);font-size:0.75rem">' + escHtml(s.key) + '</td>';
+    rowHtml += '<td style="padding:4px">' + escHtml(s.name || s.key) + (isBlocked ? ' <span style="color:var(--red);font-size:0.7rem">' + t('sqBlocked') + '</span>' : '') + '</td>';
+    if (withReason) {
+      rowHtml += '<td style="padding:4px;white-space:nowrap;color:var(--text-secondary)">' + escHtml(qualityCandidateReasonLabel(s.candidateReason)) + '</td>';
+    } else {
+      rowHtml += '<td style="padding:4px;white-space:nowrap;color:' + qualityGradeColor(grade) + '">' + qualityGradeLabel(grade) + '</td>';
+    }
+    rowHtml += '<td style="padding:4px;white-space:nowrap;font-family:var(--mono);font-size:0.75rem">' + qualitySpeedLabel(entry) + '</td>';
+    rowHtml += '<td style="padding:4px;width:120px;text-align:right;white-space:nowrap">';
+    if (!isBlocked) rowHtml += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem" onclick="togglePin(&quot;' + escHtml(s.key) + '&quot;)">' + t('sqPin') + '</button> ';
+    rowHtml += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem;color:var(--red)" onclick="toggleBlocked(&quot;' + escHtml(s.key) + '&quot;)">' + (isBlocked ? t('sqUnblock') : t('sqBlock')) + '</button>';
+    rowHtml += '</td></tr>';
+    return rowHtml;
+  };
+  const section = function(titleKey, descKey, scrollKey, items, withReason, wrapClass) {
+    if (items.length === 0) return '';
+    let out = '<div style="margin-top:18px;margin-bottom:8px"><strong>' + t(titleKey) + ' (' + items.length + ')</strong></div>';
+    out += '<div style="margin-bottom:6px;font-size:0.75rem;color:var(--text-secondary)">' + t(descKey) + '</div>';
+    out += '<div class="sq-table-wrap' + (wrapClass ? ' ' + wrapClass : '') + '" data-sq-scroll="' + scrollKey + '"><table class="sq-table">';
+    out += withReason ? tableHeaderWithReason() : tableHeader();
+    const visible = items.slice(0, visibleLimit);
+    visible.forEach(function(s) { out += row(s, withReason); });
+    if (items.length > visibleLimit) out += '<tr><td colspan="5" style="padding:4px;color:var(--text-secondary)">... +' + (items.length - visibleLimit) + ' more</td></tr>';
+    out += '</tbody></table></div>';
+    return out;
+  };
 
   let html = '';
   if (pinnedFiltered.length > 0) {
@@ -2633,84 +2765,43 @@ function renderSearchSources() {
     html += ' <span style="font-size:0.75rem;color:var(--text-secondary)">— ' + t('sqPinnedDesc') + '</span></div>';
     html += '<div class="sq-table-wrap is-pinned" data-sq-scroll="pinned"><table class="sq-table">';
     html += '<thead><tr><th style="width:30px">#</th><th>' + t('sqKey') + '</th><th>' + t('sqName') + '</th><th>' + t('sqGrade') + '</th><th>' + t('sqSpeedStatus') + '</th><th style="width:190px;text-align:right">' + t('sqAction') + '</th></tr></thead><tbody>';
-    pinnedFiltered.forEach(function(key) {
-      const s = sqAllSites.find(item => item.key === key) || { key: key, name: key };
-      const entry = qualityMap.get(key);
+    pinnedFiltered.forEach(function(s, index) {
+      const entry = qualityMap.get(s.key);
       const grade = entry ? entry.grade : null;
-      const i = pinnedArr.indexOf(key);
       html += '<tr style="border-bottom:1px solid var(--border);background:var(--bg-hover)">';
-      html += '<td style="padding:4px;width:30px;color:var(--text-secondary)">' + (i + 1) + '</td>';
+      html += '<td style="padding:4px;width:30px;color:var(--text-secondary)">' + (index + 1) + '</td>';
       html += '<td style="padding:4px;font-family:var(--mono);font-size:0.75rem">' + escHtml(s.key) + '</td>';
       html += '<td style="padding:4px">' + escHtml(s.name || s.key) + '</td>';
       html += '<td style="padding:4px;white-space:nowrap;color:' + qualityGradeColor(grade) + '">' + qualityGradeLabel(grade) + '</td>';
       html += '<td style="padding:4px;white-space:nowrap;font-family:var(--mono);font-size:0.75rem">' + qualitySpeedLabel(entry) + '</td>';
       html += '<td style="padding:4px;width:190px;text-align:right;white-space:nowrap">';
-      if (i > 0) html += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem" onclick="movePinned(' + i + ',-1)">▲</button> ';
-      if (i < pinnedArr.length - 1) html += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem" onclick="movePinned(' + i + ',1)">▼</button> ';
-      html += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem;color:var(--red)" onclick="togglePin(&quot;' + escHtml(key) + '&quot;)">' + t('sqUnpin') + '</button> ';
-      html += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem;color:var(--red)" onclick="toggleBlocked(&quot;' + escHtml(key) + '&quot;)">' + t('sqBlock') + '</button>';
+      if (index > 0) html += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem" onclick="movePinned(' + index + ',-1)">▲</button> ';
+      if (index < pinnedFiltered.length - 1) html += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem" onclick="movePinned(' + index + ',1)">▼</button> ';
+      html += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem;color:var(--red)" onclick="togglePin(&quot;' + escHtml(s.key) + '&quot;)">' + t('sqUnpin') + '</button> ';
+      html += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem;color:var(--red)" onclick="toggleBlocked(&quot;' + escHtml(s.key) + '&quot;)">' + t('sqBlock') + '</button>';
       html += '</td></tr>';
     });
     html += '</tbody></table></div>';
   }
 
-  html += '<div style="margin-top:16px;margin-bottom:8px"><strong>' + t('sqOtherSources') + ' (' + (sqCandidateCount || candidateSites.length) + ')</strong></div>';
-  html += '<div style="margin-bottom:6px;font-size:0.75rem;color:var(--text-secondary)">' + t('sqCandidateDesc') + '</div>';
-  html += '<div class="sq-table-wrap" data-sq-scroll="candidate"><table class="sq-table">';
-  html += '<thead><tr><th>' + t('sqKey') + '</th><th>' + t('sqName') + '</th><th>' + t('sqGrade') + '</th><th>' + t('sqSpeedStatus') + '</th><th style="width:120px;text-align:right">' + t('sqAction') + '</th></tr></thead><tbody>';
-  unpinned.forEach(function(s) {
-    const isBlocked = sqBlockedKeys.has(s.key);
-    const entry = qualityMap.get(s.key);
-    const grade = entry ? entry.grade : null;
-    html += '<tr style="border-bottom:1px solid var(--border)' + (isBlocked ? ';opacity:0.55;text-decoration:line-through' : '') + '">';
-    html += '<td style="padding:4px;font-family:var(--mono);font-size:0.75rem">' + escHtml(s.key) + '</td>';
-    html += '<td style="padding:4px">' + escHtml(s.name || s.key) + (isBlocked ? ' <span style="color:var(--red);font-size:0.7rem">' + t('sqBlocked') + '</span>' : '') + '</td>';
-    html += '<td style="padding:4px;white-space:nowrap;color:' + qualityGradeColor(grade) + '">' + qualityGradeLabel(grade) + '</td>';
-    html += '<td style="padding:4px;white-space:nowrap;font-family:var(--mono);font-size:0.75rem">' + qualitySpeedLabel(entry) + '</td>';
-    html += '<td style="padding:4px;width:120px;text-align:right;white-space:nowrap">';
-    if (!isBlocked) html += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem" onclick="togglePin(&quot;' + escHtml(s.key) + '&quot;)">' + t('sqPin') + '</button> ';
-    html += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem;color:var(--red)" onclick="toggleBlocked(&quot;' + escHtml(s.key) + '&quot;)">' + (isBlocked ? t('sqUnblock') : t('sqBlock')) + '</button>';
-    html += '</td>';
-    html += '</tr>';
-  });
-  if (unpinnedAll.length > visibleLimit) html += '<tr><td colspan="5" style="padding:4px;color:var(--text-secondary)">... +' + (unpinnedAll.length - visibleLimit) + ' more</td></tr>';
-  if (unpinnedAll.length === 0) html += '<tr><td colspan="5" style="padding:8px;color:var(--text-secondary)">' + t('sqFilterNoMatch') + '</td></tr>';
-  html += '</tbody></table></div>';
+  html += section('sqUsableSources', 'sqUsableDesc', 'usable', usable, false);
+  html += section('sqJarSources', 'sqJarDesc', 'jar', jar, false);
+  html += section('sqJsSources', 'sqJsDesc', 'js', js, false);
+  html += section('sqUnavailableSources', 'sqUnavailableDesc', 'unavailable', unavailable, true);
+  html += section('sqBlockedSources', 'sqBlockedDesc', 'blocked', blocked, true);
+  html += section('sqOtherSources', 'sqCandidateDesc', 'other', other, true);
 
-  const excludedFiltered = sqExcludedSites.filter(matches);
-  if (excludedFiltered.length > 0) {
-    const excludedVisible = excludedFiltered.slice(0, visibleLimit);
-    html += '<div style="margin-top:20px;margin-bottom:8px"><strong>' + t('sqExcludedSources') + ' (' + excludedFiltered.length + ')</strong></div>';
-    html += '<div style="margin-bottom:6px;font-size:0.75rem;color:var(--text-secondary)">' + t('sqExcludedDesc') + '</div>';
-    html += '<div class="sq-table-wrap" data-sq-scroll="excluded"><table class="sq-table">';
-    html += '<thead><tr><th>' + t('sqKey') + '</th><th>' + t('sqName') + '</th><th>' + t('sqReason') + '</th><th>' + t('sqSpeedStatus') + '</th><th style="width:120px;text-align:right">' + t('sqAction') + '</th></tr></thead><tbody>';
-    excludedVisible.forEach(function(s) {
-      const isBlocked = sqBlockedKeys.has(s.key);
-      const entry = qualityMap.get(s.key);
-      const grade = entry ? entry.grade : null;
-      html += '<tr style="border-bottom:1px solid var(--border)' + (isBlocked ? ';opacity:0.55;text-decoration:line-through' : '') + '">';
-      html += '<td style="padding:4px;font-family:var(--mono);font-size:0.75rem">' + escHtml(s.key) + '</td>';
-      html += '<td style="padding:4px">' + escHtml(s.name || s.key) + (isBlocked ? ' <span style="color:var(--red);font-size:0.7rem">' + t('sqBlocked') + '</span>' : '') + '</td>';
-      html += '<td style="padding:4px;white-space:nowrap;color:var(--text-secondary)">' + escHtml(qualityCandidateReasonLabel(s.candidateReason)) + '</td>';
-      html += '<td style="padding:4px;white-space:nowrap;font-family:var(--mono);font-size:0.75rem">' + qualitySpeedLabel(entry) + '</td>';
-      html += '<td style="padding:4px;width:120px;text-align:right;white-space:nowrap">';
-      html += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem;color:var(--red)" onclick="toggleBlocked(&quot;' + escHtml(s.key) + '&quot;)">' + (isBlocked ? t('sqUnblock') : t('sqBlock')) + '</button>';
-      html += '</td></tr>';
-    });
-    if (excludedFiltered.length > visibleLimit) html += '<tr><td colspan="5" style="padding:4px;color:var(--text-secondary)">... +' + (excludedFiltered.length - visibleLimit) + ' more</td></tr>';
-    html += '</tbody></table></div>';
+  if (usable.length + jar.length + js.length + unavailable.length + blocked.length + other.length === 0 && pinnedFiltered.length === 0) {
+    html += '<div style="padding:8px;color:var(--text-secondary)">' + t('sqFilterNoMatch') + '</div>';
   }
 
-  // Polling should not replace an unchanged table. Replacing it would reset
-  // scroll position and interrupt a scrollbar drag even when nothing changed.
   if (html === sqLastRenderedHtml) return;
   sqLastRenderedHtml = html;
   $('sqSelectedTable').innerHTML = html;
-  // Restore first: setting scrollTop before binding avoids treating the
-  // programmatic restore as a user scroll and re-rendering in a loop.
   restoreSearchTableScroll();
   bindSearchTableScroll();
 }
+
 async function movePinned(index, direction) {
   const arr = [...sqPinnedKeys];
   const target = index + direction;
@@ -2850,6 +2941,69 @@ let credentialDistribution = {
 
 const CLIENT_SOURCE_MODES = ['all', 'search', 'selected', 'custom'];
 const CLIENT_GRADES = ['excellent', 'good', 'usable', 'untestable'];
+const CLIENT_BUCKET_QUALITY_KEYS = ['excellent', 'good', 'usable', 'untestable'];
+const KNOWN_CLIENT_SITE_TYPE_KEYS = ['0', '1', '3', '4'];
+let credentialSiteTypes = new Set();
+
+function normalizeCredentialSiteTypeKey(value) {
+  const type = Number(value);
+  return Number.isFinite(type) && Number.isInteger(type) && type >= 0 ? String(type) : '';
+}
+
+function rememberCredentialSiteTypes(sites, configuredTypes) {
+  const next = new Set();
+  for (const site of Array.isArray(sites) ? sites : []) {
+    const key = normalizeCredentialSiteTypeKey(site && site.type);
+    if (key) next.add(key);
+  }
+  for (const value of Array.isArray(configuredTypes) ? configuredTypes : []) {
+    const key = normalizeCredentialSiteTypeKey(value);
+    if (key) next.add(key);
+  }
+  credentialSiteTypes = next;
+}
+
+function credentialTypeLabel(key) {
+  const labels = { '0': t('credentialType0'), '1': t('credentialType1'), '3': t('credentialType3'), '4': t('credentialType4') };
+  return labels[key] || t('credentialTypeUnknown');
+}
+
+function normalizeClientBucketMap(raw, allowedKeys) {
+  const out = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  const keys = Array.isArray(allowedKeys) ? allowedKeys : Object.keys(raw);
+  for (const key of keys) {
+    const value = raw[key];
+    if (typeof value !== 'number' || !Number.isFinite(value)) continue;
+    const limit = Math.floor(value);
+    if (limit === -1) out[key] = -1;
+    else if (limit >= 0) out[key] = limit;
+  }
+  return out;
+}
+
+function normalizeClientBucketLimits(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const quality = normalizeClientBucketMap(raw.quality, CLIENT_BUCKET_QUALITY_KEYS);
+  const type = normalizeClientBucketMap(raw.type);
+  const result = {};
+  if (Object.keys(quality).length) result.quality = quality;
+  if (Object.keys(type).length) result.type = type;
+  return Object.keys(result).length ? result : undefined;
+}
+
+function parseCredentialLimit(value, fallback) {
+  const number = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(number) || !Number.isInteger(number)) return fallback;
+  if (number === -1 || number >= 0) return number;
+  return fallback;
+}
+
+function clientLimitLabel(value) {
+  if (value === -1) return t('credentialBucketAll');
+  if (value === 0) return t('credentialBucketNone');
+  return t('credentialBucketCustom') + ' ' + value;
+}
 
 function normalizeClientAuthCode(item, index) {
   const now = new Date().toISOString();
@@ -2860,8 +3014,9 @@ function normalizeClientAuthCode(item, index) {
     code: (item && item.code) || '',
     enabled: !item || item.enabled !== false,
     sourceMode,
-    maxSites: Math.max(0, Number.parseInt((item && item.maxSites) || 0, 10) || 0),
-    maxSearchable: Math.max(0, Number.parseInt((item && item.maxSearchable) || 0, 10) || 0),
+    maxSites: parseCredentialLimit(item && item.maxSites, -1),
+    maxSearchable: parseCredentialLimit(item && item.maxSearchable, -1),
+    bucketLimits: normalizeClientBucketLimits(item && item.bucketLimits),
     includeGrades: Array.isArray(item && item.includeGrades) ? item.includeGrades.filter((grade) => CLIENT_GRADES.includes(grade)) : [],
     siteTypes: Array.isArray(item && item.siteTypes)
       ? [...new Set(item.siteTypes.map((value) => Number.parseInt(value, 10)).filter((value) => Number.isFinite(value) && value >= 0))]
@@ -2889,8 +3044,8 @@ function newCredentialAuthCode() {
     code: random,
     enabled: true,
     sourceMode: 'all',
-    maxSites: 0,
-    maxSearchable: 0,
+    maxSites: -1,
+    maxSearchable: -1,
     includeGrades: [],
     siteTypes: [],
     selectedKeys: [],
@@ -2915,10 +3070,10 @@ function sourceModeLabel(mode) {
 
 function credentialModeSummary(item) {
   const parts = [sourceModeLabel(item.sourceMode)];
-  if (item.maxSites > 0) parts.push(t('credentialMaxSites') + ' ' + item.maxSites);
-  if (item.maxSearchable > 0) parts.push(t('credentialMaxSearchable') + ' ' + item.maxSearchable);
+  parts.push(t('credentialMaxSites') + ' ' + clientLimitLabel(item.maxSites));
+  parts.push(t('credentialMaxSearchable') + ' ' + clientLimitLabel(item.maxSearchable));
   if (item.includeGrades && item.includeGrades.length) parts.push(item.includeGrades.join('/'));
-  if (item.siteTypes && item.siteTypes.length) parts.push(t('credentialSiteTypes') + ' ' + item.siteTypes.join(','));
+  if (item.siteTypes && item.siteTypes.length) parts.push(t('credentialSiteTypes') + ' ' + item.siteTypes.map((value) => credentialTypeLabel(String(value))).join(' / '));
   if (item.selectedKeys && item.selectedKeys.length) parts.push(t('credentialSelectedKeys') + ' ' + item.selectedKeys.length);
   if (item.pinnedKeys && item.pinnedKeys.length) parts.push(t('credentialPinnedKeys') + ' ' + item.pinnedKeys.length);
   return parts.join(' · ');
@@ -2932,6 +3087,68 @@ function addLabeledInput(container, labelText, input) {
   wrap.appendChild(label);
   wrap.appendChild(input);
   container.appendChild(wrap);
+  return wrap;
+}
+
+function createCredentialLimitControl(labelText, value, onChange) {
+  const wrap = document.createElement('div');
+  const label = document.createElement('label');
+  label.className = 'form-label';
+  label.textContent = labelText;
+  wrap.appendChild(label);
+
+  const row = document.createElement('div');
+  row.className = 'credential-inline';
+  row.style.gap = '6px';
+  const select = document.createElement('select');
+  select.className = 'nt-input';
+  select.style.minWidth = '112px';
+  [['none', t('credentialBucketNone')], ['all', t('credentialBucketAll')], ['custom', t('credentialBucketCustom')]].forEach(([optionValue, text]) => {
+    const option = document.createElement('option');
+    option.value = optionValue;
+    option.textContent = text;
+    select.appendChild(option);
+  });
+  const number = document.createElement('input');
+  number.type = 'number';
+  number.min = '1';
+  number.className = 'nt-input';
+  number.style.width = '80px';
+  number.placeholder = 'N';
+
+  let current = value;
+  const sync = () => {
+    if (current === -1) {
+      select.value = 'all';
+      number.value = '';
+    } else if (current === 0) {
+      select.value = 'none';
+      number.value = '';
+    } else {
+      select.value = 'custom';
+      number.value = String(current);
+    }
+    number.disabled = select.value !== 'custom';
+  };
+  const commit = (next) => {
+    current = next;
+    sync();
+    onChange(current);
+  };
+  select.onchange = () => {
+    if (select.value === 'all') commit(-1);
+    else if (select.value === 'none') commit(0);
+    else commit(Math.max(1, parseInt(number.value, 10) || 1));
+  };
+  number.oninput = () => {
+    if (select.value !== 'custom') return;
+    current = Math.max(1, parseInt(number.value, 10) || 1);
+    onChange(current);
+  };
+  sync();
+  row.appendChild(select);
+  row.appendChild(number);
+  wrap.appendChild(row);
   return wrap;
 }
 
@@ -3008,31 +3225,144 @@ function renderCredentialDistribution() {
     modeSelect.onchange = () => { item.sourceMode = modeSelect.value; item.updatedAt = new Date().toISOString(); renderCredentialDistribution(); };
     addLabeledInput(grid, t('credentialSourceMode'), modeSelect);
 
-    const maxSitesInput = document.createElement('input');
-    maxSitesInput.type = 'number';
-    maxSitesInput.min = '0';
-    maxSitesInput.className = 'nt-input';
-    maxSitesInput.value = item.maxSites || 0;
-    maxSitesInput.oninput = () => { item.maxSites = Math.max(0, parseInt(maxSitesInput.value, 10) || 0); item.updatedAt = new Date().toISOString(); };
-    addLabeledInput(grid, t('credentialMaxSites'), maxSitesInput);
-
-    const maxSearchableInput = document.createElement('input');
-    maxSearchableInput.type = 'number';
-    maxSearchableInput.min = '0';
-    maxSearchableInput.className = 'nt-input';
-    maxSearchableInput.value = item.maxSearchable || 0;
-    maxSearchableInput.oninput = () => { item.maxSearchable = Math.max(0, parseInt(maxSearchableInput.value, 10) || 0); item.updatedAt = new Date().toISOString(); };
-    addLabeledInput(grid, t('credentialMaxSearchable'), maxSearchableInput);
-
-    const typesInput = document.createElement('input');
-    typesInput.className = 'nt-input';
-    typesInput.placeholder = '0,1,3';
-    typesInput.value = (item.siteTypes || []).join(',');
-    typesInput.oninput = () => {
-      item.siteTypes = [...new Set(typesInput.value.split(',').map((value) => parseInt(value.trim(), 10)).filter((value) => Number.isFinite(value) && value >= 0))];
+    grid.appendChild(createCredentialLimitControl(t('credentialMaxSites'), item.maxSites, (value) => {
+      item.maxSites = value;
       item.updatedAt = new Date().toISOString();
-    };
-    addLabeledInput(grid, t('credentialSiteTypes'), typesInput);
+      summary.textContent = credentialModeSummary(item);
+    }));
+
+    grid.appendChild(createCredentialLimitControl(t('credentialMaxSearchable'), item.maxSearchable, (value) => {
+      item.maxSearchable = value;
+      item.updatedAt = new Date().toISOString();
+      summary.textContent = credentialModeSummary(item);
+    }));
+
+    // 分桶数量：全选=-1，不选=0，正数=保留前 N 个。
+    const bucketPanel = document.createElement('div');
+    bucketPanel.className = 'credential-platform-grid';
+    bucketPanel.style.gridColumn = '1 / -1';
+    const bucketTitle = document.createElement('div');
+    bucketTitle.className = 'form-label';
+    bucketTitle.style.gridColumn = '1 / -1';
+    bucketTitle.textContent = t('credentialBucketLimits');
+    bucketPanel.appendChild(bucketTitle);
+    const bucketHint = document.createElement('div');
+    bucketHint.className = 'credential-help';
+    bucketHint.style.gridColumn = '1 / -1';
+    bucketHint.textContent = t('credentialBucketLimitsHint') + ' ' + t('credentialUncategorizedZero');
+    bucketPanel.appendChild(bucketHint);
+    const qualityBuckets = [
+      { key: 'excellent', label: t('sqExcellent') },
+      { key: 'good', label: t('sqGood') },
+      { key: 'usable', label: t('sqUsable') },
+      { key: 'untestable', label: t('sqUntestable') },
+    ];
+    const typeBuckets = [...credentialSiteTypes]
+      .sort((a, b) => {
+        const ai = KNOWN_CLIENT_SITE_TYPE_KEYS.indexOf(a);
+        const bi = KNOWN_CLIENT_SITE_TYPE_KEYS.indexOf(b);
+        if (ai === -1 && bi === -1) return Number(a) - Number(b);
+        if (ai === -1) return 1;
+        if (bi === -1) return -1;
+        return ai - bi;
+      })
+      .map((key) => ({ key, label: credentialTypeLabel(key) }));
+    function addBucketRow(key, label, group) {
+      const row = document.createElement('div');
+      row.className = 'credential-inline';
+      row.style.gap = '6px';
+      const name = document.createElement('span');
+      name.style.minWidth = '128px';
+      name.style.fontSize = '0.8rem';
+      name.textContent = label;
+      const select = document.createElement('select');
+      select.className = 'nt-input';
+      select.style.width = '112px';
+      [['all', t('credentialBucketAll')], ['none', t('credentialBucketNone')], ['custom', t('credentialBucketCustom')]].forEach(([value, text]) => {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = text;
+        select.appendChild(option);
+      });
+      const number = document.createElement('input');
+      number.type = 'number';
+      number.min = '1';
+      number.className = 'nt-input';
+      number.style.width = '88px';
+      number.placeholder = 'N';
+      const current = item.bucketLimits && item.bucketLimits[group] ? item.bucketLimits[group][key] : undefined;
+      const setBucket = (value) => {
+        if (!item.bucketLimits) item.bucketLimits = {};
+        if (!item.bucketLimits[group]) item.bucketLimits[group] = {};
+        item.bucketLimits[group][key] = value;
+        item.updatedAt = new Date().toISOString();
+        summary.textContent = credentialModeSummary(item);
+      };
+      if (typeof current === 'number' && current > 0) {
+        select.value = 'custom';
+        number.value = String(current);
+      } else if (current === 0) {
+        select.value = 'none';
+      } else if (current === -1) {
+        select.value = 'all';
+      } else {
+        select.value = 'all';
+      }
+      number.disabled = select.value !== 'custom';
+      select.onchange = () => {
+        if (select.value === 'all') setBucket(-1);
+        else if (select.value === 'none') setBucket(0);
+        else setBucket(Math.max(1, parseInt(number.value, 10) || 1));
+        number.disabled = select.value !== 'custom';
+        if (select.value === 'custom' && !number.value) number.value = '1';
+      };
+      number.oninput = () => {
+        if (select.value !== 'custom') return;
+        setBucket(Math.max(1, parseInt(number.value, 10) || 1));
+      };
+      row.appendChild(name);
+      row.appendChild(select);
+      row.appendChild(number);
+      bucketPanel.appendChild(row);
+    }
+    qualityBuckets.forEach((bucket) => addBucketRow(bucket.key, bucket.label, 'quality'));
+    typeBuckets.forEach((bucket) => addBucketRow(bucket.key, bucket.label, 'type'));
+    card.appendChild(bucketPanel);
+
+    const typesBox = document.createElement('div');
+    typesBox.className = 'credential-platform-grid';
+    typesBox.style.gridColumn = '1 / -1';
+    const typesTitle = document.createElement('div');
+    typesTitle.className = 'form-label';
+    typesTitle.style.gridColumn = '1 / -1';
+    typesTitle.textContent = t('credentialSiteTypes');
+    typesBox.appendChild(typesTitle);
+    const typesHint = document.createElement('div');
+    typesHint.className = 'credential-help';
+    typesHint.style.gridColumn = '1 / -1';
+    typesHint.textContent = t('credentialSiteTypesHint');
+    typesBox.appendChild(typesHint);
+    const selectedTypes = new Set(item.siteTypes || []);
+    for (const bucket of typeBuckets) {
+      const label = document.createElement('label');
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = selectedTypes.has(Number(bucket.key));
+      checkbox.onchange = () => {
+        const next = new Set(item.siteTypes || []);
+        if (checkbox.checked) next.add(Number(bucket.key));
+        else next.delete(Number(bucket.key));
+        item.siteTypes = [...next].sort((a, b) => a - b);
+        item.updatedAt = new Date().toISOString();
+        summary.textContent = credentialModeSummary(item);
+      };
+      const span = document.createElement('span');
+      span.textContent = bucket.label;
+      label.appendChild(checkbox);
+      label.appendChild(span);
+      typesBox.appendChild(label);
+    }
+    grid.appendChild(typesBox);
 
     const selectedInput = document.createElement('input');
     selectedInput.className = 'nt-input';
@@ -3113,13 +3443,21 @@ function copyClientLink(link) {
 
 async function loadCredentialDistribution() {
   try {
-    const res = await auth.authFetch('/admin/client-distribution');
-    if (!res.ok) return;
-    const data = await res.json();
+    const [res, cfgRes] = await Promise.all([
+      auth.authFetch('/admin/client-distribution'),
+      auth.authFetch('/admin/config-data'),
+    ]);
+    const cfg = cfgRes.ok ? await cfgRes.json() : {};
+    const data = res.ok ? await res.json() : {};
     credentialDistribution = {
       requireAuth: data.requireAuth === true,
       authCodes: Array.isArray(data.authCodes) ? data.authCodes.map(normalizeClientAuthCode) : [],
     };
+    const configuredTypes = credentialDistribution.authCodes.flatMap((item) => [
+      ...(item.siteTypes || []),
+      ...Object.keys((item.bucketLimits && item.bucketLimits.type) || {}),
+    ]);
+    rememberCredentialSiteTypes(cfg.sites, configuredTypes);
     syncCredentialDistributionForm();
   } catch {}
 }

@@ -221,6 +221,13 @@ export interface EdgeProxyConfig {
 // 源分发策略：all=全部候选源，search=仅可搜索源，selected=仅质量池精选源，custom=自定义筛选
 export type SourceDistributionMode = 'all' | 'search' | 'selected' | 'custom';
 
+// 源分发分桶上限。
+// 未配置=不额外限制；0=该分类一个都不下发；-1=该分类全部下发；正数=按最终顺序保留前 N 个。
+export interface SiteBucketLimits {
+  quality?: Partial<Record<'excellent' | 'good' | 'usable' | 'untestable', number>>;
+  type?: Partial<Record<string, number>>;
+}
+
 // 单个客户端鉴权码（不同码可下发不同的源种类和数量）
 export interface ClientAuthCode {
   id: string;
@@ -230,6 +237,7 @@ export interface ClientAuthCode {
   sourceMode: SourceDistributionMode;
   maxSites: number;
   maxSearchable: number;
+  bucketLimits?: SiteBucketLimits;
   includeGrades: SiteQualityGrade[];
   siteTypes: number[];
   selectedKeys: string[];
@@ -257,6 +265,7 @@ export interface SearchQuotaConfig {
   startupMode?: 'lean' | 'full';// 客户端根配置模式：lean=快速启动，full=完整功能
   pruneDeadParses?: boolean;    // 聚合时探测并剔除确认失效的解析器
   maxParses?: number;           // 健康解析器上限，0 = 不限制
+  bucketLimits?: SiteBucketLimits; // 根链接按质量等级/站点类型的数量上限
   blockedKeys?: string[];            // 显式屏蔽的源 key：优先于置顶/质量分级，仍保留在后台列表中以便恢复
   quotaSchemaVersion?: number;  // 自动配额迁移版本
 }
@@ -314,6 +323,14 @@ export interface SearchQualityEntry {
   result: 'ok' | 'empty' | 'error' | 'timeout' | 'not_probed';
   probedAt?: string;
   consecutiveFailures: number;
+  // JAR/远程扩展的服务端元数据预检。失败是软降级，不等于客户端执行失败。
+  jarProbeResult?: 'ok' | 'error' | 'timeout' | 'not_probed';
+  jarSpeedMs?: number | null;
+  jarHttpStatus?: number;
+  jarBytes?: number;
+  jarMd5Verified?: boolean;
+  jarZipValid?: boolean;
+  jarCached?: boolean;
 }
 
 export interface SearchQualityThresholds {

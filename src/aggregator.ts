@@ -17,7 +17,7 @@ import { transformSiteNames } from './core/cleaner';
 import { parseConfigJson, type FetchProxyConfig } from './core/fetcher';
 import { stableJsonEqual } from './core/stable-json';
 import { scrapeSourceList, scrapeMacCMSSources, type ScrapeSourceConfig, type ScrapeMacCMSConfig } from './core/source-scraper';
-import { loadSearchQuota, applySearchQuota, excludeJsUrlSites, probeAndPruneParses } from './core/search-quota';
+import { loadSearchQuota, applySearchQuota, probeAndPruneParses } from './core/search-quota';
 import { loadGroupOrder, applyGroupOrder } from './core/group-order';
 import { deduplicateSimilarNames } from './core/dedup';
 import { logger } from './core/logger';
@@ -297,18 +297,8 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
   merged = cleanEmptyEntries(merged);
   merged = cleanLocalRefs(merged);
 
-  // Step 4.7: 提前排除 type=3 + URL 的 JS 源，避免对不可搜索源做无意义的站点测速
-  let quotaTotalSites = 0;
-  let quotaJsExcluded = 0;
-  if (merged.sites) {
-    quotaTotalSites = merged.sites.length;
-    const jsExclusion = excludeJsUrlSites(merged.sites);
-    merged.sites = jsExclusion.sites;
-    quotaJsExcluded = jsExclusion.jsExcluded;
-    if (quotaJsExcluded > 0) {
-      logger.infoFields('aggregation', 'search-quota-js-excluded', { jsExcluded: quotaJsExcluded });
-    }
-  }
+  // JS HTTP 入口不再提前排除：它们可复用站点 HTTP 探针做质量排序，
+  // 最终脚本执行仍由客户端完成。
 
   // Step 5.5: 名称定制（清洗推广文字 + 前缀后缀）
   const ntRaw = await storage.get(KV_NAME_TRANSFORM);
@@ -650,8 +640,6 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
       probeMap: siteProbeMap,
       healthMap: siteHealthMap,
       qualityPool,
-      jsExcluded: quotaJsExcluded,
-      totalSites: quotaTotalSites,
     });
     merged.sites = quotaSites;
 
