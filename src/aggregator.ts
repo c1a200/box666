@@ -4,7 +4,6 @@ import type { Storage } from './storage/interface';
 import type { AppConfig, SourceEntry, SourcedConfig, MacCMSSourceEntry, SourceFetchResult, SourceHealthRecord, AggregationLog, AggLogFailedSource, AggLogSiteChange, TVBoxSite, TVBoxLive, SiteHealthMap, SiteContract } from './core/types';
 import { fetchConfigs } from './core/fetcher';
 import { mergeConfigs, cleanLocalRefs, cleanEmptyEntries } from './core/merger';
-import { applyLegacyWoggCompatibility, migrateLegacyWoggCompatibility } from './core/cf-compat';
 import { batchSiteSpeedTest, appendSpeedToName, filterUnreachableSites, type SiteProbeResult } from './core/speedtest';
 import { isClientCredentialSite, getDirectPlatformFromApi } from './core/credential-risk';
 import { macCMSToTVBoxSites, processMacCMSForLocal } from './core/maccms';
@@ -251,32 +250,6 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
   let merged = mergeResult.config;
   const { siteSourceMap, siteUpstreamMap, parseSourceMap, liveSourceMap } = mergeResult;
 
-  // Deployment-agnostic compatibility: the deprecated WoGGGuard shell does
-  // not honor the project's Pan.init credential protocol. Each deployment keeps
-  // its own KV/config data; only this legacy entry is repaired in place.
-  const woggMigration = migrateLegacyWoggCompatibility(merged);
-  if (woggMigration.changed) {
-    logger.infoFields('aggregation', 'legacy-woggguard-migrated', {
-      key: '玩偶',
-      renamed: woggMigration.keyMigrations.length,
-    });
-  }
-  // 兼容迁移可能重命名 key；来源边界/来源映射必须跟随新 key，否则迁移后
-  // 的站点会在响应期被严格边界拒绝注入。
-  for (const migration of woggMigration.keyMigrations) {
-    const source = siteSourceMap.get(migration.oldKey);
-    if (source) {
-      siteSourceMap.set(migration.newKey, source);
-      siteSourceMap.delete(migration.oldKey);
-    }
-    const upstreams = siteUpstreamMap.get(migration.oldKey);
-    if (upstreams?.length) {
-      const mergedUpstreams = new Set([...(siteUpstreamMap.get(migration.newKey) || []), ...upstreams]);
-      siteUpstreamMap.set(migration.newKey, [...mergedUpstreams].filter(Boolean).sort());
-      siteUpstreamMap.delete(migration.oldKey);
-    }
-  }
-
   // 服务端质量分级与凭证感知探测仍需读取凭证，但凭证不再写入聚合结果。
   // 客户端响应由 routes.ts 按根策略或 /auth/<code> 在请求时动态注入。
   const credentials = await loadCredentials(storage);
@@ -288,7 +261,6 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
 
   // 保存过滤前的完整配置（供配置编辑器显示已屏蔽项）。
   // 这里先暂存快照，Step 5.7 注入凭证后再统一写回，避免完整配置里的
-  // Wogg ext 仍停留在聚合前的旧对象。
   const fullConfigSnapshot = JSON.parse(JSON.stringify(merged)) as typeof merged;
 
   await storage.put(KV_SOURCE_MAP, JSON.stringify({

@@ -9,7 +9,6 @@ import { getRequestBaseUrl, applyBaseUrlPlaceholder, assertHostAllowed } from '.
 import { logger } from './core/logger';
 import { loadGroupOrder, saveGroupOrder } from './core/group-order';
 import { validateMacCMS } from './core/maccms';
-import { applyLegacyWoggCompatibility } from './core/cf-compat';
 import { lookupJarUrl, isMd5Key, base64ToUint8Array, rewriteJarUrls, normalizeJarRequestKey, loadJarReadyKeys, markJarReady, getJarKeyForSite } from './core/jar-proxy';
 import { BASE_URL_PLACEHOLDER } from './core/config';
 import { lookupLiveSource, listLiveProxyEntries, removeLiveProxyEntry } from './core/live-source';
@@ -683,8 +682,6 @@ export function createApp(deps: AppDeps): Hono {
       parsed.token = tokenUrl;
     }
 
-    // Wogg 兼容迁移可能改 key/JAR，必须在注入结果写回后执行；它不会写入凭证。
-    applyLegacyWoggCompatibility(parsed);
     return JSON.stringify(parsed);
   }
 
@@ -1104,25 +1101,10 @@ export function createApp(deps: AppDeps): Hono {
     return JSON.stringify(parsed);
   }
 
-  function repairWoggCompatibilityResponse(body: string): string {
-
-    let parsed: TVBoxConfig;
-    try {
-      parsed = JSON.parse(body) as TVBoxConfig;
-    } catch {
-      return body;
-    }
-    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.sites)) return body;
-
-    if (!applyLegacyWoggCompatibility(parsed)) return body;
-    return JSON.stringify(parsed);
-  }
-
   function configBody(body: string, headers: Record<string, string>): Response {
     // 不手工压缩：Cloudflare 边缘可能在客户端未请求 gzip 时剥离
     // Content-Encoding，却保留压缩字节，导致 TVBox/影视仓 JSON 解析失败。
     // 始终保持原始 JSON，由平台按 Accept-Encoding 正常协商压缩。
-    body = repairWoggCompatibilityResponse(body);
     return new Response(body, {
       status: 200,
       headers: { ...headers, Vary: 'Accept-Encoding' },
@@ -3855,7 +3837,6 @@ export function createApp(deps: AppDeps): Hono {
       } catch { /* ignore parse error */ }
     }
 
-    applyLegacyWoggCompatibility(result);
 
     // 重新应用 JAR proxy rewrite（与 aggregator Step 7 一致）
     result = await rewriteJarUrls(result, BASE_URL_PLACEHOLDER, storage);

@@ -80,6 +80,8 @@ const VALID_MECHANISMS = new Set<CredentialMechanism>([
 const JAR_2CC = '2cc088afa757ba8bafffcfbab4b73ccc';
 const JAR_F782 = 'f782cdee81118405176fd260be9ca5cd';
 const JAR_2386 = '2386c62eb5f0b84dd53e27ad0fe9db49';
+const JAR_4CE29 = '4ce29ce27eeff6a73a230dd92d98ba0c';
+const JAR_FISH = '34b70c352eea95ed3ee262117e830f50';
 
 /**
  * 精确的 API|JAR -> 响应契约映射。
@@ -89,23 +91,31 @@ const JAR_2386 = '2386c62eb5f0b84dd53e27ad0fe9db49';
  * 同一 JAR 下还有 MyDrive、Push、S_zps 等完全不同的契约。
  */
 /**
- * YpanSo/WoGG 的实测契约与同批 Cloud-drive Guard 不同：它们消费 Pan.init
- * 的 /credential/<field> 平台 URL，而不是 Cloud-drive token JSON。
- */
-const PAN_INIT_GUARD_CONTRACTS = new Map<string, CredentialMechanism>([
-  [`csp_woggguard|${JAR_F782}`, 'pan-init-url'],
-  ['csp_woggguard|4ce29ce27eeff6a73a230dd92d98ba0c', 'pan-init-url'],
-]);
-/**
- * 这些 API|JAR 曾被错误登记为 tvfan-config-url，但反编译已确认它们并不消费
- * 该契约。显式返回 unknown 而不是依赖“没有精确规则”，这样旧 KV 绑定也不会
- * 在响应期把错误字段重新注入。
+ * 无 Pan.init 证据的 Guard 组合必须显式撤销。
+ *
+ * 这些组合此前曾被旧代码或旧 KV 误登记为 pan-init-url；反编译只证明外层
+ * Guard 类名，未证明内层会消费 ext 的 quark/uc/... 平台 URL。保留
+ * unknown 可阻止旧绑定在响应期重新注入错误字段。
  */
 const REVOKED_GUARD_BINDINGS = new Map<string, string>([
   [`csp_mydriveguard|${JAR_2386}`, 'MyDrive is not a Pan.init Guard contract'],
-
   [`csp_yisoguard|${JAR_2CC}`, 'YiSo Guard credential contract is not verified'],
   [`csp_yisoguard|${JAR_F782}`, 'YiSo Guard credential contract is not verified'],
+  [`csp_woggguard|${JAR_F782}`, 'WoGG Guard inner credential contract is not verified'],
+  [`csp_woggguard|${JAR_4CE29}`, 'WoGG Guard inner credential contract is not verified'],
+  [`csp_wogg|${JAR_F782}`, 'csp_WoGG f782 credential contract is not verified'],
+  [`csp_wogg|${JAR_4CE29}`, 'csp_WoGG 4ce29 credential contract is not verified'],
+  [`csp_wogg|${JAR_FISH}`, 'Fish Wogg credential contract is not Pan.init'],
+  ['csp_wogg|', 'csp_WoGG without a JAR fingerprint has no verified credential contract'],
+  [`csp_pansearch|${JAR_F782}`, 'csp_PanSearch f782 credential contract is not verified'],
+  [`csp_pansearch|${JAR_4CE29}`, 'csp_PanSearch 4ce29 credential contract is not verified'],
+  ['csp_pansearch|', 'csp_PanSearch without a JAR fingerprint has no verified credential contract'],
+  [`csp_mipanso|${JAR_F782}`, 'csp_MIPanSo f782 credential contract is not verified'],
+  [`csp_mipanso|${JAR_4CE29}`, 'csp_MIPanSo 4ce29 credential contract is not verified'],
+  ['csp_mipanso|', 'csp_MIPanSo without a JAR fingerprint has no verified credential contract'],
+  [`csp_kkss|${JAR_F782}`, 'csp_KkSs f782 credential contract is not verified'],
+  [`csp_kkss|${JAR_4CE29}`, 'csp_KkSs 4ce29 credential contract is not verified'],
+  ['csp_kkss|', 'csp_KkSs without a JAR fingerprint has no verified credential contract'],
 ]);
 
 const CLOUD_DRIVE_GUARD_CONTRACTS = new Map<string, CredentialMechanism>([
@@ -231,26 +241,6 @@ function resolvePreciseGuardContract(api: string, effectiveJar?: string): Creden
   const jarMd5 = extractJarMd5(effectiveJar)?.toLowerCase() || '';
   const apiJarKey = `${api.toLowerCase()}|${jarMd5}`;
 
-  const revokedReason = REVOKED_GUARD_BINDINGS.get(apiJarKey);
-  if (revokedReason) return unknownProtocol(revokedReason);
-
-  const panInitContract = PAN_INIT_GUARD_CONTRACTS.get(apiJarKey);
-  if (panInitContract) {
-    return {
-      mechanism: panInitContract,
-      platforms: [...PAN_INIT_PLATFORMS],
-      credentialRequired: true,
-      canInject: true,
-      reason: 'YpanSo Guard Pan.init platform URL contract',
-    };
-  }
-
-  // 2386 内层 DEX 没有可验证实现。显式返回 unknown，确保旧 KV 契约表
-  // 不能把已撤销的 tvfan-config-url 重新注入到 2386 Guard。
-  if (jarMd5 === JAR_2386 && /^csp_.*guard$/i.test(api)) {
-    return unknownProtocol('2386 Guard inner contract is not verified');
-  }
-
   const cloudDriveContract = CLOUD_DRIVE_GUARD_CONTRACTS.get(apiJarKey);
   if (cloudDriveContract) {
     // 精确登记的 API|JAR 组合已经证明会消费 Cloud-drive；入口字段可能由
@@ -265,6 +255,22 @@ function resolvePreciseGuardContract(api: string, effectiveJar?: string): Creden
         ? '2cc Guard Cloud-drive token.json contract'
         : 'Precise Guard Cloud-drive tvfan/config contract',
     };
+  }
+
+  return null;
+}
+
+function resolveRevokedGuardContract(api: string, effectiveJar?: string): CredentialProtocol | null {
+  const jarMd5 = extractJarMd5(effectiveJar)?.toLowerCase() || '';
+  const apiJarKey = `${api.toLowerCase()}|${jarMd5}`;
+
+  const revokedReason = REVOKED_GUARD_BINDINGS.get(apiJarKey);
+  if (revokedReason) return unknownProtocol(revokedReason);
+
+  // 2386 内层 DEX 没有可验证实现。显式返回 unknown，确保旧 KV 契约表
+  // 不能把已撤销的 tvfan-config-url 重新注入到 2386 Guard。
+  if (jarMd5 === JAR_2386 && /^csp_.*guard$/i.test(api)) {
+    return unknownProtocol('2386 Guard inner contract is not verified');
   }
 
   return null;
@@ -285,12 +291,17 @@ export function resolveCredentialProtocol(
     ? (site.jar || '')
     : (context.effectiveJar || '');
 
-  // 聚合契约表可能比当前代码旧；当前代码已经按 API|JAR 精确登记时，必须以
-  // 当前规则为准，否则旧表中的 unknown/错误 mechanism 会永久压住新契约，
-  // 表现就是“代码已修但线上仍要扫码”。没有精确规则时才允许使用实例绑定。
+  // 明确撤销的组合必须始终 unknown，不能被旧 KV 契约重新激活；明确正向
+  // 契约也必须压过旧绑定。除此之外，允许使用已审计的实例绑定，避免因为
+  // 新代码暂时没有登记某个已验证组合而让历史绑定整体失效。
+  const revokedGuardContract = resolveRevokedGuardContract(api, effectiveJar);
+  if (revokedGuardContract) return revokedGuardContract;
+
   const preciseGuardContract = resolvePreciseGuardContract(api, effectiveJar);
   const binding = context.binding;
-  if (binding && !preciseGuardContract) {
+  if (preciseGuardContract) return preciseGuardContract;
+
+  if (binding) {
     const mechanism = typeof binding.mechanism === 'string'
       ? binding.mechanism as CredentialMechanism
       : undefined;
@@ -324,8 +335,6 @@ export function resolveCredentialProtocol(
       reason: `site contract binding: ${mechanism}`,
     };
   }
-
-  if (preciseGuardContract) return preciseGuardContract;
 
   if (/^csp_AList/i.test(api)) {
     return {

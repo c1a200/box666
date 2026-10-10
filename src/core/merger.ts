@@ -37,9 +37,9 @@ export function mergeConfigs(sourcedConfigs: SourcedConfig[]): MergeResult {
   const parseSourceMap = new Map<string, string>();
   const liveSourceMap = new Map<string, string>();
 
-  // Step 2: 确定全局 spider（投票制：选引用最多 type:3 站点的 JAR）
-  const globalSpider = selectGlobalSpider(normalized);
-  const globalSpiderFull = globalSpider ? findFullSpiderString(normalized, globalSpider) : null;
+  // Step 2: 确定全局 spider（按完整 spider 指纹投票，包含 JAR URL 与 MD5）
+  const globalSpiderFull = selectGlobalSpider(normalized);
+  const globalSpider = globalSpiderFull ? extractSpiderJarUrl(globalSpiderFull) : null;
 
   // Step 3: 收集站点并记录每个实例实际生效的 JAR。站点自身 JAR 优先，
   // 其次是非全局的顶层 spider，最后才是合并配置的全局 spider。
@@ -58,7 +58,6 @@ export function mergeConfigs(sourcedConfigs: SourcedConfig[]): MergeResult {
   for (const sourced of normalized) {
     const config = sourced.config;
     const sourceSpider = config.spider;
-    const sourceSpiderJar = extractSpiderJarUrl(sourceSpider);
     const upstreams = sourced.upstreamNames?.length ? sourced.upstreamNames : [sourced.sourceName];
     const upstreamList = [...new Set(upstreams)].filter(Boolean).sort();
 
@@ -71,8 +70,8 @@ export function mergeConfigs(sourcedConfigs: SourcedConfig[]): MergeResult {
         if (
           site.type === 3
           && !site.jar
-          && sourceSpiderJar
-          && sourceSpiderJar !== globalSpider
+          && sourceSpider
+          && sourceSpider !== globalSpiderFull
         ) {
           siteCopy.jar = sourceSpider;
         }
@@ -232,49 +231,36 @@ export function mergeConfigs(sourcedConfigs: SourcedConfig[]): MergeResult {
 }
 
 /**
- * 选择全局 spider JAR
- * 统计每个 JAR URL 被多少个 type:3 站点引用，选引用最多的
+ * 选择全局 spider 指纹。
+ * 按完整 spider 字符串投票，避免同一 URL 的不同 md5 被错误合并。
  */
 function selectGlobalSpider(configs: SourcedConfig[]): string | null {
-  const jarCounts = new Map<string, number>();
+  const spiderCounts = new Map<string, number>();
 
   for (const sourced of configs) {
-    const spiderJar = extractSpiderJarUrl(sourced.config.spider);
-    if (!spiderJar) continue;
+    const spider = sourced.config.spider;
+    if (!spider) continue;
 
     const type3Count = (sourced.config.sites || []).filter((s) => s.type === 3 && !s.jar).length;
     if (type3Count > 0) {
-      jarCounts.set(spiderJar, (jarCounts.get(spiderJar) || 0) + type3Count);
+      spiderCounts.set(spider, (spiderCounts.get(spider) || 0) + type3Count);
     }
   }
 
-  if (jarCounts.size === 0) return null;
+  if (spiderCounts.size === 0) return null;
 
-  // 选引用次数最多的
-  let maxJar: string | null = null;
+  let maxSpider: string | null = null;
   let maxCount = 0;
-  for (const [jar, count] of jarCounts) {
+  for (const [spider, count] of spiderCounts) {
     if (count > maxCount) {
       maxCount = count;
-      maxJar = jar;
+      maxSpider = spider;
     }
   }
 
-  return maxJar;
+  return maxSpider;
 }
 
-/**
- * 找到使用指定 JAR URL 的完整 spider 字符串（可能含 md5 等后缀）
- */
-function findFullSpiderString(configs: SourcedConfig[], jarUrl: string): string | null {
-  for (const sourced of configs) {
-    const extracted = extractSpiderJarUrl(sourced.config.spider);
-    if (extracted === jarUrl && sourced.config.spider) {
-      return sourced.config.spider;
-    }
-  }
-  return null;
-}
 
 /**
  * 清洗空数据条目

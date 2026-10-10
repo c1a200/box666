@@ -9,6 +9,7 @@ const JAR_2CC = '2cc088afa757ba8bafffcfbab4b73ccc';
 const JAR_F782 = 'f782cdee81118405176fd260be9ca5cd';
 const JAR_2386 = '2386c62eb5f0b84dd53e27ad0fe9db49';
 const JAR_4CE29 = '4ce29ce27eeff6a73a230dd92d98ba0c';
+const JAR_FISH = '34b70c352eea95ed3ee262117e830f50';
 
 function site(api, jar, ext = { 'Cloud-drive': 'tvfan/Cloud-drive.txt' }) {
   return {
@@ -109,6 +110,7 @@ function expectPanInit(ext, label) {
 
 let injectCredentials;
 let stripInjectedCredentialsFromConfig;
+let mergeConfigs;
 
 async function main() {
   fs.rmSync(OUTDIR, { recursive: true, force: true });
@@ -116,6 +118,7 @@ async function main() {
     entryPoints: [
       path.join(ROOT, 'src/core/credential-injector.ts'),
       path.join(ROOT, 'src/core/credential-sanitizer.ts'),
+      path.join(ROOT, 'src/core/merger.ts'),
     ],
     bundle: true,
     platform: 'node',
@@ -126,7 +129,61 @@ async function main() {
   });
   ({ injectCredentials } = require(path.join(OUTDIR, 'credential-injector.js')));
   ({ stripInjectedCredentialsFromConfig } = require(path.join(OUTDIR, 'credential-sanitizer.js')));
+  ({ mergeConfigs } = require(path.join(OUTDIR, 'merger.js')));
 
+  // JAR 身份必须包含完整 spider 指纹（URL + MD5），不能让同一 URL 的
+  // 不同 MD5 在全局 spider 投票或站点固化时被折叠成同一 JAR。
+  const sharedJarUrl = 'https://jar.example/shared-guard.jar';
+  const mergedDifferentMd5 = mergeConfigs([
+    {
+      sourceUrl: 'https://source-a.example/config.json',
+      sourceName: '总源A',
+      config: {
+        spider: sharedJarUrl + ';md5;' + JAR_2CC,
+        sites: [{ key: 'same-key', name: '总源A站点', type: 3, api: 'csp_YpanSoGuard', searchable: 1 }],
+      },
+    },
+    {
+      sourceUrl: 'https://source-b.example/config.json',
+      sourceName: '总源B',
+      config: {
+        spider: sharedJarUrl + ';md5;' + JAR_F782,
+        sites: [{ key: 'same-key', name: '总源B站点', type: 3, api: 'csp_YpanSoGuard', searchable: 1 }],
+      },
+    },
+  ]).config;
+  if (mergedDifferentMd5.spider !== sharedJarUrl + ';md5;' + JAR_2CC) {
+    fail('different-MD5 merge selected unexpected global spider: ' + mergedDifferentMd5.spider);
+  }
+  const differentMd5Sites = mergedDifferentMd5.sites || [];
+  const f782Site = differentMd5Sites.find((s) => s.name.includes('总源B站点'));
+  if (!f782Site) fail('different-MD5 merge lost source B site');
+  if (f782Site.jar !== sharedJarUrl + ';md5;' + JAR_F782) {
+    fail('different-MD5 merge pinned wrong per-site spider: ' + f782Site.jar);
+  }
+
+  const sameMd5 = mergeConfigs([
+    {
+      sourceUrl: 'https://source-a.example/config.json',
+      sourceName: '总源A',
+      config: {
+        spider: sharedJarUrl + ';md5;' + JAR_2CC,
+        sites: [{ key: 'same-md5-a', name: '同指纹A', type: 3, api: 'csp_YpanSoGuard', searchable: 1 }],
+      },
+    },
+    {
+      sourceUrl: 'https://source-b.example/config.json',
+      sourceName: '总源B',
+      config: {
+        spider: sharedJarUrl + ';md5;' + JAR_2CC,
+        sites: [{ key: 'same-md5-b', name: '同指纹B', type: 3, api: 'csp_YpanSoGuard', searchable: 1 }],
+      },
+    },
+  ]).config;
+  const sameMd5Site = (sameMd5.sites || []).find((s) => s.name.includes('同指纹B'));
+  if (!sameMd5Site) fail('same-MD5 merge lost source B site');
+  if (sameMd5Site.jar !== undefined) fail('same-MD5 merge should rely on global spider, got per-site jar');
+  if (sameMd5.spider !== sharedJarUrl + ';md5;' + JAR_2CC) fail('same-MD5 merge changed global spider');
   const cloudDriveGuards = [
     ['csp_YpanSoGuard', JAR_2CC],
     ['csp_BpanSoGuard', JAR_2CC],
@@ -157,6 +214,38 @@ async function main() {
     const legacy = inject(site(api, jar), credentials(), BASE, legacyContract(source, 'unknown', []));
     if (legacy.report.injected !== 1) fail(api + '/' + jar + ': stale unknown KV contract expected one Cloud-drive injection');
     expectTvfanConfig(legacy.ext, api + '/' + jar + ' legacy');
+  }
+
+  const auditedLegacyBinding = site('csp_YpanSoGuard', JAR_2CC, {
+    'Cloud-drive': 'tvfan/Cloud-drive.txt',
+  });
+  const auditedLegacyResult = inject(
+    auditedLegacyBinding,
+    credentials(),
+    BASE,
+    legacyContract(auditedLegacyBinding, 'tvfan-config-url', ['quark', 'uc']),
+  );
+  if (auditedLegacyResult.report.injected !== 1) {
+    fail('audited legacy binding should remain usable when no precise rule exists');
+  }
+  expectTvfanConfig(auditedLegacyResult.ext, 'audited legacy binding');
+
+  const revokedCannotRevive = site('csp_WoGGGuard', JAR_F782, {
+    'Cloud-drive': 'tvfan/Cloud-drive.txt',
+    quark: 'https://upstream.example/quark-init',
+  });
+  const revokedBefore = JSON.stringify(revokedCannotRevive.ext);
+  const revokedResult = inject(
+    revokedCannotRevive,
+    credentials(),
+    BASE,
+    legacyContract(revokedCannotRevive, 'pan-init-url', ['quark']),
+  );
+  if (revokedResult.report.injected !== 0) {
+    fail('explicitly revoked binding must not be revived by legacy KV contract');
+  }
+  if (JSON.stringify(revokedResult.ext) !== revokedBefore) {
+    fail('explicitly revoked binding changed ext');
   }
 
   const staleWrong = [
@@ -204,10 +293,26 @@ async function main() {
     if (JSON.stringify(result.ext) !== before) fail(api + '/' + jar + ': 2386 unknown Guard ext changed');
   }
 
-  for (const [api, jar] of [['csp_WoGGGuard', JAR_F782], ['csp_WoGGGuard', JAR_4CE29]]) {
-    const result = inject(site(api, jar));
-    if (result.report.injected !== 1) fail(api + '/' + jar + ': expected Pan.init injection');
-    expectPanInit(result.ext, api + '/' + jar);
+  const unverifiedGuards = [
+    ['csp_WoGGGuard', JAR_F782],
+    ['csp_WoGGGuard', JAR_4CE29],
+    ['csp_WoGG', JAR_F782],
+    ['csp_Wogg', JAR_FISH],
+    ['csp_PanSearch', JAR_F782],
+    ['csp_MIPanSo', JAR_F782],
+    ['csp_KkSs', JAR_F782],
+  ];
+  for (const [api, jar] of unverifiedGuards) {
+    const source = site(api, jar, {
+      'Cloud-drive': 'tvfan/Cloud-drive.txt',
+      quark: 'https://upstream.example/quark-init',
+      uc: 'UPSTREAM_UC',
+      baidu: 'UPSTREAM_BAIDU',
+    });
+    const before = JSON.stringify(source.ext);
+    const result = inject(source, credentials(), BASE, legacyContract(source, 'pan-init-url', ['quark', 'uc']));
+    if (result.report.injected !== 0) fail(api + "/" + jar + ": unverified Guard was injected");
+    if (JSON.stringify(result.ext) !== before) fail(api + "/" + jar + ": unverified Guard ext changed");
   }
 
   const all = inject(site('csp_YpanSoGuard', JAR_2CC, {
@@ -321,7 +426,7 @@ async function main() {
   if (authScoped.sites[0].ext.quark !== undefined) fail('auth-scoped cleanup missed auth-prefixed Pan.init URL');
   if (authScoped.sites[0].ext.uc !== 'https://upstream.example/uc-init') fail('auth-scoped cleanup removed upstream uc init');
 
-  console.log('RESULT=PASS: policy isolation, upstream credential preservation, cross-mechanism cleanup, stale KV override, 2386 unknown, and negative cases verified');
+  console.log('RESULT=PASS: full-spider MD5 isolation, policy isolation, upstream credential preservation, cross-mechanism cleanup, revoked-binding isolation, audited legacy fallback, 2386 unknown, and negative cases verified');
 }
 main().catch((error) => {
   console.error(error);
