@@ -16,7 +16,7 @@ import { adminHtml } from './core/admin';
 import { dashboardHtml } from './core/dashboard';
 import { configEditorHtml } from './core/config-editor';
 import { siteFingerprint, loadBlacklist, saveBlacklist, saveRegexRule, deleteRegexRule, updateRegexRule, validateRegexRule, testRegexAgainstSites, applyBlacklist } from './core/blacklist';
-import { loadSearchQuota, saveSearchQuota, applySiteBucketLimits, normalizeSiteBucketLimits } from './core/search-quota';
+import { loadSearchQuota, saveSearchQuota, applySiteBucketLimits, normalizeSiteBucketLimits, classifySearchSource, SEARCH_SOURCE_CATEGORIES } from './core/search-quota';
 import {
   loadQualityCandidates,
   loadQualityPool,
@@ -491,38 +491,50 @@ export function createApp(deps: AppDeps): Hono {
 
     const code = context.authCode;
     const mode: SourceDistributionMode = code.sourceMode || 'all';
-    const pinned = new Set(code.pinnedKeys || []);
     const allowedGrades = new Set(code.includeGrades || []);
     const allowedTypes = new Set(code.siteTypes || []);
     let sites = parsed.sites.slice();
 
     if (mode === 'search') {
-      sites = sites.filter((site) => site.searchable === 1 || pinned.has(site.key));
+      sites = sites.filter((site) => site.searchable === 1);
     } else if (mode === 'selected') {
       try {
         const pool = await loadQualityPool(storage);
         const selectedKeys = new Set(candidateKeysFromPool(pool));
-        sites = sites.filter((site) => selectedKeys.has(site.key) || pinned.has(site.key));
+        sites = sites.filter((site) => selectedKeys.has(site.key));
       } catch {
         // 质量池缺失时不做额外裁剪，避免错误地清空客户端源。
       }
     } else if (mode === 'custom') {
       const selectedKeys = new Set(code.selectedKeys || []);
-      sites = sites.filter((site) => selectedKeys.has(site.key) || pinned.has(site.key));
+      sites = sites.filter((site) => selectedKeys.has(site.key));
     }
 
     if (allowedGrades.size > 0) {
       try {
         const pool = await loadQualityPool(storage);
         const gradeByKey = new Map((pool?.entries || []).map((entry) => [entry.key, entry.grade]));
-        sites = sites.filter((site) => pinned.has(site.key) || (gradeByKey.has(site.key) && allowedGrades.has(gradeByKey.get(site.key)!)));
+        sites = sites.filter((site) => gradeByKey.has(site.key) && allowedGrades.has(gradeByKey.get(site.key)!));
       } catch {
         // 质量池缺失时不按等级猜测。
       }
     }
 
     if (allowedTypes.size > 0) {
-      sites = sites.filter((site) => pinned.has(site.key) || allowedTypes.has(site.type));
+      // 鉴权码只接受统一分类；旧数字类型已在存储层迁移。
+      sites = sites.filter((site) => allowedTypes.has(classifySearchSource(site)));
+    }
+
+    // 鉴权码置顶只改变顺序，不能绕过任何质量、类型、分桶或数量限制。
+    const pinnedOrder = new Map(
+      (code.pinnedKeys || []).map((key, index) => [key, index] as const),
+    );
+    if (pinnedOrder.size > 0) {
+      const pinned = sites
+        .filter((site) => pinnedOrder.has(site.key))
+        .sort((a, b) => (pinnedOrder.get(a.key) as number) - (pinnedOrder.get(b.key) as number));
+      const pinnedKeys = new Set(pinned.map((site) => site.key));
+      sites = [...pinned, ...sites.filter((site) => !pinnedKeys.has(site.key))];
     }
 
     // 分桶限制：0=不选该桶，-1=该桶全选，正数=按当前质量顺序保留前 N 个。
@@ -539,7 +551,6 @@ export function createApp(deps: AppDeps): Hono {
         sites,
         code.bucketLimits,
         (site) => gradeByKey.get(site.key) || 'untestable',
-        pinned,
       );
     }
 
@@ -564,10 +575,9 @@ export function createApp(deps: AppDeps): Hono {
       : -1;
     if (maxSites === 0) {
       sites = [];
-    } else if (maxSites > 0 && sites.length > maxSites) {
-      const pinnedSites = sites.filter((site) => pinned.has(site.key));
-      const rest = sites.filter((site) => !pinned.has(site.key));
-      sites = [...pinnedSites, ...rest.slice(0, Math.max(0, maxSites - pinnedSites.length))];
+    } else if (maxSites > 0) {
+      // 置顶只影响根配置中的顺序，鉴权码总量上限按最终顺序严格取前 N。
+      sites = sites.slice(0, maxSites);
     }
 
     parsed.sites = sites;
@@ -746,42 +756,35 @@ export function createApp(deps: AppDeps): Hono {
       orderedSites = allSites.filter((site) => site.searchable === 1 && !blockedKeys.has(site.key));
     }
 
-    // 置顶源永远排在最前，且不受 maxSearchable 截断。
-    const pinnedSites: TVBoxSite[] = [];
-    const seenPinned = new Set<string>();
-    for (const key of quota.pinnedKeys || []) {
-      if (blockedKeys.has(key)) continue;
-      const site = siteByKey.get(key);
-      if (!site || seenPinned.has(key)) continue;
-      if (qualityGradeByKey.size > 0) {
-        const grade = qualityGradeByKey.get(key);
-        if (grade === 'timeout' || grade === 'unusable') continue;
-      }
-      seenPinned.add(key);
-      pinnedSites.push(site.searchable === 1 ? site : { ...site, searchable: 1 });
-    }
-
+    // 置顶仅改变顺序。源必须已通过屏蔽、质量、分桶和搜索性规则，
+    // 不得被强制改成 searchable，也不得绕过后续 maxSearchable 截断。
+    const pinnedOrder = new Map(
+      (quota.pinnedKeys || []).map((key, index) => [key, index] as const),
+    );
+    const pinnedSites = orderedSites
+      .filter((site) => pinnedOrder.has(site.key) && !blockedKeys.has(site.key))
+      .sort((a, b) => (pinnedOrder.get(a.key) as number) - (pinnedOrder.get(b.key) as number));
     const pinnedKeySet = new Set(pinnedSites.map((site) => site.key));
-    let rest = orderedSites.filter((site) => !pinnedKeySet.has(site.key) && !blockedKeys.has(site.key));
+    orderedSites = [
+      ...pinnedSites,
+      ...orderedSites.filter((site) => !pinnedKeySet.has(site.key) && !blockedKeys.has(site.key)),
+    ];
     if (quota.bucketLimits) {
-      rest = [...pinnedSites, ...rest];
-      rest = applySiteBucketLimits(
-        rest,
+      orderedSites = applySiteBucketLimits(
+        orderedSites,
         quota.bucketLimits,
         (site) => qualityGradeByKey.get(site.key) || 'untestable',
-        pinnedKeySet,
-      ).filter((site) => !pinnedKeySet.has(site.key));
+      );
     }
-
     // 轻量启动要等远程 JAR 已落到本部署缓存后再下发，避免客户端逐个等待
     // 慢速上游；完整启动模式不做这层裁剪。客户端插件 type=3 源始终保留，
     // 因为它们在客户端登录后可直接使用。/config-full.json 始终保留完整配置。
     const leanStartup = quota.startupMode !== 'full' && quota.leanStartup !== false;
-    let eligibleRest = rest;
+    let eligibleSites = orderedSites;
     let jarReadyKeys = new Set<string>();
     if (leanStartup) {
       jarReadyKeys = await loadJarReadyKeys(storage);
-      eligibleRest = rest.filter((site) => {
+      eligibleSites = orderedSites.filter((site) => {
         // 可搜索源不能因本部署尚未预取 JAR 而从根配置消失，否则
         // maxSearchable=0 仍会退化成少量启动源。JAR 就绪门槛只用于
         // 不可搜索的远程扩展，避免它们增加客户端启动等待。
@@ -796,15 +799,12 @@ export function createApp(deps: AppDeps): Hono {
     // 可选策略开启后，插件/JAR 与客户端专用源按既有质量规则参与上限。
     // selected 模式仅放行已勾选 key。
     const limit = quota.maxSearchable ?? 0;
-    let limitedRest = eligibleRest;
-    if (limit > 0) {
-      limitedRest = eligibleRest.slice(0, Math.max(0, limit));
-    }
+    const limitedSites = limit > 0 ? eligibleSites.slice(0, limit) : eligibleSites;
 
     // 根配置的快速搜索是独立策略：0=不额外裁剪；非 0 时按最终顺序
     // 仅保留前 N 个 quickSearch 源，其余仅关闭 quickSearch，不删站点。
     const startupQuickLimit = quota.maxStartupQuickSearch ?? 0;
-    let startupSites = [...pinnedSites, ...limitedRest];
+    let startupSites = limitedSites;
     if (startupQuickLimit > 0) {
       let keptQuick = 0;
       startupSites = startupSites.map((site) => {
@@ -3042,8 +3042,9 @@ export function createApp(deps: AppDeps): Hono {
       }
       const blocked = fpBlocked || regexBlocked;
       const inFinal = finalKeys.has(site.key);
-      const isJs = site.type === 3 && /^https?:\/\//.test(site.api || '');
-      const isJar = site.type === 3 || /^https?:\/\//.test(site.jar || '') || /^https?:\/\//.test(typeof site.ext === 'string' ? site.ext : '');
+      const sourceCategory = classifySearchSource(site);
+      const isJs = sourceCategory === 'js';
+      const isJar = sourceCategory === 'jar';
       const candidate = inFinal && !blocked && site.searchable === 1 && candidateKeySet.has(site.key);
       sites.push({
         ...site,
@@ -3053,6 +3054,7 @@ export function createApp(deps: AppDeps): Hono {
         regexPattern,
         group,
         inFinal,
+        sourceCategory,
         isJs,
         isJar,
         candidate,
@@ -3076,6 +3078,18 @@ export function createApp(deps: AppDeps): Hono {
     const searchableKeys = sites
       .filter(site => site.inFinal && !site.blocked && site.searchable === 1)
       .map(site => site.key);
+    const categoryCounts: Record<string, number> = {};
+    const candidateCategoryCounts: Record<string, number> = {};
+    for (const category of SEARCH_SOURCE_CATEGORIES) {
+      categoryCounts[category] = 0;
+      candidateCategoryCounts[category] = 0;
+    }
+    for (const site of sites) {
+      if (!site.inFinal || site.blocked || site.searchable !== 1) continue;
+      const category = site.sourceCategory || 'other';
+      categoryCounts[category] = (categoryCounts[category] || 0) + 1;
+      if (site.candidate === true) candidateCategoryCounts[category] = (candidateCategoryCounts[category] || 0) + 1;
+    }
 
     return c.json({
       sites,
@@ -3087,6 +3101,8 @@ export function createApp(deps: AppDeps): Hono {
         qualityPoolTotal: qualityPool?.grades?.poolTotal ?? 0,
         qualitySnapshotTotal: qualityPool?.total ?? 0,
         candidateKeys: currentCandidateKeys,
+        categoryCounts,
+        candidateCategoryCounts,
       },
     });
   });

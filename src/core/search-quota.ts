@@ -1,10 +1,36 @@
 // 搜索配额控制（复用站点测速结果）
 
-import type { ClientAuthCode, SiteBucketLimits, TVBoxParse, TVBoxSite, SearchQuotaConfig, SearchQuotaReport, SiteHealthMap, SiteQualityGrade, SiteQualityGrades, SearchQualitySnapshot } from './types';
+import type { ClientAuthCode, SiteBucketLimits, SourceCategory, TVBoxParse, TVBoxSite, SearchQuotaConfig, SearchQuotaReport, SiteHealthMap, SiteQualityGrade, SiteQualityGrades, SearchQualitySnapshot } from './types';
+import { SOURCE_CATEGORIES } from './types';
 import { isSiteProbeable, type SiteProbeResult } from './speedtest';
 import type { Storage } from '../storage/interface';
 import { KV_SEARCH_QUOTA } from './config';
 const QUOTA_SCHEMA_VERSION = 8;
+
+export type SearchSourceCategory = SourceCategory;
+
+export const SEARCH_SOURCE_CATEGORIES: readonly SearchSourceCategory[] = SOURCE_CATEGORIES;
+
+/**
+ * 以 TVBox 站点接口机制分类。质量等级只描述性能与可用性，不能当作源类型。
+ */
+export function classifySearchSource(site: Pick<TVBoxSite, 'type' | 'api' | 'jar' | 'ext'>): SearchSourceCategory {
+  const api = typeof site.api === 'string' ? site.api : '';
+  const hasRemoteJarOrExt = /^https?:\/\//i.test(typeof site.jar === 'string' ? site.jar : '')
+    || /^https?:\/\//i.test(typeof site.ext === 'string' ? site.ext : '');
+  if (site.type === 3 && /^https?:\/\//i.test(api)) return 'js';
+  if (site.type === 3) return 'jar';
+  if (site.type === 0) return 'xml';
+  if (site.type === 1) return 'json';
+  if (site.type === 4) return 'remote';
+  if (hasRemoteJarOrExt) return 'jar';
+  return 'other';
+}
+
+export function searchSourceCategoryOrder(category: SearchSourceCategory): number {
+  const index = SEARCH_SOURCE_CATEGORIES.indexOf(category);
+  return index < 0 ? SEARCH_SOURCE_CATEGORIES.length : index;
+}
 
 function isNodeRuntime(): boolean {
   return typeof process !== 'undefined' && !!process.env.PORT;
@@ -75,7 +101,22 @@ export function normalizeSiteBucketLimits(value: unknown): SiteBucketLimits | un
     return out;
   };
   const quality = normalizeMap(source.quality, new Set(['excellent', 'good', 'usable', 'untestable']));
-  const type = normalizeMap(source.type);
+  const rawType = source.type && typeof source.type === 'object' && !Array.isArray(source.type)
+    ? source.type as Record<string, unknown>
+    : {};
+  const type: Partial<Record<SourceCategory, number>> = {};
+  for (const category of SOURCE_CATEGORIES) {
+    const limit = parseThreeStateLimit(rawType[category]);
+    if (limit !== undefined) type[category] = limit;
+  }
+  const legacyMap: Record<string, SourceCategory[]> = { '0': ['xml'], '1': ['json'], '3': ['jar', 'js'], '4': ['remote'] };
+  for (const [legacyKey, categories] of Object.entries(legacyMap)) {
+    const legacyLimit = parseThreeStateLimit(rawType[legacyKey]);
+    if (legacyLimit === undefined) continue;
+    for (const category of categories) {
+      if (type[category] === undefined) type[category] = legacyLimit;
+    }
+  }
   if (Object.keys(quality).length === 0 && Object.keys(type).length === 0) return undefined;
   return {
     ...(Object.keys(quality).length ? { quality: quality as SiteBucketLimits['quality'] } : {}),
@@ -194,7 +235,6 @@ export function applySiteBucketLimits(
   sites: TVBoxSite[],
   limits: SearchQuotaConfig['bucketLimits'] | ClientAuthCode['bucketLimits'],
   gradeForSite: (site: TVBoxSite) => SiteQualityGrade,
-  pinnedKeys: Set<string> = new Set(),
 ): TVBoxSite[] {
   if (!limits) return sites;
   const qualityLimits = limits.quality || {};
@@ -202,7 +242,6 @@ export function applySiteBucketLimits(
   const qualityCounts: Record<string, number> = {};
   const typeCounts: Record<string, number> = {};
   return sites.filter((site) => {
-    const pinned = pinnedKeys.has(site.key);
     const grade = gradeForSite(site);
     const qualityLimit = qualityLimits[grade as keyof typeof qualityLimits];
     if (qualityLimit === 0) return false;
@@ -210,15 +249,15 @@ export function applySiteBucketLimits(
       const count = qualityCounts[grade] || 0;
       if (count >= qualityLimit) return false;
     }
-    const typeKey = String(site.type);
+    const typeKey = classifySearchSource(site);
     const typeLimit = typeLimits[typeKey];
     if (typeLimit === 0) return false;
     if (typeof typeLimit === 'number' && typeLimit > 0) {
-      const count = typeCounts[String(site.type)] || 0;
+      const count = typeCounts[typeKey] || 0;
       if (count >= typeLimit) return false;
     }
     if (typeof qualityLimit === 'number' && qualityLimit > 0) qualityCounts[grade] = (qualityCounts[grade] || 0) + 1;
-    if (typeof typeLimit === 'number' && typeLimit > 0) typeCounts[String(site.type)] = (typeCounts[String(site.type)] || 0) + 1;
+    if (typeof typeLimit === 'number' && typeLimit > 0) typeCounts[typeKey] = (typeCounts[typeKey] || 0) + 1;
     return true;
   });
 }
@@ -308,10 +347,10 @@ export interface SearchQuotaApplyOptions {
 /**
  * 搜索配额控制。
  *
- * 1. 置顶源优先排到 sites 最前。
+ * 1. 置顶源通过全部过滤后优先排到 sites 最前。
  * 2. 复用站点测速结果，把较快的可搜索源排在前面。
  * 3. maxSearchable > 0 时限制全局搜索源；maxQuickSearch > 0 时额外限制快速搜索源。
- * 4. 置顶源永远不被截断；若置顶源数量本身超过上限，则保留全部置顶源。
+ * 4. 置顶只影响顺序，仍受质量、分桶和数量上限约束。
  * 5. 名称标识只加给最终仍可搜索的源。
  */
 export function applySearchQuota(
@@ -347,30 +386,20 @@ export function applySearchQuota(
     sites = applySiteBucketLimits(
       sites,
       config.bucketLimits,
-      gradeForSite,
-      new Set(config.pinnedKeys || []),
+      gradeForSite
     );
   }
 
-  // 置顶源按 pinnedKeys 顺序排到最前，重复 key 只保留一次。
-  const siteByKey = new Map(sites.map(site => [site.key, site]));
-  const pinned: TVBoxSite[] = [];
-  const pinnedKeySet = new Set<string>();
-  for (const key of config.pinnedKeys || []) {
-    const site = siteByKey.get(key);
-    if (site && !pinnedKeySet.has(key)) {
-      pinned.push(site);
-      pinnedKeySet.add(key);
-    }
-  }
+  // 置顶只影响最终顺序，不改变可搜索性、质量过滤或任何配额语义。
+  const pinnedKeySet = new Set(config.pinnedKeys || []);
+  const pinnedOrder = new Map((config.pinnedKeys || []).map((key, index) => [key, index]));
 
   // 优/良/可用/客户端不可探测源进入客户端候选池；超时与不可用均不可绕过，置顶也不能例外。
   const isUsableForSearch = (site: TVBoxSite): boolean => {
     const grade = gradeForSite(site);
     return grade === 'excellent' || grade === 'good' || grade === 'usable' || grade === 'untestable';
   };
-  const pinnedSearchable = pinned.filter(site => site.searchable === 1 && isUsableForSearch(site));
-  let candidates = sites.filter(site => site.searchable === 1 && !pinnedKeySet.has(site.key) && isUsableForSearch(site));
+  let candidates = sites.filter(site => site.searchable === 1 && isUsableForSearch(site));
 
   // 质量分级始终优先参与保留决策；sortBySpeed 只控制同质量级别内是否按速度排序。
   // 这样即使关闭速度排序，快但连续失败/响应无效的源也不会挤掉稍慢但稳定可用的好源。
@@ -400,76 +429,65 @@ export function applySearchQuota(
   };
 
   let speedSorted = false;
+  const compareWithPinned = (a: TVBoxSite, b: TVBoxSite): number => {
+    const aPinned = pinnedOrder.has(a.key);
+    const bPinned = pinnedOrder.has(b.key);
+    if (aPinned || bPinned) {
+      if (aPinned !== bPinned) return aPinned ? -1 : 1;
+      return (pinnedOrder.get(a.key) as number) - (pinnedOrder.get(b.key) as number);
+    }
+    return 0;
+  };
   if (hasQualityData) {
     candidates = [...candidates].sort((a, b) => {
+      const pinnedDiff = compareWithPinned(a, b);
+      if (pinnedDiff !== 0) return pinnedDiff;
       if (hasPool) {
         const aOrder = qualityOrder.get(a.key) ?? Number.MAX_SAFE_INTEGER;
         const bOrder = qualityOrder.get(b.key) ?? Number.MAX_SAFE_INTEGER;
         if (aOrder !== bOrder) return aOrder - bOrder;
+      } else {
+        const aRank = qualityRank[gradeForSite(a)];
+        const bRank = qualityRank[gradeForSite(b)];
+        if (aRank !== bRank) return aRank - bRank;
       }
-      const gradeDiff = qualityRank[gradeForSite(a)] - qualityRank[gradeForSite(b)];
-      return gradeDiff !== 0 ? gradeDiff : compareSpeed(a, b);
+      const speedDiff = compareSpeed(a, b);
+      if (speedDiff !== 0) return speedDiff;
+      return a.key.localeCompare(b.key);
     });
-    speedSorted = config.sortBySpeed && hasSpeed
-      && candidates.some(site => typeof speedMap!.get(site.key) === 'number');
-  } else if (config.sortBySpeed && hasSpeed) {
-    // 没有探测结果时保持旧行为：仍可仅按测速结果排序。
-    candidates = [...candidates].sort(compareSpeed);
-    speedSorted = candidates.some(site => typeof speedMap!.get(site.key) === 'number');
+  } else if (config.sortBySpeed || pinnedOrder.size > 0) {
+    const before = candidates.map(site => site.key).join('\n');
+    candidates = [...candidates].sort((a, b) => {
+      const pinnedDiff = compareWithPinned(a, b);
+      if (pinnedDiff !== 0) return pinnedDiff;
+      return compareSpeed(a, b);
+    });
+    speedSorted = candidates.map(site => site.key).join('\n') !== before;
   }
-
   // 保存未受 maxSearchable / maxQuickSearch 截断影响的启动候选池。
   // 置顶源始终在最前；其余源沿用上面的测速顺序。根地址只从
   // 这个池按后台配置取前 N 个，不会改写最终配置。
-  const startupCandidateSites = [
-    ...pinnedSearchable,
-    ...candidates,
-  ];
-
-  // 先确定普通搜索保留集合；置顶源不受截断影响。
+  const startupCandidateSites = candidates.slice();
   let keptCandidates = candidates;
   let truncated = 0;
   if (limit > 0) {
-    const effectiveLimit = Math.max(limit, pinnedSearchable.length);
-    const keepCount = Math.max(0, effectiveLimit - pinnedSearchable.length);
-    keptCandidates = candidates.slice(0, keepCount);
-
+    // 所有源统一按最终顺序截取；置顶只负责排在前面，也占用全局名额。
+    keptCandidates = candidates.slice(0, limit);
     const keptKeys = new Set(keptCandidates.map(site => site.key));
-    truncated = new Set(
-      candidates
-        .filter(site => !keptKeys.has(site.key))
-        .map(site => site.key),
-    ).size;
+    truncated = candidates.filter(site => !keptKeys.has(site.key)).length;
   }
 
-  const keptCandidateKeys = new Set(keptCandidates.map(site => site.key));
-  const allowedSearchableKeys = new Set<string>([...pinnedKeySet, ...keptCandidateKeys]);
-
-  // 快速搜索独立限制：不会删除站点，只把 quickSearch 置 0。
-  // Render 默认 32、CF 默认 20，足以覆盖常用源并显著缩短首屏等待。
-  const quickCandidates = [
-    ...pinned.filter(site => site.searchable === 1 && site.quickSearch !== 0),
-    ...keptCandidates.filter(site => site.searchable === 1 && site.quickSearch !== 0),
-  ];
+  const allowedSearchableKeys = new Set(keptCandidates.map(site => site.key));
+  const quickCandidates = keptCandidates.filter(site => site.searchable === 1 && site.quickSearch !== 0);
   const allowedQuickKeys = new Set(
     quickLimit > 0
       ? quickCandidates.slice(0, quickLimit).map(site => site.key)
       : quickCandidates.map(site => site.key),
   );
 
-  // 先完成排序，再按最终顺序一次性应用所有配额，避免旧数组对象把已截断的
-  // quickSearch 状态重新带回来。只要本次探测产生了质量数据，就始终按质量顺序
-  // 输出；sortBySpeed 只决定同一质量等级内部是否再按速度排序。
-  let orderedSites: TVBoxSite[];
-  if (hasQualityData || (config.sortBySpeed && speedSorted)) {
-    const ordered = [...pinned, ...keptCandidates];
-    const orderedKeys = new Set(ordered.map(site => site.key));
-    const rest = sites.filter(site => !orderedKeys.has(site.key));
-    orderedSites = [...ordered, ...rest];
-  } else {
-    const rest = sites.filter(site => !pinnedKeySet.has(site.key));
-    orderedSites = [...pinned, ...rest];
-  }
+  const orderedKeys = new Set(keptCandidates.map(site => site.key));
+  const rest = sites.filter(site => !orderedKeys.has(site.key));
+  let orderedSites = [...keptCandidates, ...rest];
 
   let quickTruncated = 0;
   sites = orderedSites.map(site => {
@@ -477,7 +495,6 @@ export function applySearchQuota(
     if (site.searchable === 1 && !allowedSearchableKeys.has(site.key)) {
       next = { ...next, searchable: 0 };
     }
-    // 不可搜索源不能保留 quickSearch=1，否则部分客户端仍会在启动阶段初始化。
     if (next.searchable !== 1 && next.quickSearch !== 0) {
       next = { ...next, quickSearch: 0 };
     }
@@ -490,23 +507,22 @@ export function applySearchQuota(
 
   const beforeLean = sites.length;
   if (config.leanStartup !== false) {
-    sites = sites.filter(site => pinnedKeySet.has(site.key) || !isLeanStartupRemovableSite(site));
+    sites = sites.filter(site => !isLeanStartupRemovableSite(site));
   }
   const leanRemoved = beforeLean - sites.length;
-
   // 来源标识：只给最终仍可搜索的源加标识。
   sites = sites.map(site => withSourceLabel(site, siteSourceMap));
   const labeledCandidates = startupCandidateSites.map(site => withSourceLabel(site, siteSourceMap));
   // 质量统计覆盖完整的未截断可搜索候选池（置顶源 + 普通候选源），
   // 不再只统计根地址启动池，便于前端按实际质量区间配置 maxSearchable。
-  const allSearchableCandidates = [...pinnedSearchable, ...candidates];
+  const allSearchableCandidates = candidates;
   const qualityGrades = qualityPool?.grades
     ? qualityPool.grades
     : buildQualityGrades(allSearchableCandidates, options.probeMap, options.healthMap);
 
   const searchable = sites.filter(site => site.searchable === 1).length;
   const quickSearchable = sites.filter(site => site.searchable === 1 && site.quickSearch !== 0).length;
-  const pinnedCount = pinnedSearchable.length;
+  const pinnedCount = candidates.filter(site => pinnedKeySet.has(site.key)).length;
 
   return {
     sites,

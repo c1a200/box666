@@ -7,8 +7,10 @@ import type {
   ClientDistributionConfig,
   SiteBucketLimits,
   SiteQualityGrade,
+  SourceCategory,
   SourceDistributionMode,
 } from './types';
+import { SOURCE_CATEGORIES } from './types';
 import {
   KV_CLIENT_AUTH_DISTRIBUTION,
   KV_CREDENTIAL_DISTRIBUTION,
@@ -75,13 +77,27 @@ function normalizeGrades(value: unknown): SiteQualityGrade[] {
   )];
 }
 
-function normalizeSiteTypes(value: unknown): number[] {
+const LEGACY_SITE_TYPE_MAP: Record<string, SourceCategory[]> = {
+  '0': ['xml'],
+  '1': ['json'],
+  '3': ['jar', 'js'],
+  '4': ['remote'],
+};
+
+function normalizeSiteTypeValues(value: unknown): SourceCategory[] {
+  if (typeof value === 'string' && SOURCE_CATEGORIES.includes(value as SourceCategory)) {
+    return [value as SourceCategory];
+  }
+  if (typeof value === 'number' && Number.isInteger(value)) {
+    return LEGACY_SITE_TYPE_MAP[String(value)] || [];
+  }
+  return [];
+}
+
+function normalizeSiteTypes(value: unknown): SourceCategory[] {
   if (!Array.isArray(value)) return [];
-  return [...new Set(
-    value
-      .map((item) => typeof item === 'number' ? item : Number(item))
-      .filter((item) => Number.isInteger(item) && item >= 0 && item <= 4),
-  )].sort((a, b) => a - b);
+  const normalized = value.flatMap((item) => normalizeSiteTypeValues(item));
+  return SOURCE_CATEGORIES.filter((category) => normalized.includes(category));
 }
 
 function normalizeNumberMap(value: unknown, allowedKeys?: Set<string>): Partial<Record<string, number>> {
@@ -100,7 +116,19 @@ function normalizeNumberMap(value: unknown, allowedKeys?: Set<string>): Partial<
 function normalizeBucketLimits(value: unknown): SiteBucketLimits | undefined {
   const source = asRecord(value);
   const quality = normalizeNumberMap(source.quality, new Set(['excellent', 'good', 'usable', 'untestable']));
-  const type = normalizeNumberMap(source.type);
+  const rawType = asRecord(source.type);
+  const type: Partial<Record<SourceCategory, number>> = {};
+  for (const category of SOURCE_CATEGORIES) {
+    const limit = parseThreeStateInteger(rawType[category], Number.NaN);
+    if (Number.isFinite(limit)) type[category] = limit === -1 ? -1 : Math.max(0, limit);
+  }
+  for (const [legacyKey, categories] of Object.entries(LEGACY_SITE_TYPE_MAP)) {
+    const legacyLimit = parseThreeStateInteger(rawType[legacyKey], Number.NaN);
+    if (!Number.isFinite(legacyLimit)) continue;
+    for (const category of categories) {
+      if (type[category] === undefined) type[category] = legacyLimit === -1 ? -1 : Math.max(0, legacyLimit);
+    }
+  }
   const hasQuality = Object.keys(quality).length > 0;
   const hasType = Object.keys(type).length > 0;
   if (!hasQuality && !hasType) return undefined;

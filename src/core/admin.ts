@@ -808,7 +808,8 @@ const translations = {
     sqKey:'Key', sqName:'Name', sqSource:'Source', sqReason:'Reason', sqGrade:'Grade', sqSpeedStatus:'Speed / Status', sqAction:'Action',
     sqPin:'Pin', sqUnpin:'Unpin',
     sqBlock:'Block', sqUnblock:'Unblock', sqBlocked:'Blocked', sqBlockedDesc:'Blocked sources are excluded from all client outputs but remain here so they can be restored.', sqSourceFilterPh:'Search source name or key...', sqFilterAll:'All grades', sqFilterMatched:'Matched', sqFilterNoMatch:'No matching sources',
-    sqPinned:'Pinned', sqPinnedDesc:'Drag to reorder. Top sources are searched first in TVBox.', sqOtherSources:'Candidate Sources', sqCandidateDesc:'Candidate sources passed quality filtering and are eligible for distribution. Pinned sources are searched first; blocked sources stay in this list but are excluded from every client output.', sqExcludedSources:'Not Selected', sqExcludedDesc:'Searchable sources outside the quality candidate pool (JS URL, timeout, unusable, or not selected) are not distributed to clients.', sqReasonJsUrlExcluded:'JS URL excluded', sqReasonTimeout:'Timeout', sqReasonUnusable:'Unusable', sqReasonNotInPool:'Not in quality pool', sqReasonNotCandidate:'Not a candidate',
+    sqPinned:'Pinned', sqPinnedDesc:'Drag to reorder. Pinned sources are searched first and still count toward their source-type quota.', sqOtherSources:'Candidate Sources', sqCandidateDesc:'Candidate sources passed quality filtering and are eligible for distribution. Pinned sources are searched first; blocked sources stay in this list but are excluded from every client output.', sqExcludedSources:'Not Selected', sqExcludedDesc:'Searchable sources outside the quality candidate pool (timeout, unusable, or not selected) are not distributed to clients.', sqReasonJsUrlExcluded:'JS URL excluded', sqReasonTimeout:'Timeout', sqReasonUnusable:'Unusable', sqReasonNotInPool:'Not in quality pool', sqReasonNotCandidate:'Not a candidate',
+    sqXmlSources:'XML Sources', sqXmlDesc:'TVBox type 0 XML interface sources. Quality grades only affect their order within this list.', sqJsonSources:'JSON / MacCMS Sources', sqJsonDesc:'TVBox type 1 JSON or MacCMS interface sources.', sqJarSources:'JAR / Extension Sources', sqJarDesc:'TVBox type 3 local JAR or remote extension sources, excluding JS URL entries.', sqJsSources:'JS URL Sources', sqJsDesc:'TVBox type 3 sources whose API is an HTTP(S) URL.', sqRemoteSources:'Remote Sources', sqRemoteDesc:'TVBox type 4 remote site sources.', sqUncategorizedSources:'Other Sources', sqUncategorizedDesc:'Sources whose interface type could not be classified. They are listed separately instead of being mixed into a quality grade.', sqXml:'XML', sqJson:'JSON / MacCMS', sqJar:'JAR / Extension', sqJs:'JS URL', sqRemote:'Remote', sqOther:'Other', sqUnavailableSources:'Unavailable Sources', sqUnavailableDesc:'Searchable sources that are blocked, timed out, unusable, or outside the current quality candidate pool. They are not distributed to clients.', sqBlockedSources:'Blocked Sources', sqBlockedDescLong:'Blocked sources are excluded from all client outputs but remain here so they can be restored.',
     sqLeanRemoved:'lean-removed',
     channelProbeTitle:'Channel Speed Probe (Node/Docker)',
     channelProbeEnable:'Enable scheduled channel speed test (every 12h)',
@@ -951,7 +952,8 @@ const translations = {
     sqKey:'Key', sqName:'名称', sqSource:'来源', sqReason:'原因', sqGrade:'等级', sqSpeedStatus:'速度 / 状态', sqAction:'操作',
     sqPin:'置顶', sqUnpin:'取消置顶',
     sqBlock:'屏蔽', sqUnblock:'取消屏蔽', sqBlocked:'已屏蔽', sqBlockedDesc:'屏蔽源不会下发到任何客户端，但仍保留在管理列表中，可随时恢复。可按名称/Key 搜索，并按质量等级或“已屏蔽”筛选。', sqSourceFilterPh:'搜索源名称或 Key...', sqFilterAll:'全部等级', sqFilterMatched:'匹配', sqFilterNoMatch:'没有匹配的源',
-    sqPinned:'置顶源', sqPinnedDesc:'上下移动排序，排在前面的源在 TVBox 搜索时优先执行', sqOtherSources:'候选源', sqCandidateDesc:'通过质量筛选、可参与下发的候选源。置顶源优先搜索；屏蔽后仍保留在此列表，但不会下发到任何客户端。', sqExcludedSources:'未入选源', sqExcludedDesc:'可搜索但未进入质量候选池的源（如 JS URL、超时、不可用或未入选），不会下发到客户端。', sqReasonJsUrlExcluded:'JS URL 已排除', sqReasonTimeout:'超时', sqReasonUnusable:'不可用', sqReasonNotInPool:'不在质量池', sqReasonNotCandidate:'非候选源',
+    sqPinned:'置顶源', sqPinnedDesc:'上下移动排序，排在前面的源在 TVBox 搜索时优先执行；置顶仍属于原类型并占用该类型配额。', sqOtherSources:'候选源', sqCandidateDesc:'通过质量筛选、可参与下发的候选源。置顶源优先搜索；屏蔽后仍保留在此列表，但不会下发到任何客户端。', sqExcludedSources:'未入选源', sqExcludedDesc:'可搜索但未进入质量候选池的源（超时、不可用或未入选），不会下发到客户端。', sqReasonJsUrlExcluded:'JS URL 已排除', sqReasonTimeout:'超时', sqReasonUnusable:'不可用', sqReasonNotInPool:'不在质量池', sqReasonNotCandidate:'非候选源',
+    sqXmlSources:'XML 源', sqXmlDesc:'TVBox type 0 的 XML 接口源，质量等级只决定其在同一类型内部的排序。', sqJsonSources:'JSON / MacCMS 源', sqJsonDesc:'TVBox type 1 的 JSON 或 MacCMS 接口源。', sqJarSources:'JAR / 扩展源', sqJarDesc:'TVBox type 3 的本地 JAR 或远程扩展源，不包含 API 为 HTTP(S) 的 JS 源。', sqJsSources:'JS URL 源', sqJsDesc:'TVBox type 3 且 API 为 HTTP(S) 的 JS 接口源。', sqRemoteSources:'远程站点源', sqRemoteDesc:'TVBox type 4 的远程站点源。', sqUncategorizedSources:'其他类型源', sqUncategorizedDesc:'无法按接口机制归入上述类型的源，单独列出，不与质量等级混在一起。', sqUnavailableSources:'不可用 / 未入选源', sqUnavailableDesc:'可搜索但已屏蔽、超时、不可用或不在当前质量候选池中的源，不会下发到客户端。', sqBlockedSources:'屏蔽源', sqBlockedDescLong:'屏蔽源不会下发到任何客户端，但仍保留在管理列表中，可随时恢复。', sqXml:'XML', sqJson:'JSON / MacCMS', sqJar:'JAR / 扩展', sqJs:'JS URL', sqRemote:'远程', sqOther:'其他',
     sqLeanRemoved:'轻量剔除',
     channelProbeTitle:'频道级测速（仅 Node/Docker）',
     channelProbeEnable:'启用定时频道测速（每 12 小时）',
@@ -2239,21 +2241,22 @@ async function loadSearchQuotaReport() {
     const cfg = await cfgRes.json();
     const allSites = Array.isArray(cfg.sites) ? cfg.sites : [];
     rememberCredentialSiteTypes(allSites, [...credentialSiteTypes]);
-    const rawCandidateKeys = Array.isArray(cfg.searchQuality && cfg.searchQuality.candidateKeys)
+    const hasServerCandidateKeys = Array.isArray(cfg.searchQuality && cfg.searchQuality.candidateKeys);
+    const rawCandidateKeys = hasServerCandidateKeys
       ? cfg.searchQuality.candidateKeys
       : allSites.filter(s => s.candidate === true).map(s => s.key);
-    if (rawCandidateKeys.length > 0) {
-      const candidateKeys = new Set(rawCandidateKeys);
-      // 候选源必须同时满足 searchable===1 且存在于当前质量候选池。
-      // 表头和表格统一使用这个交集，避免质量池残留旧 key 时数字不一致。
-      sqAllSites = allSites.filter(s => s.searchable === 1 && candidateKeys.has(s.key));
-      sqExcludedSites = allSites.filter(s => s.searchable === 1 && !candidateKeys.has(s.key)); // 同属最终配置口径
-      sqCandidateCount = sqAllSites.length;
-    } else {
-      // 质量池尚未生成时按旧口径展示可搜索源，避免把所有源都误判为“未入选”。
-      sqAllSites = allSites.filter(s => s.searchable === 1);
-      sqExcludedSites = [];
-    }
+    const serverCategoryCounts = cfg.searchQuality && cfg.searchQuality.categoryCounts ? cfg.searchQuality.categoryCounts : {};
+    const serverCandidateCounts = cfg.searchQuality && cfg.searchQuality.candidateCategoryCounts ? cfg.searchQuality.candidateCategoryCounts : {};
+    sqBlockedSites = allSites.filter(s => s.searchable === 1 && s.blocked === true);
+    // candidateKeys 是服务端的最终候选集合；空数组也必须尊重，不能回退为全部可搜索源。
+    const candidateKeys = new Set(rawCandidateKeys);
+    sqAllSites = allSites.filter(s => s.searchable === 1 && s.candidate === true && candidateKeys.has(s.key) && s.blocked !== true);
+    sqExcludedSites = allSites.filter(s => s.searchable === 1 && s.blocked !== true && !candidateKeys.has(s.key));
+    sqCandidateCount = sqAllSites.length;
+    sqCategoryCounts = serverCategoryCounts;
+    sqCandidateCategoryCounts = typeof serverCandidateCounts === 'object' && serverCandidateCounts !== null
+      ? serverCandidateCounts
+      : countSearchCategories(sqAllSites);
     renderSearchSources();
   } catch {}
 }
@@ -2520,7 +2523,10 @@ function renderQualityStats(d) {
 
 let sqAllSites = [];
 let sqExcludedSites = [];
+let sqBlockedSites = [];
 let sqCandidateCount = 0;
+let sqCategoryCounts = {};
+let sqCandidateCategoryCounts = {};
 let sqSearchRenderPending = false;
 let sqLastRenderedHtml = '';
 const sqScrollPositions = {};
@@ -2618,12 +2624,28 @@ function qualitySpeedLabel(entry) {
   return '-';
 }
 
-function isJarSearchSite(site) {
-  return site && (
-    site.type === 3
-    || /^https?:\/\//i.test(String(site.jar || ''))
-    || /^https?:\/\//i.test(typeof site.ext === 'string' ? site.ext : '')
-  );
+function sourceCategoryOf(site) {
+  if (!site) return 'other';
+  if (SOURCE_CATEGORY_KEYS.includes(site.sourceCategory)) return site.sourceCategory;
+  const api = String(site.api || '');
+  const remoteJarOrExt = /^https?:\/\//i.test(String(site.jar || ''))
+    || /^https?:\/\//i.test(typeof site.ext === 'string' ? site.ext : '');
+  if (site.type === 3 && /^https?:\/\//i.test(api)) return 'js';
+  if (site.type === 3) return 'jar';
+  if (site.type === 0) return 'xml';
+  if (site.type === 1) return 'json';
+  if (site.type === 4) return 'remote';
+  if (remoteJarOrExt) return 'jar';
+  return 'other';
+}
+
+function countSearchCategories(items) {
+  const counts = { xml: 0, json: 0, jar: 0, js: 0, remote: 0, other: 0 };
+  (items || []).forEach((site) => {
+    const category = sourceCategoryOf(site);
+    counts[category] = (counts[category] || 0) + 1;
+  });
+  return counts;
 }
 
 function isUnavailableSearchSite(site, entry) {
@@ -2631,13 +2653,6 @@ function isUnavailableSearchSite(site, entry) {
     site.unavailable === true
     || (entry && (entry.grade === 'timeout' || entry.grade === 'unusable'))
   );
-}
-
-function isUsableSearchSite(site, entry) {
-  if (!site || site.blocked === true || site.searchable !== 1 || site.candidate !== true) return false;
-  if (isUnavailableSearchSite(site, entry)) return false;
-  if (isJarSearchSite(site)) return false;
-  return true;
 }
 
 function searchSiteGradeRank(site, entry) {
@@ -2665,7 +2680,7 @@ function compareSearchSites(a, b, qualityMap) {
 function renderSearchSources() {
   if (sqSearchRenderPending) return;
   captureSearchTableScroll();
-  const pinnedArr = [...sqPinnedKeys];
+  const pinnedOrder = new Map([...sqPinnedKeys].map((key, index) => [key, index]));
   const qualityMap = qualityEntryByKey();
   const input = $('sqSourceFilter');
   const select = $('sqGradeFilter');
@@ -2673,8 +2688,9 @@ function renderSearchSources() {
   const gradeFilter = select ? String(select.value || 'all') : 'all';
   const matches = function(s) {
     const entry = qualityMap.get(s.key);
+    const isBlocked = sqBlockedKeys.has(s.key) || s.blocked === true;
     if (gradeFilter === 'blocked') {
-      if (!sqBlockedKeys.has(s.key) && s.blocked !== true) return false;
+      if (!isBlocked) return false;
     } else if (gradeFilter !== 'all') {
       if (!entry || entry.grade !== gradeFilter) return false;
     }
@@ -2682,116 +2698,103 @@ function renderSearchSources() {
     return String(s.key || '').toLowerCase().includes(query)
       || String(s.name || '').toLowerCase().includes(query);
   };
-
-  const allSites = sqAllSites.slice().sort(function(a, b) {
+  const compare = function(a, b) {
+    const aPinned = pinnedOrder.has(a.key);
+    const bPinned = pinnedOrder.has(b.key);
+    if (aPinned !== bPinned) return aPinned ? -1 : 1;
+    if (aPinned && bPinned) return (pinnedOrder.get(a.key) || 0) - (pinnedOrder.get(b.key) || 0);
     return compareSearchSites(a, b, qualityMap);
+  };
+  const allSites = sqAllSites.slice().sort(compare);
+  const blockedAll = (sqBlockedSites || []).slice().sort(compareSearchSites.bind(null, qualityMap));
+  const blocked = blockedAll.filter(matches);
+  const excluded = (sqExcludedSites || []).slice()
+    .filter(s => !(sqBlockedKeys.has(s.key) || s.blocked === true))
+    .sort(function(a, b) { return compareSearchSites(a, b, qualityMap); })
+    .filter(matches);
+  const categoryBuckets = { xml: [], json: [], jar: [], js: [], remote: [], other: [] };
+  allSites.forEach(function(s) {
+    const category = sourceCategoryOf(s);
+    (categoryBuckets[category] || categoryBuckets.other).push(s);
   });
-  const pinnedFiltered = pinnedArr.map(function(key) {
-    return allSites.find(s => s.key === key) || { key: key, name: key };
-  }).filter(matches);
-  const pinnedKeys = new Set(pinnedFiltered.map(s => s.key));
-  const unpinned = allSites.filter(s => !pinnedKeys.has(s.key));
-
-  const blocked = unpinned.filter(s => sqBlockedKeys.has(s.key) || s.blocked === true).filter(matches);
-  const js = unpinned.filter(s => !(sqBlockedKeys.has(s.key) || s.blocked === true) && s.isJs === true).filter(matches);
-  const unavailable = unpinned.filter(s => {
-    const entry = qualityMap.get(s.key);
-    return !(sqBlockedKeys.has(s.key) || s.blocked === true) && s.isJs !== true && isUnavailableSearchSite(s, entry);
-  }).filter(matches);
-  const jar = unpinned.filter(s => {
-    const entry = qualityMap.get(s.key);
-    return !(sqBlockedKeys.has(s.key) || s.blocked === true) && s.isJs !== true
-      && !isUnavailableSearchSite(s, entry) && isJarSearchSite(s);
-  }).filter(matches);
-  const usable = unpinned.filter(s => {
-    const entry = qualityMap.get(s.key);
-    return isUsableSearchSite(s, entry);
-  }).filter(matches);
-  const other = unpinned.filter(s => {
-    const entry = qualityMap.get(s.key);
-    return !(sqBlockedKeys.has(s.key) || s.blocked === true) && s.isJs !== true
-      && !isUnavailableSearchSite(s, entry) && !isJarSearchSite(s) && !isUsableSearchSite(s, entry);
-  }).filter(matches);
+  const filteredCategoryBuckets = { xml: [], json: [], jar: [], js: [], remote: [], other: [] };
+  Object.keys(categoryBuckets).forEach(function(key) {
+    filteredCategoryBuckets[key] = categoryBuckets[key].filter(matches);
+  });
 
   const count = $('sqSourceFilterCount');
   if (count) {
-    count.textContent = (query || gradeFilter !== 'all')
-      ? t('sqFilterMatched') + ': ' + (pinnedFiltered.length + blocked.length + js.length + unavailable.length + jar.length + usable.length + other.length)
-      : '';
+    const unique = new Set();
+    Object.keys(filteredCategoryBuckets).forEach(key => filteredCategoryBuckets[key].forEach(s => unique.add(s.key)));
+    excluded.forEach(s => unique.add(s.key));
+    blocked.forEach(s => unique.add(s.key));
+    count.textContent = (query || gradeFilter !== 'all') ? t('sqFilterMatched') + ': ' + unique.size : '';
   }
 
   const visibleLimit = 1000;
   const tableHeader = function() {
-    return '<thead><tr><th>' + t('sqKey') + '</th><th>' + t('sqName') + '</th><th>' + t('sqGrade') + '</th><th>' + t('sqSpeedStatus') + '</th><th style="width:120px;text-align:right">' + t('sqAction') + '</th></tr></thead><tbody>';
+    return '<thead><tr><th style="width:30px">#</th><th>' + t('sqKey') + '</th><th>' + t('sqName') + '</th><th>' + t('sqSource') + '</th><th>' + t('sqGrade') + '</th><th>' + t('sqSpeedStatus') + '</th><th style="width:190px;text-align:right">' + t('sqAction') + '</th></tr></thead><tbody>';
   };
   const tableHeaderWithReason = function() {
-    return '<thead><tr><th>' + t('sqKey') + '</th><th>' + t('sqName') + '</th><th>' + t('sqReason') + '</th><th>' + t('sqSpeedStatus') + '</th><th style="width:120px;text-align:right">' + t('sqAction') + '</th></tr></thead><tbody>';
+    return '<thead><tr><th style="width:30px">#</th><th>' + t('sqKey') + '</th><th>' + t('sqName') + '</th><th>' + t('sqSource') + '</th><th>' + t('sqReason') + '</th><th>' + t('sqSpeedStatus') + '</th><th style="width:190px;text-align:right">' + t('sqAction') + '</th></tr></thead><tbody>';
   };
-  const row = function(s, withReason) {
+  const row = function(s, withReason, index) {
     const isBlocked = sqBlockedKeys.has(s.key) || s.blocked === true;
     const entry = qualityMap.get(s.key);
     const grade = entry ? entry.grade : null;
-    let rowHtml = '<tr style="border-bottom:1px solid var(--border)' + (isBlocked ? ';opacity:0.55;text-decoration:line-through' : '') + '">';
+    const isPinned = pinnedOrder.has(s.key);
+    let rowHtml = '<tr style="border-bottom:1px solid var(--border)' + (isBlocked ? ';opacity:0.55;text-decoration:line-through' : isPinned ? ';background:var(--bg-hover)' : '') + '">';
+    rowHtml += '<td style="padding:4px;width:30px;color:var(--text-secondary)">' + (typeof index === 'number' ? index + 1 : '') + '</td>';
     rowHtml += '<td style="padding:4px;font-family:var(--mono);font-size:0.75rem">' + escHtml(s.key) + '</td>';
-    rowHtml += '<td style="padding:4px">' + escHtml(s.name || s.key) + (isBlocked ? ' <span style="color:var(--red);font-size:0.7rem">' + t('sqBlocked') + '</span>' : '') + '</td>';
+    rowHtml += '<td style="padding:4px">' + escHtml(s.name || s.key) + (isPinned ? ' <span style="color:var(--primary);font-size:0.7rem">' + t('sqPinned') + '</span>' : '') + (isBlocked ? ' <span style="color:var(--red);font-size:0.7rem">' + t('sqBlocked') + '</span>' : '') + '</td>';
+    rowHtml += '<td style="padding:4px;white-space:nowrap">' + escHtml(sourceCategoryLabel(sourceCategoryOf(s))) + '</td>';
     if (withReason) {
       rowHtml += '<td style="padding:4px;white-space:nowrap;color:var(--text-secondary)">' + escHtml(qualityCandidateReasonLabel(s.candidateReason)) + '</td>';
     } else {
       rowHtml += '<td style="padding:4px;white-space:nowrap;color:' + qualityGradeColor(grade) + '">' + qualityGradeLabel(grade) + '</td>';
     }
     rowHtml += '<td style="padding:4px;white-space:nowrap;font-family:var(--mono);font-size:0.75rem">' + qualitySpeedLabel(entry) + '</td>';
-    rowHtml += '<td style="padding:4px;width:120px;text-align:right;white-space:nowrap">';
-    if (!isBlocked) rowHtml += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem" onclick="togglePin(&quot;' + escHtml(s.key) + '&quot;)">' + t('sqPin') + '</button> ';
+    rowHtml += '<td style="padding:4px;width:190px;text-align:right;white-space:nowrap">';
+    if (!isBlocked) rowHtml += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem" onclick="togglePin(&quot;' + escHtml(s.key) + '&quot;)">' + (isPinned ? t('sqUnpin') : t('sqPin')) + '</button> ';
     rowHtml += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem;color:var(--red)" onclick="toggleBlocked(&quot;' + escHtml(s.key) + '&quot;)">' + (isBlocked ? t('sqUnblock') : t('sqBlock')) + '</button>';
     rowHtml += '</td></tr>';
     return rowHtml;
   };
-  const section = function(titleKey, descKey, scrollKey, items, withReason, wrapClass) {
-    if (items.length === 0) return '';
-    let out = '<div style="margin-top:18px;margin-bottom:8px"><strong>' + t(titleKey) + ' (' + items.length + ')</strong></div>';
-    out += '<div style="margin-bottom:6px;font-size:0.75rem;color:var(--text-secondary)">' + t(descKey) + '</div>';
-    out += '<div class="sq-table-wrap' + (wrapClass ? ' ' + wrapClass : '') + '" data-sq-scroll="' + scrollKey + '"><table class="sq-table">';
+  const section = function(titleKey, descKey, scrollKey, items, withReason, countOverride) {
+    const displayedCount = typeof countOverride === 'number' ? countOverride : items.length;
+    let out = '<div style="margin-bottom:14px">';
+    out += '<div style="margin-bottom:6px"><strong>' + t(titleKey) + ' (' + displayedCount + ')</strong>';
+    out += ' <span style="font-size:0.75rem;color:var(--text-secondary)">— ' + t(descKey) + '</span></div>';
+    out += '<div class="sq-table-wrap' + (scrollKey ? ' is-' + scrollKey : '') + '" data-sq-scroll="' + scrollKey + '"><table class="sq-table">';
     out += withReason ? tableHeaderWithReason() : tableHeader();
     const visible = items.slice(0, visibleLimit);
-    visible.forEach(function(s) { out += row(s, withReason); });
-    if (items.length > visibleLimit) out += '<tr><td colspan="5" style="padding:4px;color:var(--text-secondary)">... +' + (items.length - visibleLimit) + ' more</td></tr>';
-    out += '</tbody></table></div>';
+    visible.forEach(function(s, index) { out += row(s, withReason, index); });
+    if (items.length > visibleLimit) out += '<tr><td colspan="7" style="padding:4px;color:var(--text-secondary)">... +' + (items.length - visibleLimit) + ' more</td></tr>';
+    out += '</tbody></table></div></div>';
     return out;
   };
 
+  const noSearchFilter = !query && gradeFilter === 'all';
+  const countFor = function(category, filteredItems) {
+    if (!noSearchFilter) return filteredItems.length;
+    const serverCount = sqCandidateCategoryCounts && typeof sqCandidateCategoryCounts[category] === 'number'
+      ? sqCandidateCategoryCounts[category]
+      : null;
+    const localCount = filteredItems.length;
+    return serverCount === null ? localCount : serverCount;
+  };
+
   let html = '';
-  if (pinnedFiltered.length > 0) {
-    html += '<div style="margin-bottom:12px"><strong style="color:var(--primary)">' + t('sqPinned') + ' (' + pinnedFiltered.length + ')</strong>';
-    html += ' <span style="font-size:0.75rem;color:var(--text-secondary)">— ' + t('sqPinnedDesc') + '</span></div>';
-    html += '<div class="sq-table-wrap is-pinned" data-sq-scroll="pinned"><table class="sq-table">';
-    html += '<thead><tr><th style="width:30px">#</th><th>' + t('sqKey') + '</th><th>' + t('sqName') + '</th><th>' + t('sqGrade') + '</th><th>' + t('sqSpeedStatus') + '</th><th style="width:190px;text-align:right">' + t('sqAction') + '</th></tr></thead><tbody>';
-    pinnedFiltered.forEach(function(s, index) {
-      const entry = qualityMap.get(s.key);
-      const grade = entry ? entry.grade : null;
-      html += '<tr style="border-bottom:1px solid var(--border);background:var(--bg-hover)">';
-      html += '<td style="padding:4px;width:30px;color:var(--text-secondary)">' + (index + 1) + '</td>';
-      html += '<td style="padding:4px;font-family:var(--mono);font-size:0.75rem">' + escHtml(s.key) + '</td>';
-      html += '<td style="padding:4px">' + escHtml(s.name || s.key) + '</td>';
-      html += '<td style="padding:4px;white-space:nowrap;color:' + qualityGradeColor(grade) + '">' + qualityGradeLabel(grade) + '</td>';
-      html += '<td style="padding:4px;white-space:nowrap;font-family:var(--mono);font-size:0.75rem">' + qualitySpeedLabel(entry) + '</td>';
-      html += '<td style="padding:4px;width:190px;text-align:right;white-space:nowrap">';
-      if (index > 0) html += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem" onclick="movePinned(' + index + ',-1)">▲</button> ';
-      if (index < pinnedFiltered.length - 1) html += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem" onclick="movePinned(' + index + ',1)">▼</button> ';
-      html += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem;color:var(--red)" onclick="togglePin(&quot;' + escHtml(s.key) + '&quot;)">' + t('sqUnpin') + '</button> ';
-      html += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem;color:var(--red)" onclick="toggleBlocked(&quot;' + escHtml(s.key) + '&quot;)">' + t('sqBlock') + '</button>';
-      html += '</td></tr>';
-    });
-    html += '</tbody></table></div>';
-  }
+  html += section('sqXmlSources', 'sqXmlDesc', 'xml', filteredCategoryBuckets.xml, false, countFor('xml', filteredCategoryBuckets.xml));
+  html += section('sqJsonSources', 'sqJsonDesc', 'json', filteredCategoryBuckets.json, false, countFor('json', filteredCategoryBuckets.json));
+  html += section('sqJarSources', 'sqJarDesc', 'jar', filteredCategoryBuckets.jar, false, countFor('jar', filteredCategoryBuckets.jar));
+  html += section('sqJsSources', 'sqJsDesc', 'js', filteredCategoryBuckets.js, false, countFor('js', filteredCategoryBuckets.js));
+  html += section('sqRemoteSources', 'sqRemoteDesc', 'remote', filteredCategoryBuckets.remote, false, countFor('remote', filteredCategoryBuckets.remote));
+  html += section('sqUncategorizedSources', 'sqUncategorizedDesc', 'other', filteredCategoryBuckets.other, false, countFor('other', filteredCategoryBuckets.other));
+  html += section('sqExcludedSources', 'sqExcludedDesc', 'excluded', excluded, true);
+  html += section('sqBlockedSources', 'sqBlockedDescLong', 'blocked', blocked, true);
 
-  html += section('sqUsableSources', 'sqUsableDesc', 'usable', usable, false);
-  html += section('sqJarSources', 'sqJarDesc', 'jar', jar, false);
-  html += section('sqJsSources', 'sqJsDesc', 'js', js, false);
-  html += section('sqUnavailableSources', 'sqUnavailableDesc', 'unavailable', unavailable, true);
-  html += section('sqBlockedSources', 'sqBlockedDesc', 'blocked', blocked, true);
-  html += section('sqOtherSources', 'sqCandidateDesc', 'other', other, true);
-
-  if (usable.length + jar.length + js.length + unavailable.length + blocked.length + other.length === 0 && pinnedFiltered.length === 0) {
+  if (excluded.length + blocked.length + Object.keys(filteredCategoryBuckets).reduce((sum, key) => sum + filteredCategoryBuckets[key].length, 0) === 0) {
     html += '<div style="padding:8px;color:var(--text-secondary)">' + t('sqFilterNoMatch') + '</div>';
   }
 
@@ -2802,6 +2805,14 @@ function renderSearchSources() {
   bindSearchTableScroll();
 }
 
+function sourceCategoryLabel(category) {
+  if (category === 'xml') return t('sqXml');
+  if (category === 'json') return t('sqJson');
+  if (category === 'jar') return t('sqJar');
+  if (category === 'js') return t('sqJs');
+  if (category === 'remote') return t('sqRemote');
+  return t('sqOther');
+}
 async function movePinned(index, direction) {
   const arr = [...sqPinnedKeys];
   const target = index + direction;
@@ -2942,42 +2953,51 @@ let credentialDistribution = {
 const CLIENT_SOURCE_MODES = ['all', 'search', 'selected', 'custom'];
 const CLIENT_GRADES = ['excellent', 'good', 'usable', 'untestable'];
 const CLIENT_BUCKET_QUALITY_KEYS = ['excellent', 'good', 'usable', 'untestable'];
-const KNOWN_CLIENT_SITE_TYPE_KEYS = ['0', '1', '3', '4'];
+const SOURCE_CATEGORY_KEYS = ['xml', 'json', 'jar', 'js', 'remote', 'other'];
 let credentialSiteTypes = new Set();
 
-function normalizeCredentialSiteTypeKey(value) {
-  const type = Number(value);
-  return Number.isFinite(type) && Number.isInteger(type) && type >= 0 ? String(type) : '';
+function normalizeCredentialSiteTypeValues(value) {
+  const out = [];
+  if (SOURCE_CATEGORY_KEYS.includes(value)) return [value];
+  const legacy = String(value);
+  if (legacy === '0') out.push('xml');
+  else if (legacy === '1') out.push('json');
+  else if (legacy === '3') out.push('jar', 'js');
+  else if (legacy === '4') out.push('remote');
+  return out;
 }
 
 function rememberCredentialSiteTypes(sites, configuredTypes) {
   const next = new Set();
   for (const site of Array.isArray(sites) ? sites : []) {
-    const key = normalizeCredentialSiteTypeKey(site && site.type);
-    if (key) next.add(key);
+    next.add(sourceCategoryOf(site));
   }
   for (const value of Array.isArray(configuredTypes) ? configuredTypes : []) {
-    const key = normalizeCredentialSiteTypeKey(value);
-    if (key) next.add(key);
+    normalizeCredentialSiteTypeValues(value).forEach(key => next.add(key));
   }
   credentialSiteTypes = next;
 }
 
 function credentialTypeLabel(key) {
-  const labels = { '0': t('credentialType0'), '1': t('credentialType1'), '3': t('credentialType3'), '4': t('credentialType4') };
-  return labels[key] || t('credentialTypeUnknown');
+  return sourceCategoryLabel(key);
 }
 
-function normalizeClientBucketMap(raw, allowedKeys) {
+function normalizeClientBucketTypeMap(raw) {
   const out = {};
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
-  const keys = Array.isArray(allowedKeys) ? allowedKeys : Object.keys(raw);
-  for (const key of keys) {
+  for (const key of SOURCE_CATEGORY_KEYS) {
     const value = raw[key];
     if (typeof value !== 'number' || !Number.isFinite(value)) continue;
     const limit = Math.floor(value);
     if (limit === -1) out[key] = -1;
     else if (limit >= 0) out[key] = limit;
+  }
+  for (const value of Object.keys(raw)) {
+    const legacyLimit = typeof raw[value] === 'number' && Number.isFinite(raw[value]) ? Math.floor(raw[value]) : NaN;
+    if (!Number.isFinite(legacyLimit)) continue;
+    for (const key of normalizeCredentialSiteTypeValues(value)) {
+      if (out[key] === undefined) out[key] = legacyLimit === -1 ? -1 : Math.max(0, legacyLimit);
+    }
   }
   return out;
 }
@@ -2985,7 +3005,7 @@ function normalizeClientBucketMap(raw, allowedKeys) {
 function normalizeClientBucketLimits(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
   const quality = normalizeClientBucketMap(raw.quality, CLIENT_BUCKET_QUALITY_KEYS);
-  const type = normalizeClientBucketMap(raw.type);
+  const type = normalizeClientBucketTypeMap(raw.type);
   const result = {};
   if (Object.keys(quality).length) result.quality = quality;
   if (Object.keys(type).length) result.type = type;
@@ -3019,7 +3039,8 @@ function normalizeClientAuthCode(item, index) {
     bucketLimits: normalizeClientBucketLimits(item && item.bucketLimits),
     includeGrades: Array.isArray(item && item.includeGrades) ? item.includeGrades.filter((grade) => CLIENT_GRADES.includes(grade)) : [],
     siteTypes: Array.isArray(item && item.siteTypes)
-      ? [...new Set(item.siteTypes.map((value) => Number.parseInt(value, 10)).filter((value) => Number.isFinite(value) && value >= 0))]
+      ? [...new Set(item.siteTypes.flatMap((value) => normalizeCredentialSiteTypeValues(value)))]
+        .filter((key) => SOURCE_CATEGORY_KEYS.includes(key))
       : [],
     selectedKeys: Array.isArray(item && item.selectedKeys)
       ? [...new Set(item.selectedKeys.filter((key) => typeof key === 'string' && key.trim()).map((key) => key.trim()))]
@@ -3072,10 +3093,9 @@ function credentialModeSummary(item) {
   const parts = [sourceModeLabel(item.sourceMode)];
   parts.push(t('credentialMaxSites') + ' ' + clientLimitLabel(item.maxSites));
   parts.push(t('credentialMaxSearchable') + ' ' + clientLimitLabel(item.maxSearchable));
-  if (item.includeGrades && item.includeGrades.length) parts.push(item.includeGrades.join('/'));
+  if (item.includeGrades && item.includeGrades.length) parts.push(item.includeGrades.map((grade) => qualityGradeLabel(grade)).join(' / '));
   if (item.siteTypes && item.siteTypes.length) parts.push(t('credentialSiteTypes') + ' ' + item.siteTypes.map((value) => credentialTypeLabel(String(value))).join(' / '));
   if (item.selectedKeys && item.selectedKeys.length) parts.push(t('credentialSelectedKeys') + ' ' + item.selectedKeys.length);
-  if (item.pinnedKeys && item.pinnedKeys.length) parts.push(t('credentialPinnedKeys') + ' ' + item.pinnedKeys.length);
   return parts.join(' · ');
 }
 
@@ -3257,15 +3277,8 @@ function renderCredentialDistribution() {
       { key: 'usable', label: t('sqUsable') },
       { key: 'untestable', label: t('sqUntestable') },
     ];
-    const typeBuckets = [...credentialSiteTypes]
-      .sort((a, b) => {
-        const ai = KNOWN_CLIENT_SITE_TYPE_KEYS.indexOf(a);
-        const bi = KNOWN_CLIENT_SITE_TYPE_KEYS.indexOf(b);
-        if (ai === -1 && bi === -1) return Number(a) - Number(b);
-        if (ai === -1) return 1;
-        if (bi === -1) return -1;
-        return ai - bi;
-      })
+    const typeBuckets = SOURCE_CATEGORY_KEYS
+      .filter(key => credentialSiteTypes.has(key))
       .map((key) => ({ key, label: credentialTypeLabel(key) }));
     function addBucketRow(key, label, group) {
       const row = document.createElement('div');
@@ -3347,12 +3360,12 @@ function renderCredentialDistribution() {
       const label = document.createElement('label');
       const checkbox = document.createElement('input');
       checkbox.type = 'checkbox';
-      checkbox.checked = selectedTypes.has(Number(bucket.key));
+      checkbox.checked = selectedTypes.has(bucket.key);
       checkbox.onchange = () => {
         const next = new Set(item.siteTypes || []);
-        if (checkbox.checked) next.add(Number(bucket.key));
-        else next.delete(Number(bucket.key));
-        item.siteTypes = [...next].sort((a, b) => a - b);
+        if (checkbox.checked) next.add(bucket.key);
+        else next.delete(bucket.key);
+        item.siteTypes = SOURCE_CATEGORY_KEYS.filter(key => next.has(key));
         item.updatedAt = new Date().toISOString();
         summary.textContent = credentialModeSummary(item);
       };
@@ -3374,15 +3387,6 @@ function renderCredentialDistribution() {
     };
     addLabeledInput(grid, t('credentialSelectedKeys'), selectedInput);
 
-    const pinnedInput = document.createElement('input');
-    pinnedInput.className = 'nt-input';
-    pinnedInput.placeholder = 'key1,key2';
-    pinnedInput.value = (item.pinnedKeys || []).join(',');
-    pinnedInput.oninput = () => {
-      item.pinnedKeys = [...new Set(pinnedInput.value.split(',').map((value) => value.trim()).filter(Boolean))];
-      item.updatedAt = new Date().toISOString();
-    };
-    addLabeledInput(grid, t('credentialPinnedKeys'), pinnedInput);
     card.appendChild(grid);
 
     const gradesBox = document.createElement('div');
@@ -3405,7 +3409,7 @@ function renderCredentialDistribution() {
         renderCredentialDistribution();
       };
       const span = document.createElement('span');
-      span.textContent = t('sq' + grade.charAt(0).toUpperCase() + grade.slice(1)) || grade;
+      span.textContent = qualityGradeLabel(grade);
       label.appendChild(checkbox);
       label.appendChild(span);
       gradesBox.appendChild(label);

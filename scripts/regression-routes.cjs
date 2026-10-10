@@ -120,7 +120,7 @@ const distribution = {
       maxSites: -1,
       maxSearchable: -1,
       includeGrades: [],
-      siteTypes: [3],
+      siteTypes: ['jar'],
       pinnedKeys: [],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -358,7 +358,7 @@ async function readSites(response) {
     const { app } = makeApp({ distribution: customDistribution });
     const custom = await readSites(await app.request('https://box.example/auth/custom-a/'));
     const keys = custom.map((site) => site.key).sort().join(',');
-    assert(keys === 'source-good,source-plugin', 'custom mode should serve selected keys plus pinned keys, got ' + keys);
+    assert(keys === 'source-good', 'custom mode must not let pinned keys bypass selectedKeys, got ' + keys);
   }
 
   {
@@ -386,6 +386,53 @@ async function readSites(response) {
   }
 
   {
+    const pinnedPolicyDistribution = {
+      requireAuth: false,
+      authCodes: [{
+        id: 'auth-pinned-policy',
+        label: '置顶边界',
+        code: 'pinned-policy',
+        enabled: true,
+        sourceMode: 'all',
+        maxSites: -1,
+        maxSearchable: -1,
+        includeGrades: ['excellent'],
+        siteTypes: ['xml'],
+        bucketLimits: { type: { xml: 0 } },
+        selectedKeys: [],
+        pinnedKeys: ['source-good', 'source-excellent'],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }],
+    };
+    const { app } = makeApp({ distribution: pinnedPolicyDistribution });
+    const sites = await readSites(await app.request('https://box.example/auth/pinned-policy/'));
+    assert(sites.length === 0, 'pinned keys must not bypass grade, type, or bucket exclusions, got ' + sites.map((site) => site.key).join(','));
+
+    const pinnedLimitDistribution = {
+      requireAuth: false,
+      authCodes: [{
+        id: 'auth-pinned-limit',
+        label: '置顶上限',
+        code: 'pinned-limit',
+        enabled: true,
+        sourceMode: 'all',
+        maxSites: 1,
+        maxSearchable: -1,
+        includeGrades: [],
+        siteTypes: [],
+        selectedKeys: [],
+        pinnedKeys: ['source-good', 'source-excellent'],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }],
+    };
+    const limited = makeApp({ distribution: pinnedLimitDistribution });
+    const limitedSites = await readSites(await limited.app.request('https://box.example/auth/pinned-limit/'));
+    assert(limitedSites.length === 1 && limitedSites[0].key === 'source-good', 'pinned keys must only affect order and must not exceed maxSites, got ' + limitedSites.map((site) => site.key).join(','));
+  }
+
+  {
     const dynamicTypeDistribution = {
       requireAuth: false,
       authCodes: [{
@@ -396,7 +443,7 @@ async function readSites(response) {
         sourceMode: 'all',
         maxSites: -1,
         maxSearchable: -1,
-        bucketLimits: { type: { '9': 0, '0': -1 } },
+        bucketLimits: { type: { other: 0, xml: -1 } },
         includeGrades: [],
         siteTypes: [],
         pinnedKeys: [],
@@ -406,7 +453,7 @@ async function readSites(response) {
     };
     const { app } = makeApp({ distribution: dynamicTypeDistribution });
     const sites = await readSites(await app.request('https://box.example/auth/dynamic-type/'));
-    assert(!sites.some((site) => site.key === 'source-custom-type'), 'unknown type bucket 0 must exclude that type');
+    assert(!sites.some((site) => site.key === 'source-custom-type'), 'other type bucket 0 must exclude unclassified sources');
     assert(sites.some((site) => site.key === 'source-excellent'), 'unknown neighboring type bucket must not block type 0');
   }
 
@@ -424,6 +471,31 @@ async function readSites(response) {
     assert(response.status === 200, 'auth live route should work');
     const text = await response.text();
     assert(!text.includes('/live/'), 'empty live body should not be rewritten unexpectedly');
+  }
+
+  {
+    const { app } = makeApp();
+    const response = await app.request('https://box.example/admin/config-data', {
+      headers: { Authorization: 'Bearer test-token' },
+    });
+    assert(response.status === 200, 'admin config-data should return 200, got ' + response.status);
+    const body = await response.json();
+    assert(body.searchQuality && body.searchQuality.categoryCounts, 'config-data should expose source category counts');
+    assert(body.searchQuality.candidateCategoryCounts, 'config-data should expose candidate category counts');
+    const categories = ['xml', 'json', 'jar', 'js', 'remote', 'other'];
+    const sumCounts = (counts) => categories.reduce((sum, key) => sum + (Number(counts[key]) || 0), 0);
+    assert(sumCounts(body.searchQuality.categoryCounts) === body.searchQuality.searchableCount, 'category counts must equal searchable count');
+    assert(sumCounts(body.searchQuality.candidateCategoryCounts) === body.searchQuality.candidateCount, 'candidate category counts must equal candidate count');
+    const byKey = new Map(body.sites.map((site) => [site.key, site]));
+    assert(byKey.get('source-excellent').sourceCategory === 'xml', 'type 0 site should classify as xml');
+    assert(byKey.get('source-good').sourceCategory === 'json', 'type 1 site should classify as json');
+    assert(byKey.get('source-custom-type').sourceCategory === 'other', 'unknown site type should classify as other');
+    for (const category of categories) {
+      const searchableSites = body.sites.filter((site) => site.inFinal && !site.blocked && site.searchable === 1 && site.sourceCategory === category);
+      const candidateSites = searchableSites.filter((site) => site.candidate === true);
+      assert(searchableSites.length === body.searchQuality.categoryCounts[category], 'category count mismatch for ' + category + ': list=' + searchableSites.length + ', server=' + body.searchQuality.categoryCounts[category]);
+      assert(candidateSites.length === body.searchQuality.candidateCategoryCounts[category], 'candidate category count mismatch for ' + category + ': list=' + candidateSites.length + ', server=' + body.searchQuality.candidateCategoryCounts[category]);
+    }
   }
 
   console.log('regression: route auth and source distribution checks passed');

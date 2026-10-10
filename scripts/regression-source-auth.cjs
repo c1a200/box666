@@ -93,7 +93,7 @@ const cfg = normalizeClientDistributionConfig({
   requireAuth: true,
   authCodes: [
     { code: 'code-a', sourceMode: 'search', maxSites: 2, includeGrades: ['excellent'] },
-    { code: 'code-b', sourceMode: 'selected', maxSearchable: 5, siteTypes: [0, 1] },
+    { code: 'code-b', sourceMode: 'selected', maxSearchable: 5, siteTypes: ['xml', 'json'] },
   ],
 });
 assert(cfg.requireAuth === true, 'requireAuth should persist');
@@ -106,6 +106,11 @@ assert(custom.authCodes[0].maxSites === -1 && custom.authCodes[0].maxSearchable 
 assert(findClientAuthCode(cfg, 'code-a').sourceMode === 'search', 'code-a policy should persist');
 assert(findClientAuthCode(cfg, 'code-b').maxSearchable === 5, 'code-b policy should persist');
 assert(!findClientAuthCode(cfg, 'missing'), 'unknown auth code must not resolve');
+const migrated = normalizeClientDistributionConfig({
+  authCodes: [{ code: 'legacy-types', siteTypes: [0, 1, 3, 4], bucketLimits: { type: { 3: 9 } } }],
+});
+assert(migrated.authCodes[0].siteTypes.join(',') === 'xml,json,jar,js,remote', 'legacy numeric site types must migrate to categories');
+assert(migrated.authCodes[0].bucketLimits.type.jar === 9 && migrated.authCodes[0].bucketLimits.type.js === 9, 'legacy type 3 bucket must expand to JAR and JS');
 
 const threeState = normalizeClientDistributionConfig({
   authCodes: [{
@@ -114,7 +119,7 @@ const threeState = normalizeClientDistributionConfig({
     maxSearchable: -1,
     bucketLimits: {
       quality: { excellent: -1, good: 0, usable: 3, untestable: 100 },
-      type: { 0: -1, 1: 0, 3: 7, 9: 2 },
+      type: { xml: -1, json: 0, jar: 7, js: 7 },
     },
   }],
 });
@@ -123,8 +128,8 @@ assert(threeState.authCodes[0].maxSearchable === -1, 'maxSearchable=-1 must be p
 assert(threeState.authCodes[0].bucketLimits.quality.excellent === -1, 'bucket -1 must be preserved');
 assert(threeState.authCodes[0].bucketLimits.quality.good === 0, 'bucket 0 must be preserved');
 assert(threeState.authCodes[0].bucketLimits.quality.usable === 3, 'bucket positive limit must be preserved');
-assert(threeState.authCodes[0].bucketLimits.type['3'] === 7, 'type bucket positive limit must be preserved');
-assert(threeState.authCodes[0].bucketLimits.type['9'] === 2, 'unknown type bucket must be preserved');
+assert(threeState.authCodes[0].bucketLimits.type.jar === 7, 'JAR bucket must be preserved');
+assert(threeState.authCodes[0].bucketLimits.type.js === 7, 'JS bucket must be preserved');
 
 (async () => {
   bundle('src/core/quality.ts', 'quality.cjs', 'true');

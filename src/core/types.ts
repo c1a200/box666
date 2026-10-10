@@ -221,11 +221,23 @@ export interface EdgeProxyConfig {
 // 源分发策略：all=全部候选源，search=仅可搜索源，selected=仅质量池精选源，custom=自定义筛选
 export type SourceDistributionMode = 'all' | 'search' | 'selected' | 'custom';
 
+// 源类型只描述接口机制，与 excellent/good/usable/untestable 质量等级无关。
+export type SourceCategory = 'xml' | 'json' | 'jar' | 'js' | 'remote' | 'other';
+
+export const SOURCE_CATEGORIES: readonly SourceCategory[] = [
+  'xml',
+  'json',
+  'jar',
+  'js',
+  'remote',
+  'other',
+];
+
 // 源分发分桶上限。
 // 未配置=不额外限制；0=该分类一个都不下发；-1=该分类全部下发；正数=按最终顺序保留前 N 个。
 export interface SiteBucketLimits {
   quality?: Partial<Record<'excellent' | 'good' | 'usable' | 'untestable', number>>;
-  type?: Partial<Record<string, number>>;
+  type?: Partial<Record<SourceCategory, number>>;
 }
 
 // 单个客户端鉴权码（不同码可下发不同的源种类和数量）
@@ -239,7 +251,8 @@ export interface ClientAuthCode {
   maxSearchable: number;
   bucketLimits?: SiteBucketLimits;
   includeGrades: SiteQualityGrade[];
-  siteTypes: number[];
+  // 新配置使用 xml/json/jar/js/remote/other；旧数字类型仍会在读取时迁移。
+  siteTypes: SourceCategory[];
   selectedKeys: string[];
   pinnedKeys: string[];
   createdAt: string;
