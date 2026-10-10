@@ -59,7 +59,7 @@ try {
   // 忽略：无 .env 或文件系统受限时，回退到已注入的 process.env
 }
 
-// 配置全局 HTTP/HTTPS 代理，用于国内网盘（如 Quark/UC/115 等）扫码登录时绕过海外云服务器的 IP 屏蔽
+// 配置全局 HTTP/HTTPS 代理，用于访问受地区限制或直连不稳定的上游源
 const proxyUrl = process.env.HTTP_PROXY || process.env.HTTPS_PROXY;
 if (proxyUrl) {
   try {
@@ -182,8 +182,6 @@ async function buildConfig(port: number): Promise<AppConfig> {
     cronSchedule: process.env.CRON_SCHEDULE || '0 5 * * *',
     qualityTimezone: process.env.QUALITY_TIMEZONE || 'Asia/Shanghai',
     localBaseUrl: baseUrl.replace(/\/$/, ''),
-    bilibiliQrProxyBaseUrl: process.env.BILIBILI_QR_PROXY_BASE_URL,
-    bilibiliQrProxyToken: process.env.BILIBILI_QR_PROXY_TOKEN,
     dockerMissingBaseUrl,
     // 自动抓取（环境变量驱动）
     scrapeSourceUrl: process.env.SCRAPE_SOURCE_URL,

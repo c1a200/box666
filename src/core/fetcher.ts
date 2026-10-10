@@ -61,7 +61,7 @@ async function expandSources(
   sourceUrlBlacklist: Set<string> = new Set(),
 ): Promise<void> {
   // 同一 URL 被多个顶层总源引用时不能直接丢弃：站点可能同时属于多个总源，
-  // 凭证边界必须保留完整来源集合。这里按 URL 归并来源后再去重。
+  // 来源边界必须保留完整来源集合。这里按 URL 归并来源后再去重。
   const mergedByUrl = new Map<string, ExpandSourceItem>();
   for (const item of sources) {
     if (sourceUrlBlacklist.has(item.entry.url)) {

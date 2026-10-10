@@ -29,13 +29,8 @@ export const CRITICAL_STORAGE_KEYS = new Set<string>([
   'maccms_sources',
   'live_sources',
   'name_transform',
-  'cloud_credentials',
-  'credential_policy',
-  'credential_encryption_key',
-  'credential_distribution_enabled',
-  'credential_distribution',
+  'client_auth_distribution',
   'site_upstream_map',
-  'site_contract_map',
   'search_quota',
   'cron_interval',
   'speed_test_enabled',
@@ -247,7 +242,7 @@ export class HybridStorage implements Storage {
 
   // Each key has its own write chain. Large background objects (for example a
   // full quality candidate snapshot) must never block a small critical config
-  // save such as credential_distribution, while writes to the same key still
+  // save such as client_auth_distribution, while writes to the same key still
   // stay ordered.
   private enqueueRemoteWrite(key: string, value: string): Promise<void> {
     const previous = this.remoteWriteChains.get(key) ?? Promise.resolve();

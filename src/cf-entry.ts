@@ -31,8 +31,6 @@ interface CfEnv {
   SPEED_TEST_BUDGET_MS?: string;
   WORKER_BASE_URL?: string;
   QUALITY_TIMEZONE?: string;
-  BILIBILI_QR_PROXY_BASE_URL?: string;
-  BILIBILI_QR_PROXY_TOKEN?: string;
 }
 
 function buildConfig(env: CfEnv): AppConfig {
@@ -46,8 +44,6 @@ function buildConfig(env: CfEnv): AppConfig {
     speedTestBudgetMs: parseInt(env.SPEED_TEST_BUDGET_MS || '') || DEFAULT_SPEED_TEST_BUDGET_MS,
     workerBaseUrl: env.WORKER_BASE_URL || undefined,
     qualityTimezone: env.QUALITY_TIMEZONE || 'Asia/Shanghai',
-    bilibiliQrProxyBaseUrl: env.BILIBILI_QR_PROXY_BASE_URL || undefined,
-    bilibiliQrProxyToken: env.BILIBILI_QR_PROXY_TOKEN || undefined,
   };
 }
 

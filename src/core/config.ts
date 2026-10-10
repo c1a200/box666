@@ -67,12 +67,9 @@ export const DEFAULT_CRON_INTERVAL = 1440; // 默认每天一次
 // 边缘函数代理
 export const KV_EDGE_PROXIES = 'edge_proxies';
 
-// 网盘凭证
-export const KV_CLOUD_CREDENTIALS = 'cloud_credentials';
-export const KV_CREDENTIAL_POLICY = 'credential_policy';
-export const KV_CREDENTIAL_ENCRYPTION_KEY = 'credential_encryption_key';
-export const KV_CREDENTIAL_DISTRIBUTION = 'credential_distribution'; // 凭证分发模式与鉴权码配置
-export const KV_CREDENTIAL_DISTRIBUTION_ENABLED = 'credential_distribution_enabled'; // 是否向前端下发已保存的网盘凭证（默认开启）
+// 客户端鉴权与源分发（不再保存/注入网盘凭证）
+export const KV_CLIENT_AUTH_DISTRIBUTION = 'client_auth_distribution';
+export const KV_CREDENTIAL_DISTRIBUTION = 'credential_distribution'; // 仅用于读取旧鉴权码配置并迁移
 
 // 搜索配额
 export const KV_SEARCH_QUOTA = 'search_quota';
@@ -131,7 +128,6 @@ export const KV_SITE_AUTO_CLEAN = 'site_auto_clean';   // 'true' | 'false'
 // Builder 源追踪
 export const KV_SOURCE_MAP = 'builder_source_map'; // { sites: Record, parses: Record, lives: Record }
 export const KV_SITE_UPSTREAM_MAP = 'site_upstream_map';
-export const KV_SITE_CONTRACT_MAP = 'site_contract_map'; // { sites: Record<siteKey, SiteContract> }
 
 // 频道测速 cron：每 12 小时
 export const CHANNEL_PROBE_CRON = '0 */12 * * *';

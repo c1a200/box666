@@ -80,30 +80,7 @@ ${sharedStyles}
 
 .nt-textarea:focus{border-color:var(--green)}
 
-/* Cloud login and credential distribution */
-.cloud-card{
-  padding:12px;
-  background:var(--surface);
-  border:1px solid var(--border);
-  border-radius:6px;
-  display:flex;
-  flex-direction:column;
-  gap:8px;
-}
-.cloud-card-header{display:flex;justify-content:space-between;align-items:center;gap:8px}
-.cloud-card-name{font-weight:600;font-size:0.9rem;color:var(--text-bright)}
-.cloud-badge{font-family:var(--mono);font-size:0.65rem;padding:2px 8px;border-radius:10px;text-transform:uppercase;letter-spacing:0.05em}
-.cloud-badge.valid{background:rgba(80,250,123,0.15);color:var(--green)}
-.cloud-badge.expired{background:rgba(255,85,85,0.15);color:var(--red)}
-.cloud-badge.none{background:rgba(136,136,136,0.15);color:var(--text-dim)}
-.cloud-card-actions{display:flex;gap:6px;flex-wrap:wrap}
-.cloud-card-time{font-family:var(--mono);font-size:0.7rem;color:var(--text-dim)}
-.cloud-card-row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px}
-.cloud-card-row-info{display:flex;flex-direction:column;gap:2px;min-width:0}
-.cloud-card-row-name{font-size:0.82rem;color:var(--text-bright);font-weight:600}
-.cloud-card-row-status{font-family:var(--mono);font-size:0.65rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.05em}
-.cloud-card-row-status.valid{color:var(--green)}
-.cloud-card-row-status.expired{color:var(--red)}
+/* Client authentication and source distribution */
 .credential-policy-box{padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:6px}
 .credential-inline{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .credential-help{font-size:0.78rem;color:var(--text-secondary);line-height:1.55;margin-top:8px}
@@ -137,40 +114,6 @@ ${sharedStyles}
 .risk-badge.low{background:rgba(80,250,123,0.1);color:var(--green)}
 .risk-badge.high{background:rgba(255,85,85,0.15);color:var(--red)}
 .risk-badge.unaudited{background:rgba(241,250,140,0.15);color:var(--yellow)}
-
-/* QR modal */
-.qr-modal-overlay{
-  position:fixed;top:0;left:0;right:0;bottom:0;
-  background:rgba(0,0,0,0.7);
-  display:flex;align-items:center;justify-content:center;
-  z-index:1000;
-}
-.qr-modal{
-  background:var(--surface);
-  border:1px solid var(--border);
-  border-radius:8px;
-  padding:24px;
-  min-width:300px;
-  max-width:400px;
-  text-align:center;
-}
-.qr-modal h3{margin:0 0 16px;color:var(--text-bright);font-size:1rem}
-.qr-modal img{
-  max-width:250px;
-  max-height:250px;
-  border-radius:4px;
-  background:#fff;
-  padding:8px;
-}
-.qr-status{
-  margin-top:12px;
-  font-family:var(--mono);
-  font-size:0.8rem;
-  color:var(--text-dim);
-}
-.qr-status.scanned{color:var(--yellow)}
-.qr-status.confirmed{color:var(--green)}
-.qr-status.expired{color:var(--red)}
 
 /* Import textarea */
 .import-textarea{
@@ -323,7 +266,6 @@ ${sharedStyles}
     <div class="tab" data-tab="maccms" onclick="switchTab('maccms')"><span data-i18n="tabMacCMS">MacCMS</span> <span class="badge" id="badgeMacCMS">0</span></div>
     <div class="tab" data-tab="live" onclick="switchTab('live')"><span data-i18n="tabLive">Live</span> <span class="badge" id="badgeLive">0</span></div>
     <div class="tab" data-tab="searchQuota" onclick="switchTab('searchQuota')" id="tabSearchQuota"><span data-i18n="tabSearchQuota">Search</span> <span class="badge" id="badgeSearchQuota">0</span></div>
-    <div class="tab" data-tab="cloud" onclick="switchTab('cloud')"><span data-i18n="tabCloud">Cloud</span></div>
     <div class="tab" data-tab="settings" onclick="switchTab('settings')"><span data-i18n="tabSettings">Settings</span></div>
     <div class="tab" data-tab="aggLogs" onclick="switchTab('aggLogs')"><span data-i18n="tabAggLogs">Logs</span></div>
   </div>
@@ -509,7 +451,6 @@ ${sharedStyles}
           <option value="excellent" data-i18n="sqExcellent">Excellent</option>
           <option value="good" data-i18n="sqGood">Good</option>
           <option value="usable" data-i18n="sqUsable">Usable</option>
-          <option value="credential-ready" data-i18n="sqCredentialReady">Credential-ready</option>
           <option value="untestable" data-i18n="sqUntestable">Client final check only</option>
           <option value="blocked" data-i18n="sqBlocked">Blocked</option>
         </select>
@@ -521,90 +462,24 @@ ${sharedStyles}
     </div>
   </div>
 
-  <!-- Cloud Tab -->
-  <div class="tab-panel" id="panelCloud">
-    <div class="section">
-      <div class="section-title" data-i18n="cloudLogin">Cloud Login</div>
-      <div class="credential-help" data-i18n="cloudLoginDesc"></div>
-      <div id="cloudLoginGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;margin-top:10px"></div>
-    </div>
-
-    <div class="section">
-      <div class="section-title" data-i18n="cloudManualPaste">Manual Credential Paste</div>
-      <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
-        <div style="flex:0 0 140px">
-          <label class="form-label" data-i18n="cloudPlatform">Platform</label>
-          <select id="manualPlatform" class="nt-input" style="width:100%"></select>
-        </div>
-        <div style="flex:1;min-width:200px">
-          <label class="form-label" data-i18n="cloudCredentialValue">Credential (cookie / token / JSON)</label>
-          <input id="manualCredValue" class="nt-input" style="width:100%" placeholder="cookie=xxx; token=yyy">
-        </div>
-        <button class="btn btn-sm" onclick="manualPasteCredential()" data-i18n="save">Save</button>
-      </div>
-      <div id="manualPasteStatus" class="status-text" style="margin-top:6px"></div>
-      <div class="cloud-helper-info" style="margin-top:12px;font-size:0.8rem;color:var(--text-secondary);background:rgba(255,255,255,0.03);padding:10px;border-radius:4px;border-left:3px solid var(--accent);line-height:1.5" data-i18n="cloudManualPasteHelp"></div>
-    </div>
-  </div>
-
   <!-- Settings Tab -->
   <div class="tab-panel" id="panelSettings">
 
     <div class="section">
-      <div class="section-title" data-i18n="credentialDistributionTitle">Credential Distribution &amp; Client Authentication</div>
-      <div class="credential-help" data-i18n="credentialDistributionDesc"></div>
-
-      <div class="credential-policy-box" style="margin-top:10px">
-        <div class="credential-inline">
-          <strong style="font-size:0.85rem;color:var(--text-bright)" data-i18n="credentialDefaultPolicy">Root-link default credential policy</strong>
-          <select id="credentialDefaultMode" class="nt-input" style="width:auto;min-width:180px" onchange="renderCredentialDistribution()">
-            <option value="none" data-i18n="credentialModeNone">Do not distribute</option>
-            <option value="all" data-i18n="credentialModeAll">Distribute all</option>
-            <option value="selected" data-i18n="credentialModeSelected">Distribute selected only</option>
-          </select>
-          <label class="credential-inline" style="font-size:0.82rem;color:var(--text-secondary)">
-            <input type="checkbox" id="credentialRequireAuth" onchange="renderCredentialDistribution()">
-            <span data-i18n="credentialRequireAuth">Require auth code for clients</span>
-          </label>
-          <label class="credential-inline" style="font-size:0.82rem;color:var(--text-secondary)" title="Applies only when the credential mode is none">
-            <input type="checkbox" id="credentialStripUpstreamEntries" onchange="renderCredentialDistribution()">
-            <span data-i18n="credentialStripUpstreamEntries">Also remove upstream cloud-login entries</span>
-          </label>
-          <button class="btn btn-sm" onclick="saveCredentialDistribution()" data-i18n="save">Save</button>
-          <button class="btn btn-sm" onclick="copyClientLink(window.location.origin + '/')" data-i18n="credentialCopyRoot">Copy root link</button>
-          <span class="credential-status" id="credentialDistributionStatus"></span>
-        </div>
-        <div id="credentialDefaultPlatforms" class="credential-platform-grid"></div>
-        <div class="credential-help">
-          <span data-i18n="credentialPolicyHint"></span>
-          <strong id="credentialRootLinkHint" style="display:block;margin-top:6px;color:var(--text-bright)"></strong>
-        </div>
+      <div class="section-title" data-i18n="credentialDistributionTitle">客户端鉴权与源分发</div>
+      <div class="credential-help" data-i18n="credentialDistributionDesc">鉴权码只控制下发哪些源，不再保存或注入任何网盘凭证。关闭强制鉴权时，根链接正常下发源；启用后根链接不下发源，必须使用 /auth/&lt;鉴权码&gt;/ 访问。</div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="credentialRequireAuth" onchange="renderCredentialDistribution()">
+          <span data-i18n="credentialRequireAuth">强制客户端鉴权</span>
+        </label>
+        <button class="btn btn-sm" onclick="addCredentialAuthCode()" data-i18n="credentialAddCode">添加鉴权码</button>
+        <button class="btn btn-sm" onclick="saveCredentialDistribution()" data-i18n="save">保存</button>
+        <span class="credential-status" id="credentialDistributionStatus"></span>
       </div>
-
-      <div class="credential-policy-box" style="margin-top:12px">
-        <div class="credential-inline" style="justify-content:space-between">
-          <div>
-            <strong style="font-size:0.85rem;color:var(--text-bright)" data-i18n="credentialAuthCodes">Client auth codes</strong>
-            <div class="credential-help" data-i18n="credentialAuthCodesDesc"></div>
-          </div>
-          <button class="btn btn-sm" onclick="addCredentialAuthCode()" data-i18n="credentialAddCode">+ Add auth code</button>
-        </div>
-        <div id="credentialAuthList" class="credential-auth-list"></div>
-      </div>
-
-      <div class="credential-help" data-i18n="credentialSecurityHint"></div>
-    </div>
-    <!-- Storage Diagnostics -->
-    <div class="section">
-      <div class="section-title" data-i18n="storageStatus">存储状态</div>
-      <div id="storageDiagnostics" style="white-space:pre-wrap;font-family:var(--mono);font-size:0.78rem;line-height:1.6;color:var(--text-secondary);min-height:1.6em">加载中...</div>
-      <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
-        <button class="btn btn-sm" onclick="loadStorageDiagnostics()" data-i18n="refresh">刷新</button>
-      </div>
-      <div style="margin-top:6px;font-size:0.78rem;color:var(--text-dim);line-height:1.5" data-i18n="storageStatusDesc">显示远端持久化状态。Render 的本地 SQLite 只作为缓存，关键配置必须成功写入远端 KV 才算保存。</div>
+      <div id="credentialDistributionList" class="credential-auth-list" style="margin-top:12px"></div>
     </div>
 
-    <!-- Cron Interval -->
     <div class="section">
       <div class="section-title" data-i18n="cronInterval">Source Aggregation Schedule</div>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
@@ -658,10 +533,6 @@ ${sharedStyles}
         <input type="number" id="maxSearchableInput" class="nt-input" style="width:90px" min="0" max="1000" value="0">
         <label class="form-label" style="margin:0" data-i18n="maxParses">解析器上限</label>
         <input type="number" id="maxParsesInput" class="nt-input" style="width:90px" min="0" max="1000" value="0">
-        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:0.85rem">
-          <input type="checkbox" id="retainCredentialSourcesInput">
-          <span data-i18n="retainCredentialSources">保留凭证/JAR 源</span>
-        </label>
         <button class="btn btn-sm" id="searchQuotaSaveBtn" onclick="saveSearchQuota()" data-i18n="save">保存</button>
         <button class="btn btn-sm" onclick="applyRecommendedQuota()" data-i18n="qualityUseRecommended">填入推荐值</button>
         <span class="status-text" id="searchQuotaStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
@@ -677,7 +548,7 @@ ${sharedStyles}
       <input type="hidden" id="pruneDeadParsesInput">
       <div id="searchQuotaStats" style="margin-top:8px;font-size:0.8rem;color:var(--text-secondary);line-height:1.6"></div>
       <div style="margin-top:6px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="searchQuotaDesc">只影响下发到应用端的数据：可搜索源上限和解析器上限，0 表示不限制。JS 地址源始终排除；置顶源不参与截断。可在“搜索”页管理置顶源。</div>
-      <div style="margin-top:4px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="qualityGradeDesc">质量分级（后台分块测速，不影响应用端启动速度）：优 ≤1000ms、良 1001-3000ms、可用 3001-6000ms。前端凭证会用于服务端真实 HTTP 探测；只有确实探测成功且达到优/良/可用的凭证源，才进入对应测速等级。凭证已保存但未成功验证、或 JAR/客户端专用源，保留为“凭证就绪/客户端登录”，不会伪装成已测速；凭证探测失败会回退到“凭证就绪”，不会永久判死。超时和不可用不进入候选池。</div>
+      <div style="margin-top:4px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="qualityGradeDesc">质量分级（后台分块测速，不影响应用端启动速度）：优 ≤1000ms、良 1001-3000ms、可用 3001-6000ms。服务端只做普通 HTTP 质量分级，不保存、不下发也不注入网盘凭证；需要网盘登录的源由应用端自行扫码并使用本地凭证。超时和不可用不进入候选池。</div>
     </div>
 
     <div class="section">
@@ -702,7 +573,7 @@ ${sharedStyles}
         <button class="btn btn-sm" onclick="refreshQualityReport()" data-i18n="qualityRefresh">刷新分级状态</button>
         <span class="status-text" id="qualityScheduleStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
       </div>
-      <div style="margin-top:8px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="qualityScheduleDesc">分级在后台异步执行，点击后立即返回，不会阻塞网页或其他请求。日常只重测服务端可探测的候选池（优/良/可用）；凭证就绪源中只有可真实 HTTP 探测的会重测，JAR/客户端专用源保留但不参与服务端重测。到达全量周期或候选池为空时自动全量分级。Cloudflare 和 Node/Render 都按小分片执行并在分片间让出事件循环；Node/Render 异常重启后会从已保存游标继续。</div>
+      <div style="margin-top:8px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="qualityScheduleDesc">分级在后台异步执行，点击后立即返回，不会阻塞网页或其他请求。日常重测候选池中的源；需要网盘登录、JAR 运行或其他客户端能力的源由应用端最终验证。网盘登录完全由应用端处理。到达全量周期或候选池为空时自动全量分级。Cloudflare 和 Node/Render 都按小分片执行并在分片间让出事件循环；Node/Render 异常重启后会从已保存游标继续。</div>
       <div id="qualityDynamicStats" style="margin-top:10px;font-size:0.82rem;color:var(--text-secondary);line-height:1.7"></div>
     </div>
     <div class="section">
@@ -921,26 +792,24 @@ const translations = {
     qualityEnabled:'Enable scheduled grading',
     qualityTimes:'Times', qualityTimesPh:'e.g. 04:30, 16:30', qualityRepeatDays:'Candidate pool refresh (days)', qualityFullRepeatDays:'Full grading interval (days)',
     qualityRunCandidate:'Retest candidate pool', qualityRunFull:'Full re-grade', qualityRunNow:'Run now', qualityRefresh:'Refresh grading status', qualityStatusLabel:'Status', qualityStatusMode:'mode',
-    qualityScheduleDesc:'Grading runs asynchronously in the background and returns immediately, so the page and other requests are never blocked. Daily runs refresh the candidate pool and also preflight sources that cannot be tested as a simple HTTP API: fetch/decode config or API responses (GET, then POST fallback), inject distributable frontend credentials, verify AList APIs, and download JARs for ZIP/MD5/structure checks. Only actual Java execution and final media playback remain client-side. When the full-grading interval is reached or the candidate pool is empty, a full grading run happens automatically. Both Cloudflare and Node/Render run in small chunks and yield between chunks; Node/Render resumes from the saved cursor after a restart.',
-    qualityGradeDesc:'Quality grades (probed in chunks in the background, no impact on client startup): excellent <=1000ms, good 1001-3000ms, usable 3001-6000ms. For sources that cannot be speed-probed as a simple HTTP API, the server simulates TVBox client behavior: it fetches/decodes config or API responses (with POST fallback), injects saved distributable credentials, verifies AList /api/fs/list responses, and downloads JARs for ZIP/MD5/structure checks. Only actual Java execution and final media playback remain client-side. Timeout and unusable are never served. Normally set only two values: searchable-source limit and parser limit; the page shows actual counts, preflight coverage, grade breakdown and recommended values.',
+    qualityScheduleDesc:'Grading runs asynchronously in the background and returns immediately, so the page and other requests are never blocked. Daily runs refresh the candidate pool with ordinary HTTP quality checks. Sources that require cloud-drive login, JAR execution or other client-side capabilities are finally verified by the client. Cloud-drive login and credentials are handled entirely by the client and are never stored, distributed or injected by the server. When the full-grading interval is reached or the candidate pool is empty, a full grading run happens automatically. Both Cloudflare and Node/Render run in small chunks and yield between chunks; Node/Render resumes from the saved cursor after a restart.',
+    qualityGradeDesc:'Quality grades (probed in chunks in the background, no impact on client startup): excellent <=1000ms, good 1001-3000ms, usable 3001-6000ms. The server performs ordinary HTTP quality checks only. Cloud-drive credentials are never stored, distributed or injected by the server; sources that require cloud-drive login use the client's own login and local credentials. Timeout and unusable are never served. Normally set only two values: searchable-source limit and parser limit; the page shows actual counts, grade breakdown and recommended values.',
     qualityNoSnapshot:'No grading result yet. Run grading once to build the quality pool.',
     qualityStateIdle:'idle', qualityStateRunning:'running', qualityStateDone:'done', qualityStateError:'error',
     qualityLastRun:'Last run', qualityNextRun:'Next run', qualityLastFullRun:'Last full run', qualityNextFullRun:'Next full run', qualityNever:'never',
     qualityGradesTitle:'Quality grades', qualityRecommended:'Recommended', qualityRecSearchable:'searchable limit', qualityRecParses:'parser limit', sqCumulative:'cumulative', qualityUseRecommended:'Fill recommended values', qualityRecommendedApplied:'Recommended values filled in; click Save in Search Quota.', qualityActualCounts:'Current actual counts', sqStatsUsablePool:'usable pool',
-    qualityTimesHint:'Uses the timezone configured by QUALITY_TIMEZONE (default Asia/Shanghai, UTC+8). Comma-separated HH:MM, up to 12 per day. Candidate pool refresh re-tests HTTP speed sources and reruns server-side preflight for config/API/credential/AList/JAR-structure sources every N days. Full grading re-grades all searchable sources every N days.',
+    qualityTimesHint:'Uses the timezone configured by QUALITY_TIMEZONE (default Asia/Shanghai, UTC+8). Comma-separated HH:MM, up to 12 per day. Candidate pool refresh re-tests candidate sources every N days. Full grading re-grades all searchable sources every N days.',
     qualityRunningNote:'Grading is running in the background; you can keep using the page.',
-    qualityStarted:'Grading started', qualityAlreadyRunning:'Grading already running', qualityModeCandidate:'candidate pool grading/refresh', qualityModeFull:'full grading', qualityCoverage:'coverage', qualityTestable:'testable', qualityProbed:'probed', qualityNotProbed:'not probed', qualityUntestable:'untestable', qualityCredentialReady:'credential-ready', qualityCredentialPartial:'credential partial/invalid', qualityCredentialMissing:'credential missing', qualityPreflightVerified:'server config verified', qualityPreflightCredentialReady:'server credential verified', qualityPreflightAListVerified:'AList verified', qualityPreflightJarVerified:'JAR downloaded and verified', qualityClientFinalOnly:'client final check only', qualityRunCandidateStarted:'Candidate pool grading started (background)', qualityRunFullStarted:'Full grading started (background)',
     qualityScheduleSaved:'Schedule saved', qualityReportRefreshed:'Report refreshed',
     searchQuota:'Client Search Quota',
-    maxSearchable:'Searchable sources', maxQuickSearch:'Quick-search sources', maxStartupQuickSearch:'Startup quick-search sources', startupSiteLimit:'Startup source count', maxParses:'Parser limit', retainCredentialSources:'Retain credential/JAR sources', autoSearchLimit:'Auto safe limit', searchQuotaDesc:'This only controls what is served to clients: searchable-source limit and parser limit. Searchable sources = 0 serves every searchable source that passed quality filtering; above 0 keeps them in quality order excellent > good > usable > credential-ready > untestable. Timeout and unusable sources are never served. Untestable means the server has completed config/API/credential/AList/JAR-structure preflight but final Java execution or media playback still needs the client; it does not mean the source was skipped. Parser limit defaults to 3; 0 means unlimited. When "Retain credential/JAR sources" is checked, the searchable-source limit applies only to testable excellent/good/usable sources; credential-ready and client-final-only sources are retained in addition and do not consume the limit. Quick-search and startup quick-search limits default to 0 (unlimited); non-zero values are explicit advanced caps.', sortSearchBySpeed:'Sort by speed', sortSearchBySpeedDesc:'Uses existing site speed-test results to put faster sources first; no extra network requests. Pinned sources stay first.', leanStartup:'Lean startup', leanStartupDesc:'Removes remote JAR/extension sites from the root startup config to shorten TVBox startup; pinned sources are kept.', maxStartupQuickSearchDesc:'Quick-search cap used by the root startup config; 0 means unlimited. Full config remains available at /config-full.json.', startupOptimizationDesc:'Quick-search and root-startup limits default to unlimited. The root address may still be trimmed by the searchable-source limit; /config-full.json contains the full searchable set.', startupMode:'Startup mode', startupModeLean:'Lean', startupModeFull:'Full', startupModeDesc:'Lean serves a trimmed config at the root address for faster startup. Full is still available at /config-full.json.', pruneDeadParses:'Prune dead parsers', pruneDeadParsesDesc:'Probes parser endpoints and removes confirmed failures/timeouts so clients do not wait for each dead parser during startup.',
+    maxSearchable:'Searchable sources', maxQuickSearch:'Quick-search sources', maxStartupQuickSearch:'Startup quick-search sources', startupSiteLimit:'Startup source count', maxParses:'Parser limit', autoSearchLimit:'Auto safe limit', searchQuotaDesc:'This only controls what is served to clients: searchable-source limit and parser limit. Searchable sources = 0 serves every searchable source that passed quality filtering; above 0 keeps them in quality order excellent > good > usable > untestable. Timeout and unusable sources are never served. Untestable means the server cannot prove final playback with a plain HTTP check; cloud-drive login, JAR execution or final media playback still needs the client. It does not mean the source was skipped. Parser limit defaults to 3; 0 means unlimited. Cloud-drive credentials are managed entirely by the client and are never stored, distributed or injected by the server. Quick-search and startup quick-search limits default to 0 (unlimited); non-zero values are explicit advanced caps.', sortSearchBySpeed:'Sort by speed', sortSearchBySpeedDesc:'Uses existing site speed-test results to put faster sources first; no extra network requests. Pinned sources stay first.', leanStartup:'Lean startup', leanStartupDesc:'Removes remote JAR/extension sites from the root startup config to shorten TVBox startup; pinned sources are kept.', maxStartupQuickSearchDesc:'Quick-search cap used by the root startup config; 0 means unlimited. Full config remains available at /config-full.json.', startupOptimizationDesc:'Quick-search and root-startup limits default to unlimited. The root address may still be trimmed by the searchable-source limit; /config-full.json contains the full searchable set.', startupMode:'Startup mode', startupModeLean:'Lean', startupModeFull:'Full', startupModeDesc:'Lean serves a trimmed config at the root address for faster startup. Full is still available at /config-full.json.', pruneDeadParses:'Prune dead parsers', pruneDeadParsesDesc:'Probes parser endpoints and removes confirmed failures/timeouts so clients do not wait for each dead parser during startup.',
     tabSearchQuota:'Search',
-    sqSelected:'Active Search Sources', sqQuality:'Quality grades', sqExcellent:'Excellent', sqGood:'Good', sqUsable:'Usable', sqCredentialReady:'Credential-ready', sqUntestable:'Client final check only', sqTimeout:'Timeout', sqUnusable:'Unusable', sqPoolTotal:'Candidate pool', sqNoData:'Run aggregation to see results',
     sqStatsCurrent:'Current actual counts', sqStatsSearchable:'searchable', sqStatsQuick:'quick-search', sqStatsQuickLimit:'auto cap', sqStatsPool:'candidate pool', sqStatsParsers:'Parsers', sqStatsKept:'kept', sqStatsProbed:'probed', sqStatsRemoved:'removed', sqStatsLimit:'limit', sqStatsUnlimited:'unlimited', sqStatsQuality:'Quality grades', sqStatsNoData:'Run aggregation to show quality grades and parser counts.',
     sqKey:'Key', sqName:'Name', sqSource:'Source', sqReason:'Reason', sqGrade:'Grade', sqSpeedStatus:'Speed / Status', sqAction:'Action',
     sqPin:'Pin', sqUnpin:'Unpin',
     sqBlock:'Block', sqUnblock:'Unblock', sqBlocked:'Blocked', sqBlockedDesc:'Blocked sources are excluded from all client outputs but remain here so they can be restored.', sqSourceFilterPh:'Search source name or key...', sqFilterAll:'All grades', sqFilterMatched:'Matched', sqFilterNoMatch:'No matching sources',
     sqPinned:'Pinned', sqPinnedDesc:'Drag to reorder. Top sources are searched first in TVBox.', sqOtherSources:'Candidate Sources', sqCandidateDesc:'Candidate sources passed quality filtering and are eligible for distribution. Pinned sources are searched first; blocked sources stay in this list but are excluded from every client output.', sqExcludedSources:'Not Selected', sqExcludedDesc:'Searchable sources outside the quality candidate pool (JS URL, timeout, unusable, or not selected) are not distributed to clients.', sqReasonJsUrlExcluded:'JS URL excluded', sqReasonTimeout:'Timeout', sqReasonUnusable:'Unusable', sqReasonNotInPool:'Not in quality pool', sqReasonNotCandidate:'Not a candidate',
-    sqHttp:'http', sqMainJar:'main jar', sqIndepJar:'indep jar', sqLeanRemoved:'lean-removed',
+    sqLeanRemoved:'lean-removed',
     channelProbeTitle:'Channel Speed Probe (Node/Docker)',
     channelProbeEnable:'Enable scheduled channel speed test (every 12h)',
     channelProbeTrigger:'Probe now', channelProbeRefresh:'Refresh probe status',
@@ -958,40 +827,38 @@ const translations = {
     probeDeep:'Deep (validate content)', probeShallow:'Shallow (HTTP only)',
     autoCleanLabel:'Auto-blacklist after 5 consecutive failures (max 5/run)',
     siteProbeDesc:'Deep mode checks type0/type1 content validity. Failed sites get [⚠] marker after 3 failures.',
-    credentialDistributionTitle:'Credential Distribution & Client Authentication',
-    credentialDistributionDesc:'Choose what the root link may distribute, then optionally create per-client auth codes. Auth codes live only in the URL path, so the client enters an ordinary /auth/<code>/ link and never a query parameter. When credentials are not distributed, the client can still scan the QR code and log in locally.',
-    credentialDefaultPolicy:'Root-link default credential policy',
-    credentialModeNone:'Do not distribute credentials',
-    credentialModeAll:'Distribute all saved credentials',
-    credentialModeSelected:'Distribute selected platforms only',
+    credentialDistributionTitle:'Client Authentication & Source Distribution',
+    credentialDistributionDesc:'Auth codes control which sources are served; the server never stores or injects cloud-drive credentials. With authentication off, the root link serves sources normally. With it on, the root link serves no sources and clients must use /auth/<code>/.',
+    credentialSourceModeAll:'All candidate sources',
+    credentialSourceModeSearch:'Searchable sources only',
+    credentialSourceModeSelected:'Selected quality-pool sources only',
+    credentialSourceModeCustom:'Custom key whitelist only',
+    credentialMaxSites:'Total sources',
+    credentialMaxSearchable:'Searchable sources',
+    credentialSiteTypes:'Site types',
+    credentialPinnedKeys:'Pinned keys',
+    credentialIncludeGrades:'Quality grades',
     credentialRequireAuth:'Require an auth code; root link returns 401',
-    credentialStripUpstreamEntries:'Also remove upstream cloud-login entries in no-credential mode',
-    credentialPolicyHint:'The root policy applies only when authentication is off. Each auth code below can independently distribute none, all, or selected credentials. In selected mode, leaving every platform unchecked distributes no credentials.',
     credentialAuthCodes:'Client auth codes',
-    credentialAuthCodesDesc:'Create one code per client or group. The client uses the shown /auth/&lt;code&gt;/ URL and never appends a query parameter; each code has its own credential policy.',
+    credentialAuthCodesDesc:'Create one code per client or group. The client uses the shown /auth/<code>/ URL; each code has its own source policy.',
     credentialAddCode:'+ Add auth code',
-    credentialNoCodes:'No auth codes yet. The root link uses the default policy above.',
+    credentialNoCodes:'No auth codes yet. The root link serves the selected sources normally.',
     credentialCodeLabel:'Name / note',
     credentialCodeValue:'Auth code',
-    credentialCodeMode:'Credential policy',
+    credentialSourceMode:'Source mode',
+    credentialSelectedKeys:'Selected keys',
+    credentialSelectedKeysHint:'Used by custom mode; comma-separated site keys.',
     credentialCodeEnabled:'Enabled',
     credentialCopyRoot:'Copy root link',
     credentialCopyAuth:'Copy authenticated link',
     credentialCopied:'Copied',
     credentialDelete:'Delete',
-    credentialRootLinkHint:'Root link status',
-    credentialSaved:'Credential distribution and auth codes saved',
+    credentialSaved:'Client authentication and source distribution saved',
     credentialRootRequired:'Enable at least one auth code before requiring authentication.',
     credentialCodeInvalid:'Auth code must be 1-64 characters: letters, numbers, underscore or hyphen.',
-    credentialSelectedSummary:'Selected',
-    credentialSelectedEmptyShort:'Selected: none (no credentials)',
-    credentialSelectedEmpty:'No platform is selected. This auth code will distribute no credentials; the client can still log in locally.',
-    credentialDefaultLabel:'Default client',
-    cloudLoginDesc:'Log in here once; choose whether to distribute the saved credential in Settings. If a platform is not distributed, clients can still scan the QR code and log in themselves.',
-    cloudManualPasteHelp:'<strong>💡 Manual login:</strong><br>' +
-      '• <strong>Tianyi</strong>: Web QR is unstable. Sign in at <a href="https://h5.cloud.189.cn" target="_blank" style="color:var(--accent)">h5.cloud.189.cn</a> on a phone browser, copy the Cookie header value, select Tianyi above and paste.<br>' +
-      '• <strong>123Pan</strong>: Third-party QR login is restricted. Generate a WebDAV password in 123Pan Web -> Tool Center -> Third-Party Mount, select 123Pan above and paste.',
-    credentialSecurityHint:'Security: links with an auth code grant access to the selected credentials. Use HTTPS, do not publish auth-code links, and rotate a code if it leaks. Disabling a code immediately stops it from working.',
+    credentialDefaultLabel:'Client',
+    credentialRootPolicyFree:'Root link enabled',
+    credentialSelectedKeysRequired:'Custom source mode requires at least one selected key.',
     footer:'TVBox Source Aggregator &middot; Admin Console',
   },
   zh: {
@@ -1056,26 +923,24 @@ const translations = {
     qualityEnabled:'启用定时分级',
     qualityTimes:'执行时间', qualityTimesPh:'例如 04:30, 16:30', qualityRepeatDays:'候选池重排周期（天）', qualityFullRepeatDays:'全量分级周期（天）',
     qualityRunCandidate:'重测候选池', qualityRunFull:'全量重测', qualityRunNow:'立即执行', qualityRefresh:'刷新分级状态', qualityStatusLabel:'状态', qualityStatusMode:'模式',
-    qualityScheduleDesc:'分级在后台异步执行，点击后立即返回，不会阻塞网页或其他请求。日常会重测候选池，并对无法用普通 HTTP API 测速的源执行服务端预检：真实请求并解码配置/API（GET 失败时 POST 回退）、按规则注入前端凭证、验证 AList 接口，以及下载 JAR 做 ZIP/MD5/结构校验。只有 Java 实际执行和最终媒体播放留给客户端。到达全量周期或候选池为空时自动全量分级。Cloudflare 和 Node/Render 都按小分片执行并在分片间让出事件循环；Node/Render 异常重启后会从已保存游标继续。',
-    qualityGradeDesc:'质量分级（后台分块测速，不影响应用端启动速度）：优 ≤1000ms；良 1001-3000ms；可用 3001-6000ms。对无法直接用普通 HTTP API 测速的源，服务端会模拟 TVBox 客户端行为：真实请求并解码配置/API（必要时 POST 回退）、按规则注入前端保存的凭证、验证 AList 接口，以及下载 JAR 做 ZIP/MD5/结构校验。只有 Java 实际执行和最终媒体播放需要客户端完成。超时和不可用不进入候选池，凭证内容不会输出。日常只需填写可搜索源上限和解析器上限；页面会显示实际数量、预检覆盖、分级统计和推荐值。',
+    qualityScheduleDesc:'分级在后台异步执行，点击后立即返回，不会阻塞网页或其他请求。日常重测候选池中的源；需要网盘登录、JAR 运行或其他客户端能力的源由应用端最终验证。网盘登录和凭证处理完全由应用端完成，服务端不会保存、下发或注入凭证。到达全量周期或候选池为空时自动全量分级。Cloudflare 和 Node/Render 都按小分片执行并在分片间让出事件循环；Node/Render 异常重启后会从已保存游标继续。',
+    qualityGradeDesc:'质量分级（后台分块测速，不影响应用端启动速度）：优 ≤1000ms；良 1001-3000ms；可用 3001-6000ms。服务端只做普通 HTTP 质量分级，不保存、不下发也不注入网盘凭证。需要网盘登录的源由应用端自行扫码并使用本地凭证。超时和不可用不进入候选池。日常只需填写可搜索源上限和解析器上限；页面会显示实际数量、分级统计和推荐值。',
     qualityNoSnapshot:'尚无分级结果，先执行一次分级以建立质量池。',
     qualityStateIdle:'空闲', qualityStateRunning:'运行中', qualityStateDone:'已完成', qualityStateError:'错误',
     qualityLastRun:'上次执行', qualityNextRun:'下次执行', qualityLastFullRun:'上次全量', qualityNextFullRun:'下次全量', qualityNever:'从未',
     qualityGradesTitle:'质量分级', qualityRecommended:'推荐值', qualityRecSearchable:'可搜索源上限', qualityRecParses:'解析器上限', sqCumulative:'累计', qualityUseRecommended:'填入推荐值', qualityRecommendedApplied:'已填入推荐值，请点击搜索配额中的保存。', qualityActualCounts:'当前实际数量', sqStatsUsablePool:'可用池',
-    qualityTimesHint:'按 QUALITY_TIMEZONE 配置的时区执行（默认 Asia/Shanghai，北京时间 UTC+8）。用英文逗号分隔的 HH:MM 时间点，每天最多 12 个。候选池重排周期表示每隔 N 天重测一次 HTTP 测速候选源，并重新执行配置/API/凭证/AList/JAR 结构的服务端预检；全量分级周期表示每隔 N 天对所有可搜索源做一次完整分级。',
+    qualityTimesHint:'按 QUALITY_TIMEZONE 配置的时区执行（默认 Asia/Shanghai，北京时间 UTC+8）。用英文逗号分隔的 HH:MM 时间点，每天最多 12 个。候选池重排周期表示每隔 N 天重测一次候选源；全量分级周期表示每隔 N 天对所有可搜索源做一次完整分级。',
     qualityRunningNote:'分级正在后台运行，可继续使用本页面。',
-    qualityStarted:'分级已开始', qualityAlreadyRunning:'分级已在运行', qualityModeCandidate:'候选池分级/重排', qualityModeFull:'全量分级', qualityCoverage:'覆盖率', qualityTestable:'可测试', qualityProbed:'已探测', qualityNotProbed:'未探测', qualityUntestable:'不可测试', qualityCredentialReady:'凭证就绪', qualityCredentialPartial:'凭证部分有效/无效', qualityCredentialMissing:'凭证缺失', qualityPreflightVerified:'服务端配置已验证', qualityPreflightCredentialReady:'服务端凭证已验证', qualityPreflightAListVerified:'AList 已验证', qualityPreflightJarVerified:'JAR 已下载校验', qualityClientFinalOnly:'仅客户端最终确认', qualityRunCandidateStarted:'候选池分级已开始（后台运行）', qualityRunFullStarted:'全量分级已开始（后台运行）',
     qualityScheduleSaved:'计划已保存', qualityReportRefreshed:'报告已刷新',
     searchQuota:'应用端搜索配额',
-    maxSearchable:'可搜索源上限', maxQuickSearch:'快速搜索源上限', maxStartupQuickSearch:'启动快速源上限', startupSiteLimit:'启动源数量', maxParses:'解析器上限', retainCredentialSources:'保留凭证/JAR 源', autoSearchLimit:'自动安全配额', searchQuotaDesc:'这里只影响下发到应用端的数量：可搜索源上限和解析器上限。可搜索源上限填 0 表示下发全部通过质量筛选的搜索源；填写大于 0 时，按“优 > 良 > 可用 > 凭证就绪 > 仅客户端最终确认”的质量顺序保留，超时和不可用不会下发。“仅客户端最终确认”表示服务端已完成配置、接口、凭证、AList 或 JAR 结构预检，但 Java 执行或最终播放仍需客户端确认，并不是被服务端跳过。解析器上限默认推荐 3；填 0 表示不限制。勾选“保留凭证/JAR 源”后，可搜索源上限只限制优/良/可用等可测速源；凭证就绪和仅客户端最终确认的源会额外保留，不挤占可搜索源上限。快速搜索源和启动快速源默认 0（不限制）；填写大于 0 时才作为高级上限显式生效。', sortSearchBySpeed:'按测速速度排序', sortSearchBySpeedDesc:'复用现有站点测速结果，将较快的源排在前面；不会额外发起测速请求。置顶源始终最前。', leanStartup:'轻量启动', leanStartupDesc:'根配置启动阶段去掉远程 JAR/扩展站点，缩短影视仓/TVBox 启动时间；置顶源仍保留。', maxStartupQuickSearchDesc:'根地址启动配置使用的快速搜索上限；0 表示不限制。完整配置仍可通过 /config-full.json 获取。', startupOptimizationDesc:'快速搜索源和根地址启动源默认不限制；根地址仍会受可搜索源上限裁剪，/config-full.json 保留完整搜索源。', startupMode:'启动模式', startupModeLean:'轻量', startupModeFull:'完整', startupModeDesc:'轻量模式在根地址返回裁剪后的启动配置以加快启动；完整配置仍可通过 /config-full.json 获取。', pruneDeadParses:'剔除失效解析器', pruneDeadParsesDesc:'主动探测解析器地址并剔除确认超时或失效的项，避免客户端启动时逐个等待死解析器。',
+    maxSearchable:'可搜索源上限', maxQuickSearch:'快速搜索源上限', maxStartupQuickSearch:'启动快速源上限', startupSiteLimit:'启动源数量', maxParses:'解析器上限', autoSearchLimit:'自动安全配额', searchQuotaDesc:'这里只影响下发到应用端的数量：可搜索源上限和解析器上限。可搜索源上限填 0 表示下发全部通过质量筛选的搜索源；填写大于 0 时，按“优 > 良 > 可用 > 仅客户端最终确认”的质量顺序保留，超时和不可用不会下发。“仅客户端最终确认”表示服务端无需或无法用普通 HTTP 检查完成最终验证，网盘登录、JAR 执行或最终播放仍需客户端确认，并不是被服务端跳过。解析器上限默认推荐 3；填 0 表示不限制。网盘凭证完全由应用端管理，不会由服务端保存、下发或注入。快速搜索源和启动快速源默认 0（不限制）；填写大于 0 时才作为高级上限显式生效。', sortSearchBySpeed:'按测速速度排序', sortSearchBySpeedDesc:'复用现有站点测速结果，将较快的源排在前面；不会额外发起测速请求。置顶源始终最前。', leanStartup:'轻量启动', leanStartupDesc:'根配置启动阶段去掉远程 JAR/扩展站点，缩短影视仓/TVBox 启动时间；置顶源仍保留。', maxStartupQuickSearchDesc:'根地址启动配置使用的快速搜索上限；0 表示不限制。完整配置仍可通过 /config-full.json 获取。', startupOptimizationDesc:'快速搜索源和根地址启动源默认不限制；根地址仍会受可搜索源上限裁剪，/config-full.json 保留完整搜索源。', startupMode:'启动模式', startupModeLean:'轻量', startupModeFull:'完整', startupModeDesc:'轻量模式在根地址返回裁剪后的启动配置以加快启动；完整配置仍可通过 /config-full.json 获取。', pruneDeadParses:'剔除失效解析器', pruneDeadParsesDesc:'主动探测解析器地址并剔除确认超时或失效的项，避免客户端启动时逐个等待死解析器。',
     tabSearchQuota:'搜索',
-    sqSelected:'活跃搜索源', sqQuality:'质量分级', sqExcellent:'优', sqGood:'良', sqUsable:'可用', sqCredentialReady:'凭证就绪', sqUntestable:'仅客户端最终确认', sqTimeout:'超时', sqUnusable:'不可用', sqPoolTotal:'候选池', sqNoData:'执行聚合后查看结果',
     sqStatsCurrent:'当前实际数量', sqStatsSearchable:'可搜索源', sqStatsQuick:'快速搜索', sqStatsQuickLimit:'自动上限', sqStatsPool:'候选池', sqStatsParsers:'解析器', sqStatsKept:'最终保留', sqStatsProbed:'探测', sqStatsRemoved:'剔除', sqStatsLimit:'上限', sqStatsUnlimited:'不限制', sqStatsQuality:'质量分级', sqStatsNoData:'执行聚合后显示质量分级和解析器数量。',
     sqKey:'Key', sqName:'名称', sqSource:'来源', sqReason:'原因', sqGrade:'等级', sqSpeedStatus:'速度 / 状态', sqAction:'操作',
     sqPin:'置顶', sqUnpin:'取消置顶',
     sqBlock:'屏蔽', sqUnblock:'取消屏蔽', sqBlocked:'已屏蔽', sqBlockedDesc:'屏蔽源不会下发到任何客户端，但仍保留在管理列表中，可随时恢复。可按名称/Key 搜索，并按质量等级或“已屏蔽”筛选。', sqSourceFilterPh:'搜索源名称或 Key...', sqFilterAll:'全部等级', sqFilterMatched:'匹配', sqFilterNoMatch:'没有匹配的源',
     sqPinned:'置顶源', sqPinnedDesc:'上下移动排序，排在前面的源在 TVBox 搜索时优先执行', sqOtherSources:'候选源', sqCandidateDesc:'通过质量筛选、可参与下发的候选源。置顶源优先搜索；屏蔽后仍保留在此列表，但不会下发到任何客户端。', sqExcludedSources:'未入选源', sqExcludedDesc:'可搜索但未进入质量候选池的源（如 JS URL、超时、不可用或未入选），不会下发到客户端。', sqReasonJsUrlExcluded:'JS URL 已排除', sqReasonTimeout:'超时', sqReasonUnusable:'不可用', sqReasonNotInPool:'不在质量池', sqReasonNotCandidate:'非候选源',
-    sqHttp:'HTTP', sqMainJar:'主 JAR', sqIndepJar:'独立 JAR', sqLeanRemoved:'轻量剔除',
+    sqLeanRemoved:'轻量剔除',
     channelProbeTitle:'频道级测速（仅 Node/Docker）',
     channelProbeEnable:'启用定时频道测速（每 12 小时）',
     channelProbeTrigger:'立即测速', channelProbeRefresh:'刷新测速状态',
@@ -1093,40 +958,38 @@ const translations = {
     probeDeep:'深度（验证内容有效性）', probeShallow:'浅层（仅 HTTP 可达）',
     autoCleanLabel:'连续失败 5 次自动屏蔽（每次最多 5 个）',
     siteProbeDesc:'深度模式会检查 type0/type1 站点是否返回有效内容。连续失败 3 次的站点会被标记 [⚠]。',
-    credentialDistributionTitle:'凭证分发与客户端鉴权',
-    credentialDistributionDesc:'先设置根链接默认可分发的凭证，再按需创建一个或多个鉴权码。鉴权码只放在 URL 路径中，应用端直接输入普通的 /auth/<鉴权码>/ 链接，不需要在链接后追加查询参数。不下发凭证时，应用端仍可自行扫码登录网盘。',
-    credentialDefaultPolicy:'根链接默认凭证策略',
-    credentialModeNone:'不下发凭证',
-    credentialModeAll:'下发全部已保存凭证',
-    credentialModeSelected:'仅下发选中平台',
+    credentialDistributionTitle:'客户端鉴权与源分发',
+    credentialDistributionDesc:'鉴权码只控制下发哪些源，不再保存或注入任何网盘凭证。关闭强制鉴权时，根链接正常下发源；启用后根链接不下发源，必须使用 /auth/<鉴权码>/ 访问。',
+    credentialSourceModeAll:'全部候选源',
+    credentialSourceModeSearch:'仅可搜索源',
+    credentialSourceModeSelected:'仅质量池精选源',
+    credentialSourceModeCustom:'仅自定义 Key 白名单',
+    credentialMaxSites:'总源数量',
+    credentialMaxSearchable:'可搜索源数量',
+    credentialSiteTypes:'站点类型',
+    credentialPinnedKeys:'置顶 Key',
+    credentialIncludeGrades:'质量等级',
     credentialRequireAuth:'强制鉴权（根链接返回 401）',
-    credentialStripUpstreamEntries:'不下发凭证时同时移除上游自带网盘登录入口',
-    credentialPolicyHint:'根链接策略仅在未启用强制鉴权时生效；下面每个鉴权码都能独立设置“不下发 / 全部下发 / 选择平台下发”。选择“仅下发选中平台”但未勾选任何平台时，等同于不下发任何凭证。',
     credentialAuthCodes:'客户端鉴权码',
-    credentialAuthCodesDesc:'可给不同应用端或用户组分别建码。应用端填写卡片上生成的 /auth/<鉴权码>/ 链接，该链接的凭证策略与根链接互不影响。',
+    credentialAuthCodesDesc:'可给不同应用端或用户组分别建码。应用端填写卡片上生成的 /auth/<鉴权码>/ 链接，各码的源分发策略互不影响。',
     credentialAddCode:'+ 添加鉴权码',
-    credentialNoCodes:'还没有鉴权码；根链接将使用上面的默认策略。',
+    credentialNoCodes:'还没有鉴权码；根链接会正常下发所选源。',
     credentialCodeLabel:'名称 / 备注',
     credentialCodeValue:'鉴权码',
-    credentialCodeMode:'凭证策略',
+    credentialSourceMode:'源模式',
+    credentialSelectedKeys:'指定源 Key',
+    credentialSelectedKeysHint:'“自定义 Key 白名单”模式使用，多个 Key 用逗号分隔。',
     credentialCodeEnabled:'启用',
     credentialCopyRoot:'复制根链接',
     credentialCopyAuth:'复制鉴权链接',
     credentialDelete:'删除',
-    credentialSaved:'凭证分发与鉴权码已保存',
+    credentialSaved:'客户端鉴权与源分发已保存',
     credentialRootRequired:'启用强制鉴权前，至少需要保留一个启用的鉴权码。',
     credentialCodeInvalid:'鉴权码需为 1-64 位字母、数字、下划线或连字符。',
-    credentialSelectedSummary:'已选',
-    credentialSelectedEmptyShort:'已选：无（不下发凭证）',
-    credentialSelectedEmpty:'未勾选任何平台，此鉴权码不会下发任何凭证；应用端仍可自行扫码登录。',
-    credentialRootLinkHint:'根链接状态',
     credentialCopied:'已复制',
-    credentialDefaultLabel:'默认客户端',
-    cloudLoginDesc:'在这里登录一次即可，已保存凭证可在“设置”页选择是否下发。未下发的平台，应用端仍可自行扫码登录。',
-    cloudManualPasteHelp:'<strong>💡 手动配置指引：</strong><br>' +
-      '• <strong>天翼云盘</strong>：扫码容易失效。用手机浏览器登录 <a href="https://h5.cloud.189.cn" target="_blank" style="color:var(--accent)">h5.cloud.189.cn</a>，复制 Cookie 请求头值，在上方选择“天翼云盘”后粘贴。<br>' +
-      '• <strong>123网盘</strong>：第三方扫码登录受限。请在 123网盘官网“工具中心 → 第三方挂载”生成 WebDAV 授权密码，在上方选择“123 网盘”后粘贴。',
-    credentialSecurityHint:'安全提示：带鉴权码的链接能够取得所选择的凭证。请使用 HTTPS，不要公开鉴权链接；如链接泄露，立即删除或停用对应鉴权码。',
+    credentialDefaultLabel:'客户端',
+    credentialRootPolicyFree:'根链接已启用',
+    credentialSelectedKeysRequired:'“自定义 Key 白名单”模式至少需要填写一个源 Key。',
     footer:'TVBox 源聚合器 &middot; 管理控制台',
   }
 };
@@ -1150,7 +1013,6 @@ const tabLoaders = {
   maccms: () => loadMacCMS(),
   live: () => Promise.all([loadLives(), loadLiveDisabled(), loadLiveMergeMode(), loadIgnoreAggregatedLives(), loadChannelProbe()]),
   searchQuota: () => Promise.all([loadSearchQuota(), loadQualityReport()]),
-  cloud: () => loadCloudCredentials(),
   settings: () => Promise.all([loadCredentialDistribution(), loadNameTransform(), loadBgSettings(), loadCronInterval(), loadSpeedTest(), loadEdgeProxies(), loadDedupConfig(), loadGroupOrder(), loadStorageDiagnostics(), loadSmartBaseUrl(), loadProbeDepth(), loadAutoClean()]),
   aggLogs: () => loadAggLogs(),
 };
@@ -2268,7 +2130,6 @@ async function loadSearchQuota() {
     $('maxStartupQuickSearchInput').value = d.maxStartupQuickSearch ?? 0;
     $('startupSiteLimitInput').value = d.startupSiteLimit ?? 0;
     $('maxParsesInput').value = d.maxParses ?? 0;
-    $('retainCredentialSourcesInput').checked = d.retainCredentialSources === true;
     $('autoSearchLimitInput').checked = false;
     $('sortSearchBySpeedInput').checked = true;
     $('leanStartupInput').checked = true;
@@ -2288,7 +2149,6 @@ async function saveSearchQuota() {
     maxStartupQuickSearch: parseInt($('maxStartupQuickSearchInput').value) || 0,
     startupSiteLimit: parseInt($('startupSiteLimitInput').value) || 0,
     maxParses: parseInt($('maxParsesInput').value) || 0,
-    retainCredentialSources: $('retainCredentialSourcesInput').checked,
     autoLimit: false,
     sortBySpeed: true,
     leanStartup: true,
@@ -2331,7 +2191,6 @@ async function loadSearchQuotaReport() {
 
     const q = d.qualityGrades;
     if (q) {
-      const credentialReady = q.credentialReady || { count: 0, cumulative: 0 }; const untestableCount = q.untestable ? q.untestable.count : 0; const untestableCumulative = q.untestable ? q.untestable.cumulative : 0; const qualityText = t('sqQuality') + ': ' + t('sqExcellent') + ' ' + q.excellent.count + ' (' + q.excellent.cumulative + ') / ' + t('sqGood') + ' ' + q.good.count + ' (' + q.good.cumulative + ') / ' + t('sqUsable') + ' ' + q.usable.count + ' (' + q.usable.cumulative + ') / ' + t('sqCredentialReady') + ' ' + credentialReady.count + ' (' + credentialReady.cumulative + ') / ' + t('sqUntestable') + ' ' + untestableCount + ' (' + untestableCumulative + ') / ' + t('sqTimeout') + ' ' + q.timeout.count + ' (' + q.timeout.cumulative + ') / ' + t('sqUnusable') + ' ' + q.unusable.count + ' · ' + t('sqPoolTotal') + ': ' + q.poolTotal;
       $('sqQualityGrades').textContent = qualityText;
       const stats = $('searchQuotaStats');
       if (stats) {
@@ -2340,7 +2199,7 @@ async function loadSearchQuotaReport() {
         const parserText = typeof d.parseKept === 'number'
           ? t('sqStatsParsers') + ': ' + t('sqStatsKept') + ' ' + d.parseKept + (typeof d.parseProbed === 'number' ? ', ' + t('sqStatsProbed') + ' ' + d.parseProbed : '') + (typeof d.parseRemoved === 'number' && d.parseRemoved > 0 ? ', ' + t('sqStatsRemoved') + ' ' + d.parseRemoved : '') + (typeof d.parseLimit === 'number' && d.parseLimit > 0 ? ', ' + t('sqStatsLimit') + ' ' + d.parseLimit : ', ' + t('sqStatsUnlimited'))
           : t('sqStatsParsers') + ': ' + t('sqStatsNoData');
-        stats.textContent = t('sqStatsCurrent') + ': ' + t('sqStatsSearchable') + ' ' + d.searchable + ' · ' + t('sqStatsPool') + ' ' + q.poolTotal + ' · ' + t('sqStatsQuick') + ' ' + quickCount + quickLimit + '. ' + parserText + '. ' + t('sqStatsQuality') + ': ' + t('sqExcellent') + ' ' + q.excellent.count + ', ' + t('sqGood') + ' ' + q.good.count + ', ' + t('sqUsable') + ' ' + q.usable.count + ', ' + t('sqCredentialReady') + ' ' + credentialReady.count + ', ' + t('sqUntestable') + ' ' + untestableCount + ', ' + t('sqTimeout') + ' ' + q.timeout.count + ', ' + t('sqUnusable') + ' ' + q.unusable.count + '.';
+        stats.textContent = t('sqStatsCurrent') + ': ' + t('sqStatsSearchable') + ' ' + d.searchable + ' · ' + t('sqStatsPool') + ' ' + q.poolTotal + ' · ' + t('sqStatsQuick') + ' ' + quickCount + quickLimit + '. ' + parserText + '. ' + t('sqStatsQuality') + ': ' + t('sqExcellent') + ' ' + q.excellent.count + ', ' + t('sqGood') + ' ' + q.good.count + ', ' + t('sqUsable') + ' ' + q.usable.count + ' + ', ' + t('sqUntestable') + ' ' + untestableCount + ', ' + t('sqTimeout') + ' ' + q.timeout.count + ', ' + t('sqUnusable') + ' ' + q.unusable.count + '.';
       }
     } else {
       $('sqQualityGrades').textContent = '';
@@ -2614,18 +2473,16 @@ function renderQualityStats(d) {
   const ex = bucket('excellent');
   const good = bucket('good');
   const usable = bucket('usable');
-  const credentialReady = bucket('credentialReady');
   const timeout = bucket('timeout');
   const unusable = bucket('unusable');
   const th = snap.thresholds || { excellentMaxMs: 1000, goodMaxMs: 3000, usableMaxMs: 6000 };
   html += '<div style="margin-top:4px"><strong>' + t('qualityGradesTitle') + '</strong></div>';
-  const untestable = g.untestable || { count: 0, cumulative: 0 }; html += '<div>' + t('sqExcellent') + ': ' + ex.count + ' (<= ' + th.excellentMaxMs + 'ms, ' + t('sqCumulative') + ' ' + ex.cumulative + ') · ' + t('sqGood') + ': ' + good.count + ' (' + th.excellentMaxMs + '-' + th.goodMaxMs + 'ms, ' + t('sqCumulative') + ' ' + good.cumulative + ') · ' + t('sqUsable') + ': ' + usable.count + ' (' + th.goodMaxMs + '-' + (th.usableMaxMs || 6000) + 'ms, ' + t('sqCumulative') + ' ' + usable.cumulative + ') · ' + t('sqCredentialReady') + ': ' + credentialReady.count + ' (' + t('sqCumulative') + ' ' + credentialReady.cumulative + ') · ' + t('sqUntestable') + ': ' + untestable.count + ' (' + t('sqCumulative') + ' ' + untestable.cumulative + ') · ' + t('sqTimeout') + ': ' + timeout.count + ' (' + t('sqCumulative') + ' ' + timeout.cumulative + ') · ' + t('sqUnusable') + ': ' + unusable.count + '</div>';
+  const untestable = g.untestable || { count: 0, cumulative: 0 }; html += '<div>' + t('sqExcellent') + ': ' + ex.count + ' (<= ' + th.excellentMaxMs + 'ms, ' + t('sqCumulative') + ' ' + ex.cumulative + ') · ' + t('sqGood') + ': ' + good.count + ' (' + th.excellentMaxMs + '-' + th.goodMaxMs + 'ms, ' + t('sqCumulative') + ' ' + good.cumulative + ') · ' + t('sqUsable') + ': ' + usable.count + ' (' + th.goodMaxMs + '-' + (th.usableMaxMs || 6000) + 'ms, ' + t('sqCumulative') + ' ' + usable.cumulative + ') · ' + t('sqUntestable') + ': ' + untestable.count + ' (' + t('sqCumulative') + ' ' + untestable.cumulative + ') · ' + t('sqTimeout') + ': ' + timeout.count + ' (' + t('sqCumulative') + ' ' + timeout.cumulative + ') · ' + t('sqUnusable') + ': ' + unusable.count + '</div>';
   const coverage = snap.coverage || {};
   const testable = typeof coverage.testable === 'number' ? coverage.testable : 0;
   const probed = typeof coverage.probed === 'number' ? coverage.probed : 0;
   const coveragePct = testable > 0 ? Math.min(100, Math.round((probed / testable) * 100)) : 0;
-  html += '<div>' + t('qualityCoverage') + ': ' + coveragePct + '% · ' + t('qualityTestable') + ' ' + countText(coverage.testable) + ' · ' + t('qualityProbed') + ' ' + countText(coverage.probed) + ' · ' + t('qualityNotProbed') + ' ' + countText(coverage.notProbed) + ' · ' + t('qualityUntestable') + ' ' + countText(coverage.untestable) + ' · ' + t('qualityCredentialReady') + ' ' + countText(coverage.credentialReady) + ' · ' + t('qualityCredentialPartial') + ' ' + countText(coverage.credentialPartial) + ' · ' + t('qualityCredentialMissing') + ' ' + countText(coverage.credentialMissing) + '</div>';
-  html += '<div>' + t('qualityPreflightVerified') + ' ' + countText(coverage.preflightVerified) + ' · ' + t('qualityPreflightCredentialReady') + ' ' + countText(coverage.preflightCredentialReady) + ' · ' + t('qualityPreflightAListVerified') + ' ' + countText(coverage.preflightAListVerified) + ' · ' + t('qualityPreflightJarVerified') + ' ' + countText(coverage.preflightJarVerified) + ' · ' + t('qualityClientFinalOnly') + ' ' + countText(coverage.clientFinalOnly) + '</div>';
+  html += '<div>' + t('qualityCoverage') + ': ' + coveragePct + '% · ' + t('qualityTestable') + ' ' + countText(coverage.testable) + ' · ' + t('qualityProbed') + ' ' + countText(coverage.probed) + ' · ' + t('qualityNotProbed') + ' ' + countText(coverage.notProbed) + ' · ' + t('qualityUntestable') + ' ' + countText(coverage.untestable) + '</div>';
   html += '<div>' + t('sqPoolTotal') + ': ' + g.poolTotal + ' · ' + t('sqQuality') + ' ' + snap.graded + '/' + snap.total + ' · ' + fmtLocalTime(snap.updatedAt, sched?.timezone) + '</div>';
   const recSearch = d.recommendedMaxSearchable ?? snap.recommendedMaxSearchable ?? 0;
   const recParse = d.recommendedMaxParses ?? snap.recommendedMaxParses ?? 3;
@@ -2701,7 +2558,6 @@ function qualityGradeLabel(grade) {
   if (grade === 'excellent') return t('sqExcellent');
   if (grade === 'good') return t('sqGood');
   if (grade === 'usable') return t('sqUsable');
-  if (grade === 'credential-ready') return t('sqCredentialReady');
   if (grade === 'untestable') return t('sqUntestable');
   if (grade === 'timeout') return t('sqTimeout');
   if (grade === 'unusable') return t('sqUnusable');
@@ -2720,30 +2576,15 @@ function qualityGradeColor(grade) {
   if (grade === 'excellent') return 'var(--green)';
   if (grade === 'good') return 'var(--primary)';
   if (grade === 'usable') return 'var(--accent)';
-  if (grade === 'credential-ready') return 'var(--text-secondary)';
   if (grade === 'untestable') return 'var(--text-secondary)';
   if (grade === 'timeout') return 'var(--red)';
   if (grade === 'unusable') return 'var(--red)';
   return 'var(--text-secondary)';
 }
 
-function preflightStatusLabel(status) {
-  if (status === 'verified') return t('qualityPreflightVerified');
-  if (status === 'credential-ready') return t('qualityPreflightCredentialReady');
-  if (status === 'alist-verified') return t('qualityPreflightAListVerified');
-  if (status === 'client-jar-verified') return t('qualityPreflightJarVerified');
-  if (status === 'client-jar-unverified') return t('qualityClientFinalOnly');
-  if (status === 'credential-invalid') return t('sqCredentialReady');
-  return '-';
-}
-
 function qualitySpeedLabel(entry) {
   if (!entry) return '-';
   if (typeof entry.speedMs === 'number' && isFinite(entry.speedMs)) return entry.speedMs + 'ms';
-  if (entry.preflight && entry.preflight.status) {
-    const status = preflightStatusLabel(entry.preflight.status);
-    if (status && status !== '-') return status;
-  }
   return '-';
 }
 
@@ -2999,105 +2840,103 @@ async function triggerRefresh() {
   }
 }
 
-// --- Cloud Credentials ---
-const PLATFORM_NAMES = {
-  aliyun:'阿里云盘', bilibili:'Bilibili', quark:'夸克网盘', uc:'UC 网盘', uc_tv:'UC TV',
-  pan115:'115 网盘', tianyi:'天翼云盘', baidu:'百度网盘', pan123:'123 网盘',
-  thunder:'迅雷', pikpak:'PikPak'
-};
-const QR_PLATFORMS = ['bilibili','aliyun','quark','uc','uc_tv','pan115','baidu'];
-const MANUAL_ONLY_PLATFORMS = ['pan123','tianyi'];
-const PW_PLATFORMS = ['pan123','tianyi','thunder','pikpak'];
-let cloudCredentials = {};
-
+// --- Client Authentication & Source Distribution ---
 let credentialDistribution = {
   requireAuth: false,
-  defaultCredentialMode: 'all',
-  defaultPlatforms: [],
   authCodes: [],
 };
-let credentialPlatforms = Object.keys(PLATFORM_NAMES);
+
+const CLIENT_SOURCE_MODES = ['all', 'search', 'selected', 'custom'];
+const CLIENT_GRADES = ['excellent', 'good', 'usable', 'untestable'];
+
+function normalizeClientAuthCode(item, index) {
+  const now = new Date().toISOString();
+  const sourceMode = CLIENT_SOURCE_MODES.includes(item && item.sourceMode) ? item.sourceMode : 'all';
+  return {
+    id: (item && item.id) || ('auth_' + Date.now().toString(36) + '_' + index),
+    label: (item && item.label) || (t('credentialDefaultLabel') + ' ' + (index + 1)),
+    code: (item && item.code) || '',
+    enabled: !item || item.enabled !== false,
+    sourceMode,
+    maxSites: Math.max(0, Number.parseInt((item && item.maxSites) || 0, 10) || 0),
+    maxSearchable: Math.max(0, Number.parseInt((item && item.maxSearchable) || 0, 10) || 0),
+    includeGrades: Array.isArray(item && item.includeGrades) ? item.includeGrades.filter((grade) => CLIENT_GRADES.includes(grade)) : [],
+    siteTypes: Array.isArray(item && item.siteTypes)
+      ? [...new Set(item.siteTypes.map((value) => Number.parseInt(value, 10)).filter((value) => Number.isFinite(value) && value >= 0))]
+      : [],
+    selectedKeys: Array.isArray(item && item.selectedKeys)
+      ? [...new Set(item.selectedKeys.filter((key) => typeof key === 'string' && key.trim()).map((key) => key.trim()))]
+      : [],
+    pinnedKeys: Array.isArray(item && item.pinnedKeys)
+      ? [...new Set(item.pinnedKeys.filter((key) => typeof key === 'string' && key.trim()).map((key) => key.trim()))]
+      : [],
+    createdAt: (item && item.createdAt) || now,
+    updatedAt: (item && item.updatedAt) || now,
+  };
+}
 
 function newCredentialAuthCode() {
-  const bytes = new Uint8Array(12);
+  const bytes = new Uint8Array(9);
   if (window.crypto && window.crypto.getRandomValues) window.crypto.getRandomValues(bytes);
   else for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
   const random = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('').slice(0, 16);
   const now = new Date().toISOString();
-  return {
+  return normalizeClientAuthCode({
     id: 'auth_' + random,
     label: t('credentialDefaultLabel') + ' ' + (credentialDistribution.authCodes.length + 1),
     code: random,
     enabled: true,
-    credentialMode: 'none',
-    platforms: [],
+    sourceMode: 'all',
+    maxSites: 0,
+    maxSearchable: 0,
+    includeGrades: [],
+    siteTypes: [],
+    selectedKeys: [],
+    pinnedKeys: [],
     createdAt: now,
     updatedAt: now,
-  };
-}
-
-function platformCheckboxes(container, selected, onchange) {
-  if (!container) return;
-  const selectedSet = new Set(Array.isArray(selected) ? selected : []);
-  container.innerHTML = '';
-  for (const platform of credentialPlatforms) {
-    const label = document.createElement('label');
-    const cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.checked = selectedSet.has(platform);
-    cb.onchange = () => onchange(platform, cb.checked);
-    const span = document.createElement('span');
-    span.textContent = PLATFORM_NAMES[platform] || platform;
-    label.appendChild(cb);
-    label.appendChild(span);
-    container.appendChild(label);
-  }
+  }, credentialDistribution.authCodes.length);
 }
 
 function syncCredentialDistributionForm() {
-  const mode = $('credentialDefaultMode');
   const requireAuth = $('credentialRequireAuth');
-  if (mode) mode.value = credentialDistribution.defaultCredentialMode || 'all';
   if (requireAuth) requireAuth.checked = credentialDistribution.requireAuth === true;
-  const stripUpstream = $('credentialStripUpstreamEntries');
-  if (stripUpstream) stripUpstream.checked = credentialDistribution.stripUpstreamCredentialEntries === true;
   renderCredentialDistribution();
 }
 
+function sourceModeLabel(mode) {
+  if (mode === 'search') return t('credentialSourceModeSearch');
+  if (mode === 'selected') return t('credentialSourceModeSelected');
+  if (mode === 'custom') return t('credentialSourceModeCustom');
+  return t('credentialSourceModeAll');
+}
+
+function credentialModeSummary(item) {
+  const parts = [sourceModeLabel(item.sourceMode)];
+  if (item.maxSites > 0) parts.push(t('credentialMaxSites') + ' ' + item.maxSites);
+  if (item.maxSearchable > 0) parts.push(t('credentialMaxSearchable') + ' ' + item.maxSearchable);
+  if (item.includeGrades && item.includeGrades.length) parts.push(item.includeGrades.join('/'));
+  if (item.siteTypes && item.siteTypes.length) parts.push(t('credentialSiteTypes') + ' ' + item.siteTypes.join(','));
+  if (item.selectedKeys && item.selectedKeys.length) parts.push(t('credentialSelectedKeys') + ' ' + item.selectedKeys.length);
+  if (item.pinnedKeys && item.pinnedKeys.length) parts.push(t('credentialPinnedKeys') + ' ' + item.pinnedKeys.length);
+  return parts.join(' · ');
+}
+
+function addLabeledInput(container, labelText, input) {
+  const wrap = document.createElement('div');
+  const label = document.createElement('label');
+  label.className = 'form-label';
+  label.textContent = labelText;
+  wrap.appendChild(label);
+  wrap.appendChild(input);
+  container.appendChild(wrap);
+  return wrap;
+}
+
 function renderCredentialDistribution() {
-  const modeEl = $('credentialDefaultMode');
   const requireEl = $('credentialRequireAuth');
-  if (!modeEl || !requireEl) return;
-
-  credentialDistribution.defaultCredentialMode = modeEl.value;
-  credentialDistribution.requireAuth = requireEl.checked;
-  const stripUpstreamEl = $('credentialStripUpstreamEntries');
-  if (stripUpstreamEl) credentialDistribution.stripUpstreamCredentialEntries = stripUpstreamEl.checked;
-
-  const defaultBox = $('credentialDefaultPlatforms');
-  if (defaultBox) {
-    defaultBox.style.display = modeEl.value === 'selected' ? 'grid' : 'none';
-    if (modeEl.value === 'selected') {
-      platformCheckboxes(defaultBox, credentialDistribution.defaultPlatforms, (platform, checked) => {
-        const set = new Set(credentialDistribution.defaultPlatforms || []);
-        if (checked) set.add(platform); else set.delete(platform);
-        credentialDistribution.defaultPlatforms = credentialPlatforms.filter((p) => set.has(p));
-      });
-    }
-  }
-
-  const rootHint = $('credentialRootLinkHint');
-  if (rootHint) {
-    const rootPolicy = {
-      none: t('credentialModeNone'),
-      all: t('credentialModeAll'),
-      selected: t('credentialModeSelected'),
-    }[modeEl.value] || modeEl.value;
-    const rootState = requireEl.checked ? t('credentialRequireAuth') : rootPolicy;
-    rootHint.textContent = t('credentialRootLinkHint') + ': ' + rootState;
-  }
-
-  const list = $('credentialAuthList');
+  if (requireEl) credentialDistribution.requireAuth = requireEl.checked;
+  const list = $('credentialDistributionList');
   if (!list) return;
   list.innerHTML = '';
   const codes = Array.isArray(credentialDistribution.authCodes) ? credentialDistribution.authCodes : [];
@@ -3108,13 +2947,15 @@ function renderCredentialDistribution() {
     list.appendChild(empty);
   }
 
-  codes.forEach((item, index) => {
+  codes.forEach((rawItem, index) => {
+    const item = normalizeClientAuthCode(rawItem, index);
+    codes[index] = item;
     const card = document.createElement('div');
     card.className = 'credential-auth-card';
+
     const top = document.createElement('div');
     top.className = 'credential-inline';
     top.style.justifyContent = 'space-between';
-
     const title = document.createElement('div');
     title.className = 'credential-inline';
     const enabled = document.createElement('input');
@@ -3124,21 +2965,16 @@ function renderCredentialDistribution() {
     const titleText = document.createElement('strong');
     titleText.style.color = 'var(--text-bright)';
     titleText.textContent = item.label || ('Auth ' + (index + 1));
-    title.appendChild(enabled);
-    title.appendChild(titleText);
     const summary = document.createElement('span');
     summary.className = 'credential-pill';
     summary.textContent = credentialModeSummary(item);
-    if (item.credentialMode === 'selected' && !(item.platforms || []).length) summary.className = 'credential-pill credential-pill-warning';
+    title.appendChild(enabled);
+    title.appendChild(titleText);
     title.appendChild(summary);
-
     const remove = document.createElement('button');
     remove.className = 'btn btn-sm btn-danger';
     remove.textContent = t('credentialDelete');
-    remove.onclick = () => {
-      credentialDistribution.authCodes.splice(index, 1);
-      renderCredentialDistribution();
-    };
+    remove.onclick = () => { credentialDistribution.authCodes.splice(index, 1); renderCredentialDistribution(); };
     top.appendChild(title);
     top.appendChild(remove);
     card.appendChild(top);
@@ -3146,72 +2982,103 @@ function renderCredentialDistribution() {
     const grid = document.createElement('div');
     grid.className = 'credential-auth-grid';
 
-    const labelWrap = document.createElement('div');
-    const labelTitle = document.createElement('label');
-    labelTitle.className = 'form-label';
-    labelTitle.textContent = t('credentialCodeLabel');
     const labelInput = document.createElement('input');
     labelInput.className = 'nt-input';
     labelInput.value = item.label || '';
-    labelInput.oninput = () => { item.label = labelInput.value; item.updatedAt = new Date().toISOString(); if (titleText) titleText.textContent = labelInput.value || ('Auth ' + (index + 1)); };
-    labelWrap.appendChild(labelTitle);
-    labelWrap.appendChild(labelInput);
+    labelInput.oninput = () => { item.label = labelInput.value; item.updatedAt = new Date().toISOString(); titleText.textContent = labelInput.value || ('Auth ' + (index + 1)); };
+    addLabeledInput(grid, t('credentialCodeLabel'), labelInput);
 
-    const codeWrap = document.createElement('div');
-    const codeTitle = document.createElement('label');
-    codeTitle.className = 'form-label';
-    codeTitle.textContent = t('credentialCodeValue');
     const codeInput = document.createElement('input');
     codeInput.className = 'nt-input';
     codeInput.value = item.code || '';
     codeInput.oninput = () => { item.code = codeInput.value.trim(); item.updatedAt = new Date().toISOString(); };
-    codeWrap.appendChild(codeTitle);
-    codeWrap.appendChild(codeInput);
+    addLabeledInput(grid, t('credentialCodeValue'), codeInput);
 
-    const modeWrap = document.createElement('div');
-    const modeTitle = document.createElement('label');
-    modeTitle.className = 'form-label';
-    modeTitle.textContent = t('credentialCodeMode');
     const modeSelect = document.createElement('select');
     modeSelect.className = 'nt-input';
-    for (const value of ['none', 'all', 'selected']) {
+    for (const value of CLIENT_SOURCE_MODES) {
       const option = document.createElement('option');
       option.value = value;
-      option.textContent = value === 'none' ? t('credentialModeNone') : value === 'all' ? t('credentialModeAll') : t('credentialModeSelected');
+      option.textContent = sourceModeLabel(value);
       modeSelect.appendChild(option);
     }
-    modeSelect.value = item.credentialMode || 'none';
-    modeSelect.onchange = () => {
-      item.credentialMode = modeSelect.value;
-      item.updatedAt = new Date().toISOString();
-      renderCredentialDistribution();
-    };
-    modeWrap.appendChild(modeTitle);
-    modeWrap.appendChild(modeSelect);
+    modeSelect.value = item.sourceMode;
+    modeSelect.onchange = () => { item.sourceMode = modeSelect.value; item.updatedAt = new Date().toISOString(); renderCredentialDistribution(); };
+    addLabeledInput(grid, t('credentialSourceMode'), modeSelect);
 
-    grid.appendChild(labelWrap);
-    grid.appendChild(codeWrap);
-    grid.appendChild(modeWrap);
+    const maxSitesInput = document.createElement('input');
+    maxSitesInput.type = 'number';
+    maxSitesInput.min = '0';
+    maxSitesInput.className = 'nt-input';
+    maxSitesInput.value = item.maxSites || 0;
+    maxSitesInput.oninput = () => { item.maxSites = Math.max(0, parseInt(maxSitesInput.value, 10) || 0); item.updatedAt = new Date().toISOString(); };
+    addLabeledInput(grid, t('credentialMaxSites'), maxSitesInput);
+
+    const maxSearchableInput = document.createElement('input');
+    maxSearchableInput.type = 'number';
+    maxSearchableInput.min = '0';
+    maxSearchableInput.className = 'nt-input';
+    maxSearchableInput.value = item.maxSearchable || 0;
+    maxSearchableInput.oninput = () => { item.maxSearchable = Math.max(0, parseInt(maxSearchableInput.value, 10) || 0); item.updatedAt = new Date().toISOString(); };
+    addLabeledInput(grid, t('credentialMaxSearchable'), maxSearchableInput);
+
+    const typesInput = document.createElement('input');
+    typesInput.className = 'nt-input';
+    typesInput.placeholder = '0,1,3';
+    typesInput.value = (item.siteTypes || []).join(',');
+    typesInput.oninput = () => {
+      item.siteTypes = [...new Set(typesInput.value.split(',').map((value) => parseInt(value.trim(), 10)).filter((value) => Number.isFinite(value) && value >= 0))];
+      item.updatedAt = new Date().toISOString();
+    };
+    addLabeledInput(grid, t('credentialSiteTypes'), typesInput);
+
+    const selectedInput = document.createElement('input');
+    selectedInput.className = 'nt-input';
+    selectedInput.placeholder = 'key1,key2';
+    selectedInput.value = (item.selectedKeys || []).join(',');
+    selectedInput.oninput = () => {
+      item.selectedKeys = [...new Set(selectedInput.value.split(',').map((value) => value.trim()).filter(Boolean))];
+      item.updatedAt = new Date().toISOString();
+    };
+    addLabeledInput(grid, t('credentialSelectedKeys'), selectedInput);
+
+    const pinnedInput = document.createElement('input');
+    pinnedInput.className = 'nt-input';
+    pinnedInput.placeholder = 'key1,key2';
+    pinnedInput.value = (item.pinnedKeys || []).join(',');
+    pinnedInput.oninput = () => {
+      item.pinnedKeys = [...new Set(pinnedInput.value.split(',').map((value) => value.trim()).filter(Boolean))];
+      item.updatedAt = new Date().toISOString();
+    };
+    addLabeledInput(grid, t('credentialPinnedKeys'), pinnedInput);
     card.appendChild(grid);
 
-    const platformBox = document.createElement('div');
-    platformBox.className = 'credential-platform-grid';
-    platformBox.style.display = item.credentialMode === 'selected' ? 'grid' : 'none';
-    if (item.credentialMode === 'selected') {
-      platformCheckboxes(platformBox, item.platforms, (platform, checked) => {
-        const set = new Set(item.platforms || []);
-        if (checked) set.add(platform); else set.delete(platform);
-        item.platforms = credentialPlatforms.filter((p) => set.has(p));
+    const gradesBox = document.createElement('div');
+    gradesBox.className = 'credential-platform-grid';
+    const gradeTitle = document.createElement('div');
+    gradeTitle.className = 'form-label';
+    gradeTitle.style.gridColumn = '1 / -1';
+    gradeTitle.textContent = t('credentialIncludeGrades');
+    gradesBox.appendChild(gradeTitle);
+    for (const grade of CLIENT_GRADES) {
+      const label = document.createElement('label');
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = (item.includeGrades || []).includes(grade);
+      checkbox.onchange = () => {
+        const set = new Set(item.includeGrades || []);
+        if (checkbox.checked) set.add(grade); else set.delete(grade);
+        item.includeGrades = CLIENT_GRADES.filter((value) => set.has(value));
         item.updatedAt = new Date().toISOString();
-      });
+        renderCredentialDistribution();
+      };
+      const span = document.createElement('span');
+      span.textContent = t('sq' + grade.charAt(0).toUpperCase() + grade.slice(1)) || grade;
+      label.appendChild(checkbox);
+      label.appendChild(span);
+      gradesBox.appendChild(label);
     }
-    card.appendChild(platformBox);
-    if (item.credentialMode === 'selected' && !(item.platforms || []).length) {
-      const warning = document.createElement('div');
-      warning.className = 'credential-help credential-help-warning';
-      warning.textContent = t('credentialSelectedEmpty');
-      card.appendChild(warning);
-    }
+    card.appendChild(gradesBox);
 
     const actions = document.createElement('div');
     actions.className = 'credential-auth-actions';
@@ -3221,19 +3088,11 @@ function renderCredentialDistribution() {
     copyAuth.onclick = () => copyClientLink(window.location.origin + '/auth/' + encodeURIComponent(item.code || '') + '/');
     actions.appendChild(copyAuth);
     card.appendChild(actions);
-
     list.appendChild(card);
   });
 
   const status = $('credentialDistributionStatus');
-  if (status) status.textContent = requireEl.checked ? t('credentialRequireAuth') : t('credentialDefaultPolicy');
-}
-
-function credentialModeSummary(item) {
-  if (item.credentialMode === 'none') return t('credentialModeNone');
-  if (item.credentialMode === 'all') return t('credentialModeAll');
-  const names = (item.platforms || []).map((platform) => PLATFORM_NAMES[platform] || platform).join(', ');
-  return names ? t('credentialSelectedSummary') + ': ' + names : t('credentialSelectedEmptyShort');
+  if (status) status.textContent = requireEl && requireEl.checked ? t('credentialRequireAuth') : t('credentialRootPolicyFree');
 }
 
 function addCredentialAuthCode() {
@@ -3252,15 +3111,12 @@ function copyClientLink(link) {
 
 async function loadCredentialDistribution() {
   try {
-    const res = await auth.authFetch('/admin/credential-distribution');
+    const res = await auth.authFetch('/admin/client-distribution');
     if (!res.ok) return;
     const data = await res.json();
     credentialDistribution = {
       requireAuth: data.requireAuth === true,
-      defaultCredentialMode: data.defaultCredentialMode || 'all',
-      defaultPlatforms: Array.isArray(data.defaultPlatforms) ? data.defaultPlatforms : [],
-      authCodes: Array.isArray(data.authCodes) ? data.authCodes : [],
-      stripUpstreamCredentialEntries: data.stripUpstreamCredentialEntries === true,
+      authCodes: Array.isArray(data.authCodes) ? data.authCodes.map(normalizeClientAuthCode) : [],
     };
     syncCredentialDistributionForm();
   } catch {}
@@ -3268,15 +3124,9 @@ async function loadCredentialDistribution() {
 
 async function saveCredentialDistribution() {
   const status = $('credentialDistributionStatus');
-  if (!status) return;
-  const modeEl = $('credentialDefaultMode');
   const requireEl = $('credentialRequireAuth');
-  if (!modeEl || !requireEl) return;
-  credentialDistribution.defaultCredentialMode = modeEl.value;
+  if (!status || !requireEl) return;
   credentialDistribution.requireAuth = requireEl.checked;
-  const stripUpstreamEl = $('credentialStripUpstreamEntries');
-  if (stripUpstreamEl) credentialDistribution.stripUpstreamCredentialEntries = stripUpstreamEl.checked;
-  if (credentialDistribution.defaultCredentialMode !== 'selected') credentialDistribution.defaultPlatforms = [];
   if (credentialDistribution.requireAuth && !(credentialDistribution.authCodes || []).some((item) => item.enabled !== false)) {
     toast(t('credentialRootRequired'), 'error');
     return;
@@ -3286,10 +3136,14 @@ async function saveCredentialDistribution() {
       toast(t('credentialCodeInvalid'), 'error');
       return;
     }
+    if (item.sourceMode === 'custom' && (!Array.isArray(item.selectedKeys) || item.selectedKeys.length === 0)) {
+      toast(t('credentialSelectedKeysRequired'), 'error');
+      return;
+    }
   }
   status.textContent = t('saving');
   try {
-    const res = await auth.authFetch('/admin/credential-distribution', {
+    const res = await auth.authFetch('/admin/client-distribution', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(credentialDistribution),
@@ -3298,10 +3152,7 @@ async function saveCredentialDistribution() {
     if (!res.ok) throw new Error(data.error || t('saveFailed'));
     credentialDistribution = {
       requireAuth: data.requireAuth === true,
-      defaultCredentialMode: data.defaultCredentialMode || 'all',
-      defaultPlatforms: Array.isArray(data.defaultPlatforms) ? data.defaultPlatforms : [],
-      authCodes: Array.isArray(data.authCodes) ? data.authCodes : [],
-      stripUpstreamCredentialEntries: data.stripUpstreamCredentialEntries === true,
+      authCodes: Array.isArray(data.authCodes) ? data.authCodes.map(normalizeClientAuthCode) : [],
     };
     syncCredentialDistributionForm();
     status.textContent = t('saved');
@@ -3311,260 +3162,6 @@ async function saveCredentialDistribution() {
     toast((e && e.message ? e.message : e), 'error');
   }
 }
-
-async function loadCloudCredentials() {
-  try {
-    const res = await auth.authFetch('/admin/cloud-credentials');
-    if (!res.ok) return;
-    const data = await res.json();
-    cloudCredentials = data.credentials || {};
-    renderCloudCards();
-    renderPlatformSelect();
-  } catch {}
-}
-
-function cloudCardState(platform) {
-  const cred = cloudCredentials[platform];
-  const isLoggedIn = cred && cred.hasCredential;
-  const statusClass = isLoggedIn ? (cred.status === 'expired' ? 'expired' : 'valid') : 'none';
-  const statusText = isLoggedIn ? (cred.status === 'expired' ? 'EXPIRED' : 'ACTIVE') : 'NOT SET';
-  const timeStr = cred?.obtainedAt ? new Date(cred.obtainedAt).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}) : '';
-  return { cred, isLoggedIn, statusClass, statusText, timeStr };
-}
-
-function renderCloudCards() {
-  const grid = $('cloudLoginGrid');
-  grid.innerHTML = '';
-
-  // UC Web Cookie and UC TV Token are different credential protocols.
-  // Keep them as two explicit actions inside one UC card so neither value is
-  // mistaken for the other while the UI stays compact.
-  const ucCard = document.createElement('div');
-  ucCard.className = 'cloud-card';
-  const ucEntries = [
-    { platform: 'uc', label: 'UC 网盘（Cookie）', button: '扫码登录' },
-    { platform: 'uc_tv', label: 'UC TV（Token）', button: '扫码登录' },
-  ];
-  ucCard.innerHTML =
-    '<div class="cloud-card-header">' +
-      '<span class="cloud-card-name">UC</span>' +
-    '</div>' +
-    ucEntries.map((entry) => {
-      const state = cloudCardState(entry.platform);
-      return '<div class="cloud-card-row">' +
-        '<div class="cloud-card-row-info">' +
-          '<span class="cloud-card-row-name">' + entry.label + '</span>' +
-          '<span class="cloud-card-row-status ' + state.statusClass + '">' + state.statusText + (state.timeStr ? ' · ' + state.timeStr : '') + '</span>' +
-        '</div>' +
-        '<div class="cloud-card-actions">' +
-          '<button class="btn btn-sm" onclick="startQRLogin(\\'' + entry.platform + '\\')">' + entry.button + '</button>' +
-          (state.isLoggedIn ? '<button class="btn btn-sm btn-danger" onclick="logoutPlatform(\\'' + entry.platform + '\\')">退出</button>' : '') +
-        '</div>' +
-      '</div>';
-    }).join('');
-  grid.appendChild(ucCard);
-
-  const allPlatforms = [...new Set([...QR_PLATFORMS, ...MANUAL_ONLY_PLATFORMS, ...PW_PLATFORMS])]
-    .filter((platform) => platform !== 'uc' && platform !== 'uc_tv');
-
-  for (const p of allPlatforms) {
-    const cred = cloudCredentials[p];
-    const isLoggedIn = cred && cred.hasCredential;
-    const statusClass = isLoggedIn ? (cred.status === 'expired' ? 'expired' : 'valid') : 'none';
-    const statusText = isLoggedIn ? (cred.status === 'expired' ? 'EXPIRED' : 'ACTIVE') : 'NOT SET';
-    const isQR = QR_PLATFORMS.includes(p);
-    const isManualOnly = MANUAL_ONLY_PLATFORMS.includes(p);
-    const timeStr = cred?.obtainedAt ? new Date(cred.obtainedAt).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}) : '';
-
-    const card = document.createElement('div');
-    card.className = 'cloud-card';
-    card.innerHTML =
-      '<div class="cloud-card-header">' +
-        '<span class="cloud-card-name">' + (PLATFORM_NAMES[p]||p) + '</span>' +
-        '<span class="cloud-badge ' + statusClass + '">' + statusText + '</span>' +
-      '</div>' +
-      (timeStr ? '<div class="cloud-card-time">' + timeStr + '</div>' : '') +
-      '<div class="cloud-card-actions">' +
-        (isQR ? '<button class="btn btn-sm" onclick="startQRLogin(\\''+p+'\\')">Scan QR</button>' :
-         isManualOnly ? '<button class="btn btn-sm" onclick="focusManualCredential(\\''+p+'\\')">Manual</button>' :
-                '<button class="btn btn-sm" onclick="showPasswordLogin(\\''+p+'\\')">Login</button>') +
-        (isLoggedIn ? '<button class="btn btn-sm btn-danger" onclick="logoutPlatform(\\''+p+'\\')">Logout</button>' : '') +
-      '</div>';
-    grid.appendChild(card);
-  }
-}
-
-function renderPlatformSelect() {
-  const sel = $('manualPlatform');
-  sel.innerHTML = '';
-  for (const [k,v] of Object.entries(PLATFORM_NAMES)) {
-    const opt = document.createElement('option');
-    opt.value = k; opt.textContent = v;
-    sel.appendChild(opt);
-  }
-}
-
-let qrPollTimer = null;
-
-async function startQRLogin(platform) {
-  try {
-    const res = await auth.authFetch('/admin/cloud-login/' + platform + '/qr', { method: 'POST' });
-    if (!res.ok) { const e = await res.json(); toast(e.error || 'QR failed', 'error'); return; }
-    const data = await res.json();
-    showQRModal(platform, data.qrUrl, data.token, data.qrKind);
-  } catch (e) {
-    toast('QR generate failed: ' + e.message, 'error');
-  }
-}
-
-function showQRModal(platform, qrUrl, token, qrKind) {
-  closeQRModal();
-  if (!qrUrl) { toast('QR generate failed: empty QR URL', 'error'); return; }
-  const overlay = document.createElement('div');
-  overlay.className = 'qr-modal-overlay';
-  overlay.id = 'qrModalOverlay';
-  overlay.onclick = function(e) { if(e.target===overlay) closeQRModal(); };
-
-  const rawQrUrl = String(qrUrl || '').trim();
-  const isImageDataUrl = /^data:image\\//i.test(rawQrUrl);
-  const looksLikeBase64Image = !isImageDataUrl
-    && rawQrUrl.length > 2048
-    && /^[A-Za-z0-9+/\\r\\n]+={0,2}$/.test(rawQrUrl)
-    && /^(iVBORw0KGgo|\\/9j\\/|R0lGOD)/.test(rawQrUrl);
-  const qrImgUrl = qrKind === 'image' || isImageDataUrl || looksLikeBase64Image
-    ? (isImageDataUrl ? rawQrUrl : 'data:image/png;base64,' + rawQrUrl.replace(/\\s+/g, ''))
-    : '/qr.svg?data=' + encodeURIComponent(rawQrUrl) + '&_=' + Date.now();
-
-  overlay.innerHTML =
-    '<div class="qr-modal">' +
-    '<h3>' + (PLATFORM_NAMES[platform]||platform) + ' - Scan QR</h3>' +
-    '<img src="' + escHtml(qrImgUrl) + '" alt="QR Code" width="250" height="250" loading="eager" decoding="sync" onerror="this.style.display=\\'none\\';document.getElementById(\\'qrPollStatus\\').textContent=\\'QR image failed to load. Close and try again.\\';document.getElementById(\\'qrPollStatus\\').className=\\'qr-status expired\\';">' +
-    '<div class="qr-status" id="qrPollStatus">Waiting for scan...</div>' +
-    '<div style="margin-top:14px;display:flex;gap:8px;justify-content:center">' +
-    '<button class="btn btn-sm" onclick="closeQRModal()">Cancel</button>' +
-    '</div></div>';
-
-  document.body.appendChild(overlay);
-  startQRPolling(platform, token);
-}
-
-function startQRPolling(platform, token) {
-  if (qrPollTimer) clearInterval(qrPollTimer);
-  let attempts = 0;
-  const maxAttempts = 120; // 4 minutes at 2s intervals
-
-  qrPollTimer = setInterval(async () => {
-    attempts++;
-    if (attempts > maxAttempts) { closeQRModal(); toast('QR expired', 'error'); return; }
-
-    try {
-      const res = await auth.authFetch('/admin/cloud-login/' + platform + '/poll?token=' + encodeURIComponent(token));
-      const data = await res.json();
-      const statusEl = $('qrPollStatus');
-      if (!statusEl) { clearInterval(qrPollTimer); return; }
-
-      if (data.status === 'confirmed') {
-        statusEl.className = 'qr-status confirmed';
-        statusEl.textContent = 'Login successful!';
-        clearInterval(qrPollTimer);
-        setTimeout(() => { closeQRModal(); loadCloudCredentials(); toast(PLATFORM_NAMES[platform] + ' logged in', 'success'); }, 1000);
-      } else if (data.status === 'scanned') {
-        statusEl.className = 'qr-status scanned';
-        statusEl.textContent = 'Scanned, waiting for confirmation...';
-      } else if (data.status === 'expired') {
-        statusEl.className = 'qr-status expired';
-        statusEl.textContent = 'QR expired. Close and try again.';
-        clearInterval(qrPollTimer);
-      } else if (data.status === 'error') {
-        statusEl.className = 'qr-status expired';
-        statusEl.textContent = data.message || 'Error';
-        clearInterval(qrPollTimer);
-      }
-    } catch {}
-  }, 2000);
-}
-
-function closeQRModal() {
-  if (qrPollTimer) { clearInterval(qrPollTimer); qrPollTimer = null; }
-  const overlay = $('qrModalOverlay');
-  if (overlay) overlay.remove();
-}
-
-async function showPasswordLogin(platform) {
-  const username = prompt(PLATFORM_NAMES[platform] + ' - Username/Email:');
-  if (!username) return;
-  const password = prompt(PLATFORM_NAMES[platform] + ' - Password:');
-  if (!password) return;
-
-  try {
-    const res = await auth.authFetch('/admin/cloud-login/' + platform + '/password', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password }),
-    });
-    const data = await res.json();
-    if (data.success) {
-      toast(PLATFORM_NAMES[platform] + ' saved', 'success');
-      loadCloudCredentials();
-    } else {
-      toast(data.message || 'Login failed', 'error');
-    }
-  } catch (e) {
-    toast('Error: ' + e.message, 'error');
-  }
-}
-
-async function logoutPlatform(platform) {
-  if (!confirm('Logout ' + (PLATFORM_NAMES[platform]||platform) + '?')) return;
-  try {
-    const res = await auth.authFetch('/admin/cloud-credentials/' + platform, { method: 'DELETE' });
-    if (res.ok) {
-      toast('Logged out', 'success');
-      loadCloudCredentials();
-    }
-  } catch {}
-}
-
-async function manualPasteCredential() {
-  const platform = $('manualPlatform').value;
-  const rawValue = $('manualCredValue').value.trim();
-  if (!rawValue) { toast('Please enter credential value', 'error'); return; }
-
-  // 智能解析：尝试 JSON，否则按 cookie string 处理
-  let credential;
-  try {
-    credential = JSON.parse(rawValue);
-    if (typeof credential !== 'object') throw 0;
-  } catch {
-    // 账号密码平台
-    if (PW_PLATFORMS.includes(platform) && rawValue.includes(':')) {
-      const [u, ...rest] = rawValue.split(':');
-      credential = { username: u, password: rest.join(':') };
-    } else {
-      credential = { cookie: rawValue };
-    }
-  }
-
-  try {
-    const res = await auth.authFetch('/admin/cloud-credentials/' + platform, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ credential }),
-    });
-    if (res.ok) {
-      $('manualCredValue').value = '';
-      toast(PLATFORM_NAMES[platform] + ' saved', 'success');
-      loadCloudCredentials();
-    } else {
-      const e = await res.json();
-      toast(e.error || 'Save failed', 'error');
-    }
-  } catch (e) {
-    toast('Error: ' + e.message, 'error');
-  }
-}
-
-
 
 // ─── 去重配置 ──────────────────────────────────────────────
 async function loadDedupConfig() {
@@ -3739,13 +3336,6 @@ async function clearAggLogs() {
   loadAggLogs();
 }
 
-function focusManualCredential(platform) {
-  const sel = $('manualPlatform');
-  const input = $('manualCredValue');
-  if (sel) sel.value = platform;
-  if (input) input.focus();
-  toast((PLATFORM_NAMES[platform] || platform) + ' uses manual credential paste');
-}
 
 let liveLogsAbort = null;
 function appendLiveLog(entry) {

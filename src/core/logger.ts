@@ -25,7 +25,6 @@ const AGG_PHASE_PATTERNS: Array<[RegExp, string]> = [
   [/^Step 4\.5:/, 'blacklist'],
   [/^Step 4\.6:/, 'clean-entries'],
   [/^Step 5\.5:/, 'name-transform'],
-  [/^Step 5\.7:/, 'credential-defer'],
   [/^Step 6:/, 'site-probe'],
   [/^Step 6\.2:/, 'dedup'],
   [/^Step 6\.5:/, 'live-merge'],

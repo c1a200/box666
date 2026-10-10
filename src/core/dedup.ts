@@ -1,7 +1,6 @@
 // 去重逻辑
 
 import type { TVBoxSite, TVBoxParse, TVBoxLive, TVBoxDoh, TVBoxRule } from './types';
-import { isClientCredentialSite } from './credential-risk';
 
 /**
  * 站点去重
@@ -23,10 +22,13 @@ function getStableSuffix(api: string): string {
  * 去重键: key + api（所有类型统一，JAR 差异不作为区分维度）
  * 冲突: key 相同但 api 不同 → key 加稳定的 API 散列值后缀，防止测速临时剔除导致 key 动态变化损坏播放历史
  */
-export function deduplicateSites(sites: TVBoxSite[]): TVBoxSite[] {
+export function deduplicateSites(
+  sites: TVBoxSite[],
+  identityKey?: (site: TVBoxSite) => string,
+): TVBoxSite[] {
   const keyMap = new Map<string, TVBoxSite>(); // key → first site
   const dedupKey = (site: TVBoxSite): string => {
-    return `${site.key}|${site.api}`;
+    return identityKey ? identityKey(site) : `${site.key}|${site.api}`;
   };
 
   const result: TVBoxSite[] = [];
@@ -57,7 +59,6 @@ export function deduplicateSites(sites: TVBoxSite[]): TVBoxSite[] {
 
   return result;
 }
-
 /**
  * 解析器去重 (url + type)
  * 按 url+type 去重而非 name+url，同一 URL 不同 name 视为同一解析
@@ -150,20 +151,6 @@ export function deduplicateStrings(arr: string[]): string[] {
 }
 
 /**
- * 客户端凭证源不做跨实例去重。
- *
- * 凭证绑定属于“最终源实例”，而不是 key/API/JAR 的公共属性。不同顶层总源
- * 可能提供同名、同 API 甚至同 JAR 的源，但它们在客户端仍是独立条目，必须
- * 各自保留 key 与契约，避免响应期契约表按 key 覆盖后串用凭证。
- */
-export function deduplicateClientCredentialSites(
-  sites: TVBoxSite[],
-  _speedMap: Map<string, number | null>,
-): TVBoxSite[] {
-  return sites;
-}
-
-/**
  * 相似名称去重：按名称相似度分组，每组只保留测速最快的站点
  */
 export function deduplicateSimilarNames(
@@ -184,8 +171,6 @@ export function deduplicateSimilarNames(
 
   for (let i = 0; i < sites.length; i++) {
     for (let j = i + 1; j < sites.length; j++) {
-      // 凭证实例禁止跨实例按名称合并；否则不同总源的同名源会再次丢失边界。
-      if (isClientCredentialSite(sites[i]) || isClientCredentialSite(sites[j])) continue;
       const na = sites[i].name || sites[i].key;
       const nb = sites[j].name || sites[j].key;
       if (nameSimilarity(na, nb) >= threshold) {
@@ -222,13 +207,7 @@ export function deduplicateSimilarNames(
       }
     }
 
-    const mergedUpstreamNames = [
-      ...new Set(indices.flatMap((idx) => sites[idx].__upstreamNames || [])),
-    ].filter(Boolean).sort();
-    kept.push({
-      ...sites[bestIdx],
-      ...(mergedUpstreamNames.length > 0 ? { __upstreamNames: mergedUpstreamNames } : {}),
-    });
+    kept.push(sites[bestIdx]);
     dedupCount += indices.length - 1;
 
     if (indices.length > 1) {
@@ -241,8 +220,9 @@ export function deduplicateSimilarNames(
     console.log(`[dedup-similar] Removed ${dedupCount} similar-name duplicates (threshold: ${threshold})`);
   }
 
-  // 必须返回 kept 中的对象本身。若按 key 回查原数组，上面合并后的来源标记
-  // 会被原对象覆盖，导致去重后的站点在严格边界校验中被拒绝注入。
+  // 只能返回实际保留的对象，不能再按 key 回查原数组。
+  // 同一 key 可能因 api/ext/jar/pan 不同而保留多个独立实例；
+  // 按 key 回查会把被相似名去重淘汰的实例重新带回。
   return kept;
 }
 

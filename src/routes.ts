@@ -4,12 +4,11 @@ import { Hono } from 'hono';
 import { MemoryCachedStorage } from './storage/cached';
 import type { Storage } from './storage/interface';
 import type { AppConfig, MacCMSSourceEntry, LiveSourceEntry, NameTransformConfig, EdgeProxyConfig, SearchQualityRunMode } from './core/types';
-import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_STARTUP_SITE_POOL, KV_MANUAL_SOURCES, KV_LAST_UPDATE, KV_LAST_UPDATE_ERROR, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_RUNTIME_TXT, KV_LIVE_RUNTIME_TXT_VERSION, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, LIVE_PROXY_TTL, IMG_PROXY_TTL, KV_NAME_TRANSFORM, KV_CRON_INTERVAL, DEFAULT_CRON_INTERVAL, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_PARSE_HEALTH_REPORT, KV_AGG_LOGS, KV_BG_SETTINGS, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, KV_SMART_BASE_URL_ENABLED, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SITE_HEALTH_MAP, KV_CHANNEL_RUNTIME_TREE, KV_LIVE_TEXT_PREFIX, KV_CREDENTIAL_DISTRIBUTION, KV_CREDENTIAL_DISTRIBUTION_ENABLED, KV_SEARCH_QUALITY_CANDIDATES, KV_SITE_UPSTREAM_MAP, KV_SITE_CONTRACT_MAP } from './core/config';
+import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_STARTUP_SITE_POOL, KV_MANUAL_SOURCES, KV_LAST_UPDATE, KV_LAST_UPDATE_ERROR, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_RUNTIME_TXT, KV_LIVE_RUNTIME_TXT_VERSION, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, LIVE_PROXY_TTL, IMG_PROXY_TTL, KV_NAME_TRANSFORM, KV_CRON_INTERVAL, DEFAULT_CRON_INTERVAL, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_PARSE_HEALTH_REPORT, KV_AGG_LOGS, KV_BG_SETTINGS, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, KV_SMART_BASE_URL_ENABLED, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SITE_HEALTH_MAP, KV_CHANNEL_RUNTIME_TREE, KV_LIVE_TEXT_PREFIX, KV_CREDENTIAL_DISTRIBUTION, KV_SEARCH_QUALITY_CANDIDATES } from './core/config';
 import { getRequestBaseUrl, applyBaseUrlPlaceholder, assertHostAllowed } from './core/base-url';
 import { logger } from './core/logger';
 import { loadGroupOrder, saveGroupOrder } from './core/group-order';
 import { validateMacCMS } from './core/maccms';
-import { applyLegacyWoggCompatibility } from './core/cf-compat';
 import { lookupJarUrl, isMd5Key, base64ToUint8Array, rewriteJarUrls, normalizeJarRequestKey, loadJarReadyKeys, markJarReady, getJarKeyForSite } from './core/jar-proxy';
 import { BASE_URL_PLACEHOLDER } from './core/config';
 import { lookupLiveSource, listLiveProxyEntries, removeLiveProxyEntry } from './core/live-source';
@@ -29,24 +28,18 @@ import {
   excludedQualityKeys,
   candidateKeysFromPool,
 } from './core/quality';
-import { isPanInitCredentialDistributable, loadCredentials, saveCredential, deleteCredential, loadCredentialPolicy, saveCredentialPolicy, normalizeCredentialInput, prepareQuarkCookie, credentialRevision, loadCredentialDistribution, saveCredentialDistribution, findCredentialAuthCode, normalizeCredentialDistributionConfig, CLOUD_PLATFORMS, createCredentialAuthCode } from './core/credential-store';
+import { loadClientDistribution, saveClientDistribution, findClientAuthCode, normalizeClientDistributionConfig, createClientAuthCode } from './core/client-auth-store';
 import { isSiteProbeable } from './core/speedtest';
-import { generateQR, pollQRStatus, passwordLogin, PLATFORM_NAMES, QR_PLATFORMS, PASSWORD_PLATFORMS } from './core/cloud-login';
-import { assessAllSources, isClientCredentialSite } from './core/credential-risk';
-import { generate3DCloudJson, generateTokenJson, generateTvfanConfig, injectAListDriveCredentials, injectCredentials } from './core/credential-injector';
-import type { SiteContract } from './core/types';
-import { stripInjectedCredentialsFromConfig, stripUpstreamCredentialEntries } from './core/credential-sanitizer';
 import { formatAggregatedLiveGroupsAsTxt, formatLiveGroupsAsTxt, filterLivesBySource, filterLivesBySourceDetailed, sortLiveGroupsForOutput } from './core/live-merger';
 import { containsBlockedLiveUrl, isBlockedLiveSource, isBlockedLiveUrl } from './core/live-policy';
 import { autoNameFromUrl, backupTypeMismatch, createSourceBackup, extractBackupItems, parseSourceList } from './core/source-list-parser';
-import type { TVBoxConfig, TVBoxSite, SearchQuotaConfig, SiteQualityGrade, CloudPlatform, CloudCredential, TVBoxLive, TVBoxLiveGroup, CredentialAuthCode, CredentialDistributionConfig, CredentialDistributionMode } from './core/types';
+import type { TVBoxConfig, TVBoxSite, SearchQuotaConfig, SiteQualityGrade, TVBoxLive, TVBoxLiveGroup, ClientAuthCode, ClientDistributionConfig, SourceDistributionMode } from './core/types';
 import { mountChannelProbeRoutes } from './routes/channel-probe-admin';
 import { loadSpeedMap as loadChannelSpeedMap } from './core/channel-probe';
 import { createLogViewerRouter } from './routes/log-viewer';
 import { createStaticAssetsRouter } from './routes/static-assets';
 import { clearDirtyMarker, getDirtyMarker, setDirtyMarker } from './core/dirty-marker';
 import { createSourceManagementRouter } from './routes/source-management';
-import * as QRCode from 'qrcode';
 
 export interface AggregationTriggerResult {
   started: boolean;
@@ -140,7 +133,7 @@ async function fetchAListJson(rawUrl: string): Promise<Record<string, any>> {
         method: 'GET',
         redirect: 'manual',
         signal: controller.signal,
-        headers: { 'User-Agent': 'TVBox-AList-Credential-Proxy/1.0' },
+        headers: { 'User-Agent': 'TVBox-AList-Proxy/1.0' },
       });
     } finally {
       clearTimeout(timer);
@@ -318,53 +311,21 @@ export function createApp(deps: AppDeps): Hono {
   // 同一 Worker 实例内合并直播刷新，避免并发请求重复下载同一批直播源。
   const liveRuntimeRefreshes = new Map<string, Promise<Response | null>>();
 
-  async function proxyBilibiliQR(pathAndQuery: string, init: RequestInit = {}): Promise<{ data?: any; error?: string; status?: number }> {
-    const base = config.bilibiliQrProxyBaseUrl?.replace(/\/+$/, '');
-    if (!base) return {};
-    const headers = new Headers(init.headers);
-    headers.set('X-Bilibili-QR-Proxy', '1');
-    const token = config.bilibiliQrProxyToken || config.adminToken;
-    if (token) headers.set('Authorization', `Bearer ${token}`);
-    try {
-      const resp = await fetch(base + pathAndQuery, {
-        ...init,
-        headers,
-      });
-      const text = await resp.text();
-      let data: any = {};
-      try { data = text ? JSON.parse(text) : {}; } catch { data = { error: text || `HTTP ${resp.status}` }; }
-      if (!resp.ok) {
-        return { error: data.error || data.message || `Bilibili QR proxy failed: HTTP ${resp.status}`, status: resp.status };
-      }
-      return { data };
-    } catch (err) {
-      return { error: `Bilibili QR proxy failed: ${err instanceof Error ? err.message : String(err)}`, status: 502 };
-    }
-  }
-
   async function markOutputDirty(): Promise<void> {
     await setDirtyMarker(storage);
     await storage.put(KV_LIVE_RUNTIME_EMPTY_AT, '');
     storage.clear();
   }
 
-  let credentialRefreshPromise: Promise<void> | null = null;
-
-  // ─── 客户端鉴权与凭证分发上下文 ─────────────────────────
+  // ─── 客户端鉴权与源分发上下文 ─────────────────────────
   //
-  // 根链接使用 defaultCredentialMode / defaultPlatforms；启用强制鉴权后根链接
-  // 直接 401。带鉴权链接形如 /auth/<code>/...，由对应鉴权码决定凭证下发策略。
-  // 鉴权码只出现在 URL 路径中，绝不接受查询参数，避免被 Referer/日志记录。
+  // 根链接仅在 requireAuth=false 时可用；强制鉴权后必须使用
+  // /auth/<code>/...。鉴权码决定下发给该客户端的源集合，不包含任何网盘凭证。
   interface ClientAuthContext {
-    distribution: CredentialDistributionConfig;
-    authCode?: CredentialAuthCode;
-    mode: CredentialDistributionMode;
-    platforms: CloudPlatform[];
-    /** 用于生成客户端链接的基地址，含 /auth/<code> 前缀（如有）。 */
+    distribution: ClientDistributionConfig;
+    authCode?: ClientAuthCode;
     effectiveBaseUrl: string;
-    /** 客户端请求的根地址（不含鉴权前缀）。 */
     rootBaseUrl: string;
-    /** /auth/<code> 前缀（以斜杠开头），根链接为空字符串。 */
     authPrefix: string;
   }
 
@@ -376,27 +337,17 @@ export function createApp(deps: AppDeps): Hono {
 
   const AUTH_PATH_RE = /^\/auth\/([^/]+)(\/.*)?$/;
 
-  /**
-   * Reject unauthenticated sub-resource requests (JAR/live/API) before they
-   * reach the proxy handlers. Valid /auth/<code>/... paths are resolved into a
-   * context so downstream URL builders can keep the auth prefix.
-   */
   async function resolveOrRejectClientContext(
     c: any,
     rootBaseUrl: string,
   ): Promise<{ context?: ClientAuthContext; response?: Response }> {
     const resolved = await resolveClientAuthContext(c, rootBaseUrl);
     if (resolved.failure) {
-      return { response: credentialAuthFailureResponse(c, resolved.failure) };
+      return { response: clientAuthFailureResponse(c, resolved.failure) };
     }
     return { context: resolved.context! };
   }
 
-  /**
-   * Rewrite one client resource URL to include the current auth prefix.
-   * Only project-owned resource paths are rewritten. Credential URLs are left
-   * untouched because they are generated with effectiveBaseUrl already.
-   */
   function applyAuthPrefixToProxyUrl(value: string, context: ClientAuthContext): string {
     if (!value || !context.authPrefix) return value;
     const prefix = context.authPrefix.replace(/\/+$/, '');
@@ -411,7 +362,6 @@ export function createApp(deps: AppDeps): Hono {
       parsed.pathname = `${prefix}${parsed.pathname}`;
       return parsed.toString();
     } catch {
-      // Relative resource URLs are also used by TVBox/影视仓 configs.
       const relativePath = value.split(/[?#]/, 1)[0];
       if (relativePath === '/api/bg-settings') return value;
       if (/^\/auth\/[^/]+\//.test(value)) return value;
@@ -420,10 +370,6 @@ export function createApp(deps: AppDeps): Hono {
     }
   }
 
-  /**
-   * Rewrite nested TVBox config fields. Doing this structurally avoids leaking
-   * auth-code routes into unrelated strings and correctly handles ext/extend.
-   */
   function applyAuthPrefixToConfigNode(node: any, context: ClientAuthContext, key = ''): any {
     if (typeof node === 'string') {
       const normalizedKey = key.toLowerCase();
@@ -448,16 +394,11 @@ export function createApp(deps: AppDeps): Hono {
     return next;
   }
 
-  /**
-   * Rewrite root-relative proxy resources to include the current auth prefix.
-   * JSON parsing keeps ext/extend and platform credential fields intact.
-   */
   function applyAuthPrefixToProxyUrls(raw: string, context: ClientAuthContext): string {
     if (!raw || !context.authPrefix) return raw;
     try {
       return JSON.stringify(applyAuthPrefixToConfigNode(JSON.parse(raw), context));
     } catch {
-      // Last-resort fallback for malformed/legacy payloads.
       const prefix = context.authPrefix.replace(/\/+$/, '');
       const root = context.rootBaseUrl.replace(/\/+$/, '');
       const escapedRoot = root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -468,36 +409,15 @@ export function createApp(deps: AppDeps): Hono {
     }
   }
 
-  /** Apply base URL, credential policy, then auth-prefix rewriting. */
-  async function applyClientContextToConfigBody(raw: string, context: ClientAuthContext): Promise<string> {
-    let body = applyBaseUrlPlaceholder(raw, context.rootBaseUrl);
-    body = await applyCredentialPolicyToResponseBody(body, context);
-    return applyAuthPrefixToProxyUrls(body, context);
-  }
-
-  function modePlatforms(
-    mode: CredentialDistributionMode,
-    selected: CloudPlatform[],
-  ): CloudPlatform[] {
-    if (mode === 'none') return [];
-    if (mode === 'all') return [...CLOUD_PLATFORMS];
-    return selected.filter((platform): platform is CloudPlatform => (CLOUD_PLATFORMS as string[]).includes(platform));
-  }
-
-  /**
-   * 解析客户端鉴权上下文。rootBaseUrl 为不含 /auth/<code> 的部署根地址。
-   * 返回 { context } 或 { failure }。
-   */
   async function resolveClientAuthContext(
     c: import('hono').Context,
     rootBaseUrl: string,
   ): Promise<{ context?: ClientAuthContext; failure?: ClientAuthFailure }> {
-    const distribution = await loadCredentialDistribution(storage);
+    const distribution = await loadClientDistribution(storage);
     const path = c.req.path;
     const match = AUTH_PATH_RE.exec(path);
 
     if (!match) {
-      // 根链接：强制鉴权开启时必须拒绝。
       if (distribution.requireAuth) {
         return {
           failure: {
@@ -510,8 +430,6 @@ export function createApp(deps: AppDeps): Hono {
       return {
         context: {
           distribution,
-          mode: distribution.defaultCredentialMode,
-          platforms: modePlatforms(distribution.defaultCredentialMode, distribution.defaultPlatforms),
           effectiveBaseUrl: rootBaseUrl.replace(/\/+$/, ''),
           rootBaseUrl: rootBaseUrl.replace(/\/+$/, ''),
           authPrefix: '',
@@ -529,9 +447,8 @@ export function createApp(deps: AppDeps): Hono {
     if (!authCodeValue || authCodeValue.includes('/')) {
       return { failure: { status: 401, code: 'invalid_code', message: 'Invalid authentication code.' } };
     }
-    const authCode = findCredentialAuthCode(distribution, authCodeValue);
+    const authCode = findClientAuthCode(distribution, authCodeValue);
     if (!authCode) {
-      // 配置了鉴权码但当前码不存在/被禁用时，不回退到根策略。
       return {
         failure: {
           status: 403,
@@ -541,15 +458,12 @@ export function createApp(deps: AppDeps): Hono {
       };
     }
 
-    // 保留 /auth/<code> 前缀作为拼接其它端点的基础地址。
     const authPrefix = `/auth/${encodeURIComponent(authCode.code)}`;
     const base = rootBaseUrl.replace(/\/+$/, '');
     return {
       context: {
         distribution,
         authCode,
-        mode: authCode.credentialMode,
-        platforms: modePlatforms(authCode.credentialMode, authCode.platforms),
         effectiveBaseUrl: `${base}${authPrefix}`,
         rootBaseUrl: base,
         authPrefix,
@@ -557,232 +471,87 @@ export function createApp(deps: AppDeps): Hono {
     };
   }
 
-  /** 归一化后返回实际需要下发的凭证集合。 */
-  function selectCredentialsForContext(
-    credentials: Map<CloudPlatform, CloudCredential>,
-    context: ClientAuthContext,
-  ): Map<CloudPlatform, CloudCredential> {
-    const allowed = new Set(context.platforms);
-    const selected = new Map<CloudPlatform, CloudCredential>();
-    if (context.mode === 'none') return selected;
-    for (const [platform, credential] of credentials) {
-      if (context.mode === 'all' || allowed.has(platform)) selected.set(platform, credential);
-    }
-    return selected;
-  }
-
-  function credentialSecretSet(credentials: Map<CloudPlatform, CloudCredential>): Set<string> {
-    const set = new Set<string>();
-    for (const credential of credentials.values()) {
-      for (const value of Object.values(credential.credential || {})) {
-        if (typeof value === 'string' && value.trim()) set.add(value.trim());
-      }
-    }
-    return set;
-  }
-
-  /** 读取聚合阶段保存的启用总源边界；仅确有凭证下发时才读取契约指纹。 */
-  async function loadSiteInjectionConstraints(includeContracts: boolean): Promise<{
-    allowedSiteKeys: Set<string> | null;
-    contractsBySiteKey: Map<string, SiteContract> | null;
-  }> {
-    let allowedSiteKeys: Set<string> | null = null;
-    let contractsBySiteKey: Map<string, SiteContract> | null = null;
-
-    const [upstreamRaw, contractRaw] = await Promise.all([
-      storage.get(KV_SITE_UPSTREAM_MAP),
-      includeContracts ? storage.get(KV_SITE_CONTRACT_MAP) : Promise.resolve(null),
-    ]);
-
-    if (upstreamRaw) {
-      try {
-        const parsed = JSON.parse(upstreamRaw) as { sites?: Record<string, unknown> };
-        // 映射存在时，仅允许映射中实际存在来源的站点注入；即使映射为空也保持拒绝，
-        // 避免空聚合结果误用旧的对外配置。
-        allowedSiteKeys = new Set(Object.keys(parsed.sites || {}));
-      } catch {
-        allowedSiteKeys = null;
-      }
-    }
-
-    if (contractRaw) {
-      try {
-        const parsed = JSON.parse(contractRaw) as { sites?: Record<string, SiteContract> };
-        contractsBySiteKey = new Map(Object.entries(parsed.sites || {}));
-      } catch {
-        contractsBySiteKey = null;
-      }
-    }
-
-    return { allowedSiteKeys, contractsBySiteKey };
-  }
-
-  /** 仅显式策略开关允许剥离上游凭证入口；none 只代表本项目不下发。 */
-  function shouldStripUpstreamCredentialEntries(context: ClientAuthContext): boolean {
-    return context.distribution.stripUpstreamCredentialEntries === true;
-  }
-
-  /** 按当前上下文重新注入凭证地址。 */
-  async function applyCredentialPolicyToConfig(
-    raw: string,
-    allCredentials: Map<CloudPlatform, CloudCredential>,
-    policy: Awaited<ReturnType<typeof loadCredentialPolicy>>,
-    context: ClientAuthContext,
-  ): Promise<string> {
-    if (!raw) return raw;
-    let parsed: any;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      return raw;
-    }
-    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.sites)) return raw;
-
-    // 只有显式 stripUpstreamCredentialEntries=true 才剥离上游自带的登录入口；
-    // none 只表示项目不下发凭证，不等于替上游剥离凭证。
-    if (shouldStripUpstreamCredentialEntries(context)) {
-      parsed = stripUpstreamCredentialEntries(
-        parsed,
-        typeof parsed.spider === 'string' ? parsed.spider : undefined,
-      );
-    }
-
-    const effective = selectCredentialsForContext(allCredentials, context);
-    const constraints = await loadSiteInjectionConstraints(
-      context.mode !== 'none' && effective.size > 0,
-    );
-    // 先清除历史注入的凭证/地址；本次允许的值保留，随后重新按策略注入。
-    const allowedSecrets = context.mode === 'none' ? new Set<string>() : credentialSecretSet(effective);
-    // 控制边界只使用实际被选中并下发的站点；每个站点是否注入仍由
-    // 已验证 JAR/API/ext 契约和当前凭证决定，不做总源级模式拦截。
-    const stripped = stripInjectedCredentialsFromConfig(
-      parsed,
-      context.effectiveBaseUrl,
-      allCredentials,
-      allowedSecrets,
-    );
-    const { sites, report } = injectCredentials(
-      stripped.sites || [],
-      effective,
-      policy,
-      context.effectiveBaseUrl,
-      constraints.allowedSiteKeys,
-      constraints.contractsBySiteKey,
-      true,
-      true,
-      typeof parsed.spider === 'string' ? parsed.spider : undefined,
-    );
-    // 注入结果必须写回响应配置，否则凭证计算完成但客户端仍收到原 ext。
-    parsed.sites = sites;
-    // 顶层 token 与本次实际注入结果绑定：none 或没有任何站点真正注入时
-    // 不下发，避免客户端继续请求项目凭证端点；上游字段不受此影响。
-    const tokenUrl = `${context.effectiveBaseUrl}/token.json`;
-    if (context.mode === 'none' || effective.size === 0 || report.injected === 0) {
-      delete parsed.token;
-    } else {
-      parsed.token = tokenUrl;
-    }
-
-    // Wogg 兼容迁移可能改 key/JAR，必须在注入结果写回后执行；它不会写入凭证。
-    applyLegacyWoggCompatibility(parsed);
-    return JSON.stringify(parsed);
-  }
-
-  /** 响应侧按上下文重新注入凭证并返回。 */
-  async function applyCredentialPolicyToResponseBody(
-    raw: string,
-    context: ClientAuthContext,
-  ): Promise<string> {
-    if (!raw) return raw;
-    const credentials = await loadCredentials(storage);
-    const policy = await loadCredentialPolicy(storage);
-    return await applyCredentialPolicyToConfig(raw, credentials, policy, context);
-  }
-
-  function stripMissingCredentialUrls(raw: string, effectiveBaseUrl: string, credentials: Map<CloudPlatform, CloudCredential>): string {
-    let parsed: any;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      return raw;
-    }
-    const stripped = stripInjectedCredentialsFromConfig(parsed, effectiveBaseUrl, credentials, new Set());
-    return JSON.stringify(stripped);
+  function clientAuthFailureResponse(c: any, failure: ClientAuthFailure): Response {
+    return c.json({ error: failure.message, code: failure.code }, failure.status);
   }
 
   /**
-   * 后台直改 KV 的即时重注入已废弃：聚合结果现在只保存源本身，凭证在每次
-   * 响应时按请求上下文动态注入，避免不同鉴权码互相污染。这里仅清理旧内容。
+   * 按当前鉴权码裁剪站点。根链接只做基础启动裁剪，不额外按鉴权码筛选；
+   * 鉴权链接在启动裁剪之后再按鉴权码的等级、类型、数量和置顶规则裁剪。
    */
-  async function reinjectCredentialsIntoOutputs(): Promise<void> {
-    const credentials = await loadCredentials(storage);
-    const keys = [
-      KV_MERGED_CONFIG,
-      KV_MERGED_CONFIG_FULL,
-      KV_STARTUP_SITE_POOL,
-      KV_SEARCH_QUALITY_CANDIDATES,
-    ];
-    let updated = 0;
-    for (const key of keys) {
-      const raw = await storage.get(key);
-      if (!raw) continue;
-      const cleaned = stripMissingCredentialUrls(raw, (config.workerBaseUrl || config.localBaseUrl || '').replace(/\/+$/, ''), credentials);
-      if (cleaned && cleaned !== raw) {
-        await storage.put(key, cleaned);
-        updated++;
-      }
-    }
-    if (updated > 0) storage.clear();
-    logger.infoFields('routes', 'credential-output-stripped', { keys: updated });
-  }
-
-  async function refreshAfterCredentialChange(c: any): Promise<void> {
-    // 保存成功后只做本地失效标记；凭证清理和聚合刷新必须在后台执行。
-    // 否则 Render 请求会一直等到整次聚合结束，浏览器最终误报“保存失败”。
+  async function applySourceDistribution(raw: string, context: ClientAuthContext): Promise<string> {
+    if (!context.authCode || !raw) return raw;
+    let parsed: TVBoxConfig;
     try {
-      await markOutputDirty();
-    } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : String(error);
-      logger.warn('routes', `Credential change dirty marker failed: ${msg}`);
-      return;
-    }
-
-    const background = (async () => {
-      try {
-        if (!credentialRefreshPromise) {
-          credentialRefreshPromise = (async () => {
-            try {
-              await reinjectCredentialsIntoOutputs();
-            } catch (error: unknown) {
-              const msg = error instanceof Error ? error.message : String(error);
-              logger.warn('routes', `Immediate credential cleanup failed: ${msg}`);
-            }
-          })().finally(() => {
-            credentialRefreshPromise = null;
-          });
-        }
-        await credentialRefreshPromise;
-
-        if (deps.isSyncing?.()) return;
-        await deps.triggerRefresh();
-      } catch (error: unknown) {
-        const msg = error instanceof Error ? error.message : String(error);
-        logger.warn('routes', `Credential change refresh failed: ${msg}`);
-      }
-    })();
-
-    try {
-      if (c.executionCtx) {
-        c.executionCtx.waitUntil(background);
-      } else {
-        void background;
-      }
+      parsed = JSON.parse(raw) as TVBoxConfig;
     } catch {
-      // Hono 在 Worker 运行时之外访问 executionCtx 会抛错，此时直接后台执行。
-      void background;
+      return raw;
     }
+    if (!Array.isArray(parsed.sites)) return raw;
+
+    const code = context.authCode;
+    const mode: SourceDistributionMode = code.sourceMode || 'all';
+    const pinned = new Set(code.pinnedKeys || []);
+    const allowedGrades = new Set(code.includeGrades || []);
+    const allowedTypes = new Set(code.siteTypes || []);
+    let sites = parsed.sites.slice();
+
+    if (mode === 'search') {
+      sites = sites.filter((site) => site.searchable === 1 || pinned.has(site.key));
+    } else if (mode === 'selected') {
+      try {
+        const pool = await loadQualityPool(storage);
+        const selectedKeys = new Set(candidateKeysFromPool(pool));
+        sites = sites.filter((site) => selectedKeys.has(site.key) || pinned.has(site.key));
+      } catch {
+        // 质量池缺失时不做额外裁剪，避免错误地清空客户端源。
+      }
+    } else if (mode === 'custom') {
+      const selectedKeys = new Set(code.selectedKeys || []);
+      sites = sites.filter((site) => selectedKeys.has(site.key) || pinned.has(site.key));
+    }
+
+    if (allowedGrades.size > 0) {
+      try {
+        const pool = await loadQualityPool(storage);
+        const gradeByKey = new Map((pool?.entries || []).map((entry) => [entry.key, entry.grade]));
+        sites = sites.filter((site) => pinned.has(site.key) || (gradeByKey.has(site.key) && allowedGrades.has(gradeByKey.get(site.key)!)));
+      } catch {
+        // 质量池缺失时不按等级猜测。
+      }
+    }
+
+    if (allowedTypes.size > 0) {
+      sites = sites.filter((site) => pinned.has(site.key) || allowedTypes.has(site.type));
+    }
+
+    const maxSearchable = Math.max(0, Math.floor(code.maxSearchable || 0));
+    if (maxSearchable > 0) {
+      let searchable = 0;
+      sites = sites.filter((site) => {
+        if (pinned.has(site.key)) return true;
+        if (site.searchable !== 1) return true;
+        searchable++;
+        return searchable <= maxSearchable;
+      });
+    }
+
+    const maxSites = Math.max(0, Math.floor(code.maxSites || 0));
+    if (maxSites > 0 && sites.length > maxSites) {
+      const pinnedSites = sites.filter((site) => pinned.has(site.key));
+      const rest = sites.filter((site) => !pinned.has(site.key));
+      sites = [...pinnedSites, ...rest.slice(0, Math.max(0, maxSites - pinnedSites.length))];
+    }
+
+    parsed.sites = sites;
+    return JSON.stringify(parsed);
   }
 
+  async function applyClientContextToConfigBody(raw: string, context: ClientAuthContext): Promise<string> {
+    let body = applyBaseUrlPlaceholder(raw, context.rootBaseUrl);
+    body = await applySourceDistribution(body, context);
+    return applyAuthPrefixToProxyUrls(body, context);
+  }
   // ─── 本地字体（仅 Node 侧）──────────────────────────────
   if (!config.workerBaseUrl) {
     app.route('/', createStaticAssetsRouter());
@@ -794,25 +563,6 @@ export function createApp(deps: AppDeps): Hono {
   app.get('/version', (c) => {
     const { APP_VERSION, APP_COMMIT } = require('./core/version');
     return c.json({ version: APP_VERSION, commit: APP_COMMIT });
-  });
-
-  app.get('/qr.svg', async (c) => {
-    const data = c.req.query('data') || '';
-    if (!data) return c.text('Missing data', 400);
-    if (data.length > 2048) return c.text('Data too long', 400);
-
-    const svg = await QRCode.toString(data, {
-      type: 'svg',
-      errorCorrectionLevel: 'M',
-      margin: 2,
-      width: 250,
-    });
-
-    return c.body(svg, 200, {
-      'Content-Type': 'image/svg+xml; charset=utf-8',
-      'Cache-Control': 'no-store',
-      'X-Content-Type-Options': 'nosniff',
-    });
   });
 
   // ─── 占位符替换辅助 ────────────────────────────────────
@@ -929,25 +679,10 @@ export function createApp(deps: AppDeps): Hono {
         if (!qualityGradeByKey.has(entry.key)) qualityGradeByKey.set(entry.key, entry.grade);
       }
     }
-    const retainCredentialMode: 'off' | 'all' | 'selected' =
-      quota.retainCredentialMode === 'all' || quota.retainCredentialMode === 'selected' || quota.retainCredentialMode === 'off'
-        ? quota.retainCredentialMode
-        : (quota.retainCredentialSources === true ? 'all' : 'off');
-    const retainedCredentialKeys = new Set(quota.retainedCredentialKeys || []);
-    const isRetainedCredentialSite = (site: TVBoxSite): boolean => {
-      if (blockedKeys.has(site.key)) return false;
-      if (retainCredentialMode === 'off') return false;
-      const grade = qualityGradeByKey.get(site.key);
-      const eligible = grade
-        ? grade === 'credential-ready' || grade === 'untestable'
-        : isClientCredentialSite(site) || !isSiteProbeable(site);
-      if (!eligible) return false;
-      return retainCredentialMode === 'all' || retainedCredentialKeys.has(site.key);
-    };
 
     // KV_MERGED_CONFIG 已经过 applySearchQuota，可能只保留前 N 个搜索源。
     // 质量池需要恢复被旧上限截断的站点，因此先以完整候选快照兜底，再用当前
-    // 合并配置覆盖同 key 的最新对象（凭证、代理等字段可能刚刚更新）。
+    // 合并配置覆盖同 key 的最新对象（上游字段和代理等可能刚刚更新）。
     let candidateSites: TVBoxSite[] = [];
     try {
       candidateSites = await loadQualityCandidates(storage);
@@ -976,7 +711,7 @@ export function createApp(deps: AppDeps): Hono {
         if (entry.grade === 'timeout' || entry.grade === 'unusable') continue;
         const site = siteByKey.get(entry.key);
         if (!site) continue;
-        restored.push(site.searchable === 1 ? site : { ...site, searchable: 1 });
+        restored.push(site);
       }
       orderedSites = restored;
     } else {
@@ -1003,7 +738,7 @@ export function createApp(deps: AppDeps): Hono {
     const rest = orderedSites.filter((site) => !pinnedKeySet.has(site.key) && !blockedKeys.has(site.key));
 
     // 轻量启动要等远程 JAR 已落到本部署缓存后再下发，避免客户端逐个等待
-    // 慢速上游；完整启动模式不做这层裁剪。客户端凭证型 type=3 源始终保留，
+    // 慢速上游；完整启动模式不做这层裁剪。客户端插件 type=3 源始终保留，
     // 因为它们在客户端登录后可直接使用。/config-full.json 始终保留完整配置。
     const leanStartup = quota.startupMode !== 'full' && quota.leanStartup !== false;
     let eligibleRest = rest;
@@ -1014,7 +749,7 @@ export function createApp(deps: AppDeps): Hono {
         // 可搜索源不能因本部署尚未预取 JAR 而从根配置消失，否则
         // maxSearchable=0 仍会退化成少量启动源。JAR 就绪门槛只用于
         // 不可搜索的远程扩展，避免它们增加客户端启动等待。
-        if (site.type !== 3 || site.searchable === 1 || isClientCredentialSite(site)) return true;
+        if (site.type !== 3 || site.searchable === 1) return true;
         const key = getJarKeyForSite(site, parsed.spider);
         // 直连 CDN JAR 无需等待本部署预取；只有实际代理 JAR 才要求 ready。
         return !key || jarReadyKeys.has(key);
@@ -1022,14 +757,12 @@ export function createApp(deps: AppDeps): Hono {
     }
 
     // 置顶是用户显式选择，轻量启动时也保留；普通候选才按模式门控。
-    // 可选策略开启后，凭证就绪与客户端登录/JAR 源额外保留，不占可测速源上限。
-    // selected 模式仅放行已勾选 key；其余凭证源仍按正常质量顺序参与上限。
+    // 可选策略开启后，插件/JAR 与客户端专用源按既有质量规则参与上限。
+    // selected 模式仅放行已勾选 key。
     const limit = quota.maxSearchable ?? 0;
     let limitedRest = eligibleRest;
     if (limit > 0) {
-      const pooledRest = eligibleRest.filter((site) => !isRetainedCredentialSite(site));
-      const retainedCredentialRest = eligibleRest.filter(isRetainedCredentialSite);
-      limitedRest = [...pooledRest.slice(0, Math.max(0, limit)), ...retainedCredentialRest];
+      limitedRest = eligibleRest.slice(0, Math.max(0, limit));
     }
 
     // 根配置的快速搜索是独立策略：0=不额外裁剪；非 0 时按最终顺序
@@ -1104,25 +837,10 @@ export function createApp(deps: AppDeps): Hono {
     return JSON.stringify(parsed);
   }
 
-  function repairWoggCompatibilityResponse(body: string): string {
-
-    let parsed: TVBoxConfig;
-    try {
-      parsed = JSON.parse(body) as TVBoxConfig;
-    } catch {
-      return body;
-    }
-    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.sites)) return body;
-
-    if (!applyLegacyWoggCompatibility(parsed)) return body;
-    return JSON.stringify(parsed);
-  }
-
   function configBody(body: string, headers: Record<string, string>): Response {
     // 不手工压缩：Cloudflare 边缘可能在客户端未请求 gzip 时剥离
     // Content-Encoding，却保留压缩字节，导致 TVBox/影视仓 JSON 解析失败。
     // 始终保持原始 JSON，由平台按 Accept-Encoding 正常协商压缩。
-    body = repairWoggCompatibilityResponse(body);
     return new Response(body, {
       status: 200,
       headers: { ...headers, Vary: 'Accept-Encoding' },
@@ -1464,7 +1182,7 @@ export function createApp(deps: AppDeps): Hono {
       cached = await repairCfSeparatedLives(cached);
       stage = 'quality-filter';
       cached = await filterExcludedQualitySites(cached);
-      stage = 'credential-policy';
+      stage = 'source-distribution';
       cached = await applyClientContextToConfigBody(cached, ctx);
       stage = 'serialize-response';
       const response = configBody(cached, {
@@ -1821,22 +1539,12 @@ export function createApp(deps: AppDeps): Hono {
     if (typeof body.maxParses === 'number' && Number.isFinite(body.maxParses)) {
       current.maxParses = Math.max(0, Math.floor(body.maxParses));
     }
-    if (body.retainCredentialMode === 'off' || body.retainCredentialMode === 'all' || body.retainCredentialMode === 'selected') {
-      current.retainCredentialMode = body.retainCredentialMode;
-    } else if (typeof body.retainCredentialSources === 'boolean') {
-      current.retainCredentialMode = body.retainCredentialSources ? 'all' : 'off';
-    }
-    current.retainCredentialSources = current.retainCredentialMode !== 'off';
-    if (Array.isArray(body.retainedCredentialKeys)) {
-      current.retainedCredentialKeys = [...new Set(body.retainedCredentialKeys.filter((key): key is string => typeof key === 'string'))];
-    }
     if (Array.isArray(body.blockedKeys)) {
       current.blockedKeys = [...new Set(body.blockedKeys.filter((key): key is string => typeof key === 'string'))];
     }
     {
       const blocked = new Set(current.blockedKeys || []);
       current.pinnedKeys = (current.pinnedKeys || []).filter((key) => !blocked.has(key));
-      current.retainedCredentialKeys = (current.retainedCredentialKeys || []).filter((key) => !blocked.has(key));
     }
     // autoLimit is retired in schema 8; the two user-facing caps are explicit.
     if (typeof body.sortBySpeed === 'boolean') current.sortBySpeed = body.sortBySpeed;
@@ -2047,9 +1755,6 @@ export function createApp(deps: AppDeps): Hono {
       probed: snapshot?.coverage?.probed ?? null,
       notProbed: snapshot?.coverage?.notProbed ?? null,
       untestable: snapshot?.coverage?.untestable ?? null,
-      credentialReady: snapshot?.coverage?.credentialReady ?? null,
-      credentialPartial: snapshot?.coverage?.credentialPartial ?? null,
-      credentialMissing: snapshot?.coverage?.credentialMissing ?? null,
     };
 
     // 推荐解析器上限：客户端启动时会串行初始化解析器，保留 3 个已足够；
@@ -2149,50 +1854,35 @@ export function createApp(deps: AppDeps): Hono {
     }
   });
 
-  // ─── 网盘凭证管理 API ───────────────────────────────────
-
-  // 查看所有已登录平台状态
-  app.get('/admin/cloud-credentials', async (c) => {
+  // ─── 客户端鉴权与源分发管理 API ───────────────────────────
+  // 鉴权码只控制“下发哪些源”，不处理任何网盘凭证。
+  async function handleGetClientDistribution(c: any) {
     if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
-    const creds = await loadCredentials(storage);
-    const result: Record<string, any> = {};
-    for (const [platform, cred] of creds) {
-      result[platform] = {
-        platform: cred.platform,
-        status: cred.status,
-        obtainedAt: cred.obtainedAt,
-        expiresAt: cred.expiresAt,
-        hasCredential: Object.values(cred.credential).some((value) => typeof value === 'string' && value.trim().length > 0),
-      };
-    }
-    return c.json({ platforms: PLATFORM_NAMES, credentials: result });
-  });
+    return c.json(await loadClientDistribution(storage));
+  }
 
-  // 凭证分发与客户端鉴权配置。鉴权码只出现在 URL 路径中，不接受查询参数。
-  app.get('/admin/credential-distribution', async (c) => {
-    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
-    return c.json(await loadCredentialDistribution(storage));
-  });
-
-  app.put('/admin/credential-distribution', async (c) => {
+  async function handlePutClientDistribution(c: any) {
     if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
 
-    let body: Partial<CredentialDistributionConfig>;
+    let body: Partial<ClientDistributionConfig>;
     try {
       body = await c.req.json();
     } catch {
       return c.json({ error: 'Invalid JSON' }, 400);
     }
 
-    const authCodes: CredentialAuthCode[] = [];
+    const authCodes: ClientAuthCode[] = [];
     const seenCodes = new Set<string>();
     if (body.authCodes !== undefined) {
       if (!Array.isArray(body.authCodes)) return c.json({ error: 'authCodes must be an array' }, 400);
       for (const raw of body.authCodes) {
         if (!raw || typeof raw !== 'object') return c.json({ error: 'authCodes entries must be objects' }, 400);
-        const code = createCredentialAuthCode(raw as Partial<CredentialAuthCode>);
+        const code = createClientAuthCode(raw as Partial<ClientAuthCode>);
         if (!/^[A-Za-z0-9_-]{1,64}$/.test(code.code)) {
           return c.json({ error: 'Each auth code must be 1-64 letters, numbers, underscores or hyphens' }, 400);
+        }
+        if (code.sourceMode === 'custom' && code.selectedKeys.length === 0) {
+          return c.json({ error: 'Custom source mode requires at least one selected key' }, 400);
         }
         if (seenCodes.has(code.code)) return c.json({ error: 'Auth codes must be unique' }, 400);
         seenCodes.add(code.code);
@@ -2200,417 +1890,28 @@ export function createApp(deps: AppDeps): Hono {
       }
     }
 
-    const candidate = normalizeCredentialDistributionConfig({
-      requireAuth: body.requireAuth,
-      defaultCredentialMode: body.defaultCredentialMode,
-      defaultPlatforms: body.defaultPlatforms,
+    const candidate = normalizeClientDistributionConfig({
+      requireAuth: body.requireAuth === true,
       authCodes,
-      stripUpstreamCredentialEntries: body.stripUpstreamCredentialEntries === true,
     });
     if (candidate.requireAuth && !candidate.authCodes.some((item) => item.enabled)) {
       return c.json({ error: 'At least one enabled auth code is required when requireAuth is enabled' }, 400);
     }
 
-    let saved: CredentialDistributionConfig;
+    let saved: ClientDistributionConfig;
     try {
-      saved = await saveCredentialDistribution(storage, candidate);
+      saved = await saveClientDistribution(storage, candidate);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
-      const quotaBlocked = /10048|quota|usage limit|limit exceeded/i.test(message);
-      logger.warn('routes', `Credential distribution save failed: ${message}`);
-      return c.json({
-        error: quotaBlocked
-          ? 'Remote KV write quota is exhausted; credential distribution was not saved.'
-          : 'Failed to persist credential distribution.',
-        code: quotaBlocked ? 'kv_write_quota_exhausted' : 'credential_distribution_save_failed',
-      }, quotaBlocked ? 503 : 500);
+      logger.warn('routes', `Client distribution save failed: ${message}`);
+      return c.json({ error: 'Failed to persist client distribution.', code: 'client_distribution_save_failed' }, 500);
     }
-    await refreshAfterCredentialChange(c);
+    await markOutputDirty();
     return c.json({ success: true, ...saved });
-  });
-
-  // 注销指定平台
-  app.delete('/admin/cloud-credentials/:platform', async (c) => {
-    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
-    const platform = c.req.param('platform') as CloudPlatform;
-    if (!PLATFORM_NAMES[platform]) return c.json({ error: 'Unknown platform' }, 400);
-    await deleteCredential(storage, platform);
-    await refreshAfterCredentialChange(c);
-    return c.json({ success: true });
-  });
-
-  // 手动粘贴凭证
-  app.post('/admin/cloud-credentials/:platform', async (c) => {
-    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
-    const platform = c.req.param('platform') as CloudPlatform;
-    if (!PLATFORM_NAMES[platform]) return c.json({ error: 'Unknown platform' }, 400);
-
-    let body: { credential?: Record<string, unknown> };
-    try { body = await c.req.json(); } catch { return c.json({ error: 'Invalid JSON' }, 400); }
-    if (!body.credential || typeof body.credential !== 'object' || Array.isArray(body.credential)) {
-      return c.json({ error: 'credential object is required' }, 400);
-    }
-
-    const credential = normalizeCredentialInput(platform, body.credential);
-    if (Object.keys(credential).length === 0) {
-      return c.json({ error: 'credential must contain at least one non-empty string' }, 400);
-    }
-
-    const cred: CloudCredential = {
-      platform,
-      credential,
-      obtainedAt: new Date().toISOString(),
-      status: 'valid',
-    };
-    await saveCredential(storage, cred);
-    await refreshAfterCredentialChange(c);
-    return c.json({ success: true });
-  });
-
-  // 生成二维码
-  app.post('/admin/cloud-login/:platform/qr', async (c) => {
-    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
-    const platform = c.req.param('platform') as CloudPlatform;
-    if (!QR_PLATFORMS.includes(platform)) {
-      return c.json({ error: `Platform ${platform} does not support QR login` }, 400);
-    }
-
-    try {
-      if (platform === 'bilibili' && config.bilibiliQrProxyBaseUrl && c.req.header('X-Bilibili-QR-Proxy') !== '1') {
-        const proxied = await proxyBilibiliQR('/admin/cloud-login/bilibili/qr', { method: 'POST' });
-        if (proxied.error) return c.json({ error: proxied.error }, (proxied.status || 502) as any);
-        if (proxied.data) return c.json(proxied.data);
-      }
-
-      const result = await generateQR(platform);
-      return c.json(result);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return c.json({ error: msg }, 500);
-    }
-  });
-
-  // 轮询扫码状态
-  app.get('/admin/cloud-login/:platform/poll', async (c) => {
-    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
-    const platform = c.req.param('platform') as CloudPlatform;
-    const token = c.req.query('token');
-    if (!token) return c.json({ error: 'token is required' }, 400);
-
-    try {
-      if (platform === 'bilibili' && config.bilibiliQrProxyBaseUrl && c.req.header('X-Bilibili-QR-Proxy') !== '1') {
-        const proxied = await proxyBilibiliQR('/admin/cloud-login/bilibili/poll?token=' + encodeURIComponent(token), { method: 'GET' });
-        if (proxied.error) return c.json({ error: proxied.error, status: 'error' }, (proxied.status || 502) as any);
-        const result = proxied.data;
-
-        if (result?.status === 'confirmed' && result.credential) {
-          const cred: CloudCredential = {
-            platform,
-            credential: result.credential,
-            obtainedAt: new Date().toISOString(),
-            status: 'valid',
-          };
-          await saveCredential(storage, cred);
-          await refreshAfterCredentialChange(c);
-        }
-
-        return c.json(result);
-      }
-
-      const result = await pollQRStatus(platform, token);
-
-      // 登录成功：自动保存凭证
-      if (result.status === 'confirmed' && result.credential) {
-        const cred: CloudCredential = {
-          platform,
-          credential: result.credential,
-          obtainedAt: new Date().toISOString(),
-          status: 'valid',
-        };
-        await saveCredential(storage, cred);
-        await refreshAfterCredentialChange(c);
-      }
-
-      return c.json(result);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return c.json({ error: msg, status: 'error' }, 500);
-    }
-  });
-
-  // 密码登录（迅雷/PikPak）
-  app.post('/admin/cloud-login/:platform/password', async (c) => {
-    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
-    const platform = c.req.param('platform') as CloudPlatform;
-    if (!PASSWORD_PLATFORMS.includes(platform)) {
-      return c.json({ error: `Platform ${platform} does not support password login` }, 400);
-    }
-
-    let body: { username?: string; password?: string };
-    try { body = await c.req.json(); } catch { return c.json({ error: 'Invalid JSON' }, 400); }
-
-    try {
-      const result = await passwordLogin(platform, body.username || '', body.password || '');
-      if (result.success && result.credential) {
-        const cred: CloudCredential = {
-          platform,
-          credential: result.credential,
-          obtainedAt: new Date().toISOString(),
-          status: 'valid',
-        };
-        await saveCredential(storage, cred);
-        await refreshAfterCredentialChange(c);
-      }
-      return c.json(result);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return c.json({ success: false, message: msg }, 500);
-    }
-  });
-
-  // 凭证注入策略
-  app.get('/admin/credential-policy', async (c) => {
-    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
-    return c.json(await loadCredentialPolicy(storage));
-  });
-
-  app.put('/admin/credential-policy', async (c) => {
-    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
-    let body: { allowedHighRiskKeys?: string[]; deniedKeys?: string[] };
-    try { body = await c.req.json(); } catch { return c.json({ error: 'Invalid JSON' }, 400); }
-
-    const policy = await loadCredentialPolicy(storage);
-    if (Array.isArray(body.allowedHighRiskKeys)) policy.allowedHighRiskKeys = body.allowedHighRiskKeys;
-    if (Array.isArray(body.deniedKeys)) policy.deniedKeys = body.deniedKeys;
-    await saveCredentialPolicy(storage, policy);
-    await refreshAfterCredentialChange(c);
-    return c.json({ success: true, ...policy });
-  });
-
-  // 风险分级报告
-  app.get('/admin/credential-risk-report', async (c) => {
-    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
-    const configRaw = await storage.get(KV_MERGED_CONFIG_FULL);
-    if (!configRaw) return c.json({ error: 'No config available. Run aggregation first.' }, 404);
-
-    const parsed: TVBoxConfig = JSON.parse(configRaw);
-    const sites = parsed.sites || [];
-    const assessments = assessAllSources(sites);
-    const policy = await loadCredentialPolicy(storage);
-
-    const summary = { safe: 0, low: 0, high: 0, unaudited: 0 };
-    for (const a of assessments) {
-      summary[a.riskLevel]++;
-    }
-
-    return c.json({ summary, assessments, policy });
-  });
-
-  // Pan.init 初始化数据（Mogg/Wogg 的 ext.p123/quark/... 会直接请求这些 URL）。
-  // 所有响应都按当前根策略或 /auth/<code> 鉴权码过滤，绝不能回退到全量凭证。
-  // 凭证响应不得进入客户端 HTTP 缓存：策略从下发切到不下发后，旧响应必须立即失效。
-  const credentialResponseHeaders = {
-    'Access-Control-Allow-Origin': '*',
-    'Cache-Control': 'private, no-store',
-  };
-  const tokenResponseHeaders = {
-    'Access-Control-Allow-Origin': '*',
-    'Cache-Control': 'private, no-store',
-  };
-
-  function credentialAuthFailureResponse(c: any, failure: ClientAuthFailure): Response {
-    return c.json({ error: failure.message, code: failure.code }, failure.status);
   }
 
-  async function lookupPanCredential(
-    c: any,
-    platform: CloudPlatform,
-  ): Promise<
-    | { credential?: CloudCredential; response?: Response; context?: ClientAuthContext }
-  > {
-    const baseUrl = await resolveBaseUrl(c);
-    if (baseUrl instanceof Response) return { response: baseUrl };
-    const resolved = await resolveClientAuthContext(c, baseUrl);
-    if (resolved.failure) return { response: credentialAuthFailureResponse(c, resolved.failure) };
-    const context = resolved.context!;
-
-    if (context.mode === 'none' || !context.platforms.includes(platform)) {
-      return { response: c.body('', 404, credentialResponseHeaders), context };
-    }
-
-    const credentials = await loadCredentials(storage);
-    const credential = selectCredentialsForContext(credentials, context).get(platform);
-    if (!credential || !isPanInitCredentialDistributable(platform, credential)) {
-      return { response: c.body('', 404, credentialResponseHeaders), context };
-    }
-    return { credential, context };
-  }
-
-  async function handleQuarkCredential(c: any) {
-    const found = await lookupPanCredential(c, 'quark');
-    if (found.response) return found.response;
-    const credential = found.credential!;
-    const cookie = credential.credential.cookie?.trim();
-    if (!cookie) return c.body('', 404, credentialResponseHeaders);
-
-    const prepared = await prepareQuarkCookie(cookie, 1500);
-    if (prepared !== cookie) {
-      await saveCredential(storage, {
-        ...credential,
-        credential: { ...credential.credential, cookie: prepared },
-      });
-    }
-    return c.body(prepared, 200, credentialResponseHeaders);
-  }
-
-  async function handleCookieCredential(c: any, platform: 'uc' | 'baidu') {
-    const found = await lookupPanCredential(c, platform);
-    if (found.response) return found.response;
-    const cookie = found.credential!.credential.cookie?.trim();
-    if (!cookie) return c.body('', 404, credentialResponseHeaders);
-    return c.body(cookie, 200, credentialResponseHeaders);
-  }
-
-  async function handleAccountCredential(
-    c: any,
-    platform: 'tianyi' | 'pan123' | 'thunder',
-  ) {
-    const found = await lookupPanCredential(c, platform);
-    if (found.response) return found.response;
-    const credential = found.credential!;
-    const username = credential.credential.username?.trim();
-    const password = credential.credential.password?.trim();
-    if (!username || !password) return c.body('', 404, credentialResponseHeaders);
-    return c.json({ username, password }, 200, credentialResponseHeaders);
-  }
-
-  async function handleAListCredential(c: any) {
-    const baseUrl = await resolveBaseUrl(c);
-    if (baseUrl instanceof Response) return baseUrl;
-    const resolved = await resolveClientAuthContext(c, baseUrl);
-    if (resolved.failure) return credentialAuthFailureResponse(c, resolved.failure);
-    const context = resolved.context!;
-    if (context.mode === 'none') {
-      return c.json({ error: 'credential distribution disabled' }, 404, credentialResponseHeaders);
-    }
-
-    const source = c.req.query('src');
-    if (!source) return c.json({ error: 'src is required' }, 400, credentialResponseHeaders);
-    const target = validatePublicHttpUrl(source);
-    if (!target) return c.json({ error: 'invalid src url' }, 400, credentialResponseHeaders);
-
-    try {
-      const parsed = await fetchAListJson(target.toString());
-      if (Array.isArray(parsed.drives)) {
-        const credentials = selectCredentialsForContext(await loadCredentials(storage), context);
-        const allowedPlatforms = context.platforms.filter((platform): platform is CloudPlatform =>
-          ['aliyun', 'quark', 'uc', 'pan115', 'thunder', 'pikpak', 'tianyi', 'baidu', 'pan123'].includes(platform),
-        );
-        const merged = injectAListDriveCredentials(parsed.drives, credentials, allowedPlatforms);
-        if (merged.changed) parsed.drives = merged.drives;
-      }
-      return c.json(parsed, 200, {
-        'Access-Control-Allow-Origin': '*',
-        'Cache-Control': 'no-store',
-        'Content-Type': 'application/json; charset=utf-8',
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'fetch_failed';
-      const status = message === 'invalid_url' || message === 'invalid_redirect' ? 400 : 502;
-      return c.json({ error: message }, status, credentialResponseHeaders);
-    }
-  }
-
-  async function handleAliyunTokenJson(c: any) {
-    const baseUrl = await resolveBaseUrl(c);
-    if (baseUrl instanceof Response) return baseUrl;
-    const resolved = await resolveClientAuthContext(c, baseUrl);
-    if (resolved.failure) return credentialAuthFailureResponse(c, resolved.failure);
-    const context = resolved.context!;
-    if (context.mode === 'none' || !context.platforms.includes('aliyun')) {
-      return c.json({ error: 'credential distribution disabled' }, 404, tokenResponseHeaders);
-    }
-    const credentials = selectCredentialsForContext(await loadCredentials(storage), context);
-    const tokenJson = generateTokenJson(credentials, ['aliyun']);
-    const token = typeof tokenJson.token === 'string' ? tokenJson.token.trim() : '';
-    if (!token) return c.json({ error: 'no credential available' }, 404, tokenResponseHeaders);
-    // 3D Ali.init 明确读取该 JSON 的 token 字段；不要返回完整 token.json，
-    // 避免其他平台凭证因一个源而扩大暴露面。
-    return c.json({ token }, 200, tokenResponseHeaders);
-  }
-
-  async function handle3DCloudJson(c: any) {
-    const baseUrl = await resolveBaseUrl(c);
-    if (baseUrl instanceof Response) return baseUrl;
-    const resolved = await resolveClientAuthContext(c, baseUrl);
-    if (resolved.failure) return credentialAuthFailureResponse(c, resolved.failure);
-    const context = resolved.context!;
-    if (context.mode === 'none') {
-      return c.json({ error: 'credential distribution disabled' }, 404, tokenResponseHeaders);
-    }
-    const credentials = selectCredentialsForContext(await loadCredentials(storage), context);
-    const config = generate3DCloudJson(credentials, ['aliyun', 'quark', 'uc']);
-    // 3D JAR 把空 JSON 视为已启用服务端凭证，随后跳过扫码；没有实际字段
-    // 时必须让端点表现为不存在，才能回退客户端本地登录。
-    if (Object.keys(config).length === 0) {
-      return c.json({ error: 'no credential available' }, 404, tokenResponseHeaders);
-    }
-    return c.json(config, 200, tokenResponseHeaders);
-  }
-
-  async function handleTvfanConfig(c: any) {
-    const baseUrl = await resolveBaseUrl(c);
-    if (baseUrl instanceof Response) return baseUrl;
-    const resolved = await resolveClientAuthContext(c, baseUrl);
-    if (resolved.failure) return credentialAuthFailureResponse(c, resolved.failure);
-    const context = resolved.context!;
-    if (context.mode === 'none') {
-      return c.json({ error: 'credential distribution disabled' }, 404, tokenResponseHeaders);
-    }
-    const credentials = selectCredentialsForContext(await loadCredentials(storage), context);
-    const config = generateTvfanConfig(credentials);
-    // 正式 2cc 契约只接受五个凭证字段。空响应会被误判为服务端凭证模式
-    // 已启用并跳过扫码，必须返回 404 让客户端回退本地登录。
-    if (Object.keys(config).length === 0) {
-      return c.json({ error: 'no credential available' }, 404, tokenResponseHeaders);
-    }
-    return c.json(config, 200, tokenResponseHeaders);
-  }
-
-  async function handleTokenJson(c: any) {
-    const baseUrl = await resolveBaseUrl(c);
-    if (baseUrl instanceof Response) return baseUrl;
-    const resolved = await resolveClientAuthContext(c, baseUrl);
-    if (resolved.failure) return credentialAuthFailureResponse(c, resolved.failure);
-    const context = resolved.context!;
-    if (context.mode === 'none') {
-      return c.json({ error: 'credential distribution disabled' }, 404, tokenResponseHeaders);
-    }
-    const credentials = selectCredentialsForContext(await loadCredentials(storage), context);
-    const tokenJson = generateTokenJson(credentials);
-    // 空对象会被部分客户端/JAR 视为“服务端凭证模式已启用”并跳过扫码；
-    // 没有实际可下发凭证时必须表现为端点不存在，让客户端回退本地登录。
-    if (Object.keys(tokenJson).length === 0) {
-      return c.json({ error: 'no credential available' }, 404, tokenResponseHeaders);
-    }
-    return c.json(tokenJson, 200, tokenResponseHeaders);
-  }
-
-  for (const prefix of ['', '/auth/:code']) {
-    app.get(prefix + '/credential/quark', handleQuarkCredential);
-    app.get(prefix + '/credential/uc', (c) => handleCookieCredential(c, 'uc'));
-    app.get(prefix + '/credential/baidu', (c) => handleCookieCredential(c, 'baidu'));
-    app.get(prefix + '/credential/tianyi', (c) => handleAccountCredential(c, 'tianyi'));
-    app.get(prefix + '/credential/p123', (c) => handleAccountCredential(c, 'pan123'));
-    app.get(prefix + '/credential/xunlei', (c) => handleAccountCredential(c, 'thunder'));
-    app.get(prefix + '/credential/alist', handleAListCredential);
-    app.get(prefix + '/credential/aliyun.json', handleAliyunTokenJson);
-    app.get(prefix + '/credential/3d.json', handle3DCloudJson);
-    app.get(prefix + '/credential/token.json', handleTokenJson);
-    app.get(prefix + '/token.json', handleTokenJson);
-    app.get(prefix + '/tvfan/config', handleTvfanConfig);
-  }
-
+  app.get('/admin/client-distribution', handleGetClientDistribution);
+  app.put('/admin/client-distribution', handlePutClientDistribution);
   // ─── 背景设置公共接口（必须放在 /api/:key 之前以避免路由拦截） ────────
   app.get('/api/bg-settings', async (c) => {
     const raw = await storage.get(KV_BG_SETTINGS);
@@ -3854,8 +3155,6 @@ export function createApp(deps: AppDeps): Hono {
         }
       } catch { /* ignore parse error */ }
     }
-
-    applyLegacyWoggCompatibility(result);
 
     // 重新应用 JAR proxy rewrite（与 aggregator Step 7 一致）
     result = await rewriteJarUrls(result, BASE_URL_PLACEHOLDER, storage);

@@ -1,33 +1,42 @@
 // 聚合流程编排
 
 import type { Storage } from './storage/interface';
-import type { AppConfig, SourceEntry, SourcedConfig, MacCMSSourceEntry, SourceFetchResult, SourceHealthRecord, AggregationLog, AggLogFailedSource, AggLogSiteChange, TVBoxSite, TVBoxLive, SiteHealthMap, SiteContract } from './core/types';
+import type { AppConfig, SourceEntry, SourcedConfig, MacCMSSourceEntry, SourceFetchResult, SourceHealthRecord, AggregationLog, AggLogFailedSource, AggLogSiteChange, TVBoxSite, TVBoxLive, SiteHealthMap } from './core/types';
 import { fetchConfigs } from './core/fetcher';
 import { mergeConfigs, cleanLocalRefs, cleanEmptyEntries } from './core/merger';
-import { applyLegacyWoggCompatibility, migrateLegacyWoggCompatibility } from './core/cf-compat';
 import { batchSiteSpeedTest, appendSpeedToName, filterUnreachableSites, type SiteProbeResult } from './core/speedtest';
-import { isClientCredentialSite, getDirectPlatformFromApi } from './core/credential-risk';
 import { macCMSToTVBoxSites, processMacCMSForLocal } from './core/maccms';
 import { rewriteJarUrls, prefetchJarBinaries, type JarEntry } from './core/jar-proxy';
 import { mergeLivesToNative, separatedMergeLives, applyChannelSpeedToGroups, formatAggregatedLiveGroupsAsTxt, formatLiveGroupsAsTxt, filterLiveSourcesDetailed, type LiveSourceInput } from './core/live-merger';
 import { loadSpeedMap as loadChannelSpeedMap } from './core/channel-probe';
 import { liveSourcesToTVBoxLives } from './core/live-source';
 import { isBlockedLiveSource, partitionBlockedLiveSources } from './core/live-policy';
-import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_STARTUP_SITE_POOL, KV_SOURCE_URLS, KV_LAST_UPDATE, KV_LAST_UPDATE_ERROR, KV_MANUAL_SOURCES, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_MERGE_REPORT, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_PARSE_HEALTH_REPORT, KV_CHANNEL_MERGED_TREE, KV_CHANNEL_RUNTIME_TREE, KV_AGG_LOGS, AGG_LOGS_MAX, KV_SITE_SNAPSHOT, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, BASE_URL_PLACEHOLDER, KV_SITE_HEALTH_MAP, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SOURCE_MAP, KV_SITE_UPSTREAM_MAP, KV_SITE_CONTRACT_MAP, KV_SOURCE_URL_BLACKLIST } from './core/config';
+import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_STARTUP_SITE_POOL, KV_SOURCE_URLS, KV_LAST_UPDATE, KV_LAST_UPDATE_ERROR, KV_MANUAL_SOURCES, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_MERGE_REPORT, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_PARSE_HEALTH_REPORT, KV_CHANNEL_MERGED_TREE, KV_CHANNEL_RUNTIME_TREE, KV_AGG_LOGS, AGG_LOGS_MAX, KV_SITE_SNAPSHOT, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, BASE_URL_PLACEHOLDER, KV_SITE_HEALTH_MAP, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SOURCE_MAP, KV_SITE_UPSTREAM_MAP, KV_SOURCE_URL_BLACKLIST } from './core/config';
 import { loadBlacklist, applyBlacklist, pruneBlacklist, saveBlacklist, siteFingerprint } from './core/blacklist';
 import { transformSiteNames } from './core/cleaner';
 import { parseConfigJson, type FetchProxyConfig } from './core/fetcher';
-import { buildSiteContractMap, stripInternalSiteMarkers } from './core/site-contract';
 import { stableJsonEqual } from './core/stable-json';
 import { scrapeSourceList, scrapeMacCMSSources, type ScrapeSourceConfig, type ScrapeMacCMSConfig } from './core/source-scraper';
 import { loadSearchQuota, applySearchQuota, excludeJsUrlSites, probeAndPruneParses } from './core/search-quota';
-import { loadCredentials } from './core/credential-store';
 import { loadGroupOrder, applyGroupOrder } from './core/group-order';
-import { deduplicateClientCredentialSites, deduplicateSimilarNames } from './core/dedup';
+import { deduplicateSimilarNames } from './core/dedup';
 import { logger } from './core/logger';
 import { clearDirtyMarker } from './core/dirty-marker';
-import { loadQualityPool, runQualityGrading, batchCredentialAwareSpeedTest, type QualityCredentialContext } from './core/quality';
+import { loadQualityPool, runQualityGrading } from './core/quality';
 import type { NameTransformConfig, EdgeProxyConfig } from './core/types';
+
+function publicSites<T extends { __upstreamNames?: string[] }>(sites: T[]): T[] {
+  return sites.map((site) => {
+    const { __upstreamNames: _ignored, ...rest } = site as T & { __upstreamNames?: string[] };
+    return rest as T;
+  });
+}
+
+function publicConfig<T extends { sites?: Array<{ __upstreamNames?: string[] }> }>(config: T): T {
+  const clone = JSON.parse(JSON.stringify(config)) as T;
+  if (clone.sites) clone.sites = publicSites(clone.sites);
+  return clone;
+}
 
 export interface AggregationRunOptions {
   waitUntil?: (task: Promise<void>) => void;
@@ -251,44 +260,13 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
   let merged = mergeResult.config;
   const { siteSourceMap, siteUpstreamMap, parseSourceMap, liveSourceMap } = mergeResult;
 
-  // Deployment-agnostic compatibility: the deprecated WoGGGuard shell does
-  // not honor the project's Pan.init credential protocol. Each deployment keeps
-  // its own KV/config data; only this legacy entry is repaired in place.
-  const woggMigration = migrateLegacyWoggCompatibility(merged);
-  if (woggMigration.changed) {
-    logger.infoFields('aggregation', 'legacy-woggguard-migrated', {
-      key: '玩偶',
-      renamed: woggMigration.keyMigrations.length,
-    });
-  }
-  // 兼容迁移可能重命名 key；来源边界/来源映射必须跟随新 key，否则迁移后
-  // 的站点会在响应期被严格边界拒绝注入。
-  for (const migration of woggMigration.keyMigrations) {
-    const source = siteSourceMap.get(migration.oldKey);
-    if (source) {
-      siteSourceMap.set(migration.newKey, source);
-      siteSourceMap.delete(migration.oldKey);
-    }
-    const upstreams = siteUpstreamMap.get(migration.oldKey);
-    if (upstreams?.length) {
-      const mergedUpstreams = new Set([...(siteUpstreamMap.get(migration.newKey) || []), ...upstreams]);
-      siteUpstreamMap.set(migration.newKey, [...mergedUpstreams].filter(Boolean).sort());
-      siteUpstreamMap.delete(migration.oldKey);
-    }
-  }
-
-  // 服务端质量分级与凭证感知探测仍需读取凭证，但凭证不再写入聚合结果。
-  // 客户端响应由 routes.ts 按根策略或 /auth/<code> 在请求时动态注入。
-  const credentials = await loadCredentials(storage);
 
   // Step 4.5: 黑名单过滤
   logger.info('aggregation', 'Step 4.5: Applying blacklist...');
   const blacklist = await loadBlacklist(storage);
   const hasBlacklist = blacklist.sites.length > 0 || blacklist.parses.length > 0 || blacklist.lives.length > 0 || blacklist.regexRules.some(r => r.enabled);
 
-  // 保存过滤前的完整配置（供配置编辑器显示已屏蔽项）。
-  // 这里先暂存快照，Step 5.7 注入凭证后再统一写回，避免完整配置里的
-  // Wogg ext 仍停留在聚合前的旧对象。
+  // 保存过滤前的完整上游配置（供配置编辑器显示已屏蔽项）。
   const fullConfigSnapshot = JSON.parse(JSON.stringify(merged)) as typeof merged;
 
   await storage.put(KV_SOURCE_MAP, JSON.stringify({
@@ -345,10 +323,7 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     merged = transformSiteNames(merged, {});
   }
 
-  // Step 5.7: 凭证不写入聚合结果。
-  // 原先在这里把凭证 URL/明文注入 KV_MERGED_CONFIG，会导致根链接与不同鉴权码
-  // 共用同一份结果而互相污染。现在仅保留源本身，响应阶段按请求上下文注入。
-  logger.info('aggregation', 'Step 5.7: Credential injection deferred to request context');
+  // 上游源配置保持原样，不做服务端修改。
 
   // Step 6: 站点验活 + 不可达过滤 + name 标记（CF 和 Node.js 统一）
   const speedTestRaw = await storage.get(KV_SPEED_TEST_ENABLED);
@@ -368,47 +343,13 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     logger.infoFields('aggregation', 'Step 6: site probe', { depth: probeDeep ? 'deep' : 'shallow' });
     siteProbeMap = await batchSiteSpeedTest(merged.sites, config.siteTimeoutMs, probeDeep, config.speedTestConcurrency, config.speedTestBudgetMs);
 
-    // 凭证源的普通 HTTP 探测结果只能作为参考，不能用来判定不可达；
-    // 同时，能通过 HTTP Cookie 验证的凭证源需要带凭证再补测一次。
-    const clientCredentialKeys = new Set(
-      merged.sites.filter((site) => isClientCredentialSite(site)).map((site) => site.key),
-    );
-    const credentialHeaders = new Map<string, Record<string, string>>();
-    for (const site of merged.sites) {
-      if (!isClientCredentialSite(site)) continue;
-      const directPlatform = getDirectPlatformFromApi(site.api);
-      if (!directPlatform) continue;
-      const credential = credentials.get(directPlatform);
-      const cookie = credential?.credential?.cookie;
-      if (!cookie) continue;
-      const headers: Record<string, string> = { Cookie: cookie };
-      try {
-        headers.Referer = site.api;
-        headers.Origin = new URL(site.api).origin;
-      } catch { /* non-standard API */ }
-      credentialHeaders.set(site.key, headers);
-    }
-    if (credentialHeaders.size > 0) {
-      const credentialProbeMap = await batchSiteSpeedTest(
-        merged.sites.filter((site) => credentialHeaders.has(site.key)),
-        config.siteTimeoutMs,
-        probeDeep,
-        config.speedTestConcurrency,
-        config.speedTestBudgetMs,
-        credentialHeaders,
-      );
-      for (const [key, probe] of credentialProbeMap) {
-        siteProbeMap.set(key, probe);
-      }
-    }
-
     // 提取纯 speedMs map 供后续 dedup 使用
     for (const [key, probe] of siteProbeMap) {
       siteSpeedMap.set(key, probe.speedMs);
     }
 
     if (siteProbeMap.size > 0) {
-      const { sites: filteredSites, filtered } = filterUnreachableSites(merged.sites, siteProbeMap, clientCredentialKeys);
+      const { sites: filteredSites, filtered } = filterUnreachableSites(merged.sites, siteProbeMap);
       merged.sites = filteredSites;
 
       if (!config.workerBaseUrl) {
@@ -426,40 +367,11 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     // “优 > 良 > 可用 > 未探测 > 不可用”排序并持久化，根配置只读该顺序。
     try {
       const healthMap = await loadSiteHealthMap(storage);
-      // 质量分级必须和最终落库使用同一批实例契约。这里以 preProbeSites 为
-      // 身份基准（后续过滤只会减少站点，不会改变 still-present 站点的 key）。
-      const preQualityUpstreams = new Map<string, string[]>();
-      for (const site of preProbeSites) {
-        const upstreams = (site.__upstreamNames?.length ? site.__upstreamNames : siteUpstreamMap.get(site.key)) || [];
-        if (upstreams.length > 0) preQualityUpstreams.set(site.key, [...new Set(upstreams)].filter(Boolean).sort());
-      }
-      const preQualitySpider = typeof merged.spider === 'string' ? merged.spider : undefined;
-      const preQualityContracts = buildSiteContractMap(preProbeSites, preQualitySpider, preQualityUpstreams);
-      const credentialContext: QualityCredentialContext = {
-        contractsBySiteKey: new Map(Object.entries(preQualityContracts)),
-        globalSpider: preQualitySpider,
-      };
-      // 普通站点沿用 Step 6 的结果；客户端凭证源必须用统一凭证感知探测覆盖，
-      // 否则外部传入 probeMap 会让它们跳过带 Cookie 的真实补测。
-      const qualityProbeMap = new Map(siteProbeMap);
-      const credentialSites = preProbeSites.filter((site) => isClientCredentialSite(site));
-      if (credentialSites.length > 0) {
-        const credentialProbeMap = await batchCredentialAwareSpeedTest(
-          credentialSites,
-          credentials,
-          config.siteTimeoutMs,
-          config.speedTestConcurrency,
-          config.speedTestBudgetMs,
-          credentialContext,
-        );
-        for (const [key, probe] of credentialProbeMap) qualityProbeMap.set(key, probe);
-      }
       const snapshot = await runQualityGrading(storage, preProbeSites, {
-        probeMap: qualityProbeMap,
+        probeMap: siteProbeMap,
         healthMap,
         markRun: false,
         timezone: config.qualityTimezone,
-        credentialContext,
       });
       logger.infoFields('aggregation', 'quality-grading', {
         total: snapshot.total,
@@ -490,17 +402,6 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
         ? dedupCfg.similarDedupThreshold
         : 0.85;
     } catch { /* ignore */ }
-  }
-
-  if (merged.sites && merged.sites.length > 0) {
-    const beforeClientDedup = merged.sites.length;
-    merged.sites = deduplicateClientCredentialSites(merged.sites, siteSpeedMap);
-    if (merged.sites.length !== beforeClientDedup) {
-      logger.infoFields('aggregation', 'Step 6.2: client-credential-identity-dedup', {
-        before: beforeClientDedup,
-        after: merged.sites.length,
-      });
-    }
   }
 
   if (similarDedupEnabled && merged.sites && merged.sites.length > 0) {
@@ -759,7 +660,7 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     // 启动源数量取前 N 个，不会反向修改最终配置或另一套部署的 KV。
     await storage.put(KV_STARTUP_SITE_POOL, JSON.stringify({
       updatedAt: new Date().toISOString(),
-      sites: stripInternalSiteMarkers({ sites: candidateSites }).sites,
+      sites: publicSites(candidateSites),
     }));
 
     // autoLimit=false 时 0 表示明确不限制；开启时保存前必须满足最终不变量。
@@ -984,8 +885,7 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
   }
 
   // Step 8: 存入存储
-  // 完整快照只保存源本身，不写凭证；客户端凭证始终由 routes.ts 按请求
-  // 的根策略或 /auth/<code> 上下文动态注入。
+  // 完整快照只保存上游原始配置；服务端不处理上游字段。
   // 总源映射只保留最终实际存在的站点，并且只允许本次实际启用的总源贡献。
   // __upstreamNames 是内部标记，绝不能写入对外配置。
   const finalSiteUpstreams: Record<string, string[]> = {};
@@ -1008,33 +908,8 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     logger.warn('aggregation', `site_upstream_map write deferred: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  // 契约指纹独立落库，响应期用于防止不同 JAR/API/ext 形态之间误共用注入模板。
-  // 每个最终实例都固化自己的凭证机制和平台白名单，响应期不再按通用规则猜测。
-  // 与质量分级共用同一个纯构造函数，避免两处指纹算法漂移。
-  const finalSpider = typeof merged.spider === 'string' ? merged.spider : undefined;
-  const finalUpstreamMap = new Map<string, string[]>(
-    Object.entries(finalSiteUpstreams).map(([key, values]) => [key, [...values]]),
-  );
-  const finalSiteContracts: Record<string, SiteContract> = buildSiteContractMap(
-    merged.sites || [],
-    finalSpider,
-    finalUpstreamMap,
-  );
-  try {
-    const previousRaw = await storage.get(KV_SITE_CONTRACT_MAP);
-    const previous = previousRaw ? JSON.parse(previousRaw) : null;
-    if (!previous || !stableJsonEqual(previous.sites, finalSiteContracts)) {
-      await storage.put(KV_SITE_CONTRACT_MAP, JSON.stringify({
-        updatedAt: new Date().toISOString(),
-        sites: finalSiteContracts,
-      }));
-    }
-  } catch (err) {
-    logger.warn('aggregation', `site_contract_map write deferred: ${err instanceof Error ? err.message : String(err)}`);
-  }
-
-  const publicMerged = stripInternalSiteMarkers(merged);
-  const publicFullSnapshot = stripInternalSiteMarkers(fullConfigSnapshot);
+  const publicMerged = publicConfig(merged);
+  const publicFullSnapshot = publicConfig(fullConfigSnapshot);
   const mergedJson = JSON.stringify(publicMerged);
   await storage.put(KV_MERGED_CONFIG, mergedJson);
   await storage.put(KV_MERGED_CONFIG_FULL, JSON.stringify(publicFullSnapshot));

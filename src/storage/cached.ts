@@ -23,7 +23,7 @@ export class MemoryCachedStorage implements Storage {
       return entry.value;
     }
 
-    // 同一个 Worker 实例内的并发请求（如 Pan.init 同时初始化多个平台）
+    // 同一个 Worker 实例内的并发请求（并发下载/初始化等）
     // 共享一次底层 KV 读取，避免重复等待网络和拖垮 5 秒初始化窗口。
     if (entry?.promise) return entry.promise;
 

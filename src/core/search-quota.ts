@@ -2,12 +2,9 @@
 
 import type { TVBoxParse, TVBoxSite, SearchQuotaConfig, SearchQuotaReport, SiteHealthMap, SiteQualityGrade, SiteQualityGrades, SearchQualitySnapshot } from './types';
 import { isSiteProbeable, type SiteProbeResult } from './speedtest';
-import { isClientCredentialSite } from './credential-risk';
 import type { Storage } from '../storage/interface';
 import { KV_SEARCH_QUOTA } from './config';
-const QUOTA_SCHEMA_VERSION = 11;
-const LEGACY_PARSE_LIMIT_SCHEMA_VERSION = 8;
-const EXPLICIT_QUICK_LIMIT_SCHEMA_VERSION = 11;
+const QUOTA_SCHEMA_VERSION = 8;
 
 function isNodeRuntime(): boolean {
   return typeof process !== 'undefined' && !!process.env.PORT;
@@ -20,13 +17,13 @@ function defaultSearchLimit(): number {
 }
 
 function defaultQuickSearchLimit(): number {
-  // 默认不限制；由可搜索源上限和质量筛选控制下发数量。
-  return 0;
+  // 快速搜索只保留少量健康度最高的源，减少影视仓/TVBox 启动与首屏等待。
+  return isNodeRuntime() ? 32 : 20;
 }
 
 function defaultStartupQuickSearchLimit(): number {
-  // 默认不限制；保留字段用于兼容旧配置和显式回滚。
-  return 0;
+  // 根配置保留全部通过健康/速度筛选的快速源；Render 资源更充足，可多保留一些；CF 保持较小上限。
+  return isNodeRuntime() ? 32 : 20;
 }
 
 function defaultParseLimit(): number {
@@ -41,10 +38,6 @@ function createDefaultSearchQuota(): SearchQuotaConfig {
     maxQuickSearch: defaultQuickSearchLimit(),
     maxStartupQuickSearch: defaultStartupQuickSearchLimit(),
     maxParses: defaultParseLimit(),
-    retainCredentialSources: false,
-    retainCredentialMode: 'off',
-    retainedCredentialKeys: [],
-    blockedKeys: [],
     autoLimit: false,
     pinnedKeys: [],
     sortBySpeed: true,
@@ -69,35 +62,20 @@ export async function loadSearchQuota(storage: Storage): Promise<SearchQuotaConf
       const parsed = JSON.parse(raw) as Partial<SearchQuotaConfig>;
       const fallback = createDefaultSearchQuota();
       const quotaVersion = parsed.quotaSchemaVersion ?? 1;
-      const legacyParseLimit = quotaVersion < LEGACY_PARSE_LIMIT_SCHEMA_VERSION;
-      // schema 10 及以前，quick/startup 上限是代码自动写入的部署常量，
-      // 不代表用户配置。升级时清零，否则 maxSearchable=0 仍会被暗截断。
-      const quickLimitsAreUserConfigured = quotaVersion >= EXPLICIT_QUICK_LIMIT_SCHEMA_VERSION;
-      const retainCredentialMode: 'off' | 'all' | 'selected' =
-        parsed.retainCredentialMode === 'all' || parsed.retainCredentialMode === 'selected' || parsed.retainCredentialMode === 'off'
-          ? parsed.retainCredentialMode
-          : (parsed.retainCredentialSources === true ? 'all' : 'off');
+      const legacy = quotaVersion < QUOTA_SCHEMA_VERSION;
 
       // User-facing settings: searchable source cap and parser cap.
       // Everything else is an automatic performance guard.
       return {
         maxSearchable: normalizeLimit(parsed.maxSearchable),
-        maxQuickSearch: quickLimitsAreUserConfigured ? normalizeLimit(parsed.maxQuickSearch) : 0,
-        maxStartupQuickSearch: quickLimitsAreUserConfigured ? normalizeLimit(parsed.maxStartupQuickSearch) : 0,
+        maxQuickSearch: fallback.maxQuickSearch,
+        maxStartupQuickSearch: fallback.maxStartupQuickSearch,
         // Legacy startup-site values are intentionally ignored after schema 8:
         // the root startup config is always derived from the automatic quick cap.
         startupSiteLimit: 0,
-        maxParses: legacyParseLimit
+        maxParses: legacy
           ? fallback.maxParses
           : normalizeLimit(parsed.maxParses),
-        retainCredentialSources: retainCredentialMode !== 'off',
-        retainCredentialMode,
-        retainedCredentialKeys: Array.isArray(parsed.retainedCredentialKeys)
-          ? [...new Set(parsed.retainedCredentialKeys.filter((key): key is string => typeof key === 'string'))]
-          : [],
-        blockedKeys: Array.isArray(parsed.blockedKeys)
-          ? [...new Set(parsed.blockedKeys.filter((key): key is string => typeof key === 'string'))]
-          : [],
         autoLimit: false,
         pinnedKeys: Array.isArray(parsed.pinnedKeys)
           ? parsed.pinnedKeys.filter((key): key is string => typeof key === 'string')
@@ -115,25 +93,15 @@ export async function loadSearchQuota(storage: Storage): Promise<SearchQuotaConf
 
 /** 保存搜索配额配置。 */
 export async function saveSearchQuota(storage: Storage, config: SearchQuotaConfig): Promise<void> {
-  const retainCredentialMode: 'off' | 'all' | 'selected' =
-    config.retainCredentialMode === 'all' || config.retainCredentialMode === 'selected' || config.retainCredentialMode === 'off'
-      ? config.retainCredentialMode
-      : (config.retainCredentialSources === true ? 'all' : 'off');
+  const fallback = createDefaultSearchQuota();
   await storage.put(KV_SEARCH_QUOTA, JSON.stringify({
     maxSearchable: normalizeLimit(config.maxSearchable),
-    // 0 表示不限制；显式值由管理接口保存，不能再被部署默认值覆盖。
-    maxQuickSearch: normalizeLimit(config.maxQuickSearch),
-    maxStartupQuickSearch: normalizeLimit(config.maxStartupQuickSearch),
+    // Automatic startup/quick-search guards are deployment-specific and are
+    // never taken from stale form values.
+    maxQuickSearch: fallback.maxQuickSearch,
+    maxStartupQuickSearch: fallback.maxStartupQuickSearch,
     startupSiteLimit: 0,
     maxParses: normalizeLimit(config.maxParses),
-    retainCredentialSources: retainCredentialMode !== 'off',
-    retainCredentialMode,
-    retainedCredentialKeys: Array.isArray(config.retainedCredentialKeys)
-      ? [...new Set(config.retainedCredentialKeys.filter((key): key is string => typeof key === 'string'))]
-      : [],
-    blockedKeys: Array.isArray(config.blockedKeys)
-      ? [...new Set(config.blockedKeys.filter((key): key is string => typeof key === 'string'))]
-      : [],
     autoLimit: false,
     pinnedKeys: Array.isArray(config.pinnedKeys) ? config.pinnedKeys : [],
     sortBySpeed: config.sortBySpeed === true,
@@ -196,7 +164,6 @@ function createEmptyQualityGrades(): SiteQualityGrades {
     excellent: { count: 0, cumulative: 0 },
     good: { count: 0, cumulative: 0 },
     usable: { count: 0, cumulative: 0 },
-    credentialReady: { count: 0, cumulative: 0 },
     untestable: { count: 0, cumulative: 0 },
     timeout: { count: 0, cumulative: 0 },
     unusable: { count: 0, cumulative: 0 },
@@ -249,15 +216,14 @@ function buildQualityGrades(
   const grades = createEmptyQualityGrades();
   for (const site of candidateSites) {
     const grade = getSiteQualityGrade(site, probeMap, healthMap);
-    if (grade === 'credential-ready') grades.credentialReady.count++;
-    else grades[grade].count++;
+    grades[grade].count++;
     if (grade !== 'timeout' && grade !== 'unusable') grades.poolTotal++;
   }
 
   let cumulative = 0;
-  for (const bucket of ['excellent', 'good', 'usable', 'credentialReady', 'untestable', 'timeout'] as const) {
-    cumulative += grades[bucket].count;
-    grades[bucket].cumulative = cumulative;
+  for (const grade of ['excellent', 'good', 'usable', 'untestable', 'timeout'] as const) {
+    cumulative += grades[grade].count;
+    grades[grade].cumulative = cumulative;
   }
   grades.unusable.cumulative = grades.unusable.count;
   return grades;
@@ -307,16 +273,11 @@ export function applySearchQuota(
     return getSiteQualityGrade(site, options.probeMap, options.healthMap);
   };
 
-  // 显式屏蔽优先于置顶、凭证/JAR 保留和质量顺序。屏蔽项仍保留在
-  // 完整后台快照中供管理页取消屏蔽，但不会进入任何客户端出口。
-  const blockedKeySet = new Set((config.blockedKeys || []).filter((key): key is string => typeof key === 'string'));
-
   // 置顶源按 pinnedKeys 顺序排到最前，重复 key 只保留一次。
   const siteByKey = new Map(sites.map(site => [site.key, site]));
   const pinned: TVBoxSite[] = [];
   const pinnedKeySet = new Set<string>();
   for (const key of config.pinnedKeys || []) {
-    if (blockedKeySet.has(key)) continue;
     const site = siteByKey.get(key);
     if (site && !pinnedKeySet.has(key)) {
       pinned.push(site);
@@ -327,28 +288,10 @@ export function applySearchQuota(
   // 优/良/可用/客户端不可探测源进入客户端候选池；超时与不可用均不可绕过，置顶也不能例外。
   const isUsableForSearch = (site: TVBoxSite): boolean => {
     const grade = gradeForSite(site);
-    return grade === 'excellent' || grade === 'good' || grade === 'usable' || grade === 'credential-ready' || grade === 'untestable';
+    return grade === 'excellent' || grade === 'good' || grade === 'usable' || grade === 'untestable';
   };
   const pinnedSearchable = pinned.filter(site => site.searchable === 1 && isUsableForSearch(site));
-  let candidates = sites.filter(site => site.searchable === 1 && !pinnedKeySet.has(site.key) && !blockedKeySet.has(site.key) && isUsableForSearch(site));
-
-  // 可选：凭证就绪与客户端登录/JAR 源额外保留，不占用可测速源 maxSearchable 配额。
-  // 它们仍需排除 timeout/unusable，也不会绕过置顶规则。
-  const retainCredentialMode: 'off' | 'all' | 'selected' =
-    config.retainCredentialMode === 'all' || config.retainCredentialMode === 'selected'
-      ? config.retainCredentialMode
-      : (config.retainCredentialSources === true ? 'all' : 'off');
-  const retainedCredentialKeySet = new Set(config.retainedCredentialKeys || []);
-  const isExtraCredentialSource = (site: TVBoxSite): boolean => {
-    if (blockedKeySet.has(site.key)) return false;
-    if (retainCredentialMode === 'off') return false;
-    if (retainCredentialMode === 'selected' && !retainedCredentialKeySet.has(site.key)) return false;
-    const persisted = qualityEntries.get(site.key);
-    // 有持久化分级时严格尊重分级结果：timeout/unusable 不能被额外保留。
-    if (persisted) return persisted.grade === 'credential-ready' || persisted.grade === 'untestable';
-    // 无分级数据时按源本身判断，避免候选池尚未建立时误把凭证/JAR 源算入可测速上限。
-    return isClientCredentialSite(site) || !isSiteProbeable(site);
-  };
+  let candidates = sites.filter(site => site.searchable === 1 && !pinnedKeySet.has(site.key) && isUsableForSearch(site));
 
   // 质量分级始终优先参与保留决策；sortBySpeed 只控制同质量级别内是否按速度排序。
   // 这样即使关闭速度排序，快但连续失败/响应无效的源也不会挤掉稍慢但稳定可用的好源。
@@ -356,10 +299,9 @@ export function applySearchQuota(
     excellent: 0,
     good: 1,
     usable: 2,
-    'credential-ready': 3,
-    untestable: 4,
-    timeout: 5,
-    unusable: 6,
+    untestable: 3,
+    timeout: 4,
+    unusable: 5,
   };
   const hasPool = qualityEntries.size > 0;
   const hasProbe = !!options.probeMap && options.probeMap.size > 0;
@@ -400,9 +342,6 @@ export function applySearchQuota(
   // 保存未受 maxSearchable / maxQuickSearch 截断影响的启动候选池。
   // 置顶源始终在最前；其余源沿用上面的测速顺序。根地址只从
   // 这个池按后台配置取前 N 个，不会改写最终配置。
-  // 候选池只做质量可用性过滤，不再按 type 或 quickSearch 预过滤。
-  // 根配置会在读取时按 maxStartupQuickSearch 重新应用策略；否则
-  // quickSearch=0 的历史对象一旦被写进候选池，后续永远无法恢复。
   const startupCandidateSites = [
     ...pinnedSearchable,
     ...candidates,
@@ -414,9 +353,7 @@ export function applySearchQuota(
   if (limit > 0) {
     const effectiveLimit = Math.max(limit, pinnedSearchable.length);
     const keepCount = Math.max(0, effectiveLimit - pinnedSearchable.length);
-    const pooledCandidates = candidates.filter(site => !isExtraCredentialSource(site));
-    const retainedCredentialCandidates = candidates.filter(isExtraCredentialSource);
-    keptCandidates = [...pooledCandidates.slice(0, keepCount), ...retainedCredentialCandidates];
+    keptCandidates = candidates.slice(0, keepCount);
 
     const keptKeys = new Set(keptCandidates.map(site => site.key));
     truncated = new Set(
@@ -428,13 +365,12 @@ export function applySearchQuota(
 
   const keptCandidateKeys = new Set(keptCandidates.map(site => site.key));
   const allowedSearchableKeys = new Set<string>([...pinnedKeySet, ...keptCandidateKeys]);
-  for (const key of blockedKeySet) allowedSearchableKeys.delete(key);
 
   // 快速搜索独立限制：不会删除站点，只把 quickSearch 置 0。
-  // 0 表示不限制，与 maxSearchable=0 的语义保持一致。
+  // Render 默认 32、CF 默认 20，足以覆盖常用源并显著缩短首屏等待。
   const quickCandidates = [
-    ...pinned.filter(site => site.searchable === 1 && site.quickSearch !== 0 && !blockedKeySet.has(site.key)),
-    ...keptCandidates.filter(site => site.searchable === 1 && site.quickSearch !== 0 && !blockedKeySet.has(site.key)),
+    ...pinned.filter(site => site.searchable === 1 && site.quickSearch !== 0),
+    ...keptCandidates.filter(site => site.searchable === 1 && site.quickSearch !== 0),
   ];
   const allowedQuickKeys = new Set(
     quickLimit > 0
@@ -457,7 +393,7 @@ export function applySearchQuota(
   }
 
   let quickTruncated = 0;
-  sites = orderedSites.filter(site => !blockedKeySet.has(site.key)).map(site => {
+  sites = orderedSites.map(site => {
     let next = site;
     if (site.searchable === 1 && !allowedSearchableKeys.has(site.key)) {
       next = { ...next, searchable: 0 };
@@ -481,9 +417,7 @@ export function applySearchQuota(
 
   // 来源标识：只给最终仍可搜索的源加标识。
   sites = sites.map(site => withSourceLabel(site, siteSourceMap));
-  const labeledCandidates = startupCandidateSites
-    .filter(site => !blockedKeySet.has(site.key))
-    .map(site => withSourceLabel(site, siteSourceMap));
+  const labeledCandidates = startupCandidateSites.map(site => withSourceLabel(site, siteSourceMap));
   // 质量统计覆盖完整的未截断可搜索候选池（置顶源 + 普通候选源），
   // 不再只统计根地址启动池，便于前端按实际质量区间配置 maxSearchable。
   const allSearchableCandidates = [...pinnedSearchable, ...candidates];
@@ -494,7 +428,6 @@ export function applySearchQuota(
   const searchable = sites.filter(site => site.searchable === 1).length;
   const quickSearchable = sites.filter(site => site.searchable === 1 && site.quickSearch !== 0).length;
   const pinnedCount = pinnedSearchable.length;
-  const blockedCount = blockedKeySet.size;
 
   return {
     sites,
@@ -508,7 +441,6 @@ export function applySearchQuota(
       maxQuickSearch: quickLimit,
       autoLimit: config.autoLimit === true,
       pinnedCount,
-      blockedCount,
       truncated,
       quickTruncated,
       speedSorted,

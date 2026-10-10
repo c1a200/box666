@@ -1,32 +1,5 @@
 // TVBox JSON 配置完整类型定义
 
-export interface SiteContract {
-  /** 最终源实例标识；仅用于审计/回归，不写入客户端配置。 */
-  siteKey?: string;
-  /** 贡献该最终实例的顶层总源，用于验证实例边界。 */
-  upstreamNames?: string[];
-  /** JAR 内容 MD5；同一 api 在不同 JAR 中协议可能不同。 */
-  jarMd5?: string;
-  /** 站点 API/Spider 类名。 */
-  api: string;
-  /** ext 原始形态，用于区分对象、字符串和 null。 */
-  extShape: 'null' | 'undefined' | 'object' | 'string' | 'array' | 'other';
-  /** ext 为对象时的顶层字段名，排序后保存。 */
-  extKeys?: string[];
-  /** 响应期清洗历史注入时，允许从上述集合中移除的可注入字段。 */
-  injectableExtKeys?: string[];
-  /** TVBox site.pan 字段（若上游提供）。 */
-  /** PanSearch 等从 ext 读取的语义平台值；仅记录，不参与字段名集合。 */
-  extPan?: string;
-  pan?: string;
-  /** 已验证的凭证注入机制；仅由聚合/审计阶段写入，响应期据此精确选择协议。 */
-  credentialMechanism?: string;
-  /** 该机制允许下发的平台白名单，避免按 API/JAR 扩大注入范围。 */
-  credentialPlatforms?: CloudPlatform[];
-  /** 聚合阶段一次计算的稳定契约哈希；响应期只比较该值。 */
-  contractHash?: string;
-}
-
 export interface TVBoxSite {
   key: string;
   name?: string;
@@ -136,7 +109,7 @@ export interface TVBoxConfig {
   doh?: TVBoxDoh[];
   ads?: string[];
   flags?: string[];
-  token?: string; // 全局网盘凭证接口地址
+  token?: string; // 上游全局接口/token 字段
 }
 
 // MacCMS 源条目
@@ -173,7 +146,7 @@ export interface SourcedConfig {
   speedMs?: number; // 配置 URL 响应时间
   /**
    * 顶层总源名称。多仓展开后仍保留最初配置的启用总源，
-   * 供运行时按“总源边界”决定哪些站点允许注入凭证。
+   * 保留总源边界信息，供运行时分发与追踪来源使用。
    */
   upstreamNames?: string[];
 }
@@ -232,8 +205,6 @@ export interface AppConfig {
   localBaseUrl?: string;   // Node.js 版设置，如 "http://192.168.1.100:5678"；用于 JAR 代理
   dockerMissingBaseUrl?: boolean;  // Docker 环境未配置 BASE_URL 时为 true
   // 自动抓取配置（环境变量驱动，未配置则不启用）
-  bilibiliQrProxyBaseUrl?: string;
-  bilibiliQrProxyToken?: string;
   scrapeSourceUrl?: string;
   scrapeSourceReferer?: string;
   maccmsApiUrl?: string;
@@ -247,58 +218,30 @@ export interface EdgeProxyConfig {
   vercel?: string;  // Vercel 代理 URL，如 "https://fetch.riowang.win"
 }
 
-// 网盘平台
-export type CloudPlatform =
-  | 'aliyun'      // 阿里云盘
-  | 'bilibili'    // Bilibili
-  | 'quark'       // 夸克网盘
-  | 'uc'          // UC 网盘（Web Cookie）
-  | 'uc_tv'       // UC TV（独立 refresh token）
-  | 'pan115'      // 115 网盘
-  | 'tianyi'      // 天翼云盘
-  | 'baidu'       // 百度网盘
-  | 'pan123'      // 123 网盘
-  | 'thunder'     // 迅雷
-  | 'pikpak';     // PikPak
+// 源分发策略：all=全部候选源，search=仅可搜索源，selected=仅质量池精选源，custom=自定义筛选
+export type SourceDistributionMode = 'all' | 'search' | 'selected' | 'custom';
 
-// 单个平台的凭证
-export interface CloudCredential {
-  platform: CloudPlatform;
-  credential: Record<string, string>;
-  obtainedAt: string;   // ISO 时间
-  expiresAt?: string;
-  status: 'valid' | 'expired' | 'unknown';
-}
-
-// 凭证注入策略
-export interface CredentialPolicyConfig {
-  allowedHighRiskKeys: string[];  // 用户手动放行的高风险源 key
-  deniedKeys: string[];           // 用户手动拉黑的源 key
-}
-
-// 凭证下发模式：none=不下发；all=全部可用凭证；selected=仅指定平台
-export type CredentialDistributionMode = 'none' | 'all' | 'selected';
-
-// 单个客户端鉴权码（不同码可下发不同凭证）
-export interface CredentialAuthCode {
-  id: string;                          // 稳定内部 ID
-  label: string;                       // 管理页显示名称
-  code: string;                        // URL 中使用的鉴权码
+// 单个客户端鉴权码（不同码可下发不同的源种类和数量）
+export interface ClientAuthCode {
+  id: string;
+  label: string;
+  code: string;
   enabled: boolean;
-  credentialMode: CredentialDistributionMode;
-  platforms: CloudPlatform[];          // selected 模式下允许下发的平台
+  sourceMode: SourceDistributionMode;
+  maxSites: number;
+  maxSearchable: number;
+  includeGrades: SiteQualityGrade[];
+  siteTypes: number[];
+  selectedKeys: string[];
+  pinnedKeys: string[];
   createdAt: string;
   updatedAt: string;
 }
 
-// 客户端源/凭证分发与鉴权配置
-export interface CredentialDistributionConfig {
-  requireAuth: boolean;                // true=根链接不可用，必须 /auth/<code>/
-  defaultCredentialMode: CredentialDistributionMode; // 无鉴权根链接使用的凭证策略
-  defaultPlatforms: CloudPlatform[];
-  authCodes: CredentialAuthCode[];
-  /** none 策略下是否额外移除上游源自带的凭证入口字段；默认关闭。 */
-  stripUpstreamCredentialEntries?: boolean;
+// 客户端源分发与鉴权配置
+export interface ClientDistributionConfig {
+  requireAuth: boolean;
+  authCodes: ClientAuthCode[];
 }
 
 // 搜索配额配置（持久化到 KV）
@@ -314,10 +257,7 @@ export interface SearchQuotaConfig {
   startupMode?: 'lean' | 'full';// 客户端根配置模式：lean=快速启动，full=完整功能
   pruneDeadParses?: boolean;    // 聚合时探测并剔除确认失效的解析器
   maxParses?: number;           // 健康解析器上限，0 = 不限制
-  retainCredentialSources?: boolean; // 旧版兼容字段：等价于 retainCredentialMode !== 'off'
-  retainCredentialMode?: 'off' | 'all' | 'selected'; // 凭证/JAR 源的额外保留策略
-  retainedCredentialKeys?: string[]; // selected 模式下允许绕过可搜索源上限的站点 key
-  blockedKeys?: string[];            // 显式屏蔽的源 key：优先于置顶/质量分级/凭证保留，仍保留在后台列表中以便恢复
+  blockedKeys?: string[];            // 显式屏蔽的源 key：优先于置顶/质量分级，仍保留在后台列表中以便恢复
   quotaSchemaVersion?: number;  // 自动配额迁移版本
 }
 // 搜索配额报告
@@ -348,8 +288,8 @@ export interface SearchQuotaReport {
 }
 
 // 站点质量分级（基于聚合阶段已有验活/测速结果，不额外发起请求）
-// 候选池下发 excellent / good / usable / credential-ready / untestable；timeout 与 unusable 永不进入客户端搜索源。
-export type SiteQualityGrade = 'excellent' | 'good' | 'usable' | 'credential-ready' | 'untestable' | 'timeout' | 'unusable';
+// 候选池下发 excellent / good / usable / untestable；timeout 与 unusable 永不进入客户端搜索源。
+export type SiteQualityGrade = 'excellent' | 'good' | 'usable' | 'untestable' | 'timeout' | 'unusable';
 
 export interface SiteQualityGradeBucket {
   count: number;
@@ -360,35 +300,11 @@ export interface SiteQualityGrades {
   excellent: SiteQualityGradeBucket; // 优：<=1000ms
   good: SiteQualityGradeBucket;      // 良：1001-3000ms
   usable: SiteQualityGradeBucket;    // 可用：3001-6000ms
-  credentialReady: SiteQualityGradeBucket; // 凭证就绪：服务端不可直探，但已配置所需平台凭证
   untestable: SiteQualityGradeBucket; // 无法由服务端直接探测（如客户端 JAR/网盘登录源）
   timeout: SiteQualityGradeBucket;   // 超时：>6000ms、无结果或未完成探测
   unusable: SiteQualityGradeBucket;  // 不可用：连续失败/明确错误
-  poolTotal: number;                 // 可下发候选池总数（优/良/可用/凭证就绪/客户端可验证候选）
+  poolTotal: number;                 // 可下发候选池总数（优/良/可用/不可测试）
 }
-// 服务端预检状态。
-export type SourcePreflightStatus =
-  | 'verified'
-  | 'credential-ready'
-  | 'alist-verified'
-  | 'client-jar-verified'
-  | 'client-jar-unverified'
-  | 'credential-invalid'
-  | 'timeout'
-  | 'failed';
-
-// 服务端模拟 TVBox/HTTP 客户端得到的预检结果。
-export interface SourcePreflightResult {
-  status: SourcePreflightStatus;
-  reason: string;
-  message: string;
-  checkedAt: string;
-  httpStatus?: number;
-  contentLength?: number;
-  jarBytes?: number;
-  durationMs?: number;
-}
-
 // 搜索源质量分级快照
 export interface SearchQualityEntry {
   key: string;
@@ -398,10 +314,6 @@ export interface SearchQualityEntry {
   result: 'ok' | 'empty' | 'error' | 'timeout' | 'not_probed';
   probedAt?: string;
   consecutiveFailures: number;
-  credentialPlatforms: CloudPlatform[];
-  credentialStatus: 'not-required' | 'ready' | 'partial' | 'missing' | 'invalid';
-  probeKind: 'http' | 'client-jar' | 'credential-http';
-  preflight?: SourcePreflightResult;
 }
 
 export interface SearchQualityThresholds {
@@ -415,14 +327,6 @@ export interface SearchQualityCoverage {
   probed: number;        // 已有有效探测结果的源（成功或失败）
   notProbed: number;     // 具备条件但尚未探测/预算耗尽
   untestable: number;    // 服务端无法直接探测、需由客户端登录/JAR 执行的源
-  credentialReady: number;   // 所需平台凭证均已就绪
-  credentialPartial: number; // 已配置部分凭证或凭证无效
-  credentialMissing: number; // 未配置所需平台凭证
-  preflightVerified?: number; // 服务端已完成真实请求/接口验证
-  preflightCredentialReady?: number; // 服务端已注入凭证并验证
-  preflightAListVerified?: number; // AList API 已验证
-  preflightJarVerified?: number; // JAR 已下载并通过结构校验
-  clientFinalOnly?: number; // 仅剩客户端最终执行/播放验证
 }
 
 export interface SearchQualitySnapshot {
