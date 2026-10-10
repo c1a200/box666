@@ -183,7 +183,7 @@ async function readSites(response) {
     const { app } = makeApp({
       distribution: { ...distribution, requireAuth: true },
     });
-    for (const requestPath of ['/', '/index.json', '/live', '/live.json', '/jar/source-key', '/api/source-key', '/reader-proxy?url=https%3A%2F%2Fsource.example%2Fpage']) {
+    for (const requestPath of ['/', '/index.json', '/live', '/live.json', '/jar/source-key', '/api/source-key']) {
       const response = await app.request('https://box.example' + requestPath);
       assert(response.status === 401, 'root/proxy route should be 401 when requireAuth=true: ' + requestPath);
     }
@@ -197,11 +197,19 @@ async function readSites(response) {
       return new Response('reader-ok', { status: 200, headers: { 'Content-Type': 'text/plain' } });
     };
     try {
-      const { app } = makeApp();
-      const response = await app.request('https://box.example/auth/code-a/reader-proxy?url=https%3A%2F%2Fsource.example%2Fpage&cookie=server-secret');
-      assert(response.status === 200, 'auth reader proxy should reach proxy handling');
+      const publicApp = makeApp().app;
+      const publicResponse = await publicApp.request('https://box.example/reader-proxy?url=https%3A%2F%2Fsource.example%2Fpage&cookie=server-secret');
+      assert(publicResponse.status === 200, 'reader proxy should remain usable when auth is not required');
       assert(seenHeaders.length === 1, 'reader proxy should perform one upstream fetch');
       assert(!seenHeaders[0].has('cookie'), 'reader proxy must not forward cookie query parameter');
+
+      const authApp = makeApp({ distribution: { ...distribution, requireAuth: true } }).app;
+      const blocked = await authApp.request('https://box.example/reader-proxy?url=https%3A%2F%2Fsource.example%2Fpage');
+      assert(blocked.status === 401, 'reader proxy should require an auth link when requireAuth=true');
+
+      const authResponse = await authApp.request('https://box.example/auth/code-a/reader-proxy?url=https%3A%2F%2Fsource.example%2Fpage');
+      assert(authResponse.status === 200, 'auth reader proxy should reach proxy handling');
+      assert(seenHeaders.length === 2, 'auth reader proxy should perform one upstream fetch');
     } finally {
       global.fetch = originalFetch;
     }
