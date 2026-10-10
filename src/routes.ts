@@ -358,14 +358,14 @@ export function createApp(deps: AppDeps): Hono {
       if (parsed.origin !== new URL(root).origin) return value;
       if (parsed.pathname === '/api/bg-settings') return value;
       if (/^\/auth\/[^/]+\//.test(parsed.pathname)) return value;
-      if (!/^\/(?:jar\/|live(?:\/|$)|live\.json$|api\/)/.test(parsed.pathname)) return value;
+      if (!/^\/(?:jar\/|live(?:\/|$)|live\.json$|api\/|reader-proxy$)/.test(parsed.pathname)) return value;
       parsed.pathname = `${prefix}${parsed.pathname}`;
       return parsed.toString();
     } catch {
       const relativePath = value.split(/[?#]/, 1)[0];
       if (relativePath === '/api/bg-settings') return value;
       if (/^\/auth\/[^/]+\//.test(value)) return value;
-      if (!/^\/(?:jar\/|live(?:\/|$)|live\.json$|api\/)/.test(relativePath)) return value;
+      if (!/^\/(?:jar\/|live(?:\/|$)|live\.json$|api\/|reader-proxy$)/.test(relativePath)) return value;
       return `${prefix}${value}`;
     }
   }
@@ -3679,13 +3679,22 @@ export function createApp(deps: AppDeps): Hono {
     }
   });
 
-  // ─── Reader 通用代理（无 auth，供 reader 后端中转被封站点）──
-  app.get('/reader-proxy', async (c) => {
+  // ─── Reader 通用代理（受客户端鉴权控制，不接受 Cookie 透传）──
+  const handleReaderProxy = async (c: any) => {
+    const baseUrl = await resolveBaseUrl(c);
+    if (baseUrl instanceof Response) return baseUrl;
+    const authResolved = await resolveOrRejectClientContext(c, baseUrl);
+    if (authResolved.response) return authResolved.response;
+
     const url = c.req.query('url');
     if (!url) return c.text('missing url', 400);
 
-    const referer = c.req.query('referer') || new URL(url).origin + '/';
-    const cookie = c.req.query('cookie') || '';
+    let referer: string;
+    try {
+      referer = c.req.query('referer') || new URL(url).origin + '/';
+    } catch {
+      return c.text('invalid url', 400);
+    }
 
     const headers: Record<string, string> = {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36',
@@ -3693,7 +3702,6 @@ export function createApp(deps: AppDeps): Hono {
       'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       'Accept-Language': 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7',
     };
-    if (cookie) headers['Cookie'] = cookie;
 
     try {
       const resp = await fetch(url, { headers });
@@ -3708,7 +3716,9 @@ export function createApp(deps: AppDeps): Hono {
     } catch {
       return c.body(null, 502);
     }
-  });
+  };
+  app.get('/reader-proxy', handleReaderProxy);
+  app.get('/auth/:code/reader-proxy', handleReaderProxy);
 
   return app;
 }
