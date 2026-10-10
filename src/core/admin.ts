@@ -2191,6 +2191,8 @@ async function loadSearchQuotaReport() {
 
     const q = d.qualityGrades;
     if (q) {
+      const untestableCount = q.untestable && typeof q.untestable.count === 'number' ? q.untestable.count : 0;
+      const qualityText = t('sqStatsQuality') + ': ' + t('sqExcellent') + ' ' + q.excellent.count + ' (' + q.excellent.cumulative + ') / ' + t('sqGood') + ' ' + q.good.count + ' (' + q.good.cumulative + ') / ' + t('sqUsable') + ' ' + q.usable.count + ' (' + q.usable.cumulative + ') / ' + t('sqUntestable') + ' ' + untestableCount + ' (' + q.untestable.cumulative + ') / ' + t('sqTimeout') + ' ' + q.timeout.count + ' (' + q.timeout.cumulative + ') / ' + t('sqUnusable') + ' ' + q.unusable.count + ' · ' + t('sqStatsPool') + ': ' + q.poolTotal;
       $('sqQualityGrades').textContent = qualityText;
       const stats = $('searchQuotaStats');
       if (stats) {
