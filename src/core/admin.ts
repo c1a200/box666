@@ -2628,9 +2628,11 @@ function sourceCategoryOf(site) {
   if (!site) return 'other';
   if (SOURCE_CATEGORY_KEYS.includes(site.sourceCategory)) return site.sourceCategory;
   const api = String(site.api || '');
-  const remoteJarOrExt = /^https?:\/\//i.test(String(site.jar || ''))
-    || /^https?:\/\//i.test(typeof site.ext === 'string' ? site.ext : '');
-  if (site.type === 3 && /^https?:\/\//i.test(api)) return 'js';
+  const jarText = String(site.jar || '');
+  const extText = typeof site.ext === 'string' ? site.ext : '';
+  const remoteJarOrExt = jarText.startsWith('http://') || jarText.startsWith('https://')
+    || extText.startsWith('http://') || extText.startsWith('https://');
+  if (site.type === 3 && (api.startsWith('http://') || api.startsWith('https://'))) return 'js';
   if (site.type === 3) return 'jar';
   if (site.type === 0) return 'xml';
   if (site.type === 1) return 'json';

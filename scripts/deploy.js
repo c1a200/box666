@@ -1,6 +1,7 @@
 const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { checkAdminInlineScripts } = require('./check-admin-inline-scripts');
 
 const pkgPath = path.join(__dirname, '..', 'package.json');
 const wranglerPath = path.join(__dirname, '..', 'wrangler.toml');
@@ -16,6 +17,8 @@ try {
 const originalWrangler = fs.readFileSync(wranglerPath, 'utf-8');
 
 try {
+  checkAdminInlineScripts();
+
   // Remove existing [define] block if present to prevent duplicates
   let newWrangler = originalWrangler.replace(/\[define\][\s\S]*?(?=\n\s*\[|\n\s*\[\[|$)/g, '').trim();
   

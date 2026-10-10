@@ -2,6 +2,7 @@
 
 const { build } = require('esbuild');
 const { execSync } = require('child_process');
+const { checkAdminInlineScripts } = require('./check-admin-inline-scripts');
 const path = require('path');
 const fs = require('fs');
 
@@ -34,8 +35,10 @@ build({
     }
     console.log(`Copied ${fontFiles.length} font files to dist/static/fonts/`);
   }
+  checkAdminInlineScripts();
   console.log('Build complete: dist/server.js');
 }).catch((err) => {
   console.error('Build failed:', err);
   process.exit(1);
 });
+
