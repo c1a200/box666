@@ -441,8 +441,33 @@ ${sharedStyles}
   <!-- Search Quota Tab -->
   <div class="tab-panel" id="panelSearchQuota">
     <div class="section">
+      <div class="section-title" style="margin-top:14px" data-i18n="rootSourceSelectionTitle">根链接源选择</div>
+      <div class="credential-help" data-i18n="rootSourceSelectionHint">简单方式按统一质量排序从前向后取源；精细方式按质量等级和源类型分别取各自排序靠前的源。两种方式互斥。</div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px">
+        <label class="form-label" style="margin:0" data-i18n="sourceSelectionMode">选择方式</label>
+        <select id="rootSourceSelectionModeInput" class="nt-input" style="width:250px" onchange="toggleRootSourceSelection()">
+          <option value="simple" data-i18n-text="sourceSelectionSimple">简单选择：按质量池总排序</option>
+          <option value="category" data-i18n-text="sourceSelectionCategory">精细选择：按分类分别选择</option>
+        </select>
+        <label class="form-label" style="margin:0" data-i18n="rootSourceCount">下发源数量</label>
+        <select id="rootSourceCountModeInput" class="nt-input" style="width:130px" onchange="toggleRootSourceCount()">
+          <option value="all" data-i18n-text="credentialBucketAll">全部</option>
+          <option value="none" data-i18n-text="credentialBucketNone">不下发</option>
+          <option value="custom" data-i18n-text="credentialBucketCustom">自定义数量</option>
+        </select>
+        <input type="number" id="rootSourceCountInput" class="nt-input" style="width:90px" min="1" placeholder="数量" data-i18n-placeholder="sourceCountPlaceholder">
+        <button class="btn btn-sm" onclick="saveSearchQuota('root')" data-i18n="save">保存根链接选择</button>
+        <span class="status-text" id="rootSourceSelectionStatus" style="font-size:0.8rem"></span>
+      </div>
+      <div id="rootSourceBuckets" style="display:none;margin-top:8px"></div>
+      <div style="margin-top:6px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="searchQuotaDesc">这里只控制根配置下发的健康解析器数量；源选择方式决定根链接下发哪些质量池源。</div>
+      <div style="margin-top:4px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="qualityGradeDesc">质量分级（后台分块测速，不影响应用端启动速度）：优 ≤1000ms、良 1001-3000ms、可用 3001-6000ms。服务端只验证可直接请求的源；可搜索 JAR/客户端运行时源会进入独立的小型后备池，不等于不可搜索。默认最多下发 4 个，鉴权码可将客户端后备设置为 0、N 或全部。超时和不可用永不下发。</div>
+    </div>
+
+    <div class="section">
       <div class="section-title" data-i18n="sqSelected">质量池</div>
       <div id="sqSelectedInfo" style="margin-bottom:8px;font-size:0.8rem;color:var(--text-secondary)"></div>
+      <div style="margin-bottom:8px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="sqRankingHint">所有列表按质量池总排名排列；每个分类表同时显示该分类内排名。置顶源按已保存的置顶顺序显示。</div>
       <div id="sqQualityGrades" style="margin-bottom:8px;font-size:0.8rem;color:var(--text-secondary)"></div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
         <input id="sqSourceFilter" class="nt-input" style="width:220px" placeholder="搜索源名称或源标识..." data-i18n-placeholder="sqSourceFilterPh" oninput="renderSearchSources()">
@@ -545,26 +570,7 @@ ${sharedStyles}
       <input type="hidden" id="startupModeInput" value="lean">
       <input type="hidden" id="pruneDeadParsesInput">
       <div id="searchQuotaStats" style="margin-top:8px;font-size:0.8rem;color:var(--text-secondary);line-height:1.6"></div>
-      <div class="section-title" style="margin-top:14px" data-i18n="rootSourceSelectionTitle">根链接源选择</div>
-      <div class="credential-help" data-i18n="rootSourceSelectionHint">简单方式按统一质量排序从前向后取源；精细方式按质量等级和源类型分别取各自排序靠前的源。两种方式互斥。</div>
-      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px">
-        <label class="form-label" style="margin:0" data-i18n="sourceSelectionMode">选择方式</label>
-        <select id="rootSourceSelectionModeInput" class="nt-input" style="width:250px" onchange="toggleRootSourceSelection()">
-          <option value="simple" data-i18n-text="sourceSelectionSimple">简单选择：按质量池总排序</option>
-          <option value="category" data-i18n-text="sourceSelectionCategory">精细选择：按分类分别选择</option>
-        </select>
-        <label class="form-label" style="margin:0" data-i18n="rootSourceCount">下发源数量</label>
-        <select id="rootSourceCountModeInput" class="nt-input" style="width:130px" onchange="toggleRootSourceCount()">
-          <option value="all" data-i18n-text="credentialBucketAll">全部</option>
-          <option value="none" data-i18n-text="credentialBucketNone">不下发</option>
-          <option value="custom" data-i18n-text="credentialBucketCustom">自定义数量</option>
-        </select>
-        <input type="number" id="rootSourceCountInput" class="nt-input" style="width:90px" min="1" placeholder="数量" data-i18n-placeholder="sourceCountPlaceholder">
-        <button class="btn btn-sm" onclick="saveSearchQuota()" data-i18n="save">保存</button>
-      </div>
-      <div id="rootSourceBuckets" style="display:none;margin-top:8px"></div>
-      <div style="margin-top:6px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="searchQuotaDesc">这里只控制根配置下发的健康解析器数量；源选择方式决定根链接下发哪些质量池源。</div>
-      <div style="margin-top:4px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="qualityGradeDesc">质量分级（后台分块测速，不影响应用端启动速度）：优 ≤1000ms、良 1001-3000ms、可用 3001-6000ms。服务端只验证可直接请求的源；可搜索 JAR/客户端运行时源会进入独立的小型后备池，不等于不可搜索。默认最多下发 4 个，鉴权码可将客户端后备设置为 0、N 或全部。超时和不可用永不下发。</div>
+
     </div>
 
     <div class="section">
@@ -2241,8 +2247,8 @@ async function loadSearchQuota() {
     loadSearchQuotaReport();
   } catch {}
 }
-async function saveSearchQuota() {
-  const status = $('searchQuotaStatus');
+async function saveSearchQuota(scope) {
+  const status = $(scope === 'root' ? 'rootSourceSelectionStatus' : 'searchQuotaStatus');
   status.textContent = '';
   const data = {
    maxQuickSearch: parseInt($('maxQuickSearchInput').value) || 0,
@@ -2338,6 +2344,7 @@ async function loadSearchQuotaReport() {
     sqBlockedSites = allSites.filter(s => s.searchable === 1 && s.blocked === true);
     // qualityPoolKeys 是服务端的唯一质量池集合；空数组也必须尊重，不能回退为全部可搜索源。
     const qualityPoolKeys = new Set(rawQualityPoolKeys);
+    sqQualityOrder = rawQualityPoolKeys.slice();
     sqAllSites = allSites.filter(s => s.searchable === 1 && s.inQualityPool === true && qualityPoolKeys.has(s.key) && s.blocked !== true);
     sqExcludedSites = allSites.filter(s => s.searchable === 1 && s.blocked !== true && !qualityPoolKeys.has(s.key));
     sqQualityPoolCount = sqAllSites.length;
@@ -2607,6 +2614,7 @@ function renderQualityStats(d) {
 }
 
 let sqAllSites = [];
+let sqQualityOrder = [];
 let sqExcludedSites = [];
 let sqBlockedSites = [];
 let sqQualityPoolCount = 0;
@@ -2724,11 +2732,22 @@ function qualityConfidenceLabel(entry) {
 function qualityRankingMaps(sites, qualityMap) {
   const global = new Map();
   const category = new Map();
-  const ordered = (sites || []).slice().sort(function(a, b) {
+  const poolRank = new Map((sqQualityOrder || []).map(function(key, index) { return [key, index]; }));
+  const fallbackCompare = function(a, b) {
     const as = Number(qualityScoreLabel(qualityMap.get(a.key)));
     const bs = Number(qualityScoreLabel(qualityMap.get(b.key)));
     if (Number.isFinite(as) && Number.isFinite(bs) && as !== bs) return bs - as;
     return String(a.key).localeCompare(String(b.key));
+  };
+  const ordered = (sites || []).slice().sort(function(a, b) {
+    const ar = poolRank.get(a.key);
+    const br = poolRank.get(b.key);
+    if (ar !== undefined || br !== undefined) {
+      if (ar === undefined) return 1;
+      if (br === undefined) return -1;
+      if (ar !== br) return ar - br;
+    }
+    return fallbackCompare(a, b);
   });
   ordered.forEach(function(site, index) { global.set(site.key, index + 1); });
   const buckets = {};
@@ -2804,6 +2823,17 @@ function compareSearchSites(a, b, qualityMap) {
   return String(a.name || a.key).localeCompare(String(b.name || b.key), getLang() === 'zh' ? 'zh-CN' : 'en');
 }
 
+function compareByQualityPoolOrder(a, b, qualityMap, rankMaps) {
+  const aRank = rankMaps && rankMaps.global ? rankMaps.global.get(a.key) : undefined;
+  const bRank = rankMaps && rankMaps.global ? rankMaps.global.get(b.key) : undefined;
+  if (aRank !== undefined || bRank !== undefined) {
+    if (aRank === undefined) return 1;
+    if (bRank === undefined) return -1;
+    if (aRank !== bRank) return aRank - bRank;
+  }
+  return compareSearchSites(a, b, qualityMap);
+}
+
 function renderSearchSources() {
   if (sqSearchRenderPending) return;
   captureSearchTableScroll();
@@ -2831,16 +2861,16 @@ function renderSearchSources() {
     const bPinned = pinnedOrder.has(b.key);
     if (aPinned !== bPinned) return aPinned ? -1 : 1;
     if (aPinned && bPinned) return (pinnedOrder.get(a.key) || 0) - (pinnedOrder.get(b.key) || 0);
-    return compareSearchSites(a, b, qualityMap);
+    return compareByQualityPoolOrder(a, b, qualityMap, rankMaps);
   };
   const allSites = sqAllSites.slice().sort(compare);
   const blockedAll = (sqBlockedSites || []).slice().sort(function(a, b) {
-    return compareSearchSites(a, b, qualityMap);
+    return compareByQualityPoolOrder(a, b, qualityMap, rankMaps);
   });
   const blocked = blockedAll.filter(matches);
   const excluded = (sqExcludedSites || []).slice()
     .filter(s => !(sqBlockedKeys.has(s.key) || s.blocked === true))
-    .sort(function(a, b) { return compareSearchSites(a, b, qualityMap); })
+    .sort(function(a, b) { return compareByQualityPoolOrder(a, b, qualityMap, rankMaps); })
     .filter(matches);
   const categoryBuckets = { xml: [], json: [], jar: [], js: [], remote: [], other: [] };
   allSites.forEach(function(s) {

@@ -36,6 +36,24 @@ function checkAdminInlineScripts() {
     throw new Error('adminHtml has no inline scripts');
   }
 
+  const searchPanelStart = html.indexOf('id="panelSearchQuota"');
+  const settingsPanelStart = html.indexOf('id="panelSettings"');
+  if (searchPanelStart < 0 || settingsPanelStart < 0 || settingsPanelStart <= searchPanelStart) {
+    throw new Error('admin search/settings panels could not be located');
+  }
+  const searchPanel = html.slice(searchPanelStart, settingsPanelStart);
+  for (const id of ['rootSourceSelectionModeInput', 'rootSourceCountModeInput', 'rootSourceBuckets']) {
+    if (!searchPanel.includes('id="' + id + '"')) {
+      throw new Error('root source selection control is missing from the search page: ' + id);
+    }
+  }
+  if (!searchPanel.includes("saveSearchQuota('root')")) {
+    throw new Error('root source selection must have its own save action on the search page');
+  }
+  if (!searchPanel.includes('sqRankingHint') || !html.includes('sqQualityOrder = rawQualityPoolKeys.slice()') || !html.includes('compareByQualityPoolOrder')) {
+    throw new Error('search source ranking must explain and use the server quality-pool order');
+  }
+
   for (const script of scripts) {
     try {
       new vm.Script(script.code, { filename: 'admin-inline-' + script.index + '.js' });
