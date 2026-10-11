@@ -196,6 +196,11 @@ function normalizeAuthCode(raw: unknown, usedCodes: Set<string>, usedIds: Set<st
     legacyGrades,
     legacyTypes,
   );
+  // maxSearchable was the old name for the same user-facing quantity.
+  const hasMaxSites = Object.prototype.hasOwnProperty.call(entry, 'maxSites');
+  const maxSites = hasMaxSites
+    ? parseThreeStateInteger(entry.maxSites, -1)
+    : parseThreeStateInteger(entry.maxSearchable, -1);
 
   return {
     id,
@@ -203,8 +208,7 @@ function normalizeAuthCode(raw: unknown, usedCodes: Set<string>, usedIds: Set<st
     code,
     enabled: entry.enabled !== false,
     sourceMode: normalizeSourceMode(entry.sourceMode),
-    maxSites: parseThreeStateInteger(entry.maxSites, -1),
-    maxSearchable: parseThreeStateInteger(entry.maxSearchable, -1),
+    maxSites,
     bucketLimits,
     // 旧版过滤字段在读取时迁移到 bucketLimits，并留空，避免隐藏配置二次过滤。
     includeGrades: [],
@@ -239,14 +243,18 @@ export function createClientAuthCode(raw: Partial<ClientAuthCode> = {}): ClientA
   const code = typeof raw.code === 'string' && AUTH_CODE_RE.test(raw.code.trim())
     ? raw.code.trim()
     : randomToken(8);
+  const rawRecord = raw as Partial<ClientAuthCode> & { maxSearchable?: unknown };
+  const hasMaxSites = Object.prototype.hasOwnProperty.call(rawRecord, 'maxSites');
+  const maxSites = hasMaxSites
+    ? parseThreeStateInteger(rawRecord.maxSites, -1)
+    : parseThreeStateInteger(rawRecord.maxSearchable, -1);
   return {
     id: typeof raw.id === 'string' && raw.id.trim() ? raw.id.trim() : randomAuthId(),
     label: typeof raw.label === 'string' && raw.label.trim() ? raw.label.trim().slice(0, 80) : 'Auth code',
     code,
     enabled: raw.enabled !== false,
     sourceMode: normalizeSourceMode(raw.sourceMode),
-    maxSites: parseThreeStateInteger(raw.maxSites, -1),
-    maxSearchable: parseThreeStateInteger(raw.maxSearchable, -1),
+    maxSites,
     bucketLimits: normalizeBucketLimits(raw.bucketLimits),
     includeGrades: [],
     siteTypes: [],

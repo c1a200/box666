@@ -128,7 +128,6 @@ const distribution = {
       enabled: true,
       sourceMode: 'all',
       maxSites: -1,
-      maxSearchable: -1,
       includeGrades: ['excellent'],
       siteTypes: [],
       pinnedKeys: [],
@@ -142,7 +141,6 @@ const distribution = {
       enabled: true,
       sourceMode: 'all',
       maxSites: -1,
-      maxSearchable: -1,
       includeGrades: [],
       siteTypes: ['jar'],
       pinnedKeys: [],
@@ -194,7 +192,6 @@ async function readSites(response) {
 
   {
     const quota = {
-      maxSearchable: 0,
       maxQuickSearch: 20,
       maxStartupQuickSearch: 20,
       maxParses: 3,
@@ -248,7 +245,6 @@ async function readSites(response) {
         enabled: true,
         sourceMode: 'selected',
         maxSites: -1,
-        maxSearchable: -1,
         includeGrades: [],
         siteTypes: [],
         selectedKeys: [],
@@ -351,7 +347,6 @@ async function readSites(response) {
         enabled: true,
         sourceMode: 'search',
         maxSites: -1,
-        maxSearchable: -1,
         bucketLimits: { quality: { excellent: -1, good: -1, usable: -1, untestable: 1 } },
         selectedKeys: [],
         pinnedKeys: ['source-client-fallback'],
@@ -413,7 +408,6 @@ async function readSites(response) {
         enabled: true,
         sourceMode: 'search',
         maxSites: -1,
-        maxSearchable: -1,
         bucketLimits: { quality: { untestable: 0 } },
         selectedKeys: [],
         pinnedKeys: [],
@@ -460,7 +454,6 @@ async function readSites(response) {
         enabled: true,
         sourceMode: 'search',
         maxSites: -1,
-        maxSearchable: -1,
         includeGrades: [],
         siteTypes: [],
         pinnedKeys: [],
@@ -483,8 +476,7 @@ async function readSites(response) {
         code: 'limit-search',
         enabled: true,
         sourceMode: 'all',
-        maxSites: -1,
-        maxSearchable: 1,
+        maxSites: 1,
         includeGrades: [],
         siteTypes: [],
         pinnedKeys: [],
@@ -494,9 +486,9 @@ async function readSites(response) {
     };
     const { app } = makeApp({ distribution: limitedDistribution });
     const limited = await readSites(await app.request('https://box.example/auth/limit-search/'));
-    assert(limited.filter((site) => site.searchable === 1).length === 1, 'maxSearchable should count actual searchable sites only');
-    assert(limited.filter((site) => site.searchable === 1).length === 1, 'maxSearchable must apply only to searchable sites');
-    assert(limited.some((site) => site.key === 'source-plugin'), 'maxSearchable should keep non-searchable sites when maxSites is all');
+    assert(limited.filter((site) => site.searchable === 1).length === 1, 'maxSites should count actual searchable sites only');
+    assert(limited.filter((site) => site.searchable === 1).length === 1, 'maxSites must apply only to searchable sites');
+    assert(limited.some((site) => site.key === 'source-plugin'), 'maxSites should keep non-searchable sites');
   }
 
   {
@@ -508,8 +500,7 @@ async function readSites(response) {
         code: 'zero-search',
         enabled: true,
         sourceMode: 'all',
-        maxSites: -1,
-        maxSearchable: 0,
+        maxSites: 0,
         includeGrades: [],
         siteTypes: [],
         pinnedKeys: [],
@@ -519,8 +510,8 @@ async function readSites(response) {
     };
     const { app } = makeApp({ distribution: zeroSearchDistribution });
     const sites = await readSites(await app.request('https://box.example/auth/zero-search/'));
-    assert(sites.every((site) => site.searchable !== 1), 'maxSearchable=0 must exclude every searchable site');
-    assert(sites.some((site) => site.key === 'source-plugin'), 'maxSearchable=0 must keep non-searchable sites');
+    assert(sites.every((site) => site.searchable !== 1), 'maxSites=0 must exclude every searchable site');
+    assert(sites.some((site) => site.key === 'source-plugin'), 'maxSites=0 must keep non-searchable sites');
   }
 
   {
@@ -533,7 +524,6 @@ async function readSites(response) {
         enabled: true,
         sourceMode: 'all',
         maxSites: 0,
-        maxSearchable: -1,
         includeGrades: [],
         siteTypes: [],
         pinnedKeys: [],
@@ -543,7 +533,8 @@ async function readSites(response) {
     };
     const { app } = makeApp({ distribution: zeroTotalDistribution });
     const sites = await readSites(await app.request('https://box.example/auth/zero-total/'));
-    assert(sites.length === 0, 'maxSites=0 must exclude every source');
+    assert(sites.filter((site) => site.searchable === 1).length === 0, 'maxSites=0 must exclude every searchable source');
+    assert(sites.some((site) => site.key === 'source-plugin'), 'maxSites=0 must keep non-searchable functional sources');
   }
 
   {
@@ -556,7 +547,6 @@ async function readSites(response) {
         enabled: true,
         sourceMode: 'custom',
         maxSites: -1,
-        maxSearchable: -1,
         includeGrades: [],
         siteTypes: [],
         selectedKeys: ['source-good'],
@@ -605,7 +595,6 @@ async function readSites(response) {
         enabled: true,
         sourceMode: 'all',
         maxSites: -1,
-        maxSearchable: -1,
         includeGrades: ['excellent'],
         siteTypes: ['xml'],
         bucketLimits: { type: { xml: 0 } },
@@ -628,7 +617,6 @@ async function readSites(response) {
         enabled: true,
         sourceMode: 'all',
         maxSites: 1,
-        maxSearchable: -1,
         includeGrades: [],
         siteTypes: [],
         selectedKeys: [],
@@ -639,7 +627,7 @@ async function readSites(response) {
     };
     const limited = makeApp({ distribution: pinnedLimitDistribution });
     const limitedSites = await readSites(await limited.app.request('https://box.example/auth/pinned-limit/'));
-    assert(limitedSites.length === 1 && limitedSites[0].key === 'source-good', 'pinned keys must only affect order and must not exceed maxSites, got ' + limitedSites.map((site) => site.key).join(','));
+    assert(limitedSites.filter((site) => site.searchable === 1).length === 1 && limitedSites[0].key === 'source-excellent', 'pinned keys must only affect order and must not exceed maxSites, got ' + limitedSites.map((site) => site.key).join(','));
   }
 
   {
@@ -652,7 +640,6 @@ async function readSites(response) {
         enabled: true,
         sourceMode: 'all',
         maxSites: -1,
-        maxSearchable: -1,
         bucketLimits: { type: { other: 0, xml: -1 } },
         includeGrades: [],
         siteTypes: [],

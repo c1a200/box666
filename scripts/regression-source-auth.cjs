@@ -102,10 +102,10 @@ const custom = normalizeClientDistributionConfig({ authCodes: [{ code: 'custom-a
 assert(custom.authCodes[0].sourceMode === 'custom', 'custom source mode should persist');
 assert(custom.authCodes[0].selectedKeys.join(',') === 'key-a,key-b', 'selectedKeys should trim and deduplicate');
 assert(custom.authCodes[0].pinnedKeys.join(',') === 'key-b', 'pinnedKeys should trim and deduplicate');
-assert(custom.authCodes[0].maxSites === -1 && custom.authCodes[0].maxSearchable === -1, 'numeric limits should default to all');
+assert(custom.authCodes[0].maxSites === -1 && !Object.prototype.hasOwnProperty.call(custom.authCodes[0], 'maxSearchable'), 'numeric limits should default to all');
 assert(findClientAuthCode(cfg, 'code-a').sourceMode === 'search', 'code-a policy should persist');
 assert(findClientAuthCode(cfg, 'code-a').bucketLimits.quality.excellent === -1, 'legacy grades should migrate into quality buckets');
-assert(findClientAuthCode(cfg, 'code-b').maxSearchable === 5, 'code-b policy should persist');
+assert(findClientAuthCode(cfg, 'code-b').maxSites === 5, 'legacy maxSearchable should migrate to maxSites');
 assert(findClientAuthCode(cfg, 'code-b').bucketLimits.type.xml === -1 && findClientAuthCode(cfg, 'code-b').bucketLimits.type.json === -1, 'legacy site types should migrate into type buckets');
 assert(!findClientAuthCode(cfg, 'missing'), 'unknown auth code must not resolve');
 const migrated = normalizeClientDistributionConfig({
@@ -131,12 +131,16 @@ const threeState = normalizeClientDistributionConfig({
   }],
 });
 assert(threeState.authCodes[0].maxSites === 0, 'maxSites=0 must be preserved');
-assert(threeState.authCodes[0].maxSearchable === -1, 'maxSearchable=-1 must be preserved');
+assert(!Object.prototype.hasOwnProperty.call(threeState.authCodes[0], 'maxSearchable'), 'legacy field must not survive normalization');
 assert(threeState.authCodes[0].bucketLimits.quality.excellent === -1, 'bucket -1 must be preserved');
 assert(threeState.authCodes[0].bucketLimits.quality.good === 0, 'bucket 0 must be preserved');
 assert(threeState.authCodes[0].bucketLimits.quality.usable === 3, 'bucket positive limit must be preserved');
 assert(threeState.authCodes[0].bucketLimits.type.jar === 7, 'JAR bucket must be preserved');
 assert(threeState.authCodes[0].bucketLimits.type.js === 7, 'JS bucket must be preserved');
+const conflictingLimits = normalizeClientDistributionConfig({
+  authCodes: [{ code: 'conflicting-limits', maxSites: 2, maxSearchable: 5 }],
+});
+assert(conflictingLimits.authCodes[0].maxSites === 2, 'current maxSites must win over stale maxSearchable');
 
 (async () => {
   bundle('src/core/quality.ts', 'quality.cjs', 'true');

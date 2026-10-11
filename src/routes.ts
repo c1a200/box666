@@ -500,7 +500,6 @@ export function createApp(deps: AppDeps): Hono {
     const policy = context.authCode || {
       sourceMode: 'all' as SourceDistributionMode,
       maxSites: -1,
-      maxSearchable: -1,
       bucketLimits: rootQuota?.bucketLimits,
       selectedKeys: [] as string[],
       pinnedKeys: rootQuota?.pinnedKeys || [],
@@ -615,6 +614,23 @@ export function createApp(deps: AppDeps): Hono {
     }
 
     // 鉴权码置顶只改变已筛选结果的顺序，不能绕过任何质量、类型、分桶或数量限制。
+    // Quality pool count: 0 serves no searchable pool source, -1 serves all,
+    // and a positive value takes the first N in the shared quality order.
+    const maxSites = typeof policy.maxSites === 'number' && Number.isFinite(policy.maxSites)
+      ? Math.floor(policy.maxSites)
+      : -1;
+    if (maxSites >= 0) {
+      const searchableSites = sites.filter((site) => site.searchable === 1);
+      const functionalSites = sites.filter((site) => site.searchable !== 1);
+      sites = [
+        ...(maxSites === 0 ? [] : searchableSites.slice(0, maxSites)),
+        ...functionalSites,
+      ];
+    }
+
+    // Pinning is an order preference only. Apply it after the quality,
+    // category, and count filters so a lower-quality pinned source cannot
+    // consume a Top-N slot.
     const pinnedOrder = new Map(
       (policy.pinnedKeys || []).map((key, index) => [key, index] as const),
     );
@@ -624,32 +640,6 @@ export function createApp(deps: AppDeps): Hono {
         .sort((a, b) => (pinnedOrder.get(a.key) as number) - (pinnedOrder.get(b.key) as number));
       const pinnedKeys = new Set(pinned.map((site) => site.key));
       sites = [...pinned, ...sites.filter((site) => !pinnedKeys.has(site.key))];
-    }
-
-    const maxSearchable = typeof policy.maxSearchable === 'number' && Number.isFinite(policy.maxSearchable)
-      ? Math.floor(policy.maxSearchable)
-      : -1;
-    if (maxSearchable === 0) {
-      sites = sites.filter((site) => site.searchable !== 1);
-    } else if (maxSearchable > 0) {
-      let searchable = 0;
-      sites = sites.filter((site) => {
-        if (site.searchable !== 1) return true;
-        if (searchable >= maxSearchable) return false;
-        searchable++;
-        return true;
-      });
-    }
-
-    // 未分类数量语义：0=所有源都不下发；-1=全部；正数=保留前 N 个。
-    const maxSites = typeof policy.maxSites === 'number' && Number.isFinite(policy.maxSites)
-      ? Math.floor(policy.maxSites)
-      : -1;
-    if (maxSites === 0) {
-      sites = [];
-    } else if (maxSites > 0) {
-      // 置顶只影响根配置中的顺序，鉴权码总量上限按最终顺序严格取前 N。
-      sites = sites.slice(0, maxSites);
     }
 
     const seenSiteKeys = new Set<string>();
@@ -1858,6 +1848,40 @@ export function createApp(deps: AppDeps): Hono {
         report.parseProbeFailed = parseReport.failedProbe === true;
       } catch {}
     }
+    // The stored report may describe the grading snapshot before blacklist or
+    // final-config changes. Expose the effective pool explicitly so admin UI
+    // never treats the snapshot total as the currently selectable total.
+    const effectiveQualityPool = await loadQualityPool(storage);
+    const effectiveConfigRaw = await storage.get(KV_MERGED_CONFIG);
+    let effectiveSearchableKeys: Set<string> | null = null;
+    if (effectiveConfigRaw) {
+      try {
+        const effectiveConfig = JSON.parse(effectiveConfigRaw) as TVBoxConfig;
+        effectiveSearchableKeys = new Set(
+          (effectiveConfig.sites || []).filter((site) => site.searchable === 1).map((site) => site.key),
+        );
+      } catch {
+        effectiveSearchableKeys = null;
+      }
+    }
+    const effectivePoolKeys = qualityPoolKeysFromPool(effectiveQualityPool);
+    const effectivePoolEntries = effectiveQualityPool?.entries.filter((entry) =>
+      effectivePoolKeys.has(entry.key)
+      && (effectiveSearchableKeys === null || effectiveSearchableKeys.has(entry.key)),
+    ) || [];
+    report.qualityPoolCount = effectiveQualityPool
+      ? (effectiveSearchableKeys === null ? effectiveQualityPool.grades.poolTotal : effectivePoolEntries.length)
+      : null;
+    report.qualityPoolServerVerified = effectiveQualityPool
+      ? (effectiveSearchableKeys === null
+        ? effectiveQualityPool.grades.serverVerifiedTotal
+        : effectivePoolEntries.filter((entry) => entry.grade !== 'untestable').length)
+      : null;
+    report.qualityPoolClientFallback = effectiveQualityPool
+      ? (effectiveSearchableKeys === null
+        ? effectiveQualityPool.grades.clientFallbackTotal
+        : effectivePoolEntries.filter((entry) => entry.grade === 'untestable').length)
+      : null;
     return c.json(report);
   });
 
@@ -1884,13 +1908,14 @@ export function createApp(deps: AppDeps): Hono {
   // 质量分级结果（质量池 + 统计 + 实际数量 + 推荐值）
   app.get('/admin/quality-report', async (c) => {
     if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
-    const [snapshot, schedule, status, quota, searchQuotaRaw, parseHealthRaw] = await Promise.all([
+    const [snapshot, schedule, status, quota, searchQuotaRaw, parseHealthRaw, mergedRaw] = await Promise.all([
       loadQualitySnapshot(storage),
       loadQualitySchedule(storage, config.qualityTimezone),
       loadQualityStatus(storage),
       loadSearchQuota(storage),
       storage.get(KV_SEARCH_QUOTA_REPORT),
       storage.get(KV_PARSE_HEALTH_REPORT),
+      storage.get(KV_MERGED_CONFIG),
     ]);
 
     const parseReport = (() => {
@@ -1916,6 +1941,26 @@ export function createApp(deps: AppDeps): Hono {
       typeof value === 'number' && Number.isFinite(value) ? value : null;
     const parseLimit = numberOrNull(parseReport?.parseLimit) ?? (quota.maxParses ?? 0);
     const parsers = numberOrNull(parseReport?.parseKept);
+    let finalSearchableKeys: Set<string> | null = null;
+    if (mergedRaw) {
+      try {
+        const merged = JSON.parse(mergedRaw) as TVBoxConfig;
+        finalSearchableKeys = new Set(
+          (merged.sites || []).filter((site) => site.searchable === 1).map((site) => site.key),
+        );
+      } catch {
+        finalSearchableKeys = null;
+      }
+    }
+    const poolKeys = qualityPoolKeysFromPool(snapshot);
+    const actualPoolEntries = snapshot?.entries.filter((entry) =>
+      poolKeys.has(entry.key) && (finalSearchableKeys === null || finalSearchableKeys.has(entry.key)),
+    ) || [];
+    const actualServerVerifiedPool = actualPoolEntries.filter((entry) => entry.grade !== 'untestable').length;
+    const actualClientFallbackPool = actualPoolEntries.filter((entry) => entry.grade === 'untestable').length;
+    const actualQualityPoolCount = snapshot
+      ? (finalSearchableKeys === null ? snapshot.grades.poolTotal : actualPoolEntries.length)
+      : null;
     const actual = {
       searchable: numberOrNull(quotaReport?.searchable),
       parsers,
@@ -1923,9 +1968,9 @@ export function createApp(deps: AppDeps): Hono {
       // `assessedSourceCount` is the full searchable set included in grading;
       // `qualityPoolCount` is the ordered set eligible for selection/output.
       assessedSourceCount: snapshot?.total ?? null,
-      qualityPoolCount: snapshot?.grades?.poolTotal ?? null,
-      serverVerifiedPool: snapshot?.grades?.serverVerifiedTotal ?? null,
-      clientFallbackPool: snapshot?.grades?.clientFallbackTotal ?? null,
+      qualityPoolCount: actualQualityPoolCount,
+      serverVerifiedPool: snapshot ? (finalSearchableKeys === null ? snapshot.grades.serverVerifiedTotal : actualServerVerifiedPool) : null,
+      clientFallbackPool: snapshot ? (finalSearchableKeys === null ? snapshot.grades.clientFallbackTotal : actualClientFallbackPool) : null,
       testable: snapshot?.coverage?.testable ?? null,
       probed: snapshot?.coverage?.probed ?? null,
       notProbed: snapshot?.coverage?.notProbed ?? null,
@@ -3261,7 +3306,7 @@ export function createApp(deps: AppDeps): Hono {
         qualityPoolCount: currentCandidateKeys.length,
         searchableCount: searchableKeys.length,
         assessedSourceCount: qualityPool?.total ?? 0,
-        qualityPoolTotal: qualityPool?.grades?.poolTotal ?? 0,
+        qualityPoolTotal: currentCandidateKeys.length,
         qualitySnapshotTotal: qualityPool?.total ?? 0,
         qualityPoolHealth,
         qualityPoolKeys: currentCandidateKeys,

@@ -247,8 +247,8 @@ export interface ClientAuthCode {
   code: string;
   enabled: boolean;
   sourceMode: SourceDistributionMode;
+  /** Maximum number of searchable sources selected from the quality pool. */
   maxSites: number;
-  maxSearchable: number;
   bucketLimits?: SiteBucketLimits;
   includeGrades: SiteQualityGrade[];
   // 新配置使用 xml/json/jar/js/remote/other；旧数字类型仍会在读取时迁移。

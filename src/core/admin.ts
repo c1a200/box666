@@ -441,7 +441,7 @@ ${sharedStyles}
   <!-- Search Quota Tab -->
   <div class="tab-panel" id="panelSearchQuota">
     <div class="section">
-      <div class="section-title" data-i18n="sqSelected">Active Search Sources</div>
+      <div class="section-title" data-i18n="sqSelected">Quality Pool</div>
       <div id="sqSelectedInfo" style="margin-bottom:8px;font-size:0.8rem;color:var(--text-secondary)"></div>
       <div id="sqQualityGrades" style="margin-bottom:8px;font-size:0.8rem;color:var(--text-secondary)"></div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
@@ -828,12 +828,11 @@ const translations = {
     siteProbeDesc:'Deep mode checks type0/type1 content validity. Failed sites get [⚠] marker after 3 failures.',
     credentialDistributionTitle:'Client Authentication & Source Distribution',
     credentialDistributionDesc:'Auth codes control which sources are served; the server never stores or injects cloud-drive credentials. With authentication off, the root link serves sources normally. With it on, the root link serves no sources and clients must use /auth/<code>/.',
-    credentialSourceModeAll:'All candidate sources',
+    credentialSourceModeAll:'All quality pool sources',
     credentialSourceModeSearch:'Searchable sources only',
     credentialSourceModeSelected:'Selected quality-pool sources only',
     credentialSourceModeCustom:'Custom key whitelist only',
-    credentialMaxSites:'Total source limit',
-    credentialMaxSearchable:'Searchable source limit',
+    credentialMaxSites:'Quality pool source limit',
     credentialSiteTypes:'Allowed site types',
     credentialSiteTypesHint:'Leave all unchecked to allow every site type. Checked types are the only site types served.',
     credentialPinnedKeys:'Pinned keys',
@@ -976,8 +975,7 @@ const translations = {
     credentialSourceModeSearch:'仅可搜索源',
     credentialSourceModeSelected:'仅质量池精选源',
     credentialSourceModeCustom:'仅自定义 Key 白名单',
-    credentialMaxSites:'总源数量上限',
-    credentialMaxSearchable:'可搜索源数量上限',
+    credentialMaxSites:'质量池源数量上限',
     credentialSiteTypes:'允许的站点类型',
     credentialSiteTypesHint:'全部不勾选表示允许所有站点类型；勾选后只下发所选的站点类型。',
     credentialPinnedKeys:'置顶 Key',
@@ -2214,9 +2212,14 @@ async function loadSearchQuotaReport() {
     const q = d.qualityGrades;
     if (q) {
       const untestableCount = q.untestable && typeof q.untestable.count === 'number' ? q.untestable.count : 0;
-      const serverVerified = typeof q.serverVerifiedTotal === 'number' ? q.serverVerifiedTotal : q.excellent.count + q.good.count + q.usable.count;
-      const clientFallback = typeof q.clientFallbackTotal === 'number' ? q.clientFallbackTotal : untestableCount;
-      const qualityText = t('sqStatsQuality') + ': ' + t('sqExcellent') + ' ' + q.excellent.count + ' (' + q.excellent.cumulative + ') / ' + t('sqGood') + ' ' + q.good.count + ' (' + q.good.cumulative + ') / ' + t('sqUsable') + ' ' + q.usable.count + ' (' + q.usable.cumulative + ') / ' + t('sqUntestable') + ' ' + untestableCount + ' (' + q.untestable.cumulative + ') / ' + t('sqTimeout') + ' ' + q.timeout.count + ' (' + q.timeout.cumulative + ') / ' + t('sqUnusable') + ' ' + q.unusable.count + ' · ' + t('sqStatsPool') + ': ' + q.poolTotal + ' (' + t('sqStatsServerVerified') + ' ' + serverVerified + ', ' + t('sqStatsClientFallback') + ' ' + clientFallback + ')';
+      const serverVerified = typeof d.qualityPoolServerVerified === 'number'
+        ? d.qualityPoolServerVerified
+        : (typeof q.serverVerifiedTotal === 'number' ? q.serverVerifiedTotal : q.excellent.count + q.good.count + q.usable.count);
+      const clientFallback = typeof d.qualityPoolClientFallback === 'number'
+        ? d.qualityPoolClientFallback
+        : (typeof q.clientFallbackTotal === 'number' ? q.clientFallbackTotal : untestableCount);
+      const qualityPoolCount = typeof d.qualityPoolCount === 'number' ? d.qualityPoolCount : q.poolTotal;
+      const qualityText = t('sqStatsQuality') + ': ' + t('sqExcellent') + ' ' + q.excellent.count + ' (' + q.excellent.cumulative + ') / ' + t('sqGood') + ' ' + q.good.count + ' (' + q.good.cumulative + ') / ' + t('sqUsable') + ' ' + q.usable.count + ' (' + q.usable.cumulative + ') / ' + t('sqUntestable') + ' ' + untestableCount + ' (' + q.untestable.cumulative + ') / ' + t('sqTimeout') + ' ' + q.timeout.count + ' (' + q.timeout.cumulative + ') / ' + t('sqUnusable') + ' ' + q.unusable.count + ' · ' + t('sqStatsPool') + ': ' + qualityPoolCount + ' (' + t('sqStatsServerVerified') + ' ' + serverVerified + ', ' + t('sqStatsClientFallback') + ' ' + clientFallback + ')';
       $('sqQualityGrades').textContent = qualityText;
       const stats = $('searchQuotaStats');
       if (stats) {
@@ -2225,7 +2228,7 @@ async function loadSearchQuotaReport() {
         const parserText = typeof d.parseKept === 'number'
           ? t('sqStatsParsers') + ': ' + t('sqStatsKept') + ' ' + d.parseKept + (typeof d.parseProbed === 'number' ? ', ' + t('sqStatsProbed') + ' ' + d.parseProbed : '') + (typeof d.parseRemoved === 'number' && d.parseRemoved > 0 ? ', ' + t('sqStatsRemoved') + ' ' + d.parseRemoved : '') + (typeof d.parseLimit === 'number' && d.parseLimit > 0 ? ', ' + t('sqStatsLimit') + ' ' + d.parseLimit : ', ' + t('sqStatsUnlimited'))
           : t('sqStatsParsers') + ': ' + t('sqStatsNoData');
-        stats.textContent = t('sqStatsCurrent') + ': ' + t('sqStatsSearchable') + ' ' + d.searchable + ' · ' + t('sqStatsPool') + ' ' + q.poolTotal + ' (' + t('sqStatsServerVerified') + ' ' + serverVerified + ', ' + t('sqStatsClientFallback') + ' ' + clientFallback + ') · ' + t('sqStatsQuick') + ' ' + quickCount + quickLimit + '. ' + parserText + '. ' + t('sqStatsQuality') + ': ' + t('sqExcellent') + ' ' + q.excellent.count + ', ' + t('sqGood') + ' ' + q.good.count + ', ' + t('sqUsable') + ' ' + q.usable.count + ', ' + t('sqUntestable') + ' ' + untestableCount + ', ' + t('sqTimeout') + ' ' + q.timeout.count + ', ' + t('sqUnusable') + ' ' + q.unusable.count + '.';
+        stats.textContent = t('sqStatsCurrent') + ': ' + t('sqStatsSearchable') + ' ' + d.searchable + ' · ' + t('sqStatsPool') + ' ' + qualityPoolCount + ' (' + t('sqStatsServerVerified') + ' ' + serverVerified + ', ' + t('sqStatsClientFallback') + ' ' + clientFallback + ') · ' + t('sqStatsQuick') + ' ' + quickCount + quickLimit + '. ' + parserText + '. ' + t('sqStatsQuality') + ': ' + t('sqExcellent') + ' ' + q.excellent.count + ', ' + t('sqGood') + ' ' + q.good.count + ', ' + t('sqUsable') + ' ' + q.usable.count + ', ' + t('sqUntestable') + ' ' + untestableCount + ', ' + t('sqTimeout') + ' ' + q.timeout.count + ', ' + t('sqUnusable') + ' ' + q.unusable.count + '.';
       }
     } else {
       $('sqQualityGrades').textContent = '';
@@ -2254,9 +2257,9 @@ async function loadSearchQuotaReport() {
     const qualityPoolKeys = new Set(rawQualityPoolKeys);
     sqAllSites = allSites.filter(s => s.searchable === 1 && (s.qualityPoolMember === true || s.candidate === true) && qualityPoolKeys.has(s.key) && s.blocked !== true);
     sqExcludedSites = allSites.filter(s => s.searchable === 1 && s.blocked !== true && !qualityPoolKeys.has(s.key));
-    sqCandidateCount = sqAllSites.length;
+    sqQualityPoolCount = sqAllSites.length;
     sqCategoryCounts = serverCategoryCounts;
-    sqCandidateCategoryCounts = typeof serverCandidateCounts === 'object' && serverCandidateCounts !== null
+    sqQualityPoolCategoryCounts = typeof serverCandidateCounts === 'object' && serverCandidateCounts !== null
       ? serverCandidateCounts
       : countSearchCategories(sqAllSites);
     renderSearchSources();
@@ -2513,7 +2516,7 @@ function renderQualityStats(d) {
   const probed = typeof coverage.probed === 'number' ? coverage.probed : 0;
   const coveragePct = testable > 0 ? Math.min(100, Math.round((probed / testable) * 100)) : 0;
   html += '<div>' + t('qualityCoverage') + ': ' + coveragePct + '% · ' + t('qualityTestable') + ' ' + countText(coverage.testable) + ' · ' + t('qualityProbed') + ' ' + countText(coverage.probed) + ' · ' + t('qualityNotProbed') + ' ' + countText(coverage.notProbed) + ' · ' + t('qualityUntestable') + ' ' + countText(coverage.untestable) + '</div>';
-  html += '<div>' + t('sqPoolTotal') + ': ' + g.poolTotal + ' · ' + t('sqQuality') + ' ' + snap.graded + '/' + snap.total + ' · ' + fmtLocalTime(snap.updatedAt, sched?.timezone) + '</div>';
+  html += '<div>' + t('sqPoolTotal') + ': ' + countText(actual.qualityPoolCount) + ' · ' + t('sqQuality') + ' ' + snap.graded + '/' + snap.total + ' · ' + fmtLocalTime(snap.updatedAt, sched?.timezone) + '</div>';
  const recParse = d.recommendedMaxParses ?? snap.recommendedMaxParses ?? 3;
   html += '<div>' + t('qualityRecommended') + ': ' + t('qualityRecParses') + ' ' + recParse + '</div>';
   html += '<div style="margin-top:2px">' + t('qualityTimesHint') + '</div>';
@@ -2523,9 +2526,9 @@ function renderQualityStats(d) {
 let sqAllSites = [];
 let sqExcludedSites = [];
 let sqBlockedSites = [];
-let sqCandidateCount = 0;
+let sqQualityPoolCount = 0;
 let sqCategoryCounts = {};
-let sqCandidateCategoryCounts = {};
+let sqQualityPoolCategoryCounts = {};
 let sqSearchRenderPending = false;
 let sqLastRenderedHtml = '';
 const sqScrollPositions = {};
@@ -2824,8 +2827,8 @@ function renderSearchSources() {
   const noSearchFilter = !query && gradeFilter === 'all';
   const countFor = function(category, filteredItems) {
     if (!noSearchFilter) return filteredItems.length;
-    const serverCount = sqCandidateCategoryCounts && typeof sqCandidateCategoryCounts[category] === 'number'
-      ? sqCandidateCategoryCounts[category]
+    const serverCount = sqQualityPoolCategoryCounts && typeof sqQualityPoolCategoryCounts[category] === 'number'
+      ? sqQualityPoolCategoryCounts[category]
       : null;
     const localCount = filteredItems.length;
     return serverCount === null ? localCount : serverCount;
@@ -3081,8 +3084,7 @@ function normalizeClientAuthCode(item, index) {
     code: (item && item.code) || '',
     enabled: !item || item.enabled !== false,
     sourceMode,
-    maxSites: parseCredentialLimit(item && item.maxSites, -1),
-    maxSearchable: parseCredentialLimit(item && item.maxSearchable, -1),
+    maxSites: parseCredentialLimit(item && item.maxSites, parseCredentialLimit(item && item.maxSearchable, -1)),
     bucketLimits: normalizeClientBucketLimits(item && item.bucketLimits),
     includeGrades: Array.isArray(item && item.includeGrades) ? item.includeGrades.filter((grade) => CLIENT_GRADES.includes(grade)) : [],
     siteTypes: Array.isArray(item && item.siteTypes)
@@ -3113,7 +3115,6 @@ function newCredentialAuthCode() {
     enabled: true,
     sourceMode: 'all',
     maxSites: -1,
-    maxSearchable: -1,
     includeGrades: [],
     siteTypes: [],
     selectedKeys: [],
@@ -3139,7 +3140,6 @@ function sourceModeLabel(mode) {
 function credentialModeSummary(item) {
   const parts = [sourceModeLabel(item.sourceMode)];
   parts.push(t('credentialMaxSites') + ' ' + clientLimitLabel(item.maxSites));
-  parts.push(t('credentialMaxSearchable') + ' ' + clientLimitLabel(item.maxSearchable));
   if (item.includeGrades && item.includeGrades.length) parts.push(item.includeGrades.map((grade) => qualityGradeLabel(grade)).join(' / '));
   if (item.siteTypes && item.siteTypes.length) parts.push(t('credentialSiteTypes') + ' ' + item.siteTypes.map((value) => credentialTypeLabel(String(value))).join(' / '));
   if (item.selectedKeys && item.selectedKeys.length) parts.push(t('credentialSelectedKeys') + ' ' + item.selectedKeys.length);
@@ -3298,11 +3298,6 @@ function renderCredentialDistribution() {
       summary.textContent = credentialModeSummary(item);
     }));
 
-    grid.appendChild(createCredentialLimitControl(t('credentialMaxSearchable'), item.maxSearchable, (value) => {
-      item.maxSearchable = value;
-      item.updatedAt = new Date().toISOString();
-      summary.textContent = credentialModeSummary(item);
-    }));
 
     // 分桶数量：全选=-1，不选=0，正数=保留前 N 个。
     const bucketPanel = document.createElement('div');
