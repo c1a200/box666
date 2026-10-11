@@ -312,7 +312,7 @@ export interface SearchQuotaReport {
 }
 
 // 站点质量分级（基于聚合阶段已有验活/测速结果，不额外发起请求）
-// 质量池包含 excellent / good / usable / untestable；timeout 与 unusable 永不进入客户端搜索源。
+// 质量池包含 excellent / good / usable / untestable；timeout 与 unusable 不下发。
 export type SiteQualityGrade = 'excellent' | 'good' | 'usable' | 'untestable' | 'timeout' | 'unusable';
 
 export interface SiteQualityGradeBucket {
@@ -329,7 +329,7 @@ export interface SiteQualityGrades {
   unusable: SiteQualityGradeBucket;  // 不可用：连续失败/明确错误
   poolTotal: number;                 // 质量池总数（服务端验证 + 客户端后备）
   serverVerifiedTotal: number;      // excellent/good/usable，可默认下发
-  clientFallbackTotal: number;      // untestable，只有显式策略才下发
+  clientFallbackTotal: number;      // untestable，客户端后备候选
 }
 // 搜索源质量分级快照
 export interface SearchQualityEntry {

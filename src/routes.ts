@@ -33,7 +33,6 @@ import {
   getQualityPoolHealth,
 } from './core/quality';
 import { loadClientDistribution, saveClientDistribution, findClientAuthCode, normalizeClientDistributionConfig, createClientAuthCode } from './core/client-auth-store';
-import { isSiteProbeable } from './core/speedtest';
 import { formatAggregatedLiveGroupsAsTxt, formatLiveGroupsAsTxt, filterLivesBySource, filterLivesBySourceDetailed, sortLiveGroupsForOutput } from './core/live-merger';
 import { containsBlockedLiveUrl, isBlockedLiveSource, isBlockedLiveUrl } from './core/live-policy';
 import { autoNameFromUrl, backupTypeMismatch, createSourceBackup, extractBackupItems, parseSourceList } from './core/source-list-parser';
@@ -493,9 +492,8 @@ export function createApp(deps: AppDeps): Hono {
     }
     if (!Array.isArray(parsed.sites)) return raw;
 
-    // The root URL has no auth code, but must use the same conservative
-    // quality gate as authenticated URLs. `all` means verified candidates,
-    // never literally every merged source.
+    // 根链接与鉴权码使用同一套质量池和分发规则。
+    // “全部”表示质量池中所有符合条件的去重源，不是隐式只取少量后备源。
     const rootQuota = context.authCode ? null : await loadSearchQuota(storage);
     const policy = context.authCode || {
       sourceMode: 'all' as SourceDistributionMode,
@@ -514,7 +512,7 @@ export function createApp(deps: AppDeps): Hono {
       sites.filter((site) => site.searchable === 1).map((site) => site.key),
     );
 
-    // Distribution always starts from the same quality-ranked pool.  Category
+    // 根链接、鉴权码都从同一个已排序质量池开始。分类
     // and count limits are applied after this ordering, so a per-category N
     // means that category's own top N rather than whichever entries happened
     // to occur first in the merged config.
@@ -533,9 +531,8 @@ export function createApp(deps: AppDeps): Hono {
     (effectiveQualityPool?.entries || []).forEach((entry, index) => {
       if (!qualityOrder.has(entry.key)) qualityOrder.set(entry.key, index);
     });
-    // A searchable JAR is valid for the client even though the server cannot
-    // execute it. Keep a bounded client-runtime fallback window; an explicit
-    // 0/N/-1 policy still overrides this conservative default.
+    // 可搜索 JAR 由客户端执行，服务端无法直接验活。默认保留质量池中全部
+    // untestable 候选；只有明确配置 0/N/-1 时才关闭、限制或全选该类。
     const hasUntestableLimit = effectiveBucketLimits?.quality?.untestable !== undefined;
     const maxUntestable = hasUntestableLimit
       ? effectiveBucketLimits!.quality!.untestable!
@@ -552,11 +549,9 @@ export function createApp(deps: AppDeps): Hono {
     // directly probeable provisional pool instead of either returning zero
     // search sources or leaking the whole merged configuration.
     if (!qualityHasEntries) {
-      const provisional = sites
-        .filter((site) => site.searchable === 1 && isSiteProbeable(site))
-        .slice(0, 24);
-      provisionalKeys = new Set(provisional.map((site) => site.key));
-      sites = sites.filter((site) => site.searchable !== 1 || provisionalKeys.has(site.key));
+      // 质量池不可用时不以“小型临时池”暗中截断全选策略；所有去重的
+      // searchable 候选都保留，排序退回聚合顺序，待质量任务恢复后再排序。
+      provisionalKeys = new Set(sites.filter((site) => site.searchable === 1).map((site) => site.key));
     }
     const isSearchableAllowed = (site: TVBoxSite): boolean => {
       if (site.searchable !== 1) return true;
@@ -802,9 +797,8 @@ export function createApp(deps: AppDeps): Hono {
       }
     }
 
-    // Searchable JAR/client-runtime sources are useful to the application but
-    // cannot be verified by this server. Keep a small default fallback window;
-    // an explicit 0/N/-1 remains authoritative for each root/auth policy.
+    // 根链接和鉴权码默认都保留全部客户端后备源；质量池顺序仍然决定优先级。
+    // 只有明确的 0/N/-1 才会关闭、限制或全选 untestable。
     const hasUntestableLimit = distributionBucketLimits?.quality?.untestable !== undefined;
     const maxUntestable = hasUntestableLimit
       ? distributionBucketLimits!.quality!.untestable!
@@ -860,17 +854,15 @@ export function createApp(deps: AppDeps): Hono {
         ...functionalSites.filter((site) => !restoredKeys.has(site.key)),
       ];
     } else {
-      // 质量池尚未生成时，仍保留功能扩展；可搜索源则只使用当前最终配置
-      // 中的条目，避免冷启动阶段把原始全量候选直接泄漏给客户端。
-      const provisional = allSites
-        .filter((site) => !blockedKeys.has(site.key))
-        .filter((site) => site.searchable !== 1 || isSiteProbeable(site))
-        .slice(0, 24);
-      const provisionalKeys = new Set(provisional.map((site) => site.key));
-      orderedSites = allSites.filter((site) =>
-        !blockedKeys.has(site.key)
-        && (site.searchable !== 1 || provisionalKeys.has(site.key))
-      );
+      // 质量池尚未生成/已过期时不另设隐式 24 源上限，也不能漏掉 JAR。
+      // 合并当前配置与完整候选快照并按 key 去重；之后有新质量快照再排序。
+      const fallbackByKey = new Map<string, TVBoxSite>();
+      for (const site of [...allSites, ...candidateSites]) {
+        if (blockedKeys.has(site.key)) continue;
+        const current = siteByKey.get(site.key) || site;
+        if (!fallbackByKey.has(site.key)) fallbackByKey.set(site.key, current);
+      }
+      orderedSites = [...fallbackByKey.values()];
     }
 
     // Apply category/grade limits before pinning. A pinned lower-quality source

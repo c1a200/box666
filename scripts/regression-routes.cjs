@@ -185,7 +185,7 @@ async function readSites(response) {
     const sites = await readSites(await app.request('https://box.example/'));
     assert(sites.length >= 2, 'root link should receive enabled startup sites when requireAuth is false');
     const keys = sites.map((site) => site.key);
-    assert(keys.includes('source-client-fallback'), 'root link should include a bounded client-runtime fallback');
+    assert(keys.includes('source-client-fallback'), 'root link should include all client-runtime fallback sources');
     assert(!keys.includes('source-timeout'), 'root link must never distribute timeout sources');
     assert(keys.indexOf('source-excellent') < keys.indexOf('source-good'), 'root link must preserve the quality-pool order');
   }
@@ -227,7 +227,7 @@ async function readSites(response) {
     const keys = sites.map((site) => site.key);
     assert(!keys.includes('source-outside-pool'), 'full config must not restore searchable sources outside the quality pool');
     assert(!keys.includes('source-timeout'), 'full config must not restore timeout sources');
-    assert(keys.includes('source-client-fallback'), 'full config should keep the default bounded client-runtime fallback');
+    assert(keys.includes('source-client-fallback'), 'full config should keep the default client-runtime fallback');
     assert(keys.includes('source-plugin'), 'full config may keep non-searchable functional extensions');
   }
 
@@ -254,9 +254,8 @@ async function readSites(response) {
     const { app } = makeApp({ qualityPool: expiredPool, distribution: expiredDistribution });
     const sites = await readSites(await app.request('https://box.example/auth/expired-pool/'));
     const searchable = sites.filter((site) => site.searchable === 1);
-    assert(searchable.length > 0, 'expired quality pool must keep a bounded provisional search pool');
-    assert(searchable.length <= 24, 'expired quality pool provisional pool must remain bounded');
-    assert(searchable.every((site) => site.type !== 3), 'expired quality pool fallback must be directly probeable');
+    assert(searchable.length >= 3, 'expired quality pool must keep the complete deduplicated searchable fallback');
+    assert(searchable.some((site) => site.type === 3), 'expired quality pool fallback must retain client-executed JAR sources');
   }
 
   {
@@ -393,8 +392,8 @@ async function readSites(response) {
     const defaultSites = await readSites(await defaultApp.request('https://box.example/'));
     const defaultFallbacks = defaultSites.filter((site) => site.key.startsWith('source-extra-fallback-'));
     const allDefaultFallbacks = defaultSites.filter((site) => site.key === 'source-client-fallback' || site.key.startsWith('source-extra-fallback-'));
-    assert(defaultFallbacks.length === 3 && allDefaultFallbacks.length === 4,
-      'default distribution must cap untestable searchable JARs at four: ' + allDefaultFallbacks.map((site) => site.key).join(','));
+    assert(defaultFallbacks.length === 6 && allDefaultFallbacks.length === 7,
+      'root default must include every untestable searchable JAR without an implicit cap: ' + allDefaultFallbacks.map((site) => site.key).join(','));
     assert(defaultSites.findIndex((site) => site.key === 'source-excellent')
       < defaultSites.findIndex((site) => site.key === defaultFallbacks[0].key),
     'server-verified sources must precede client-runtime fallbacks');

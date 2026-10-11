@@ -56,9 +56,9 @@ const DEFAULT_FULL_REPEAT_DAYS = 7;
 export const QUALITY_POOL_FRESH_TTL_MS = 36 * 60 * 60 * 1000;
 export const QUALITY_POOL_STALE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 // JAR/客户端运行时源可以在应用端参与搜索，但服务端无法替它们验活。
-// 默认只给启动配置留一个很小的后备窗口，避免把大量未验证的 JAR
-// 变成应用启动时的串行初始化负担。鉴权码仍可用 0/N/-1 覆盖这个默认值。
-export const DEFAULT_CLIENT_FALLBACK_LIMIT = 4;
+// “全部”是默认策略：质量池负责排序，客户端后备源不再被隐式截断。
+// 只有管理端明确设置 0/N 时才会排除或限制 untestable；-1 表示全部。
+export const DEFAULT_CLIENT_FALLBACK_LIMIT = -1;
 
 export type QualityPoolState = 'fresh' | 'stale' | 'expired' | 'unavailable';
 
@@ -396,10 +396,10 @@ function buildGrades(entries: SearchQualitySnapshot['entries']): SiteQualityGrad
   for (const entry of entries) {
     const grade = normalizeGrade(entry.grade);
     grades[grade].count++;
-    if (grade !== 'timeout' && grade !== 'unusable') {
+    if (grade !== 'timeout') {
       grades.poolTotal++;
-      if (grade === 'untestable') grades.clientFallbackTotal++;
-      else grades.serverVerifiedTotal++;
+      if (grade === 'excellent' || grade === 'good' || grade === 'usable') grades.serverVerifiedTotal++;
+      else if (grade === 'untestable') grades.clientFallbackTotal++;
     }
   }
   let cumulative = 0;
@@ -420,18 +420,41 @@ function normalizeSnapshot(raw: unknown): SearchQualitySnapshot | null {
   if (!raw || typeof raw !== 'object') return null;
   const parsed = raw as Record<string, any>;
   if (!Array.isArray(parsed.entries)) return null;
-  const entries = parsed.entries.map((entry: any) => ({
-    ...entry,
-    grade: normalizeGrade(entry.grade),
-    speedMs: typeof entry.speedMs === 'number' ? entry.speedMs : null,
-    result: entry.result === 'ok' || entry.result === 'empty' || entry.result === 'error' || entry.result === 'timeout' || entry.result === 'not_probed'
-      ? entry.result
-      : 'not_probed',
-    consecutiveFailures: typeof entry.consecutiveFailures === 'number' ? entry.consecutiveFailures : 0,
-    qualityScore: typeof entry.qualityScore === 'number' ? entry.qualityScore : undefined,
-    qualityConfidence: typeof entry.qualityConfidence === 'number' ? entry.qualityConfidence : undefined,
-    category: typeof entry.category === 'string' ? entry.category : undefined,
-  })) as SearchQualitySnapshot['entries'];
+  const entries = parsed.entries.map((entry: any) => {
+    const rawGrade = normalizeGrade(entry.grade);
+    const jarProbeResult = entry.jarProbeResult === 'ok' || entry.jarProbeResult === 'error'
+      || entry.jarProbeResult === 'timeout' || entry.jarProbeResult === 'not_probed'
+      ? entry.jarProbeResult
+      : undefined;
+    // 3.3.4 and earlier classified many client JARs as unusable merely because
+    // Render could not validate a placeholder/image URL as a ZIP. Migrate those
+    // historical records to untestable immediately; a later quality run can
+    // still promote or remove them using the explicit HTTP failure rules.
+    const softJarFailure = rawGrade === 'unusable'
+      && !!jarProbeResult
+      && !isHardJarProbeFailure({
+        key: entry.key || '',
+        siteKey: entry.key || '',
+        result: jarProbeResult,
+        speedMs: typeof entry.jarSpeedMs === 'number' ? entry.jarSpeedMs : null,
+        httpStatus: typeof entry.jarHttpStatus === 'number' ? entry.jarHttpStatus : undefined,
+      });
+    const grade = softJarFailure ? 'untestable' : rawGrade;
+    return {
+      ...entry,
+      grade,
+      speedMs: typeof entry.speedMs === 'number' ? entry.speedMs : null,
+      result: entry.result === 'ok' || entry.result === 'empty' || entry.result === 'error' || entry.result === 'timeout' || entry.result === 'not_probed'
+        ? entry.result
+        : 'not_probed',
+      consecutiveFailures: typeof entry.consecutiveFailures === 'number' ? entry.consecutiveFailures : 0,
+      // Recompute the score after a legacy unusable -> untestable migration.
+      qualityScore: softJarFailure ? undefined : (typeof entry.qualityScore === 'number' ? entry.qualityScore : undefined),
+      qualityConfidence: softJarFailure ? 0.2 : (typeof entry.qualityConfidence === 'number' ? entry.qualityConfidence : undefined),
+      jarProbeResult,
+      category: typeof entry.category === 'string' ? entry.category : undefined,
+    };
+  }) as SearchQualitySnapshot['entries'];
   const sorted = sortQualityEntries(entries);
   const grades = buildGrades(sorted);
   const coverageRaw = parsed.coverage && typeof parsed.coverage === 'object' ? parsed.coverage : {};
@@ -518,7 +541,7 @@ export function qualityPoolKeysFromPool(pool: SearchQualitySnapshot | null): Set
   if (!pool || !Array.isArray(pool.entries)) return keys;
   for (const entry of pool.entries) {
     const grade = normalizeGrade(entry.grade);
-    if (QUALITY_POOL_GRADES.has(grade) && qualityScoreForEntry(entry) > 0) keys.add(entry.key);
+    if (QUALITY_POOL_GRADES.has(grade)) keys.add(entry.key);
   }
   return keys;
 }
@@ -538,8 +561,9 @@ export function candidateKeysFromPool(pool: SearchQualitySnapshot | null): Set<s
 }
 
 /**
- * Return keys eligible for distribution.  Client-verifiable sources are an
- * explicit fallback only; they never silently join the server-verified pool.
+ * Return keys eligible for distribution. Client-verifiable sources remain in
+ * the same ordered candidate pool; callers may explicitly set 0/N/-1 for
+ * untestable, while the default is -1 (all).
  */
 export function distributableKeysFromPool(
   pool: SearchQualitySnapshot | null,
@@ -547,7 +571,7 @@ export function distributableKeysFromPool(
 ): Set<string> {
   const keys = new Set<string>();
   if (!pool || !Array.isArray(pool.entries)) return keys;
-  const maxUntestable = options.maxUntestable ?? 0;
+  const maxUntestable = options.maxUntestable ?? -1;
   let untestable = 0;
   for (const entry of pool.entries) {
     if (options.eligibleKeys && !options.eligibleKeys.has(entry.key)) continue;
@@ -560,6 +584,7 @@ export function distributableKeysFromPool(
       && (maxUntestable < 0 || untestable < maxUntestable)) {
       keys.add(entry.key);
       untestable++;
+      continue;
     }
   }
   return keys;
@@ -637,13 +662,13 @@ export async function runQualityGrading(
   return snapshot;
 }
 
-function isHardJarProbeFailure(probe: JarProbeResult): boolean {
-  // 网络超时、Render 到上游的临时失败，只说明本次服务端无法完成预检，
-  // 不能推断客户端也无法下载/执行。只有明确的 HTTP 拒绝、ZIP 损坏或
-  // 声明 MD5 不匹配，才足以把“客户端 JAR”标成 unusable。
-  return (typeof probe.httpStatus === 'number' && probe.httpStatus >= 400)
-    || probe.zipValid === false
-    || probe.md5Verified === false;
+export function isHardJarProbeFailure(probe: JarProbeResult): boolean {
+  // 客户端运行时才会真正执行 type=3 扩展。Render 侧遇到超时、5xx、
+  // 非 ZIP 响应或 MD5 不一致，只能说明本次预检无法证明质量；尤其是
+  // 聚合源常用图片/占位地址填充 jar 字段，不能据此把整类源误判为不可用。
+  // 只有明确的鉴权拒绝或资源不存在，才足以排除该源。
+  return typeof probe.httpStatus === 'number'
+    && [401, 403, 404, 410].includes(probe.httpStatus);
 }
 
 function buildQualityEntries(
@@ -675,8 +700,8 @@ function buildQualityEntries(
         if (jarProbe.result === 'ok') {
           entry.qualityConfidence = 0.55;
         } else if (isHardJarProbeFailure(jarProbe)) {
-          // 明确损坏/拒绝的 JAR 才进入 unusable；服务端网络失败仍是
-          // 客户端可验证的 untestable 后备源。
+          // 只有明确被上游拒绝或确认不存在的入口才进入 unusable；
+          // 其余 JAR 预检失败均保留为 untestable，交给客户端实际执行。
           entry.grade = 'unusable';
           entry.qualityConfidence = 0.75;
         } else {
@@ -913,7 +938,7 @@ export function unusableKeys(pool: SearchQualitySnapshot | null): Set<string> {
   return keys;
 }
 
-/** 不进入质量池的 key 集合（超时 + 不可用）。 */
+/** 不进入质量池的 key 集合（超时 + 明确不可用）。 */
 export function excludedQualityKeys(pool: SearchQualitySnapshot | null): Set<string> {
   const keys = new Set<string>();
   if (!pool || !Array.isArray(pool.entries)) return keys;

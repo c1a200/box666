@@ -19,6 +19,8 @@ const {
   QUALITY_POOL_FRESH_TTL_MS,
   QUALITY_POOL_STALE_TTL_MS,
   qualityPoolKeysFromPool,
+  distributableKeysFromPool,
+  isHardJarProbeFailure,
 } = require(outfile);
 
 function assert(condition, message) {
@@ -71,5 +73,15 @@ const mixedPool = {
 };
 const qualityPoolKeys = [...qualityPoolKeysFromPool(mixedPool)];
 assert(qualityPoolKeys.join(',') === 'excellent,untestable', 'quality pool must include untestable and exclude timeout/unusable');
+
+const distributed = [...distributableKeysFromPool({ entries: [
+  { key: 'verified', grade: 'good', qualityScore: 760 },
+  { key: 'client-a', grade: 'untestable', qualityScore: 420 },
+  { key: 'client-b', grade: 'untestable', qualityScore: 420 },
+  { key: 'dead', grade: 'unusable', qualityScore: 0 },
+] }, { includeUntestable: true })];
+assert(distributed.join(',') === 'verified,client-a,client-b', 'default client fallback must keep all untestable sources');
+assert(isHardJarProbeFailure({ key: 'x', siteKey: 'x', result: 'error', speedMs: null, httpStatus: 404 }) === true, 'missing remote JAR must remain unusable');
+assert(isHardJarProbeFailure({ key: 'x', siteKey: 'x', result: 'error', speedMs: null, httpStatus: 200, zipValid: false, md5Verified: false }) === false, 'metadata/placeholder JAR failures must remain untestable');
 
 console.log('regression: quality pool freshness checks passed');

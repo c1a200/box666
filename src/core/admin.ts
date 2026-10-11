@@ -461,7 +461,7 @@ ${sharedStyles}
       </div>
       <div id="rootSourceBuckets" style="display:none;margin-top:8px"></div>
       <div style="margin-top:6px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="searchQuotaDesc">这里只控制根配置下发的健康解析器数量；源选择方式决定根链接下发哪些质量池源。</div>
-      <div style="margin-top:4px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="qualityGradeDesc">质量分级（后台分块测速，不影响应用端启动速度）：优 ≤1000ms、良 1001-3000ms、可用 3001-6000ms。服务端只验证可直接请求的源；可搜索 JAR/客户端运行时源会进入独立的小型后备池，不等于不可搜索。默认最多下发 4 个，鉴权码可将客户端后备设置为 0、N 或全部。超时和不可用永不下发。</div>
+      <div style="margin-top:4px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="qualityGradeDesc">质量分级（后台分块测速，不影响应用端启动速度）：优 ≤1000ms、良 1001-3000ms、可用 3001-6000ms。服务端只验证可直接请求的源；可搜索 JAR/客户端运行时源无法由服务端直接确认，但仍参与客户端搜索；默认全部按质量排序下发，只有超时和屏蔽源排除。</div>
     </div>
 
     <div class="section">
@@ -962,7 +962,7 @@ const translations = {
     qualityTimes:'执行时间', qualityTimesPh:'例如 04:30, 16:30', qualityRepeatDays:'质量池重排周期（天）', qualityFullRepeatDays:'全量分级周期（天）',
     qualityRunPool:'重测质量池', qualityRunFull:'全量重测', qualityRunNow:'立即执行', qualityRefresh:'刷新分级状态', qualityStatusLabel:'状态', qualityStatusMode:'模式',
     qualityScheduleDesc:'分级在后台异步执行，点击后立即返回，不会阻塞网页或其他请求。日常重测质量池中的源；需要网盘登录、JAR 运行或其他客户端能力的源由应用端最终验证。网盘登录和凭证处理完全由应用端完成，服务端不会保存、下发或注入凭证。到达全量周期或质量池为空时自动全量分级。Cloudflare 和 Node/Render 都按小分片执行并在分片间让出事件循环；Node/Render 异常重启后会从已保存游标继续。',
-    qualityGradeDesc:'质量分级（后台分块测速，不影响应用端启动速度）：优 ≤1000ms；良 1001-3000ms；可用 3001-6000ms。服务端只验证可直接请求的源；可搜索 JAR/客户端运行时源进入独立的小型后备池，默认最多 4 个，鉴权码可设置为 0、N 或全部。超时和不可用永不下发。源类型与数量请在鉴权码中按需选择。',
+    qualityGradeDesc:'质量分级（后台分块测速，不影响应用端启动速度）：优 ≤1000ms；良 1001-3000ms；可用 3001-6000ms。服务端只验证可直接请求的源；可搜索 JAR/客户端运行时源同样进入质量排序；根链接与鉴权码默认全部下发，只有超时和屏蔽源排除。源类型与数量可在此按需设置。',
     qualityNoSnapshot:'尚无分级结果，先执行一次分级以建立质量池。',
     qualityStateIdle:'空闲', qualityStateRunning:'运行中', qualityStateDone:'已完成', qualityStateError:'错误',
     qualityLastRun:'上次执行', qualityNextRun:'下次执行', qualityLastFullRun:'上次全量', qualityNextFullRun:'下次全量', qualityNever:'从未',
@@ -1032,7 +1032,7 @@ const translations = {
     credentialRootPolicyFree:'根链接已启用',
     credentialSelectedKeysRequired:'“自定义源标识白名单”模式至少需要填写一个源标识。',
     credentialBucketLimits:'分类源数量',
-    credentialBucketLimitsHint:'质量等级和站点类型均可设置为全选、不选或自定义 N；自定义按最终质量顺序保留前 N 个，未设置的项目不额外限制。未设置客户端后备时默认最多保留 4 个可搜索 JAR/运行时源。',
+    credentialBucketLimitsHint:'质量等级和站点类型均可设置为全选、不选或自定义 N；自定义按最终质量顺序保留前 N 个，未设置的项目不额外限制。未设置时全部下发；根链接与鉴权码规则一致。',
     credentialBucketAll:'全选 / 不限',
     credentialBucketNone:'不选',
     credentialBucketCustom:'自定义数量',
