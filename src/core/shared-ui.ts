@@ -12,7 +12,8 @@ function esc(s) {
 function getLang() {
   const s = localStorage.getItem('lang');
   if (s === 'en' || s === 'zh') return s;
-  return navigator.language?.startsWith('zh') ? 'zh' : 'en';
+  // 管理界面默认使用中文；英文仍可通过右上角切换。
+  return 'zh';
 }
 
 function applyLang(translations, lang) {
@@ -124,12 +125,12 @@ function getTheme() {
 }
 
 var THEMES = [
-  { id: 'dark',    icon: '\\u2600\\uFE0F',  label: 'Dark',    dot: '#0a0e14' },
-  { id: 'light',   icon: '\\uD83C\\uDF19',  label: 'Light',   dot: '#f4f6f9' },
-  { id: 'sunset',  icon: '\\uD83C\\uDF05',  label: 'Sunset',  dot: '#1a1208' },
-  { id: 'cyber',   icon: '\\u26A1',         label: 'Cyber',   dot: '#08000f' },
-  { id: 'eyecare', icon: '\\uD83C\\uDF3F',  label: 'EyeCare', dot: '#0d1a0d' },
-  { id: 'violet',  icon: '\\uD83D\\uDC8E',  label: 'Violet',  dot: '#140a20' }
+  { id: 'dark',    icon: '\\u2600\\uFE0F',  label: '深色', dot: '#0a0e14' },
+  { id: 'light',   icon: '\\uD83C\\uDF19',  label: '浅色', dot: '#f4f6f9' },
+  { id: 'sunset',  icon: '\\uD83C\\uDF05',  label: '日落', dot: '#1a1208' },
+  { id: 'cyber',   icon: '\\u26A1',         label: '赛博', dot: '#08000f' },
+  { id: 'eyecare', icon: '\\uD83C\\uDF3F',  label: '护眼', dot: '#0d1a0d' },
+  { id: 'violet',  icon: '\\uD83D\\uDC8E',  label: '紫色', dot: '#140a20' }
 ];
 
 function findTheme(id) {

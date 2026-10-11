@@ -37,7 +37,7 @@ import { isSiteProbeable } from './core/speedtest';
 import { formatAggregatedLiveGroupsAsTxt, formatLiveGroupsAsTxt, filterLivesBySource, filterLivesBySourceDetailed, sortLiveGroupsForOutput } from './core/live-merger';
 import { containsBlockedLiveUrl, isBlockedLiveSource, isBlockedLiveUrl } from './core/live-policy';
 import { autoNameFromUrl, backupTypeMismatch, createSourceBackup, extractBackupItems, parseSourceList } from './core/source-list-parser';
-import type { TVBoxConfig, TVBoxSite, SearchQuotaConfig, SiteQualityGrade, TVBoxLive, TVBoxLiveGroup, ClientAuthCode, ClientDistributionConfig, SourceDistributionMode } from './core/types';
+import type { TVBoxConfig, TVBoxSite, SearchQuotaConfig, SiteQualityGrade, TVBoxLive, TVBoxLiveGroup, ClientAuthCode, ClientDistributionConfig, SourceDistributionMode, SourceSelectionMode } from './core/types';
 import { mountChannelProbeRoutes } from './routes/channel-probe-admin';
 import { loadSpeedMap as loadChannelSpeedMap } from './core/channel-probe';
 import { createLogViewerRouter } from './routes/log-viewer';
@@ -499,12 +499,16 @@ export function createApp(deps: AppDeps): Hono {
     const rootQuota = context.authCode ? null : await loadSearchQuota(storage);
     const policy = context.authCode || {
       sourceMode: 'all' as SourceDistributionMode,
-      maxSites: -1,
+      selectionMode: (rootQuota?.selectionMode || 'simple') as SourceSelectionMode,
+      maxSites: rootQuota?.maxSites ?? -1,
       bucketLimits: rootQuota?.bucketLimits,
       selectedKeys: [] as string[],
       pinnedKeys: rootQuota?.pinnedKeys || [],
     };
     const mode: SourceDistributionMode = policy.sourceMode || 'all';
+    const selectionMode: SourceSelectionMode = policy.selectionMode === 'category' ? 'category' : 'simple';
+    // 简单选择独立于历史分类限制，避免旧配置与总数量策略叠加。
+    const effectiveBucketLimits = selectionMode === 'category' ? policy.bucketLimits : undefined;
     let sites = parsed.sites.slice();
     const searchableKeys = new Set(
       sites.filter((site) => site.searchable === 1).map((site) => site.key),
@@ -532,9 +536,9 @@ export function createApp(deps: AppDeps): Hono {
     // A searchable JAR is valid for the client even though the server cannot
     // execute it. Keep a bounded client-runtime fallback window; an explicit
     // 0/N/-1 policy still overrides this conservative default.
-    const hasUntestableLimit = policy.bucketLimits?.quality?.untestable !== undefined;
+    const hasUntestableLimit = effectiveBucketLimits?.quality?.untestable !== undefined;
     const maxUntestable = hasUntestableLimit
-      ? policy.bucketLimits!.quality!.untestable!
+      ? effectiveBucketLimits!.quality!.untestable!
       : DEFAULT_CLIENT_FALLBACK_LIMIT;
     const allowUntestable = maxUntestable !== 0;
     const distributableKeys = distributableKeysFromPool(effectiveQualityPool, {
@@ -603,11 +607,11 @@ export function createApp(deps: AppDeps): Hono {
 
 
     // 分桶在质量排序之后执行，保证分类 Top-N 是该分类内的真实 Top-N。
-    if (policy.bucketLimits) {
+    if (selectionMode === 'category' && effectiveBucketLimits) {
       const gradeByKey = new Map((effectiveQualityPool?.entries || []).map((entry) => [entry.key, entry.grade]));
       sites = applySiteBucketLimits(
         sites,
-        policy.bucketLimits,
+        effectiveBucketLimits,
         (site) => gradeByKey.get(site.key) || 'untestable',
         !context.authCode,
       );
@@ -619,7 +623,7 @@ export function createApp(deps: AppDeps): Hono {
     const maxSites = typeof policy.maxSites === 'number' && Number.isFinite(policy.maxSites)
       ? Math.floor(policy.maxSites)
       : -1;
-    if (maxSites >= 0) {
+    if (selectionMode === 'simple' && maxSites >= 0) {
       const searchableSites = sites.filter((site) => site.searchable === 1);
       const functionalSites = sites.filter((site) => site.searchable !== 1);
       sites = [
@@ -761,7 +765,13 @@ export function createApp(deps: AppDeps): Hono {
       return cached;
     }
 
-    const distributionBucketLimits = authCode?.bucketLimits ?? quota.bucketLimits;
+    const distributionSelectionMode = authCode?.selectionMode
+      || quota.selectionMode
+      || (authCode?.bucketLimits || quota.bucketLimits ? 'category' : 'simple');
+    const distributionBucketLimits = distributionSelectionMode === 'category'
+      ? (authCode?.bucketLimits ?? quota.bucketLimits)
+      : undefined;
+    const distributionMaxSites = authCode?.maxSites ?? quota.maxSites ?? -1;
     const distributionPinnedKeys = authCode?.pinnedKeys ?? quota.pinnedKeys;
     const blockedKeys = new Set(
       (quota.blockedKeys || []).filter((key): key is string => typeof key === 'string')
@@ -873,6 +883,11 @@ export function createApp(deps: AppDeps): Hono {
         (site) => qualityGradeByKey.get(site.key) || 'untestable',
         true,
       );
+    }
+    if (distributionSelectionMode === 'simple' && distributionMaxSites >= 0) {
+      const searchable = orderedSites.filter((site) => site.searchable === 1);
+      const functional = orderedSites.filter((site) => site.searchable !== 1);
+      orderedSites = [...searchable.slice(0, distributionMaxSites), ...functional];
     }
     const pinnedOrder = new Map(
       (distributionPinnedKeys || []).map((key, index) => [key, index] as const),
@@ -1693,6 +1708,12 @@ export function createApp(deps: AppDeps): Hono {
     }
     if (typeof body.maxParses === 'number' && Number.isFinite(body.maxParses)) {
       current.maxParses = Math.max(0, Math.floor(body.maxParses));
+    }
+    if (body.selectionMode === 'simple' || body.selectionMode === 'category') {
+      current.selectionMode = body.selectionMode;
+    }
+    if (typeof body.maxSites === 'number' && Number.isFinite(body.maxSites) && Number.isInteger(body.maxSites)) {
+      current.maxSites = body.maxSites === -1 ? -1 : Math.max(0, body.maxSites);
     }
     if (Array.isArray(body.blockedKeys)) {
       current.blockedKeys = [...new Set(body.blockedKeys.filter((key): key is string => typeof key === 'string'))];

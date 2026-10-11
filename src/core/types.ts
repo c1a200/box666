@@ -220,6 +220,7 @@ export interface EdgeProxyConfig {
 
 // 源分发策略：all=质量池全部源，search=仅可搜索源，selected=仅质量池精选源，custom=自定义筛选
 export type SourceDistributionMode = 'all' | 'search' | 'selected' | 'custom';
+export type SourceSelectionMode = 'simple' | 'category';
 
 // 源类型只描述接口机制，与 excellent/good/usable/untestable 质量等级无关。
 export type SourceCategory = 'xml' | 'json' | 'jar' | 'js' | 'remote' | 'other';
@@ -247,6 +248,7 @@ export interface ClientAuthCode {
   code: string;
   enabled: boolean;
   sourceMode: SourceDistributionMode;
+  selectionMode?: SourceSelectionMode;
   /** Maximum number of searchable sources selected from the quality pool. */
   maxSites: number;
   bucketLimits?: SiteBucketLimits;
@@ -278,6 +280,8 @@ export interface SearchQuotaConfig {
   pruneDeadParses?: boolean;    // 聚合时探测并剔除确认失效的解析器
   maxParses?: number;           // 健康解析器上限，0 = 不限制
   bucketLimits?: SiteBucketLimits; // 根链接按质量等级/站点类型的数量上限
+  selectionMode?: SourceSelectionMode;
+  maxSites?: number;
   blockedKeys?: string[];            // 显式屏蔽的源 key：优先于置顶/质量分级，仍保留在后台列表中以便恢复
   quotaSchemaVersion?: number;  // 自动配额迁移版本
 }

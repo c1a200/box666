@@ -6,7 +6,7 @@ export const adminHtml = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>TVBox Aggregator - Admin</title>
+<title>TVBox 源聚合器 - 管理控制台</title>
 <style>
 ${sharedStyles}
 
@@ -229,11 +229,11 @@ ${sharedStyles}
 <!-- Login -->
 <div class="login-overlay" id="loginOverlay">
   <div class="login-box">
-    <h2 data-i18n="loginTitle">Admin Access</h2>
-    <p data-i18n="loginSubtitle">TVBox Aggregator Management</p>
-    <div class="error-msg" id="loginError" data-i18n="invalidToken">Invalid token</div>
-    <input type="password" id="loginInput" placeholder="Enter admin token" data-i18n-placeholder="enterToken" autocomplete="off">
-    <button class="btn" style="width:100%" onclick="auth.doLogin()" data-i18n="login">Login</button>
+    <h2 data-i18n="loginTitle">管理登录</h2>
+    <p data-i18n="loginSubtitle">TVBox 源聚合器管理</p>
+    <div class="error-msg" id="loginError" data-i18n="invalidToken">管理令牌无效</div>
+    <input type="password" id="loginInput" placeholder="请输入管理令牌" data-i18n-placeholder="enterToken" autocomplete="off">
+    <button class="btn" style="width:100%" onclick="auth.doLogin()" data-i18n="login">登录</button>
   </div>
 </div>
 
@@ -241,33 +241,33 @@ ${sharedStyles}
 <div class="container" id="mainContent" style="display:none">
   <header class="header">
     <div class="header-top">
-      <div class="header-label" data-i18n="headerLabel">Admin Console</div>
+      <div class="header-label" data-i18n="headerLabel">管理控制台</div>
       <div style="display:flex;gap:8px;align-items:center">
         <span id="themeDropdown"></span>
         <button class="lang-toggle" id="langToggle" onclick="doToggleLang()">中文</button>
       </div>
     </div>
-    <h1 class="header-title">Source <span>Manager</span></h1>
+    <h1 class="header-title">源<span>管理</span></h1>
     <nav class="header-nav">
-      <a href="/admin/config-editor" data-i18n="navConfigEditor">Config Editor</a>
-      <a href="/builder">Builder</a>
-      <a href="/status" data-i18n="navDashboard">Dashboard</a>
+      <a href="/admin/config-editor" data-i18n="navConfigEditor">配置编辑</a>
+      <a href="/builder" data-i18n="navBuilder">配置构建</a>
+      <a href="/status" data-i18n="navDashboard">运行状态</a>
     </nav>
     <!-- Aggregation status bar -->
     <div class="agg-bar">
-      <span class="status-text" id="aggStatus" data-i18n="loadingStatus">Loading...</span>
-      <button class="btn btn-sm" id="refreshBtn" onclick="triggerRefresh()" data-i18n="aggregateNow">Aggregate now</button>
+      <span class="status-text" id="aggStatus" data-i18n="loadingStatus">加载中...</span>
+      <button class="btn btn-sm" id="refreshBtn" onclick="triggerRefresh()" data-i18n="aggregateNow">立即聚合</button>
     </div>
   </header>
 
   <!-- Tabs -->
   <div class="tabs">
-    <div class="tab active" data-tab="sources" onclick="switchTab('sources')"><span data-i18n="tabSources">Sources</span> <span class="badge" id="badgeSources">0</span></div>
+    <div class="tab active" data-tab="sources" onclick="switchTab('sources')"><span data-i18n="tabSources">源</span> <span class="badge" id="badgeSources">0</span></div>
     <div class="tab" data-tab="maccms" onclick="switchTab('maccms')"><span data-i18n="tabMacCMS">MacCMS</span> <span class="badge" id="badgeMacCMS">0</span></div>
-    <div class="tab" data-tab="live" onclick="switchTab('live')"><span data-i18n="tabLive">Live</span> <span class="badge" id="badgeLive">0</span></div>
-    <div class="tab" data-tab="searchQuota" onclick="switchTab('searchQuota')" id="tabSearchQuota"><span data-i18n="tabSearchQuota">Search</span> <span class="badge" id="badgeSearchQuota">0</span></div>
-    <div class="tab" data-tab="settings" onclick="switchTab('settings')"><span data-i18n="tabSettings">Settings</span></div>
-    <div class="tab" data-tab="aggLogs" onclick="switchTab('aggLogs')"><span data-i18n="tabAggLogs">Logs</span></div>
+    <div class="tab" data-tab="live" onclick="switchTab('live')"><span data-i18n="tabLive">直播</span> <span class="badge" id="badgeLive">0</span></div>
+    <div class="tab" data-tab="searchQuota" onclick="switchTab('searchQuota')" id="tabSearchQuota"><span data-i18n="tabSearchQuota">搜索</span> <span class="badge" id="badgeSearchQuota">0</span></div>
+    <div class="tab" data-tab="settings" onclick="switchTab('settings')"><span data-i18n="tabSettings">设置</span></div>
+    <div class="tab" data-tab="aggLogs" onclick="switchTab('aggLogs')"><span data-i18n="tabAggLogs">日志</span></div>
   </div>
 
   <!-- Sources Tab -->
@@ -314,7 +314,7 @@ ${sharedStyles}
         <span class="count" id="sourceCount">0</span>
       </div>
       <div class="source-list" id="sourceList">
-        <div class="empty">Loading sources...</div>
+      <div class="empty">正在加载源...</div>
       </div>
     </div>
     </div>
@@ -353,7 +353,7 @@ ${sharedStyles}
         <span class="count" id="mcCount">0</span>
       </div>
       <div class="source-list" id="mcList">
-        <div class="empty">Loading MacCMS sources...</div>
+        <div class="empty">正在加载 MacCMS 源...</div>
       </div>
     </div>
   </div>
@@ -390,7 +390,7 @@ ${sharedStyles}
         <span class="count" id="liveCount">0</span>
       </div>
       <div class="source-list" id="liveList">
-        <div class="empty">Loading live sources...</div>
+        <div class="empty">正在加载直播源...</div>
       </div>
     </div>
 
@@ -441,18 +441,18 @@ ${sharedStyles}
   <!-- Search Quota Tab -->
   <div class="tab-panel" id="panelSearchQuota">
     <div class="section">
-      <div class="section-title" data-i18n="sqSelected">Quality Pool</div>
+      <div class="section-title" data-i18n="sqSelected">质量池</div>
       <div id="sqSelectedInfo" style="margin-bottom:8px;font-size:0.8rem;color:var(--text-secondary)"></div>
       <div id="sqQualityGrades" style="margin-bottom:8px;font-size:0.8rem;color:var(--text-secondary)"></div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
-        <input id="sqSourceFilter" class="nt-input" style="width:220px" placeholder="Search source name or key..." data-i18n-placeholder="sqSourceFilterPh" oninput="renderSearchSources()">
+        <input id="sqSourceFilter" class="nt-input" style="width:220px" placeholder="搜索源名称或源标识..." data-i18n-placeholder="sqSourceFilterPh" oninput="renderSearchSources()">
         <select id="sqGradeFilter" class="nt-input" style="width:190px" onchange="renderSearchSources()">
-          <option value="all" data-i18n="sqFilterAll">All grades</option>
-          <option value="excellent" data-i18n="sqExcellent">Excellent</option>
-          <option value="good" data-i18n="sqGood">Good</option>
-          <option value="usable" data-i18n="sqUsable">Usable</option>
-          <option value="untestable" data-i18n="sqUntestable">Client final check only</option>
-          <option value="blocked" data-i18n="sqBlocked">Blocked</option>
+          <option value="all" data-i18n="sqFilterAll">全部等级</option>
+          <option value="excellent" data-i18n="sqExcellent">优</option>
+          <option value="good" data-i18n="sqGood">良</option>
+          <option value="usable" data-i18n="sqUsable">可用</option>
+          <option value="untestable" data-i18n="sqUntestable">待客户端最终验证</option>
+          <option value="blocked" data-i18n="sqBlocked">已屏蔽</option>
         </select>
         <span id="sqSourceFilterCount" style="font-size:0.75rem;color:var(--text-secondary)"></span>
       </div>
@@ -481,26 +481,26 @@ ${sharedStyles}
     </div>
 
     <div class="section">
-      <div class="section-title" data-i18n="cronInterval">Source Aggregation Schedule</div>
+        <div class="section-title" data-i18n="cronInterval">源聚合计划</div>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
         <select id="cronSelect" class="nt-input" style="width:auto;min-width:160px">
-          <option value="60" data-i18n-text="cronEvery1h">Every 1 hour</option>
-          <option value="180" data-i18n-text="cronEvery3h">Every 3 hours</option>
-          <option value="360" data-i18n-text="cronEvery6h">Every 6 hours</option>
-          <option value="720" data-i18n-text="cronEvery12h">Every 12 hours</option>
-          <option value="1440" data-i18n-text="cronEveryDay">Once a day</option>
+          <option value="60" data-i18n-text="cronEvery1h">每 1 小时</option>
+          <option value="180" data-i18n-text="cronEvery3h">每 3 小时</option>
+          <option value="360" data-i18n-text="cronEvery6h">每 6 小时</option>
+          <option value="720" data-i18n-text="cronEvery12h">每 12 小时</option>
+          <option value="1440" data-i18n-text="cronEveryDay">每天一次</option>
         </select>
-        <button class="btn btn-sm" id="cronSaveBtn" onclick="saveCronInterval()" data-i18n="save">Save</button>
+      <button class="btn btn-sm" id="cronSaveBtn" onclick="saveCronInterval()" data-i18n="save">保存</button>
         <span class="status-text" id="cronStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
       </div>
     </div>
 
     <div class="section">
-      <div class="section-title" data-i18n="speedTestToggle">Media Site Speed Test</div>
+      <div class="section-title" data-i18n="speedTestToggle">影视站点测速</div>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
           <input type="checkbox" id="speedTestCheck" onchange="saveSpeedTest()" checked>
-          <span data-i18n="speedTestLabel">Enable site speed test and unreachable filtering</span>
+        <span data-i18n="speedTestLabel">聚合时测速并剔除不可达的影视站点</span>
         </label>
         <span class="status-text" id="speedTestStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
       </div>
@@ -508,15 +508,15 @@ ${sharedStyles}
     </div>
 
     <div class="section">
-      <div class="section-title" data-i18n="edgeProxies">Edge Function Proxies</div>
+      <div class="section-title" data-i18n="edgeProxies">边缘函数代理</div>
       <div style="margin-bottom:6px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="edgeProxiesDesc">Configure edge function URLs for proxy fallback (fetch retry + image CDN). Local Docker mode only.</div>
       <div class="nt-grid">
         <div>
-          <label class="form-label">Cloudflare Worker URL</label>
+          <label class="form-label">Cloudflare Worker 地址</label>
           <input type="text" id="edgeCfUrl" class="nt-input" placeholder="https://tvbox.example.com">
         </div>
         <div>
-          <label class="form-label">Vercel Proxy URL</label>
+          <label class="form-label">Vercel 代理地址</label>
           <input type="text" id="edgeVercelUrl" class="nt-input" placeholder="https://fetch.example.com">
         </div>
       </div>
@@ -545,7 +545,25 @@ ${sharedStyles}
       <input type="hidden" id="startupModeInput" value="lean">
       <input type="hidden" id="pruneDeadParsesInput">
       <div id="searchQuotaStats" style="margin-top:8px;font-size:0.8rem;color:var(--text-secondary);line-height:1.6"></div>
-      <div style="margin-top:6px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="searchQuotaDesc">这里只控制根配置下发的健康解析器数量；0 表示不限制。可搜索源类型与数量由鉴权码设置决定，根链接不再按全局可搜索源上限裁剪。</div>
+      <div class="section-title" style="margin-top:14px" data-i18n="rootSourceSelectionTitle">根链接源选择</div>
+      <div class="credential-help" data-i18n="rootSourceSelectionHint">简单方式按统一质量排序从前向后取源；精细方式按质量等级和源类型分别取各自排序靠前的源。两种方式互斥。</div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px">
+        <label class="form-label" style="margin:0" data-i18n="sourceSelectionMode">选择方式</label>
+        <select id="rootSourceSelectionModeInput" class="nt-input" style="width:250px" onchange="toggleRootSourceSelection()">
+          <option value="simple" data-i18n-text="sourceSelectionSimple">简单选择：按质量池总排序</option>
+          <option value="category" data-i18n-text="sourceSelectionCategory">精细选择：按分类分别选择</option>
+        </select>
+        <label class="form-label" style="margin:0" data-i18n="rootSourceCount">下发源数量</label>
+        <select id="rootSourceCountModeInput" class="nt-input" style="width:130px" onchange="toggleRootSourceCount()">
+          <option value="all" data-i18n-text="credentialBucketAll">全部</option>
+          <option value="none" data-i18n-text="credentialBucketNone">不下发</option>
+          <option value="custom" data-i18n-text="credentialBucketCustom">自定义数量</option>
+        </select>
+        <input type="number" id="rootSourceCountInput" class="nt-input" style="width:90px" min="1" placeholder="数量" data-i18n-placeholder="sourceCountPlaceholder">
+        <button class="btn btn-sm" onclick="saveSearchQuota()" data-i18n="save">保存</button>
+      </div>
+      <div id="rootSourceBuckets" style="display:none;margin-top:8px"></div>
+      <div style="margin-top:6px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="searchQuotaDesc">这里只控制根配置下发的健康解析器数量；源选择方式决定根链接下发哪些质量池源。</div>
       <div style="margin-top:4px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="qualityGradeDesc">质量分级（后台分块测速，不影响应用端启动速度）：优 ≤1000ms、良 1001-3000ms、可用 3001-6000ms。服务端只验证可直接请求的源；可搜索 JAR/客户端运行时源会进入独立的小型后备池，不等于不可搜索。默认最多下发 4 个，鉴权码可将客户端后备设置为 0、N 或全部。超时和不可用永不下发。</div>
     </div>
 
@@ -575,23 +593,23 @@ ${sharedStyles}
       <div id="qualityDynamicStats" style="margin-top:10px;font-size:0.82rem;color:var(--text-secondary);line-height:1.7"></div>
     </div>
     <div class="section">
-      <div class="section-title" data-i18n="nameTransform">Name Transform</div>
+      <div class="section-title" data-i18n="nameTransform">名称定制</div>
       <div class="nt-grid">
         <div>
-          <label class="form-label" data-i18n="ntPrefix">Prefix</label>
+          <label class="form-label" data-i18n="ntPrefix">前缀</label>
           <input type="text" id="ntPrefix" class="nt-input" placeholder="e.g. 【RioTV】" data-i18n-placeholder="ntPrefixPh">
         </div>
         <div>
-          <label class="form-label" data-i18n="ntSuffix">Suffix</label>
+          <label class="form-label" data-i18n="ntSuffix">后缀</label>
           <input type="text" id="ntSuffix" class="nt-input" placeholder="e.g.  · Curated" data-i18n-placeholder="ntSuffixPh">
         </div>
       </div>
       <div style="margin-bottom:10px">
-        <label class="form-label" data-i18n="ntPromoReplace">Promo Replacement (empty = delete)</label>
+        <label class="form-label" data-i18n="ntPromoReplace">推广替换文字（留空则删除）</label>
         <input type="text" id="ntPromoReplace" class="nt-input" placeholder="e.g. Premium" data-i18n-placeholder="ntPromoReplacePh">
       </div>
       <div style="margin-bottom:10px">
-        <label class="form-label" data-i18n="ntExtraPatterns">Extra Clean Patterns (one regex per line)</label>
+        <label class="form-label" data-i18n="ntExtraPatterns">额外清洗正则（每行一条）</label>
         <textarea id="ntExtraPatterns" class="nt-textarea" placeholder="e.g. sponsor[：:]\\S+" data-i18n-placeholder="ntExtraPatternsPh"></textarea>
       </div>
       <div style="display:flex;gap:8px;align-items:center">
@@ -602,15 +620,15 @@ ${sharedStyles}
 
     <!-- 相似去重配置 -->
     <div class="section">
-      <div class="section-title" data-i18n="dedupConfigTitle">Similar Name Dedup</div>
+      <div class="section-title" data-i18n="dedupConfigTitle">相似名称去重</div>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
           <input type="checkbox" id="similarDedupCheck" onchange="saveDedupConfig()" checked>
-          <span data-i18n="similarDedupLabel">Enable similar-name dedup (keep fastest)</span>
+          <span data-i18n="similarDedupLabel">启用相似名称去重（保留最快）</span>
         </label>
       </div>
       <div style="margin-top:8px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-        <label class="form-label" style="margin:0" data-i18n="dedupThreshold">Threshold</label>
+        <label class="form-label" style="margin:0" data-i18n="dedupThreshold">相似度阈值</label>
         <input type="range" id="dedupThreshold" min="50" max="100" value="85" style="width:120px" oninput="$('dedupThresholdVal').textContent=this.value+'%'">
         <span id="dedupThresholdVal" style="font-family:var(--mono);font-size:0.8rem">85%</span>
         <button class="btn btn-sm" onclick="saveDedupConfig()" data-i18n="save">Save</button>
@@ -620,31 +638,31 @@ ${sharedStyles}
 
     <!-- 分组排序 -->
     <div class="section">
-      <div class="section-title" data-i18n="groupOrderTitle">Site Group Order</div>
+      <div class="section-title" data-i18n="groupOrderTitle">站点分组排序</div>
       <div style="margin-bottom:10px;display:flex;gap:10px;align-items:center">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
           <input type="checkbox" id="groupOrderEnabled" onchange="saveGroupOrder()">
-          <span data-i18n="groupOrderEnabled">Enable group ordering</span>
+          <span data-i18n="groupOrderEnabled">启用分组排序</span>
         </label>
         <select id="groupOrderUnmatched" class="nt-input" style="width:auto;min-width:120px" onchange="saveGroupOrder()">
-          <option value="after">Unmatched → after</option>
-          <option value="before">Unmatched → before</option>
+          <option value="after">未匹配项 → 后置</option>
+          <option value="before">未匹配项 → 前置</option>
         </select>
         <span class="status-text" id="groupOrderStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
       </div>
       <div id="groupOrderRules"></div>
-      <button class="btn btn-sm" onclick="addGroupRule()" style="margin-top:8px" data-i18n="groupOrderAdd">+ Add Rule</button>
+      <button class="btn btn-sm" onclick="addGroupRule()" style="margin-top:8px" data-i18n="groupOrderAdd">+ 添加规则</button>
     </div>
 
     <!-- 背景设置 -->
     <div class="section">
-      <div class="section-title" data-i18n="bgSettingsTitle">Background Settings</div>
+      <div class="section-title" data-i18n="bgSettingsTitle">背景设置</div>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
         <select id="bgType" class="nt-input" style="width:auto;min-width:120px" onchange="onBgTypeChange()">
-          <option value="default">Default</option>
-          <option value="image">Image URL</option>
-          <option value="solid">Solid Color</option>
-          <option value="gradient">Gradient</option>
+          <option value="default">默认</option>
+          <option value="image">图片地址</option>
+          <option value="solid">纯色</option>
+          <option value="gradient">渐变</option>
         </select>
       </div>
       <div id="bgImageGroup" style="display:none;margin-bottom:10px">
@@ -664,11 +682,11 @@ ${sharedStyles}
 
     <!-- 智能 Base URL -->
     <div class="section">
-      <div class="section-title" data-i18n="smartBaseUrlTitle">Smart Base URL</div>
+      <div class="section-title" data-i18n="smartBaseUrlTitle">智能基础地址</div>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
           <input type="checkbox" id="smartBaseUrlCheck" onchange="saveSmartBaseUrl()">
-          <span data-i18n="smartBaseUrlLabel">Auto-detect client host for JAR/image URLs (LAN only, set DMZ=0 to allow public)</span>
+        <span data-i18n="smartBaseUrlLabel">根据客户端访问地址自动生成 JAR/图片地址（仅局域网，设置 DMZ=0 允许公网）</span>
         </label>
         <span class="status-text" id="smartBaseUrlStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
       </div>
@@ -676,19 +694,19 @@ ${sharedStyles}
 
     <!-- 站点验活 -->
     <div class="section">
-      <div class="section-title" data-i18n="siteProbeTitle">Site Content Probe &amp; Auto Clean</div>
+      <div class="section-title" data-i18n="siteProbeTitle">站点内容验活与自动清理</div>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
-        <label class="form-label" style="margin:0" data-i18n="probeDepthLabel">Probe depth:</label>
+        <label class="form-label" style="margin:0" data-i18n="probeDepthLabel">验活深度：</label>
         <select id="probeDepthSelect" class="nt-input" style="width:auto;min-width:140px" onchange="saveProbeDepth()">
-          <option value="deep" data-i18n-text="probeDeep">Deep (validate content)</option>
-          <option value="shallow" data-i18n-text="probeShallow">Shallow (HTTP only)</option>
+          <option value="deep" data-i18n-text="probeDeep">深度（验证内容）</option>
+          <option value="shallow" data-i18n-text="probeShallow">浅层（仅 HTTP）</option>
         </select>
         <span class="status-text" id="probeDepthStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
       </div>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
           <input type="checkbox" id="autoCleanCheck" onchange="saveAutoClean()">
-          <span data-i18n="autoCleanLabel">Auto-blacklist after 5 consecutive failures (max 5/run)</span>
+          <span data-i18n="autoCleanLabel">连续失败 5 次自动屏蔽（每次最多 5 个）</span>
         </label>
         <span class="status-text" id="autoCleanStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
       </div>
@@ -700,11 +718,11 @@ ${sharedStyles}
   <div class="tab-panel" id="panelAggLogs">
     <div class="section">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:8px;flex-wrap:wrap">
-        <div class="section-title" style="margin:0" data-i18n="liveLogsTitle">Live Logs</div>
+        <div class="section-title" style="margin:0" data-i18n="liveLogsTitle">实时日志</div>
         <div style="display:flex;gap:8px;align-items:center">
           <span class="status-text" id="liveLogsStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
-          <button class="btn btn-sm" onclick="connectLiveLogs()" data-i18n="connectLogs">Connect</button>
-          <button class="btn btn-sm btn-danger" onclick="disconnectLiveLogs()" data-i18n="disconnectLogs">Disconnect</button>
+          <button class="btn btn-sm" onclick="connectLiveLogs()" data-i18n="connectLogs">连接</button>
+          <button class="btn btn-sm btn-danger" onclick="disconnectLiveLogs()" data-i18n="disconnectLogs">断开</button>
         </div>
       </div>
       <div id="liveLogsBox" class="live-log-box"></div>
@@ -731,7 +749,7 @@ const translations = {
   en: {
     loginTitle:'Admin Access', loginSubtitle:'TVBox Aggregator Management',
     invalidToken:'Invalid token', enterToken:'Enter admin token', login:'Login',
-    connectionFailed:'Connection failed',
+    connectionFailed:'Connection failed', connecting:'Connecting', connected:'Connected', disconnected:'Disconnected',
     headerLabel:'Admin Console', navConfigEditor:'Config Editor', navDashboard:'Dashboard',
     tabSources:'Sources', tabMacCMS:'MacCMS', tabLive:'Live', tabSettings:'Settings', tabAggLogs:'Logs',
     aggLogsTitle:'Aggregation Logs', clearLogs:'Clear All', liveLogsTitle:'Live Logs', connectLogs:'Connect', disconnectLogs:'Disconnect',
@@ -802,8 +820,8 @@ const translations = {
     searchQuota:'Client Parser Quota',
     maxParses:'Parser limit', autoSearchLimit:'Auto safe limit', searchQuotaDesc:'This only controls how many healthy parsers the root config serves. 0 means unlimited. Searchable source categories and counts are controlled per auth code; the root URL is no longer trimmed by a global searchable-source limit.', sortSearchBySpeed:'Sort by speed', sortSearchBySpeedDesc:'Uses existing site speed-test results to put faster sources first; no extra network requests. Pinned sources stay first.', leanStartup:'Lean startup', leanStartupDesc:'Removes remote JAR/extension sites from the root startup config to shorten TVBox startup; pinned sources are kept.', maxStartupQuickSearchDesc:'Quick-search cap used by the root startup config; 0 means unlimited. Full config remains available at /config-full.json.', startupOptimizationDesc:'Quick-search and root-startup limits default to unlimited. Searchable source categories and counts are selected per auth code; /config-full.json contains the full searchable set.', startupMode:'Startup mode', startupModeLean:'Lean', startupModeFull:'Full', startupModeDesc:'Lean serves a trimmed config at the root address for faster startup. Full is still available at /config-full.json.', pruneDeadParses:'Prune dead parsers', pruneDeadParsesDesc:'Probes parser endpoints and removes confirmed failures/timeouts so clients do not wait for each dead parser during startup.',
     tabSearchQuota:'Search',
-    sqStatsCurrent:'Current actual counts', sqStatsSearchable:'searchable', sqStatsQuick:'quick-search', sqStatsQuickLimit:'auto cap', sqStatsPool:'quality pool', sqStatsServerVerified:'server-verified', sqStatsClientFallback:'client fallback', sqStatsParsers:'Parsers', sqStatsKept:'kept', sqStatsProbed:'probed', sqStatsRemoved:'removed', sqStatsLimit:'limit', sqStatsUnlimited:'unlimited', sqStatsQuality:'Quality grades', sqStatsNoData:'Run aggregation to show quality grades and parser counts.',
-    sqKey:'Key', sqName:'Name', sqSource:'Source', sqReason:'Reason', sqGrade:'Grade / score', sqSpeedStatus:'Speed / confidence', sqRank:'Rank', sqAction:'Action',
+    sqStatsCurrent:'Current actual counts', sqStatsSearchable:'searchable sources', sqStatsQuick:'quick search', sqStatsQuickLimit:'automatic limit', sqStatsPool:'quality pool', sqStatsServerVerified:'server verified', sqStatsClientFallback:'client fallback', sqStatsParsers:'Parsers', sqStatsKept:'kept', sqStatsProbed:'probed', sqStatsRemoved:'removed', sqStatsLimit:'limit', sqStatsUnlimited:'unlimited', sqStatsQuality:'Quality grades', sqStatsNoData:'Run aggregation to show quality grades and parser counts.', sqPoolTotal:'Total quality-pool sources', sqQuality:'graded',
+    sqKey:'Source identifier', sqName:'Source name', sqSource:'Source type', sqReason:'Exclusion reason', sqGrade:'Quality grade / score', sqSpeedStatus:'Response speed / confidence', sqRank:'Overall / category rank', sqAction:'Action',
     sqPin:'Pin', sqUnpin:'Unpin',
     sqBlock:'Block', sqUnblock:'Unblock', sqBlocked:'Blocked', sqBlockedDesc:'Blocked sources are excluded from all client outputs but remain here so they can be restored.', sqSourceFilterPh:'Search source name or key...', sqFilterAll:'All grades', sqFilterMatched:'Matched', sqFilterNoMatch:'No matching sources',
     sqPinned:'Pinned', sqPinnedDesc:'Drag to reorder. Pinned sources are searched first and still count toward their source-type quota.', sqOtherSources:'Quality Pool Sources', sqQualityPoolDesc:'Sources in the ordered quality pool and eligible for distribution. Pinned sources are searched first; blocked sources stay in this list but are excluded from every client output.', sqExcludedSources:'Sources Outside Quality Pool', sqExcludedDesc:'Searchable sources that were assessed but are outside the quality pool, for example timeout or unusable sources. They are not distributed to clients.', sqReasonJsUrlExcluded:'JS URL excluded', sqReasonTimeout:'Timeout', sqReasonUnusable:'Unusable', sqReasonNotInPool:'Not in quality pool', sqReasonOutsideQualityPool:'Outside quality pool',
@@ -844,7 +862,7 @@ const translations = {
     credentialNoCodes:'No auth codes yet. The root link serves the selected sources normally.',
     credentialCodeLabel:'Name / note',
     credentialCodeValue:'Auth code',
-    credentialSourceMode:'Source mode',
+    credentialSourceMode:'Source mode', sourceSelectionMode:'Source selection', sourceSelectionSimple:'Simple: top sources from the unified quality order', sourceSelectionCategory:'Detailed: choose a quantity for each category', rootSourceSelectionTitle:'Root link source selection', rootSourceSelectionHint:'Simple takes the first N sources from the unified quality order. Detailed takes the best N sources within each quality grade or source type.', rootSourceCount:'Source count', sourceCountPlaceholder:'Count',
     credentialSelectedKeys:'Selected keys',
     credentialSelectedKeysHint:'Used by custom mode; comma-separated site keys.',
     credentialCodeEnabled:'Enabled',
@@ -862,20 +880,24 @@ const translations = {
     credentialBucketLimitsHint:'Quality grades and site types can each be set to all, none, or a custom N. Custom keeps the first N in the final quality order; unconfigured entries add no extra limit.',
     credentialBucketAll:'All / no limit',
     credentialBucketNone:'Do not serve',
-    credentialBucketCustom:'Custom N',
+    credentialBucketCustom:'Custom amount',
     credentialType0:'XML site',
     credentialType1:'JSON site (MacCMS)',
     credentialType3:'JAR / extension source',
     credentialType4:'Remote site',
     credentialTypeUnknown:'Other type',
     credentialUncategorizedZero:'Total and searchable source limits use the same all / none / custom choices.',
+    authDefaultLabel:'Auth code', moreItems:'{count} more items not shown', noGroupRules:'No group rules yet', noAggregationLogs:'No aggregation logs yet.',
+    logSources:'Source processing: {ok}/{total} succeeded', logSites:'Sites: {count}', logParses:'Parsers: {count}', logLives:'Live sources: {count}',
+    logAdded:'Added: ', logRemoved:'Removed: ', logFailed:'Failed sources: ', logError:'Error: ', clearLogsConfirm:'Clear all aggregation logs?',
+    selectedKeysPlaceholder:'Source identifier 1, source identifier 2', groupNamePlaceholder:'Name', groupKeywordsPlaceholder:'Keywords (comma-separated)',
     footer:'TVBox Source Aggregator &middot; Admin Console',
   },
   zh: {
     loginTitle:'管理登录', loginSubtitle:'TVBox 聚合器管理',
     invalidToken:'无效的令牌', enterToken:'请输入管理令牌', login:'登录',
     connectionFailed:'连接失败',
-    headerLabel:'管理控制台', navConfigEditor:'配置编辑', navDashboard:'仪表盘',
+    headerLabel:'管理控制台', navConfigEditor:'配置编辑', navBuilder:'配置构建', navDashboard:'运行状态',
     tabSources:'源', tabMacCMS:'MacCMS', tabLive:'直播', tabSettings:'设置', tabAggLogs:'日志',
     aggLogsTitle:'聚合日志', clearLogs:'清空', liveLogsTitle:'实时日志', connectLogs:'连接', disconnectLogs:'断开',
     dedupConfigTitle:'相似名称去重', similarDedupLabel:'启用相似名称去重（保留最快）', dedupThreshold:'阈值',
@@ -886,11 +908,11 @@ const translations = {
     addLiveSource:'添加直播源', editLiveSource:'修改直播源', liveSourceUpdated:'直播源已修改', liveSources:'直播源列表',
     liveImportExport:'直播导入 / 导出', liveImportPlaceholder:'每行一个直播源：源名 URL / URL 源名 / 仅 URL；单行 URL 兼容直播源、TVBox 配置和远程配置。', liveListHelp:'每行一个直播源，支持“源名 URL”“URL 源名”或仅 URL；单行 URL 若返回 TVBox 配置会展开，否则直接作为直播源导入。也兼容旧版 JSON 和远程配置 URL。导入默认合并，重复 URL 会跳过。', liveImport:'导入直播源', liveExport:'导出直播源', liveImporting:'导入中...', liveImported:'直播源已导入', liveImportDuplicates:'条重复已跳过', liveImportParseFailed:'导入直播源失败',
     nameOptional:'名称（可选）', configJsonUrl:'TVBox 配置 JSON 地址',
-    mcKeyPh:'Key（如 hongniuzy）', mcNamePh:'名称', mcApiPh:'MacCMS API 地址',
+    mcKeyPh:'源标识（如 hongniuzy）', mcNamePh:'名称', mcApiPh:'MacCMS API 地址',
     liveNamePh:'名称（如 iptv365）', liveUrlPh:'m3u/txt 地址',
     add:'添加', adding:'添加中...', batchImport:'批量导入 / 恢复',
     mcBatchPlaceholder:'每行一个 MacCMS 源：源名 API URL / API URL 源名 / 仅 URL；也可粘贴旧版 JSON 数组。',
-    mcListHelp:'每行一个 MacCMS 源，支持“源名 API URL”“API URL 源名”或仅 URL；缺少 key 时自动生成唯一 key。导入默认合并，重复 key/API 会跳过。',
+    mcListHelp:'每行一个 MacCMS 源，支持“源名 API URL”“API URL 源名”或仅 URL；缺少源标识时自动生成唯一标识。导入默认合并，重复源标识或 API 地址会跳过。',
     submitBatch:'导入 / 恢复',refresh:'刷新', aggregateNow:'立即聚合', aggregateNowRunning:'聚合中...', running:'运行中...', remove:'删除', test:'测试',
     loadingStatus:'加载中...',
     lastUpdate:'上次更新: ', neverUpdated:'暂无成功更新时间', updateFailed:'最近聚合失败：',
@@ -941,16 +963,18 @@ const translations = {
     qualityGradesTitle:'质量分级', qualityRecommended:'推荐值', qualityRecParses:'解析器上限', sqCumulative:'累计', qualityUseRecommended:'填入推荐值', qualityRecommendedApplied:'已填入解析器推荐值，请点击解析器配额中的保存。', qualityActualCounts:'当前实际数量', sqStatsAssessed:'已评估源', sqStatsUsablePool:'质量池',
     qualityTimesHint:'按 QUALITY_TIMEZONE 配置的时区执行（默认 Asia/Shanghai，北京时间 UTC+8）。用英文逗号分隔的 HH:MM 时间点，每天最多 12 个。质量池重排周期表示每隔 N 天重测一次质量池源；全量分级周期表示每隔 N 天对所有可搜索源做一次完整分级。',
     qualityRunningNote:'分级正在后台运行，可继续使用本页面。',
-    qualityScheduleSaved:'计划已保存', qualityReportRefreshed:'报告已刷新',
+    qualityScheduleSaved:'计划已保存', qualityReportRefreshed:'报告已刷新', qualityModePool:'质量池重测', qualityModeFull:'全量分级',
     searchQuota:'应用端解析器配额',
     maxParses:'解析器上限', autoSearchLimit:'自动安全配额', searchQuotaDesc:'这里只控制根配置下发的健康解析器数量；填 0 表示不限制。可搜索源的类型和数量由鉴权码设置决定，根链接不再按全局可搜索源上限裁剪。', sortSearchBySpeed:'按测速速度排序', sortSearchBySpeedDesc:'复用现有站点测速结果，将较快的源排在前面；不会额外发起测速请求。置顶源始终最前。', leanStartup:'轻量启动', leanStartupDesc:'根配置启动阶段去掉远程 JAR/扩展站点，缩短影视仓/TVBox 启动时间；置顶源仍保留。', maxStartupQuickSearchDesc:'根地址启动配置使用的快速搜索上限；0 表示不限制。完整配置仍可通过 /config-full.json 获取。', startupOptimizationDesc:'快速搜索源默认不限制。可搜索源的类型和数量由鉴权码按质量池顺序选择；/config-full.json 保留完整搜索源。', startupMode:'启动模式', startupModeLean:'轻量', startupModeFull:'完整', startupModeDesc:'轻量模式在根地址返回裁剪后的启动配置以加快启动；完整配置仍可通过 /config-full.json 获取。', pruneDeadParses:'剔除失效解析器', pruneDeadParsesDesc:'主动探测解析器地址并剔除确认超时或失效的项，避免客户端启动时逐个等待死解析器。',
     tabSearchQuota:'搜索',
-    sqStatsCurrent:'当前实际数量', sqStatsSearchable:'可搜索源', sqStatsQuick:'快速搜索', sqStatsQuickLimit:'自动上限', sqStatsPool:'质量池', sqStatsServerVerified:'服务端已验证', sqStatsClientFallback:'客户端后备', sqStatsParsers:'解析器', sqStatsKept:'最终保留', sqStatsProbed:'探测', sqStatsRemoved:'剔除', sqStatsLimit:'上限', sqStatsUnlimited:'不限制', sqStatsQuality:'质量分级', sqStatsNoData:'执行聚合后显示质量分级和解析器数量。',
-    sqKey:'Key', sqName:'名称', sqSource:'来源', sqReason:'原因', sqGrade:'等级 / 质量分', sqSpeedStatus:'速度 / 置信度', sqRank:'排名', sqAction:'操作',
+    sqStatsCurrent:'当前实际数量', sqStatsSearchable:'可搜索源', sqStatsQuick:'快速搜索', sqStatsQuickLimit:'自动上限', sqStatsPool:'质量池', sqStatsServerVerified:'服务端已验证', sqStatsClientFallback:'客户端后备', sqStatsParsers:'解析器', sqStatsKept:'最终保留', sqStatsProbed:'探测', sqStatsRemoved:'剔除', sqStatsLimit:'上限', sqStatsUnlimited:'不限制', sqStatsQuality:'质量分级', sqStatsNoData:'执行聚合后显示质量分级和解析器数量。', sqPoolTotal:'质量池总数', sqQuality:'已分级',
+    sqExcellent:'优', sqGood:'良', sqUsable:'可用', sqUntestable:'待客户端最终验证', sqTimeout:'超时', sqUnusable:'不可用', sqCumulative:'累计',
+    sqReasonBlocked:'已屏蔽', sqReasonNotInFinal:'未进入最终列表', sqReasonNotSearchable:'不可搜索',
+    sqKey:'源标识', sqName:'源名称', sqSource:'源类型', sqReason:'未入选原因', sqGrade:'质量等级 / 分数', sqSpeedStatus:'响应速度 / 可信度', sqRank:'总排名 / 分类排名', sqAction:'操作',
     sqPin:'置顶', sqUnpin:'取消置顶',
-    sqBlock:'屏蔽', sqUnblock:'取消屏蔽', sqBlocked:'已屏蔽', sqBlockedDesc:'屏蔽源不会下发到任何客户端，但仍保留在管理列表中，可随时恢复。可按名称/Key 搜索，并按质量等级或“已屏蔽”筛选。', sqSourceFilterPh:'搜索源名称或 Key...', sqFilterAll:'全部等级', sqFilterMatched:'匹配', sqFilterNoMatch:'没有匹配的源',
+    sqBlock:'屏蔽', sqUnblock:'取消屏蔽', sqBlocked:'已屏蔽', sqBlockedDesc:'屏蔽源不会下发到任何客户端，但仍保留在管理列表中，可随时恢复。可按名称或源标识搜索，并按质量等级或“已屏蔽”筛选。', sqSourceFilterPh:'搜索源名称或源标识...', sqFilterAll:'全部等级', sqFilterMatched:'匹配', sqFilterNoMatch:'没有匹配的源',
     sqPinned:'置顶源', sqPinnedDesc:'上下移动排序，排在前面的源在 TVBox 搜索时优先执行；置顶仍属于原类型并占用该类型配额。', sqOtherSources:'质量池源', sqQualityPoolDesc:'已进入统一质量排序、可参与下发选择的源。置顶源优先搜索；屏蔽后仍保留在此列表，但不会下发到任何客户端。', sqExcludedSources:'质量池外源', sqExcludedDesc:'已经评估但未进入质量池的可搜索源，例如超时或不可用，不会下发到客户端。', sqReasonJsUrlExcluded:'JS URL 已排除', sqReasonTimeout:'超时', sqReasonUnusable:'不可用', sqReasonNotInPool:'不在质量池', sqReasonOutsideQualityPool:'质量池外',
-    sqXmlSources:'XML 源', sqXmlDesc:'TVBox type 0 的 XML 接口源，质量等级只决定其在同一类型内部的排序。', sqJsonSources:'JSON / MacCMS 源', sqJsonDesc:'TVBox type 1 的 JSON 或 MacCMS 接口源。', sqJarSources:'JAR / 扩展源', sqJarDesc:'TVBox type 3 的本地 JAR 或远程扩展源，不包含 API 为 HTTP(S) 的 JS 源。', sqJsSources:'JS URL 源', sqJsDesc:'TVBox type 3 且 API 为 HTTP(S) 的 JS 接口源。', sqRemoteSources:'远程站点源', sqRemoteDesc:'TVBox type 4 的远程站点源。', sqUncategorizedSources:'其他类型源', sqUncategorizedDesc:'无法按接口机制归入上述类型的源，单独列出，不与质量等级混在一起。', sqUnavailableSources:'不可用 / 未入选源', sqUnavailableDesc:'可搜索但已屏蔽、超时、不可用或不在当前质量池中的源，不会下发到客户端。', sqBlockedSources:'屏蔽源', sqBlockedDescLong:'屏蔽源不会下发到任何客户端，但仍保留在管理列表中，可随时恢复。', sqXml:'XML', sqJson:'JSON / MacCMS', sqJar:'JAR / 扩展', sqJs:'JS URL', sqRemote:'远程', sqOther:'其他',
+    sqXmlSources:'XML 源', sqXmlDesc:'TVBox 0 类 XML 接口源；质量等级决定其在统一排序和 XML 分类中的位置。', sqJsonSources:'JSON / MacCMS 源', sqJsonDesc:'TVBox 1 类 JSON 或 MacCMS 接口源。', sqJarSources:'JAR / 扩展源', sqJarDesc:'TVBox 3 类本地 JAR 或远程扩展源，不包含 API 为 HTTP(S) 的 JS 地址源。', sqJsSources:'JS 地址源', sqJsDesc:'TVBox 3 类且 API 为 HTTP(S) 地址的 JS 接口源。', sqRemoteSources:'远程站点源', sqRemoteDesc:'TVBox 4 类远程站点源。', sqUncategorizedSources:'其他类型源', sqUncategorizedDesc:'无法按接口机制归入上述类型的源，单独列出，不与质量等级混在一起。', sqUnavailableSources:'不可用 / 未入选源', sqUnavailableDesc:'可搜索但已屏蔽、超时、不可用或不在当前质量池中的源，不会下发到客户端。', sqBlockedSources:'屏蔽源', sqBlockedDescLong:'屏蔽源不会下发到任何客户端，但仍保留在管理列表中，可随时恢复。', sqXml:'XML', sqJson:'JSON / MacCMS', sqJar:'JAR / 扩展', sqJs:'JS 地址', sqRemote:'远程', sqOther:'其他',
     sqLeanRemoved:'轻量剔除',
     channelProbeTitle:'频道级测速（仅 Node/Docker）',
     channelProbeEnable:'启用定时频道测速（每 12 小时）',
@@ -968,17 +992,17 @@ const translations = {
     siteProbeTitle:'站点内容验活与自动清理', probeDepthLabel:'验活深度：',
     probeDeep:'深度（验证内容有效性）', probeShallow:'浅层（仅 HTTP 可达）',
     autoCleanLabel:'连续失败 5 次自动屏蔽（每次最多 5 个）',
-    siteProbeDesc:'深度模式会检查 type0/type1 站点是否返回有效内容。连续失败 3 次的站点会被标记 [⚠]。',
+    siteProbeDesc:'深度模式会检查 0 类和 1 类站点是否返回有效内容。连续失败 3 次的站点会被标记 [⚠]。',
     credentialDistributionTitle:'客户端鉴权与源分发',
     credentialDistributionDesc:'鉴权码只控制下发哪些源，不再保存或注入任何网盘凭证。关闭强制鉴权时，根链接正常下发源；启用后根链接不下发源，必须使用 /auth/<鉴权码>/ 访问。',
     credentialSourceModeAll:'质量池全部源',
     credentialSourceModeSearch:'仅可搜索源',
     credentialSourceModeSelected:'仅质量池精选源',
-    credentialSourceModeCustom:'仅自定义 Key 白名单',
+    credentialSourceModeCustom:'仅自定义源标识白名单',
     credentialMaxSites:'质量池源数量上限',
     credentialSiteTypes:'允许的站点类型',
     credentialSiteTypesHint:'全部不勾选表示允许所有站点类型；勾选后只下发所选的站点类型。',
-    credentialPinnedKeys:'置顶 Key',
+    credentialPinnedKeys:'置顶源标识',
     credentialIncludeGrades:'质量等级',
     credentialRequireAuth:'强制鉴权（根链接返回 401）',
     credentialAuthCodes:'客户端鉴权码',
@@ -987,9 +1011,9 @@ const translations = {
     credentialNoCodes:'还没有鉴权码；根链接会正常下发所选源。',
     credentialCodeLabel:'名称 / 备注',
     credentialCodeValue:'鉴权码',
-    credentialSourceMode:'源模式',
-    credentialSelectedKeys:'指定源 Key',
-    credentialSelectedKeysHint:'“自定义 Key 白名单”模式使用，多个 Key 用逗号分隔。',
+    credentialSourceMode:'源模式', sourceSelectionMode:'源选择方式', sourceSelectionSimple:'简单选择：按质量池总排序取前 N 个', sourceSelectionCategory:'精细选择：按分类分别取前 N 个', rootSourceSelectionTitle:'根链接源选择', rootSourceSelectionHint:'简单方式按统一质量排序从前向后取源；精细方式按质量等级和源类型分别取各自排序靠前的源。两种方式互斥。', rootSourceCount:'下发源数量', sourceCountPlaceholder:'数量',
+    credentialSelectedKeys:'指定源标识',
+    credentialSelectedKeysHint:'“自定义源标识白名单”模式使用，多个源标识用逗号分隔。',
     credentialCodeEnabled:'启用',
     credentialCopyRoot:'复制根链接',
     credentialCopyAuth:'复制鉴权链接',
@@ -1000,18 +1024,23 @@ const translations = {
     credentialCopied:'已复制',
     credentialDefaultLabel:'客户端',
     credentialRootPolicyFree:'根链接已启用',
-    credentialSelectedKeysRequired:'“自定义 Key 白名单”模式至少需要填写一个源 Key。',
+    credentialSelectedKeysRequired:'“自定义源标识白名单”模式至少需要填写一个源标识。',
     credentialBucketLimits:'分类源数量',
     credentialBucketLimitsHint:'质量等级和站点类型均可设置为全选、不选或自定义 N；自定义按最终质量顺序保留前 N 个，未设置的项目不额外限制。未设置客户端后备时默认最多保留 4 个可搜索 JAR/运行时源。',
     credentialBucketAll:'全选 / 不限',
     credentialBucketNone:'不选',
-    credentialBucketCustom:'自定义 N',
+    credentialBucketCustom:'自定义数量',
     credentialType0:'XML 站点',
     credentialType1:'JSON 站点（MacCMS）',
     credentialType3:'JAR / 扩展源',
     credentialType4:'远程站点',
     credentialTypeUnknown:'其他类型',
     credentialUncategorizedZero:'总源和可搜索源上限也使用相同的全选、不选或自定义 N 选项。',
+    authDefaultLabel:'鉴权码', moreItems:'还有 {count} 项未显示', noGroupRules:'暂无分组规则', noAggregationLogs:'暂无聚合日志。',
+    logSources:'源处理：{ok}/{total} 个成功', logSites:'站点：{count}', logParses:'解析器：{count}', logLives:'直播源：{count}',
+    logAdded:'新增：', logRemoved:'移除：', logFailed:'失败源：', logError:'错误：', clearLogsConfirm:'确定清空全部聚合日志吗？',
+    connecting:'连接中', connected:'已连接', disconnected:'已断开', connectionFailed:'连接失败',
+    selectedKeysPlaceholder:'源标识1，源标识2', groupNamePlaceholder:'名称', groupKeywordsPlaceholder:'关键词（用逗号分隔）',
     footer:'TVBox 源聚合器 &middot; 管理控制台',
   }
 };
@@ -2140,6 +2169,51 @@ async function saveEdgeProxies() {
 // --- Search Quota ---
 let sqPinnedKeys = new Set();
 let sqBlockedKeys = new Set();
+let rootSourceSelection = { selectionMode: 'simple', maxSites: -1, bucketLimits: undefined };
+
+function rootLimitValue(mode, input) {
+  if (mode === 'none') return 0;
+  if (mode === 'custom') return Math.max(1, parseInt(input && input.value, 10) || 1);
+  return -1;
+}
+
+function renderRootSourceBuckets() {
+  const box = $('rootSourceBuckets');
+  if (!box) return;
+  box.innerHTML = '';
+  const groups = [
+    { name: t('sqQuality'), group: 'quality', keys: ['excellent', 'good', 'usable', 'untestable'], labels: [t('sqExcellent'), t('sqGood'), t('sqUsable'), t('sqUntestable')] },
+    { name: t('credentialSiteTypes'), group: 'type', keys: SOURCE_CATEGORY_KEYS, labels: SOURCE_CATEGORY_KEYS.map(credentialTypeLabel) },
+  ];
+  groups.forEach((set) => {
+    const title = document.createElement('div'); title.className = 'form-label'; title.textContent = set.name; box.appendChild(title);
+    const row = document.createElement('div'); row.className = 'credential-platform-grid';
+    set.keys.forEach((key, index) => {
+      const wrap = document.createElement('div'); const label = document.createElement('label'); label.className = 'form-label'; label.textContent = set.labels[index];
+      const select = document.createElement('select'); select.className = 'nt-input';
+      [['all', t('credentialBucketAll')], ['none', t('credentialBucketNone')], ['custom', t('credentialBucketCustom')]].forEach(([value, text]) => { const option = document.createElement('option'); option.value = value; option.textContent = text; select.appendChild(option); });
+      const number = document.createElement('input'); number.type = 'number'; number.min = '1'; number.className = 'nt-input'; number.placeholder = t('sourceCountPlaceholder');
+      const current = rootSourceSelection.bucketLimits && rootSourceSelection.bucketLimits[set.group] && rootSourceSelection.bucketLimits[set.group][key];
+      select.value = current === 0 ? 'none' : (typeof current === 'number' && current > 0 ? 'custom' : 'all'); if (select.value === 'custom') number.value = String(current); number.disabled = select.value !== 'custom';
+      const commit = () => { if (!rootSourceSelection.bucketLimits) rootSourceSelection.bucketLimits = {}; if (!rootSourceSelection.bucketLimits[set.group]) rootSourceSelection.bucketLimits[set.group] = {}; rootSourceSelection.bucketLimits[set.group][key] = select.value === 'none' ? 0 : (select.value === 'custom' ? Math.max(1, parseInt(number.value, 10) || 1) : -1); number.disabled = select.value !== 'custom'; };
+      select.onchange = commit; number.oninput = commit; wrap.appendChild(label); wrap.appendChild(select); wrap.appendChild(number); row.appendChild(wrap);
+    });
+    box.appendChild(row);
+  });
+}
+
+function toggleRootSourceSelection() {
+  const mode = $('rootSourceSelectionModeInput'); rootSourceSelection.selectionMode = mode ? mode.value : 'simple';
+  const count = $('rootSourceCountModeInput'); const countInput = $('rootSourceCountInput'); const category = rootSourceSelection.selectionMode === 'category';
+  if (count) count.style.display = category ? 'none' : ''; if (countInput) countInput.style.display = category ? 'none' : '';
+  const box = $('rootSourceBuckets'); if (box) box.style.display = category ? '' : 'none'; if (category) renderRootSourceBuckets();
+}
+
+function toggleRootSourceCount() {
+  const select = $('rootSourceCountModeInput'); const input = $('rootSourceCountInput'); if (!select) return;
+  if (input) { input.disabled = select.value !== 'custom'; input.style.display = select.value === 'custom' ? '' : 'none'; }
+  rootSourceSelection.maxSites = rootLimitValue(select.value, input);
+}
 
 async function loadSearchQuota() {
   try {
@@ -2151,6 +2225,12 @@ async function loadSearchQuota() {
     $('maxStartupQuickSearchInput').value = d.maxStartupQuickSearch ?? 0;
     $('startupSiteLimitInput').value = d.startupSiteLimit ?? 0;
     $('maxParsesInput').value = d.maxParses ?? 0;
+    rootSourceSelection = { selectionMode: d.selectionMode === 'category' ? 'category' : 'simple', maxSites: typeof d.maxSites === 'number' ? d.maxSites : -1, bucketLimits: d.bucketLimits };
+    $('rootSourceSelectionModeInput').value = rootSourceSelection.selectionMode;
+    const rootCount = $('rootSourceCountModeInput'); const rootCountInput = $('rootSourceCountInput');
+    if (rootCount) rootCount.value = rootSourceSelection.maxSites === 0 ? 'none' : (rootSourceSelection.maxSites > 0 ? 'custom' : 'all');
+    if (rootCountInput && rootSourceSelection.maxSites > 0) rootCountInput.value = String(rootSourceSelection.maxSites);
+    toggleRootSourceCount(); toggleRootSourceSelection();
     $('autoSearchLimitInput').checked = false;
     $('sortSearchBySpeedInput').checked = true;
     $('leanStartupInput').checked = true;
@@ -2176,6 +2256,9 @@ async function saveSearchQuota() {
     pruneDeadParses: true,
     pinnedKeys: [...sqPinnedKeys],
     blockedKeys: [...sqBlockedKeys],
+    selectionMode: rootSourceSelection.selectionMode,
+    maxSites: rootSourceSelection.selectionMode === 'simple' ? rootSourceSelection.maxSites : -1,
+    bucketLimits: rootSourceSelection.selectionMode === 'category' ? rootSourceSelection.bucketLimits : undefined,
   };
   try {
     const res = await auth.authFetch('/admin/search-quota', {
@@ -2206,7 +2289,8 @@ async function loadSearchQuotaReport() {
 
     // 显示 Search 页签
     $('tabSearchQuota').style.display = '';
-    $('sqSelectedInfo').textContent = d.totalSites + ' sites → ' + d.jsExcluded + ' JS excluded → ' + d.searchable + ' searchable' + (d.truncated > 0 ? ' (' + d.truncated + ' truncated)' : '') + (typeof d.quickSearchable === 'number' ? ', ' + d.quickSearchable + ' quick' + (d.quickTruncated > 0 ? ' (' + d.quickTruncated + ' limited)' : '') : '') + (d.pinnedCount > 0 ? ', ' + d.pinnedCount + ' pinned' : '') + (d.leanRemoved > 0 ? ', ' + d.leanRemoved + ' ' + t('sqLeanRemoved') : '') + (typeof d.parseRemoved === 'number' && d.parseRemoved > 0 ? ', ' + d.parseRemoved + ' dead parses pruned' : '') + (typeof d.parseKept === 'number' ? ', ' + d.parseKept + ' parsers kept' + (d.parseTruncated > 0 ? ' (' + d.parseTruncated + ' limited)' : '') : '') + (d.speedParsed ? ', speed-sorted' : d.speedSorted ? ', speed-sorted' : '');
+    const moreText = function(count, label) { return count > 0 ? '（' + count + label + '）' : ''; };
+    $('sqSelectedInfo').textContent = '总源 ' + d.totalSites + ' → 排除 JS 地址源 ' + d.jsExcluded + ' → 可搜索源 ' + d.searchable + moreText(d.truncated, ' 个已截断') + (typeof d.quickSearchable === 'number' ? '；快速搜索 ' + d.quickSearchable + moreText(d.quickTruncated, ' 个受限') : '') + (d.pinnedCount > 0 ? '；置顶 ' + d.pinnedCount : '') + (d.leanRemoved > 0 ? '；' + d.leanRemoved + ' 个' + t('sqLeanRemoved') : '') + (typeof d.parseRemoved === 'number' && d.parseRemoved > 0 ? '；剔除失效解析器 ' + d.parseRemoved : '') + (typeof d.parseKept === 'number' ? '；最终保留解析器 ' + d.parseKept + moreText(d.parseTruncated, ' 个受限') : '') + (d.speedParsed || d.speedSorted ? '；已按速度排序' : '');
     $('badgeSearchQuota').textContent = d.searchable;
 
     const q = d.qualityGrades;
@@ -2801,7 +2885,7 @@ function renderSearchSources() {
     }
     const globalRank = rankMaps.global.get(s.key);
     const categoryRank = rankMaps.category.get(s.key);
-    rowHtml += '<td style="padding:4px;white-space:nowrap;font-family:var(--mono);font-size:0.75rem">#' + (globalRank || '-') + ' / #' + (categoryRank || '-') + '</td>';
+    rowHtml += '<td style="padding:4px;white-space:nowrap;font-family:var(--mono);font-size:0.75rem">总第 ' + (globalRank || '-') + ' / 类别第 ' + (categoryRank || '-') + '</td>';
     rowHtml += '<td style="padding:4px;white-space:nowrap;font-family:var(--mono);font-size:0.75rem">' + qualitySpeedLabel(entry) + ' · ' + qualityConfidenceLabel(entry) + '</td>';
     rowHtml += '<td style="padding:4px;width:190px;text-align:right;white-space:nowrap">';
     if (!isBlocked) rowHtml += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem" onclick="togglePin(&quot;' + escHtml(s.key) + '&quot;)">' + (isPinned ? t('sqUnpin') : t('sqPin')) + '</button> ';
@@ -2818,7 +2902,7 @@ function renderSearchSources() {
     out += withReason ? tableHeaderWithReason() : tableHeader();
     const visible = items.slice(0, visibleLimit);
     visible.forEach(function(s, index) { out += row(s, withReason, index); });
-    if (items.length > visibleLimit) out += '<tr><td colspan="8" style="padding:4px;color:var(--text-secondary)">... +' + (items.length - visibleLimit) + ' more</td></tr>';
+    if (items.length > visibleLimit) out += '<tr><td colspan="8" style="padding:4px;color:var(--text-secondary)">还有 ' + (items.length - visibleLimit) + ' 项未显示</td></tr>';
     out += '</tbody></table></div></div>';
     return out;
   };
@@ -3083,6 +3167,9 @@ function normalizeClientAuthCode(item, index) {
     code: (item && item.code) || '',
     enabled: !item || item.enabled !== false,
     sourceMode,
+    selectionMode: item && (item.selectionMode === 'category' || item.selectionMode === 'simple')
+      ? item.selectionMode
+      : ((item && item.bucketLimits) ? 'category' : 'simple'),
     maxSites: parseCredentialLimit(item && item.maxSites, parseCredentialLimit(item && item.maxSearchable, -1)),
     bucketLimits: normalizeClientBucketLimits(item && item.bucketLimits),
     includeGrades: Array.isArray(item && item.includeGrades) ? item.includeGrades.filter((grade) => CLIENT_GRADES.includes(grade)) : [],
@@ -3113,6 +3200,7 @@ function newCredentialAuthCode() {
     code: random,
     enabled: true,
     sourceMode: 'all',
+    selectionMode: 'simple',
     maxSites: -1,
     includeGrades: [],
     siteTypes: [],
@@ -3137,7 +3225,7 @@ function sourceModeLabel(mode) {
 }
 
 function credentialModeSummary(item) {
-  const parts = [sourceModeLabel(item.sourceMode)];
+  const parts = [sourceModeLabel(item.sourceMode), item.selectionMode === 'category' ? t('sourceSelectionCategory') : t('sourceSelectionSimple')];
   parts.push(t('credentialMaxSites') + ' ' + clientLimitLabel(item.maxSites));
   if (item.includeGrades && item.includeGrades.length) parts.push(item.includeGrades.map((grade) => qualityGradeLabel(grade)).join(' / '));
   if (item.siteTypes && item.siteTypes.length) parts.push(t('credentialSiteTypes') + ' ' + item.siteTypes.map((value) => credentialTypeLabel(String(value))).join(' / '));
@@ -3249,7 +3337,7 @@ function renderCredentialDistribution() {
     enabled.onchange = () => { item.enabled = enabled.checked; item.updatedAt = new Date().toISOString(); };
     const titleText = document.createElement('strong');
     titleText.style.color = 'var(--text-bright)';
-    titleText.textContent = item.label || ('Auth ' + (index + 1));
+    titleText.textContent = item.label || (t('authDefaultLabel') + ' ' + (index + 1));
     const summary = document.createElement('span');
     summary.className = 'credential-pill';
     summary.textContent = credentialModeSummary(item);
@@ -3270,7 +3358,7 @@ function renderCredentialDistribution() {
     const labelInput = document.createElement('input');
     labelInput.className = 'nt-input';
     labelInput.value = item.label || '';
-    labelInput.oninput = () => { item.label = labelInput.value; item.updatedAt = new Date().toISOString(); titleText.textContent = labelInput.value || ('Auth ' + (index + 1)); };
+    labelInput.oninput = () => { item.label = labelInput.value; item.updatedAt = new Date().toISOString(); titleText.textContent = labelInput.value || (t('authDefaultLabel') + ' ' + (index + 1)); };
     addLabeledInput(grid, t('credentialCodeLabel'), labelInput);
 
     const codeInput = document.createElement('input');
@@ -3291,17 +3379,27 @@ function renderCredentialDistribution() {
     modeSelect.onchange = () => { item.sourceMode = modeSelect.value; item.updatedAt = new Date().toISOString(); renderCredentialDistribution(); };
     addLabeledInput(grid, t('credentialSourceMode'), modeSelect);
 
-    grid.appendChild(createCredentialLimitControl(t('credentialMaxSites'), item.maxSites, (value) => {
+    const selectionSelect = document.createElement('select');
+    selectionSelect.className = 'nt-input';
+    [['simple', t('sourceSelectionSimple')], ['category', t('sourceSelectionCategory')]].forEach(([value, text]) => { const option = document.createElement('option'); option.value = value; option.textContent = text; selectionSelect.appendChild(option); });
+    selectionSelect.value = item.selectionMode;
+    selectionSelect.onchange = () => { item.selectionMode = selectionSelect.value; if (item.selectionMode === 'simple') item.bucketLimits = undefined; item.updatedAt = new Date().toISOString(); renderCredentialDistribution(); };
+    addLabeledInput(grid, t('sourceSelectionMode'), selectionSelect);
+
+    const simpleLimit = createCredentialLimitControl(t('credentialMaxSites'), item.maxSites, (value) => {
       item.maxSites = value;
       item.updatedAt = new Date().toISOString();
       summary.textContent = credentialModeSummary(item);
-    }));
+    });
+    simpleLimit.style.display = item.selectionMode === 'simple' ? '' : 'none';
+    grid.appendChild(simpleLimit);
 
 
     // 分桶数量：全选=-1，不选=0，正数=保留前 N 个。
     const bucketPanel = document.createElement('div');
     bucketPanel.className = 'credential-platform-grid';
     bucketPanel.style.gridColumn = '1 / -1';
+    bucketPanel.style.display = item.selectionMode === 'category' ? '' : 'none';
     const bucketTitle = document.createElement('div');
     bucketTitle.className = 'form-label';
     bucketTitle.style.gridColumn = '1 / -1';
@@ -3420,7 +3518,7 @@ function renderCredentialDistribution() {
 
     const selectedInput = document.createElement('input');
     selectedInput.className = 'nt-input';
-    selectedInput.placeholder = 'key1,key2';
+    selectedInput.placeholder = t('selectedKeysPlaceholder');
     selectedInput.value = (item.selectedKeys || []).join(',');
     selectedInput.oninput = () => {
       item.selectedKeys = [...new Set(selectedInput.value.split(',').map((value) => value.trim()).filter(Boolean))];
@@ -3586,7 +3684,7 @@ async function loadGroupOrder() {
 }
 function renderGroupRules() {
   const container = $('groupOrderRules');
-  if (groupRules.length === 0) { container.innerHTML = '<div style="color:var(--text-dim);font-size:0.85rem">No rules yet</div>'; return; }
+  if (groupRules.length === 0) { container.innerHTML = '<div style="color:var(--text-dim);font-size:0.85rem">' + t('noGroupRules') + '</div>'; return; }
   let html = '';
   groupRules.forEach((rule, i) => {
     html += '<div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;padding:6px 8px;background:var(--surface-2);border-radius:4px">';
@@ -3675,7 +3773,7 @@ async function loadAggLogs() {
     const data = await res.json();
     const logs = data.logs || [];
     if (logs.length === 0) {
-      $('aggLogsList').innerHTML = '<div style="color:var(--text-dim)">No aggregation logs yet.</div>';
+      $('aggLogsList').innerHTML = '<div style="color:var(--text-dim)">' + t('noAggregationLogs') + '</div>';
       return;
     }
     let html = '';
@@ -3689,8 +3787,10 @@ async function loadAggLogs() {
       html += '<span style="font-family:var(--mono);font-size:0.8rem;color:var(--text-dim)">' + dur + '</span>';
       html += '</div>';
       html += '<div style="font-size:0.8rem;color:var(--text-dim);margin-top:4px">';
-      html += 'Sources: ' + log.okSources + '/' + log.totalSources + ' OK';
-      html += ' &middot; Sites: ' + log.finalSiteCount + ' &middot; Parses: ' + log.finalParseCount + ' &middot; Lives: ' + log.finalLiveCount;
+      html += t('logSources').replace('{ok}', log.okSources).replace('{total}', log.totalSources);
+      html += ' &middot; ' + t('logSites').replace('{count}', log.finalSiteCount);
+      html += ' &middot; ' + t('logParses').replace('{count}', log.finalParseCount);
+      html += ' &middot; ' + t('logLives').replace('{count}', log.finalLiveCount);
       html += '</div>';
       const addedCount = log.addedSiteCount != null ? log.addedSiteCount : (log.addedSites ? log.addedSites.length : 0);
       const removedCount = log.removedSiteCount != null ? log.removedSiteCount : (log.removedSites ? log.removedSites.length : 0);
@@ -3705,10 +3805,10 @@ async function loadAggLogs() {
       }
       if (failedCount > 0) {
         const shown = (log.failedSources || []).map(s => s.name).join(', ');
-        html += '<div style="font-size:0.75rem;color:var(--amber);margin-top:2px">Failed: ' + esc(shown) + (log.failedTruncated ? ' … +' + (failedCount - (log.failedSources || []).length) + ' more' : '') + '</div>';
+        html += '<div style="font-size:0.75rem;color:var(--amber);margin-top:2px">' + t('logFailed') + esc(shown) + (log.failedTruncated ? ' … +' + (failedCount - (log.failedSources || []).length) + ' more' : '') + '</div>';
       }
       if (log.errorMessage) {
-        html += '<div style="font-size:0.75rem;color:var(--red);margin-top:2px">Error: ' + esc(log.errorMessage) + '</div>';
+        html += '<div style="font-size:0.75rem;color:var(--red);margin-top:2px">' + t('logError') + esc(log.errorMessage) + '</div>';
       }
       html += '</div>';
     });
@@ -3716,7 +3816,7 @@ async function loadAggLogs() {
   } catch {}
 }
 async function clearAggLogs() {
-  if (!confirm('Clear all aggregation logs?')) return;
+  if (!confirm(t('clearLogsConfirm'))) return;
   await auth.authFetch('/admin/agg-logs', { method: 'DELETE' });
   loadAggLogs();
 }
@@ -3737,17 +3837,17 @@ async function connectLiveLogs() {
   const box = $('liveLogsBox');
   if (box) box.textContent = '';
   liveLogsAbort = new AbortController();
-  if (status) status.textContent = 'connecting';
+  if (status) status.textContent = t('connecting');
   try {
     const res = await fetch('/admin/logs', {
       headers: { 'Authorization': 'Bearer ' + auth.getToken() },
       signal: liveLogsAbort.signal
     });
     if (!res.ok || !res.body) {
-      if (status) status.textContent = 'failed';
+      if (status) status.textContent = t('connectionFailed');
       return;
     }
-    if (status) status.textContent = 'connected';
+    if (status) status.textContent = t('connected');
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let pending = '';
@@ -3765,7 +3865,7 @@ async function connectLiveLogs() {
       }
     }
   } catch {
-    if (status && liveLogsAbort) status.textContent = 'disconnected';
+    if (status && liveLogsAbort) status.textContent = t('disconnected');
   } finally {
     liveLogsAbort = null;
   }

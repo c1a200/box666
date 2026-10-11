@@ -9,6 +9,7 @@ import type {
   SiteQualityGrade,
   SourceCategory,
   SourceDistributionMode,
+  SourceSelectionMode,
 } from './types';
 import { SOURCE_CATEGORIES } from './types';
 import {
@@ -172,6 +173,10 @@ function normalizeSourceMode(value: unknown): SourceDistributionMode {
     : 'all';
 }
 
+function normalizeSelectionMode(value: unknown, fallback: SourceSelectionMode): SourceSelectionMode {
+  return value === 'category' || value === 'simple' ? value : fallback;
+}
+
 function normalizeAuthCode(raw: unknown, usedCodes: Set<string>, usedIds: Set<string>): ClientAuthCode | null {
   const entry = asRecord(raw);
   const code = typeof entry.code === 'string' ? entry.code.trim() : '';
@@ -196,6 +201,7 @@ function normalizeAuthCode(raw: unknown, usedCodes: Set<string>, usedIds: Set<st
     legacyGrades,
     legacyTypes,
   );
+  const selectionMode = normalizeSelectionMode(entry.selectionMode, bucketLimits ? 'category' : 'simple');
   // maxSearchable was the old name for the same user-facing quantity.
   const hasMaxSites = Object.prototype.hasOwnProperty.call(entry, 'maxSites');
   const maxSites = hasMaxSites
@@ -208,6 +214,7 @@ function normalizeAuthCode(raw: unknown, usedCodes: Set<string>, usedIds: Set<st
     code,
     enabled: entry.enabled !== false,
     sourceMode: normalizeSourceMode(entry.sourceMode),
+    selectionMode,
     maxSites,
     bucketLimits,
     // 旧版过滤字段在读取时迁移到 bucketLimits，并留空，避免隐藏配置二次过滤。
@@ -254,6 +261,7 @@ export function createClientAuthCode(raw: Partial<ClientAuthCode> = {}): ClientA
     code,
     enabled: raw.enabled !== false,
     sourceMode: normalizeSourceMode(raw.sourceMode),
+    selectionMode: normalizeSelectionMode(raw.selectionMode, raw.bucketLimits ? 'category' : 'simple'),
     maxSites,
     bucketLimits: normalizeBucketLimits(raw.bucketLimits),
     includeGrades: [],

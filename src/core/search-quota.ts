@@ -1,6 +1,6 @@
 // 搜索配额控制（复用站点测速结果）
 
-import type { ClientAuthCode, SiteBucketLimits, SourceCategory, TVBoxParse, TVBoxSite, SearchQuotaConfig, SearchQuotaReport, SiteHealthMap, SiteQualityGrade, SiteQualityGrades, SearchQualitySnapshot } from './types';
+import type { ClientAuthCode, SiteBucketLimits, SourceCategory, SourceSelectionMode, TVBoxParse, TVBoxSite, SearchQuotaConfig, SearchQuotaReport, SiteHealthMap, SiteQualityGrade, SiteQualityGrades, SearchQualitySnapshot } from './types';
 import { SOURCE_CATEGORIES } from './types';
 import { isSiteProbeable, type SiteProbeResult } from './speedtest';
 import type { Storage } from '../storage/interface';
@@ -69,6 +69,8 @@ function createDefaultSearchQuota(): SearchQuotaConfig {
     leanStartup: true,
     startupMode: 'lean',
     pruneDeadParses: true,
+    selectionMode: 'simple',
+    maxSites: -1,
     quotaSchemaVersion: QUOTA_SCHEMA_VERSION,
   };
 }
@@ -84,6 +86,10 @@ function parseThreeStateLimit(value: unknown): number | undefined {
   if (!Number.isFinite(number) || !Number.isInteger(number)) return undefined;
   if (number === -1 || number >= 0) return number;
   return undefined;
+}
+
+function normalizeSelectionMode(value: unknown, fallback: SourceSelectionMode): SourceSelectionMode {
+  return value === 'category' || value === 'simple' ? value : fallback;
 }
 
 export function normalizeSiteBucketLimits(value: unknown): SiteBucketLimits | undefined {
@@ -132,6 +138,7 @@ export async function loadSearchQuota(storage: Storage): Promise<SearchQuotaConf
       const fallback = createDefaultSearchQuota();
       const quotaVersion = parsed.quotaSchemaVersion ?? 1;
       const legacy = quotaVersion < QUOTA_SCHEMA_VERSION;
+      const bucketLimits = normalizeSiteBucketLimits(parsed.bucketLimits);
 
       // Only the parser cap is a global runtime guard now. The legacy
       // searchable-source cap is ignored so old KV values cannot truncate the pool.
@@ -144,7 +151,9 @@ export async function loadSearchQuota(storage: Storage): Promise<SearchQuotaConf
         maxParses: legacy
           ? fallback.maxParses
           : normalizeLimit(parsed.maxParses),
-        bucketLimits: normalizeSiteBucketLimits(parsed.bucketLimits),
+        bucketLimits,
+        selectionMode: normalizeSelectionMode(parsed.selectionMode, bucketLimits ? 'category' : 'simple'),
+        maxSites: parseThreeStateLimit(parsed.maxSites) ?? -1,
         autoLimit: false,
         pinnedKeys: Array.isArray(parsed.pinnedKeys)
           ? parsed.pinnedKeys.filter((key): key is string => typeof key === 'string')
@@ -171,6 +180,8 @@ export async function saveSearchQuota(storage: Storage, config: SearchQuotaConfi
     startupSiteLimit: 0,
     maxParses: normalizeLimit(config.maxParses),
     bucketLimits: normalizeSiteBucketLimits(config.bucketLimits),
+    selectionMode: normalizeSelectionMode(config.selectionMode, config.bucketLimits ? 'category' : 'simple'),
+    maxSites: parseThreeStateLimit(config.maxSites) ?? -1,
     autoLimit: false,
     pinnedKeys: Array.isArray(config.pinnedKeys) ? config.pinnedKeys : [],
     sortBySpeed: config.sortBySpeed === true,
