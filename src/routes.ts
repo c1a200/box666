@@ -26,7 +26,7 @@ import {
   saveQualitySchedule,
   updateQualityStatus,
   excludedQualityKeys,
-  candidateKeysFromPool,
+  qualityPoolKeysFromPool,
   distributableKeysFromPool,
   qualityScoreForEntry,
   DEFAULT_CLIENT_FALLBACK_LIMIT,
@@ -832,7 +832,7 @@ export function createApp(deps: AppDeps): Hono {
     for (const site of allSites) {
       if (blockedKeys.has(site.key)) continue;
       // 合并配置中的对象可能已被 maxQuickSearch 把 quickSearch 改为 0；
-      // 根启动配置需要按 maxStartupQuickSearch 独立决策，因此以候选池
+      // 根启动配置需要按 maxStartupQuickSearch 独立决策，因此以质量池
       // 的原始 quickSearch 为准，其余字段仍采用最新配置。
       const original = candidateByKey.get(site.key);
       siteByKey.set(site.key, original
@@ -958,7 +958,7 @@ export function createApp(deps: AppDeps): Hono {
     return JSON.stringify(parsed);
   }
   // 完整配置保留非搜索扩展等功能性内容，但搜索源仍必须经过统一质量
-  // 分发边界；applySourceDistribution 会排除不在质量候选池中的 searchable
+  // 分发边界；applySourceDistribution 会排除不在质量池中的 searchable
   // 源，untestable 也只有鉴权策略显式允许时才会进入输出。
   async function filterExcludedQualitySites(cached: string): Promise<string> {
     let quota: SearchQuotaConfig;
@@ -1208,7 +1208,7 @@ export function createApp(deps: AppDeps): Hono {
                 await storage.put(KV_LIVE_RUNTIME_TXT, txt);
                 await storage.put(KV_LIVE_RUNTIME_TXT_VERSION, mergedVersion || 'legacy');
                 await storage.put(KV_LIVE_RUNTIME_EMPTY_AT, '');
-                // 运行时过滤结果；完整候选池只由主聚合维护，不能被实时解析覆盖。
+                // 运行时过滤结果；完整聚合源快照只由主聚合维护，不能被实时解析覆盖。
                 await storage.put(KV_CHANNEL_RUNTIME_TREE, JSON.stringify(groups));
                 const responseHeaders = {
                   'Content-Type': 'text/plain; charset=utf-8',
@@ -1920,14 +1920,20 @@ export function createApp(deps: AppDeps): Hono {
       searchable: numberOrNull(quotaReport?.searchable),
       parsers,
       parserLimit: parseLimit,
-      candidatePool: snapshot?.total ?? null,
-      usablePool: snapshot?.grades?.poolTotal ?? null,
+      // `assessedSourceCount` is the full searchable set included in grading;
+      // `qualityPoolCount` is the ordered set eligible for selection/output.
+      assessedSourceCount: snapshot?.total ?? null,
+      qualityPoolCount: snapshot?.grades?.poolTotal ?? null,
       serverVerifiedPool: snapshot?.grades?.serverVerifiedTotal ?? null,
       clientFallbackPool: snapshot?.grades?.clientFallbackTotal ?? null,
       testable: snapshot?.coverage?.testable ?? null,
       probed: snapshot?.coverage?.probed ?? null,
       notProbed: snapshot?.coverage?.notProbed ?? null,
       untestable: snapshot?.coverage?.untestable ?? null,
+      // Keep the old names for older admin pages; new clients must use the
+      // explicit assessed/quality-pool names above.
+      candidatePool: snapshot?.total ?? null,
+      usablePool: snapshot?.grades?.poolTotal ?? null,
     };
 
     // 推荐解析器上限：客户端启动时会串行初始化解析器，保留 3 个已足够；
@@ -3133,8 +3139,8 @@ export function createApp(deps: AppDeps): Hono {
     (qualityPool?.entries || []).forEach((entry, index) => {
       if (!qualityRank.has(entry.key)) qualityRank.set(entry.key, index + 1);
     });
-    const candidateKeySet = qualityPoolHealth.state === 'fresh' || qualityPoolHealth.state === 'stale'
-      ? candidateKeysFromPool(qualityPool)
+    const qualityPoolKeySet = qualityPoolHealth.state === 'fresh' || qualityPoolHealth.state === 'stale'
+      ? qualityPoolKeysFromPool(qualityPool)
       : new Set<string>();
     const finalKeys = new Set((finalParsed.sites || []).map(site => site.key));
 
@@ -3149,7 +3155,7 @@ export function createApp(deps: AppDeps): Hono {
       if (!inFinal) return 'not-in-final';
       if (site.searchable !== 1) return 'not-searchable';
       if (!entry) return 'not-in-quality-pool';
-      if (!candidateKeySet.has(site.key)) return 'not-candidate';
+      if (!qualityPoolKeySet.has(site.key)) return 'not-in-quality-pool';
       return '';
     };
 
@@ -3190,7 +3196,7 @@ export function createApp(deps: AppDeps): Hono {
       const isJs = sourceCategory === 'js';
       const isJar = sourceCategory === 'jar';
       const entry = qualityEntryMap.get(site.key);
-      const candidate = inFinal && !blocked && site.searchable === 1 && candidateKeySet.has(site.key);
+      const qualityPoolMember = inFinal && !blocked && site.searchable === 1 && qualityPoolKeySet.has(site.key);
       sites.push({
         ...site,
         fingerprint: fp,
@@ -3202,13 +3208,16 @@ export function createApp(deps: AppDeps): Hono {
         sourceCategory,
         isJs,
         isJar,
-        candidate,
+        // `candidate` remains as a read-only compatibility alias. The public
+        // meaning is qualityPoolMember: the one ordered pool used for choice.
+        candidate: qualityPoolMember,
+        qualityPoolMember,
         qualityRank: qualityRank.get(site.key) ?? null,
         qualityScore: entry?.qualityScore ?? (entry ? qualityScoreForEntry(entry) : null),
         qualityConfidence: entry?.qualityConfidence ?? null,
         qualityGrade: entry?.grade ?? null,
         qualityUpdatedAt: qualityPool?.updatedAt ?? null,
-        candidateReason: candidate ? undefined : candidateReason(site, blocked, inFinal),
+        candidateReason: qualityPoolMember ? undefined : candidateReason(site, blocked, inFinal),
       });
     }
 
@@ -3222,23 +3231,26 @@ export function createApp(deps: AppDeps): Hono {
       blocked: liveSet.has(l.url || l.api || ''),
     }));
 
-    const currentCandidateKeys = sites
-      .filter(site => site.candidate === true)
-      .map(site => site.key);
+    const siteByKey = new Map(sites.map(site => [site.key, site]));
+    // Preserve the persisted quality order. This is the single source order
+    // used by both simple total limits and per-category limits.
+    const currentCandidateKeys = (qualityPool?.entries || [])
+      .filter(entry => siteByKey.get(entry.key)?.qualityPoolMember === true)
+      .map(entry => entry.key);
     const searchableKeys = sites
       .filter(site => site.inFinal && !site.blocked && site.searchable === 1)
       .map(site => site.key);
     const categoryCounts: Record<string, number> = {};
-    const candidateCategoryCounts: Record<string, number> = {};
+    const qualityPoolCategoryCounts: Record<string, number> = {};
     for (const category of SEARCH_SOURCE_CATEGORIES) {
       categoryCounts[category] = 0;
-      candidateCategoryCounts[category] = 0;
+      qualityPoolCategoryCounts[category] = 0;
     }
     for (const site of sites) {
       if (!site.inFinal || site.blocked || site.searchable !== 1) continue;
       const category = site.sourceCategory || 'other';
       categoryCounts[category] = (categoryCounts[category] || 0) + 1;
-      if (site.candidate === true) candidateCategoryCounts[category] = (candidateCategoryCounts[category] || 0) + 1;
+      if (site.qualityPoolMember === true) qualityPoolCategoryCounts[category] = (qualityPoolCategoryCounts[category] || 0) + 1;
     }
 
     return c.json({
@@ -3246,14 +3258,19 @@ export function createApp(deps: AppDeps): Hono {
       parses,
       lives,
       searchQuality: {
-        candidateCount: currentCandidateKeys.length,
+        qualityPoolCount: currentCandidateKeys.length,
         searchableCount: searchableKeys.length,
+        assessedSourceCount: qualityPool?.total ?? 0,
         qualityPoolTotal: qualityPool?.grades?.poolTotal ?? 0,
         qualitySnapshotTotal: qualityPool?.total ?? 0,
         qualityPoolHealth,
+        qualityPoolKeys: currentCandidateKeys,
+        qualityPoolCategoryCounts,
+        // Compatibility fields for older admin pages/scripts.
         candidateKeys: currentCandidateKeys,
         categoryCounts,
-        candidateCategoryCounts,
+        candidateCount: currentCandidateKeys.length,
+        candidateCategoryCounts: qualityPoolCategoryCounts,
       },
     });
   });

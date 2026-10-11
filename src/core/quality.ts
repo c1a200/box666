@@ -4,7 +4,7 @@
 // 1. 质量分级独立于聚合运行，可对完整可搜索池分批执行并持久化。
 // 2. 根配置读取已排序快照池；可搜索源类型与数量由鉴权码控制，不按全局上限截断。
 // 3. Render/CF 使用各自 KV；CF 通过 cursor 分片续跑，避免一次 cron 超时。
-// 4. 日常只重测候选池；候选池为空或到达全量周期时，再自动回退/执行全量分级。
+// 4. 日常只重测质量池；质量池为空或到达全量周期时，再自动回退/执行全量分级。
 import type {
   SearchQualityRunMode,
   SearchQualitySchedule,
@@ -98,9 +98,11 @@ export function getQualityPoolHealth(
     updatedAt: pool.updatedAt,
   };
 }
-// `untestable` means client-verifiable, not server-verified.  Keep it out of
-// the default high-quality candidate set; callers may explicitly opt into it.
-const CANDIDATE_GRADES = new Set<SiteQualityGrade>(['excellent', 'good', 'usable']);
+// The quality pool contains every source with a positive quality score. The
+// distribution policy may still limit `untestable` to a small client fallback
+// window, but that is a serving decision rather than pool membership.
+const QUALITY_POOL_GRADES = new Set<SiteQualityGrade>(['excellent', 'good', 'usable', 'untestable']);
+const SERVER_VERIFIED_GRADES = new Set<SiteQualityGrade>(['excellent', 'good', 'usable']);
 
 function isNodeRuntime(): boolean {
   return typeof process !== 'undefined' && !!process.env.PORT;
@@ -177,7 +179,7 @@ function zonedLocalToUtcIso(year: number, month: number, day: number, hour: numb
   return guess.toISOString();
 }
 
-/** 计算下一次候选池重排时间（基于固定时区，按天/每 N 天）。 */
+/** 计算下一次质量池重排时间（基于固定时区，按天/每 N 天）。 */
 export function computeNextQualityRun(config: SearchQualitySchedule, now = new Date(), timezone = config.timezone || QUALITY_TIMEZONE): string | undefined {
   const times = (config.times || []).map((time: unknown) => normalizeTime(time)).filter((time): time is string => !!time).sort();
   if (!config.enabled || times.length === 0) return undefined;
@@ -511,12 +513,26 @@ export function collectSearchableSites(sites: TVBoxSite[]): TVBoxSite[] {
   return result;
 }
 
+export function qualityPoolKeysFromPool(pool: SearchQualitySnapshot | null): Set<string> {
+  const keys = new Set<string>();
+  if (!pool || !Array.isArray(pool.entries)) return keys;
+  for (const entry of pool.entries) {
+    const grade = normalizeGrade(entry.grade);
+    if (QUALITY_POOL_GRADES.has(grade) && qualityScoreForEntry(entry) > 0) keys.add(entry.key);
+  }
+  return keys;
+}
+
+/**
+ * Backward-compatible alias for the server-verifiable subset used by the
+ * incremental quality recheck. It is not the user-facing quality pool.
+ */
 export function candidateKeysFromPool(pool: SearchQualitySnapshot | null): Set<string> {
   const keys = new Set<string>();
   if (!pool || !Array.isArray(pool.entries)) return keys;
   for (const entry of pool.entries) {
     const grade = normalizeGrade(entry.grade);
-    if (CANDIDATE_GRADES.has(grade) && qualityScoreForEntry(entry) > 0) keys.add(entry.key);
+    if (SERVER_VERIFIED_GRADES.has(grade) && qualityScoreForEntry(entry) > 0) keys.add(entry.key);
   }
   return keys;
 }
@@ -536,7 +552,7 @@ export function distributableKeysFromPool(
   for (const entry of pool.entries) {
     if (options.eligibleKeys && !options.eligibleKeys.has(entry.key)) continue;
     const grade = normalizeGrade(entry.grade);
-    if (CANDIDATE_GRADES.has(grade) && qualityScoreForEntry(entry) > 0) {
+    if (SERVER_VERIFIED_GRADES.has(grade) && qualityScoreForEntry(entry) > 0) {
       keys.add(entry.key);
       continue;
     }
@@ -560,8 +576,8 @@ export function qualityTargetSites(sites: TVBoxSite[], pool: SearchQualitySnapsh
 /**
  * 对可搜索池执行一次质量分级并持久化。
  *
- * candidate 模式只重测当前优/良/可用候选池；full 模式重测全部可服务端探测的 searchable。
- * untestable 由客户端执行，不参与服务端重测；timeout/unusable 保留历史统计但不进入候选池。
+ * candidate 模式只重测当前服务端可验证的质量池子集；full 模式重测全部可服务端探测的 searchable。
+ * untestable 由客户端执行，不参与服务端重测；timeout/unusable 保留历史统计但不进入质量池。
  */
 export async function runQualityGrading(
   storage: Storage,
@@ -897,7 +913,7 @@ export function unusableKeys(pool: SearchQualitySnapshot | null): Set<string> {
   return keys;
 }
 
-/** 不进入下发候选池的 key 集合（超时 + 不可用）。 */
+/** 不进入质量池的 key 集合（超时 + 不可用）。 */
 export function excludedQualityKeys(pool: SearchQualitySnapshot | null): Set<string> {
   const keys = new Set<string>();
   if (!pool || !Array.isArray(pool.entries)) return keys;

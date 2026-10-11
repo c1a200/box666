@@ -18,7 +18,7 @@ export const DEFAULT_QUALITY_PROBE_YIELD_MS = 25;
 // KV keys
 export const KV_MERGED_CONFIG = 'merged_config';
 export const KV_MERGED_CONFIG_FULL = 'merged_config_full'; // 黑名单过滤前的完整配置（供配置编辑器使用）
-export const KV_STARTUP_SITE_POOL = 'startup_site_pool'; // 根配置动态裁剪用的完整候选池（已按测速排序，不受 maxSearchable 截断）
+export const KV_STARTUP_SITE_POOL = 'startup_site_pool'; // 根配置动态裁剪用的完整源快照（已按测速排序，不受 maxSearchable 截断）
 export const KV_SOURCE_URLS = 'source_urls';
 export const KV_LAST_UPDATE = 'last_update';
 export const KV_LAST_UPDATE_ERROR = 'last_update_error';
@@ -74,7 +74,7 @@ export const KV_CREDENTIAL_DISTRIBUTION = 'credential_distribution'; // 仅用�
 // 搜索配额
 export const KV_SEARCH_QUOTA = 'search_quota';
 export const KV_SEARCH_QUALITY_POOL = 'search_quality_pool'; // 全量搜索源质量排序池（根配置动态取前 N）
-export const KV_SEARCH_QUALITY_CANDIDATES = 'search_quality_candidates'; // 质量分级候选站点快照（含完整站点对象，供定时重测）
+export const KV_SEARCH_QUALITY_CANDIDATES = 'search_quality_candidates'; // 内部质量评估源快照（含完整站点对象，供定时重测；不是第二个用户池）
 export const KV_SEARCH_QUALITY_SNAPSHOT = 'search_quality_snapshot'; // 最近一次质量分级快照
 export const KV_SEARCH_QUALITY_SCHEDULE = 'search_quality_schedule'; // 全量质量分级计划
 export const KV_SEARCH_QUALITY_STATUS = 'search_quality_status'; // 质量分级任务状态
@@ -85,7 +85,7 @@ export const KV_PARSE_HEALTH_REPORT = 'parse_health_report';
 export const KV_CHANNEL_SPEED_MAP = 'channel_speed_map';
 export const KV_CHANNEL_PROBE_ENABLED = 'channel_probe_enabled';
 export const KV_CHANNEL_PROBE_STATUS = 'channel_probe_status';
-export const KV_CHANNEL_MERGED_TREE = 'channel_merged_tree'; // 主聚合产出的完整候选池（probe 只能读，不能被过滤结果覆盖）
+export const KV_CHANNEL_MERGED_TREE = 'channel_merged_tree'; // 主聚合产出的完整源树（probe 只能读，不能被过滤结果覆盖）
 export const KV_CHANNEL_RUNTIME_TREE = 'channel_runtime_tree'; // 应用测速/过滤后的运行时频道树（/live 输出与版本使用）
 export const KV_LIVE_MERGE_REPORT = 'live_merge_report'; // 最近一次直播聚合统计报告
 export const KV_LIVE_SOURCE_CACHE = 'live_source_cache'; // m3u/txt 下载缓存

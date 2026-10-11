@@ -691,11 +691,18 @@ async function readSites(response) {
     assert(response.status === 200, 'admin config-data should return 200, got ' + response.status);
     const body = await response.json();
     assert(body.searchQuality && body.searchQuality.categoryCounts, 'config-data should expose source category counts');
+    assert(Array.isArray(body.searchQuality.qualityPoolKeys), 'config-data should expose quality pool keys');
+    assert(body.searchQuality.qualityPoolCategoryCounts, 'config-data should expose quality pool category counts');
+    assert(typeof body.searchQuality.assessedSourceCount === 'number', 'config-data should expose assessed source count');
+    assert(typeof body.searchQuality.qualityPoolCount === 'number', 'config-data should expose quality pool count');
     assert(body.searchQuality.candidateCategoryCounts, 'config-data should expose candidate category counts');
     const categories = ['xml', 'json', 'jar', 'js', 'remote', 'other'];
     const sumCounts = (counts) => categories.reduce((sum, key) => sum + (Number(counts[key]) || 0), 0);
     assert(sumCounts(body.searchQuality.categoryCounts) === body.searchQuality.searchableCount, 'category counts must equal searchable count');
     assert(sumCounts(body.searchQuality.candidateCategoryCounts) === body.searchQuality.candidateCount, 'candidate category counts must equal candidate count');
+    assert(sumCounts(body.searchQuality.qualityPoolCategoryCounts) === body.searchQuality.qualityPoolCount, 'quality pool category counts must equal quality pool count');
+    assert(body.searchQuality.assessedSourceCount === qualityPool.entries.length, 'assessed source count must equal quality snapshot total');
+    assert(body.searchQuality.qualityPoolKeys.includes('source-client-fallback'), 'untestable source must remain in the quality pool');
     const byKey = new Map(body.sites.map((site) => [site.key, site]));
     assert(byKey.get('source-excellent').sourceCategory === 'xml', 'type 0 site should classify as xml');
     assert(byKey.get('source-good').sourceCategory === 'json', 'type 1 site should classify as json');
@@ -703,8 +710,10 @@ async function readSites(response) {
     for (const category of categories) {
       const searchableSites = body.sites.filter((site) => site.inFinal && !site.blocked && site.searchable === 1 && site.sourceCategory === category);
       const candidateSites = searchableSites.filter((site) => site.candidate === true);
+      const qualityPoolSites = searchableSites.filter((site) => site.qualityPoolMember === true);
       assert(searchableSites.length === body.searchQuality.categoryCounts[category], 'category count mismatch for ' + category + ': list=' + searchableSites.length + ', server=' + body.searchQuality.categoryCounts[category]);
       assert(candidateSites.length === body.searchQuality.candidateCategoryCounts[category], 'candidate category count mismatch for ' + category + ': list=' + candidateSites.length + ', server=' + body.searchQuality.candidateCategoryCounts[category]);
+      assert(qualityPoolSites.length === body.searchQuality.qualityPoolCategoryCounts[category], 'quality pool category count mismatch for ' + category + ': list=' + qualityPoolSites.length + ', server=' + body.searchQuality.qualityPoolCategoryCounts[category]);
     }
   }
 

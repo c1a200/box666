@@ -18,6 +18,7 @@ const {
   getQualityPoolHealth,
   QUALITY_POOL_FRESH_TTL_MS,
   QUALITY_POOL_STALE_TTL_MS,
+  qualityPoolKeysFromPool,
 } = require(outfile);
 
 function assert(condition, message) {
@@ -58,5 +59,17 @@ assert(
   getQualityPoolHealth({ updatedAt: new Date(now).toISOString(), entries: [] }, now).state === 'unavailable',
   'empty pool must be unavailable',
 );
+
+const mixedPool = {
+  updatedAt: new Date(now).toISOString(),
+  entries: [
+    { key: 'excellent', grade: 'excellent', qualityScore: 900 },
+    { key: 'untestable', grade: 'untestable', qualityScore: 420 },
+    { key: 'timeout', grade: 'timeout', qualityScore: 80 },
+    { key: 'unusable', grade: 'unusable', qualityScore: 0 },
+  ],
+};
+const qualityPoolKeys = [...qualityPoolKeysFromPool(mixedPool)];
+assert(qualityPoolKeys.join(',') === 'excellent,untestable', 'quality pool must include untestable and exclude timeout/unusable');
 
 console.log('regression: quality pool freshness checks passed');

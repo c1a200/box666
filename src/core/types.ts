@@ -218,7 +218,7 @@ export interface EdgeProxyConfig {
   vercel?: string;  // Vercel 代理 URL，如 "https://fetch.riowang.win"
 }
 
-// 源分发策略：all=全部候选源，search=仅可搜索源，selected=仅质量池精选源，custom=自定义筛选
+// 源分发策略：all=质量池全部源，search=仅可搜索源，selected=仅质量池精选源，custom=自定义筛选
 export type SourceDistributionMode = 'all' | 'search' | 'selected' | 'custom';
 
 // 源类型只描述接口机制，与 excellent/good/usable/untestable 质量等级无关。
@@ -297,7 +297,7 @@ export interface SearchQuotaReport {
   quickTruncated: number;       // 快速搜索被截断数
   speedSorted: boolean;         // 是否实际按测速结果排序
   leanRemoved: number;          // 轻量启动剔除的远程扩展站点数
-  qualityGrades?: SiteQualityGrades; // 未截断候选池的质量分级统计
+  qualityGrades?: SiteQualityGrades; // 未截断可搜索源的质量分级统计
   parseProbed?: number;         // 解析器探测数
   parseRemoved?: number;        // 解析器剔除数
   parseTimeouts?: number;       // 解析器超时数
@@ -310,7 +310,7 @@ export interface SearchQuotaReport {
 }
 
 // 站点质量分级（基于聚合阶段已有验活/测速结果，不额外发起请求）
-// 候选池下发 excellent / good / usable / untestable；timeout 与 unusable 永不进入客户端搜索源。
+// 质量池包含 excellent / good / usable / untestable；timeout 与 unusable 永不进入客户端搜索源。
 export type SiteQualityGrade = 'excellent' | 'good' | 'usable' | 'untestable' | 'timeout' | 'unusable';
 
 export interface SiteQualityGradeBucket {

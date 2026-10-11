@@ -558,7 +558,7 @@ ${sharedStyles}
         </label>
         <label class="form-label" style="margin:0" data-i18n="qualityTimes">时间点</label>
         <input type="text" id="qualityTimesInput" class="nt-input" style="width:210px" placeholder="04:30, 16:30" data-i18n-placeholder="qualityTimesPh">
-        <label class="form-label" style="margin:0" data-i18n="qualityRepeatDays">候选池重排周期（天）</label>
+        <label class="form-label" style="margin:0" data-i18n="qualityRepeatDays">质量池重排周期（天）</label>
         <input type="number" id="qualityRepeatDaysInput" class="nt-input" style="width:80px" min="1" max="30" value="1">
         <label class="form-label" style="margin:0" data-i18n="qualityFullRepeatDays">全量分级周期（天）</label>
         <input type="number" id="qualityFullRepeatDaysInput" class="nt-input" style="width:80px" min="1" max="365" value="7">
@@ -566,12 +566,12 @@ ${sharedStyles}
         <button class="btn btn-sm" onclick="saveQualitySchedule()" data-i18n="save">保存</button>
       </div>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px">
-        <button class="btn btn-sm" id="qualityRunCandidateBtn" onclick="runQualityNow('candidate')" data-i18n="qualityRunCandidate">重测候选池</button>
+        <button class="btn btn-sm" id="qualityRunCandidateBtn" onclick="runQualityNow('candidate')" data-i18n="qualityRunCandidate">重测质量池</button>
         <button class="btn btn-sm" id="qualityRunFullBtn" onclick="runQualityNow('full')" data-i18n="qualityRunFull">全量重测</button>
         <button class="btn btn-sm" onclick="refreshQualityReport()" data-i18n="qualityRefresh">刷新分级状态</button>
         <span class="status-text" id="qualityScheduleStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
       </div>
-      <div style="margin-top:8px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="qualityScheduleDesc">分级在后台异步执行，点击后立即返回，不会阻塞网页或其他请求。日常重测候选池中的源；需要网盘登录、JAR 运行或其他客户端能力的源由应用端最终验证。网盘登录完全由应用端处理。到达全量周期或候选池为空时自动全量分级。Cloudflare 和 Node/Render 都按小分片执行并在分片间让出事件循环；Node/Render 异常重启后会从已保存游标继续。</div>
+      <div style="margin-top:8px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="qualityScheduleDesc">分级在后台异步执行，点击后立即返回，不会阻塞网页或其他请求。日常重测质量池中的源；需要网盘登录、JAR 运行或其他客户端能力的源由应用端最终验证。网盘登录完全由应用端处理。到达全量周期或质量池为空时自动全量分级。Cloudflare 和 Node/Render 都按小分片执行并在分片间让出事件循环；Node/Render 异常重启后会从已保存游标继续。</div>
       <div id="qualityDynamicStats" style="margin-top:10px;font-size:0.82rem;color:var(--text-secondary);line-height:1.7"></div>
     </div>
     <div class="section">
@@ -788,15 +788,15 @@ const translations = {
     healthLastOk:'Last OK',
     qualitySchedule:'Search Quality Grading',
     qualityEnabled:'Enable scheduled grading',
-    qualityTimes:'Times', qualityTimesPh:'e.g. 04:30, 16:30', qualityRepeatDays:'Candidate pool refresh (days)', qualityFullRepeatDays:'Full grading interval (days)',
-    qualityRunCandidate:'Retest candidate pool', qualityRunFull:'Full re-grade', qualityRunNow:'Run now', qualityRefresh:'Refresh grading status', qualityStatusLabel:'Status', qualityStatusMode:'mode',
-    qualityScheduleDesc:'Grading runs asynchronously in the background and returns immediately, so the page and other requests are never blocked. Daily runs refresh the candidate pool with ordinary HTTP quality checks. Sources that require cloud-drive login, JAR execution or other client-side capabilities are finally verified by the client. Cloud-drive login and credentials are handled entirely by the client and are never stored, distributed or injected by the server. When the full-grading interval is reached or the candidate pool is empty, a full grading run happens automatically. Both Cloudflare and Node/Render run in small chunks and yield between chunks; Node/Render resumes from the saved cursor after a restart.',
+    qualityTimes:'Times', qualityTimesPh:'e.g. 04:30, 16:30', qualityRepeatDays:'Quality pool refresh (days)', qualityFullRepeatDays:'Full grading interval (days)',
+    qualityRunCandidate:'Retest quality pool', qualityRunFull:'Full re-grade', qualityRunNow:'Run now', qualityRefresh:'Refresh grading status', qualityStatusLabel:'Status', qualityStatusMode:'mode',
+    qualityScheduleDesc:'Grading runs asynchronously in the background and returns immediately, so the page and other requests are never blocked. Daily runs refresh the quality pool with ordinary HTTP quality checks. Sources that require cloud-drive login, JAR execution or other client-side capabilities are finally verified by the client. Cloud-drive login and credentials are handled entirely by the client and are never stored, distributed or injected by the server. When the full-grading interval is reached or the quality pool is empty, a full grading run happens automatically. Both Cloudflare and Node/Render run in small chunks and yield between chunks; Node/Render resumes from the saved cursor after a restart.',
     qualityGradeDesc:'Quality grades run in background chunks and do not block client startup: excellent <=1000ms, good 1001-3000ms, usable 3001-6000ms. The server verifies directly reachable sources only. Searchable JAR/client-runtime sources remain eligible through a small fallback pool; they are not the same as unsearchable. The default is at most 4 fallback sources, and each auth code can set client fallback to 0, N, or all. Timeout and unusable sources are never served. Source categories and counts are configured per auth code; the global parser limit is the only global runtime cap.',
     qualityNoSnapshot:'No grading result yet. Run grading once to build the quality pool.',
     qualityStateIdle:'idle', qualityStateRunning:'running', qualityStateDone:'done', qualityStateError:'error',
     qualityLastRun:'Last run', qualityNextRun:'Next run', qualityLastFullRun:'Last full run', qualityNextFullRun:'Next full run', qualityNever:'never',
-    qualityGradesTitle:'Quality grades', qualityRecommended:'Recommended', qualityRecParses:'parser limit', sqCumulative:'cumulative', qualityUseRecommended:'Fill recommended value', qualityRecommendedApplied:'Recommended parser limit filled in; click Save in Parser Quota.', qualityActualCounts:'Current actual counts', sqStatsUsablePool:'usable pool',
-    qualityTimesHint:'Uses the timezone configured by QUALITY_TIMEZONE (default Asia/Shanghai, UTC+8). Comma-separated HH:MM, up to 12 per day. Candidate pool refresh re-tests candidate sources every N days. Full grading re-grades all searchable sources every N days.',
+    qualityGradesTitle:'Quality grades', qualityRecommended:'Recommended', qualityRecParses:'parser limit', sqCumulative:'cumulative', qualityUseRecommended:'Fill recommended value', qualityRecommendedApplied:'Recommended parser limit filled in; click Save in Parser Quota.', qualityActualCounts:'Current actual counts', sqStatsAssessed:'assessed', sqStatsUsablePool:'quality pool',
+    qualityTimesHint:'Uses the timezone configured by QUALITY_TIMEZONE (default Asia/Shanghai, UTC+8). Comma-separated HH:MM, up to 12 per day. Quality pool refresh re-tests quality-pool sources every N days. Full grading re-grades all searchable sources every N days.',
     qualityRunningNote:'Grading is running in the background; you can keep using the page.',
     qualityScheduleSaved:'Schedule saved', qualityReportRefreshed:'Report refreshed',
     searchQuota:'Client Parser Quota',
@@ -806,8 +806,8 @@ const translations = {
     sqKey:'Key', sqName:'Name', sqSource:'Source', sqReason:'Reason', sqGrade:'Grade / score', sqSpeedStatus:'Speed / confidence', sqRank:'Rank', sqAction:'Action',
     sqPin:'Pin', sqUnpin:'Unpin',
     sqBlock:'Block', sqUnblock:'Unblock', sqBlocked:'Blocked', sqBlockedDesc:'Blocked sources are excluded from all client outputs but remain here so they can be restored.', sqSourceFilterPh:'Search source name or key...', sqFilterAll:'All grades', sqFilterMatched:'Matched', sqFilterNoMatch:'No matching sources',
-    sqPinned:'Pinned', sqPinnedDesc:'Drag to reorder. Pinned sources are searched first and still count toward their source-type quota.', sqOtherSources:'Candidate Sources', sqCandidateDesc:'Candidate sources passed quality filtering and are eligible for distribution. Pinned sources are searched first; blocked sources stay in this list but are excluded from every client output.', sqExcludedSources:'Not Selected', sqExcludedDesc:'Searchable sources outside the quality candidate pool (timeout, unusable, or not selected) are not distributed to clients.', sqReasonJsUrlExcluded:'JS URL excluded', sqReasonTimeout:'Timeout', sqReasonUnusable:'Unusable', sqReasonNotInPool:'Not in quality pool', sqReasonNotCandidate:'Not a candidate',
-    sqXmlSources:'XML Sources', sqXmlDesc:'TVBox type 0 XML interface sources. Quality grades only affect their order within this list.', sqJsonSources:'JSON / MacCMS Sources', sqJsonDesc:'TVBox type 1 JSON or MacCMS interface sources.', sqJarSources:'JAR / Extension Sources', sqJarDesc:'TVBox type 3 local JAR or remote extension sources, excluding JS URL entries.', sqJsSources:'JS URL Sources', sqJsDesc:'TVBox type 3 sources whose API is an HTTP(S) URL.', sqRemoteSources:'Remote Sources', sqRemoteDesc:'TVBox type 4 remote site sources.', sqUncategorizedSources:'Other Sources', sqUncategorizedDesc:'Sources whose interface type could not be classified. They are listed separately instead of being mixed into a quality grade.', sqXml:'XML', sqJson:'JSON / MacCMS', sqJar:'JAR / Extension', sqJs:'JS URL', sqRemote:'Remote', sqOther:'Other', sqUnavailableSources:'Unavailable Sources', sqUnavailableDesc:'Searchable sources that are blocked, timed out, unusable, or outside the current quality candidate pool. They are not distributed to clients.', sqBlockedSources:'Blocked Sources', sqBlockedDescLong:'Blocked sources are excluded from all client outputs but remain here so they can be restored.',
+    sqPinned:'Pinned', sqPinnedDesc:'Drag to reorder. Pinned sources are searched first and still count toward their source-type quota.', sqOtherSources:'Quality Pool Sources', sqCandidateDesc:'Sources in the ordered quality pool and eligible for distribution. Pinned sources are searched first; blocked sources stay in this list but are excluded from every client output.', sqExcludedSources:'Sources Outside Quality Pool', sqExcludedDesc:'Searchable sources that were assessed but are outside the quality pool, for example timeout or unusable sources. They are not distributed to clients.', sqReasonJsUrlExcluded:'JS URL excluded', sqReasonTimeout:'Timeout', sqReasonUnusable:'Unusable', sqReasonNotInPool:'Not in quality pool', sqReasonNotCandidate:'Outside quality pool',
+    sqXmlSources:'XML Sources', sqXmlDesc:'TVBox type 0 XML interface sources. Quality grades only affect their order within this list.', sqJsonSources:'JSON / MacCMS Sources', sqJsonDesc:'TVBox type 1 JSON or MacCMS interface sources.', sqJarSources:'JAR / Extension Sources', sqJarDesc:'TVBox type 3 local JAR or remote extension sources, excluding JS URL entries.', sqJsSources:'JS URL Sources', sqJsDesc:'TVBox type 3 sources whose API is an HTTP(S) URL.', sqRemoteSources:'Remote Sources', sqRemoteDesc:'TVBox type 4 remote site sources.', sqUncategorizedSources:'Other Sources', sqUncategorizedDesc:'Sources whose interface type could not be classified. They are listed separately instead of being mixed into a quality grade.', sqXml:'XML', sqJson:'JSON / MacCMS', sqJar:'JAR / Extension', sqJs:'JS URL', sqRemote:'Remote', sqOther:'Other', sqUnavailableSources:'Unavailable Sources', sqUnavailableDesc:'Searchable sources that are blocked, timed out, unusable, or outside the current quality pool. They are not distributed to clients.', sqBlockedSources:'Blocked Sources', sqBlockedDescLong:'Blocked sources are excluded from all client outputs but remain here so they can be restored.',
     sqLeanRemoved:'lean-removed',
     channelProbeTitle:'Channel Speed Probe (Node/Docker)',
     channelProbeEnable:'Enable scheduled channel speed test (every 12h)',
@@ -932,26 +932,26 @@ const translations = {
     healthLastOk:'最后成功',
     qualitySchedule:'搜索源质量分级',
     qualityEnabled:'启用定时分级',
-    qualityTimes:'执行时间', qualityTimesPh:'例如 04:30, 16:30', qualityRepeatDays:'候选池重排周期（天）', qualityFullRepeatDays:'全量分级周期（天）',
-    qualityRunCandidate:'重测候选池', qualityRunFull:'全量重测', qualityRunNow:'立即执行', qualityRefresh:'刷新分级状态', qualityStatusLabel:'状态', qualityStatusMode:'模式',
-    qualityScheduleDesc:'分级在后台异步执行，点击后立即返回，不会阻塞网页或其他请求。日常重测候选池中的源；需要网盘登录、JAR 运行或其他客户端能力的源由应用端最终验证。网盘登录和凭证处理完全由应用端完成，服务端不会保存、下发或注入凭证。到达全量周期或候选池为空时自动全量分级。Cloudflare 和 Node/Render 都按小分片执行并在分片间让出事件循环；Node/Render 异常重启后会从已保存游标继续。',
+    qualityTimes:'执行时间', qualityTimesPh:'例如 04:30, 16:30', qualityRepeatDays:'质量池重排周期（天）', qualityFullRepeatDays:'全量分级周期（天）',
+    qualityRunCandidate:'重测质量池', qualityRunFull:'全量重测', qualityRunNow:'立即执行', qualityRefresh:'刷新分级状态', qualityStatusLabel:'状态', qualityStatusMode:'模式',
+    qualityScheduleDesc:'分级在后台异步执行，点击后立即返回，不会阻塞网页或其他请求。日常重测质量池中的源；需要网盘登录、JAR 运行或其他客户端能力的源由应用端最终验证。网盘登录和凭证处理完全由应用端完成，服务端不会保存、下发或注入凭证。到达全量周期或质量池为空时自动全量分级。Cloudflare 和 Node/Render 都按小分片执行并在分片间让出事件循环；Node/Render 异常重启后会从已保存游标继续。',
     qualityGradeDesc:'质量分级（后台分块测速，不影响应用端启动速度）：优 ≤1000ms；良 1001-3000ms；可用 3001-6000ms。服务端只验证可直接请求的源；可搜索 JAR/客户端运行时源进入独立的小型后备池，默认最多 4 个，鉴权码可设置为 0、N 或全部。超时和不可用永不下发。源类型与数量请在鉴权码中按需选择。',
     qualityNoSnapshot:'尚无分级结果，先执行一次分级以建立质量池。',
     qualityStateIdle:'空闲', qualityStateRunning:'运行中', qualityStateDone:'已完成', qualityStateError:'错误',
     qualityLastRun:'上次执行', qualityNextRun:'下次执行', qualityLastFullRun:'上次全量', qualityNextFullRun:'下次全量', qualityNever:'从未',
-    qualityGradesTitle:'质量分级', qualityRecommended:'推荐值', qualityRecParses:'解析器上限', sqCumulative:'累计', qualityUseRecommended:'填入推荐值', qualityRecommendedApplied:'已填入解析器推荐值，请点击解析器配额中的保存。', qualityActualCounts:'当前实际数量', sqStatsUsablePool:'可用池',
-    qualityTimesHint:'按 QUALITY_TIMEZONE 配置的时区执行（默认 Asia/Shanghai，北京时间 UTC+8）。用英文逗号分隔的 HH:MM 时间点，每天最多 12 个。候选池重排周期表示每隔 N 天重测一次候选源；全量分级周期表示每隔 N 天对所有可搜索源做一次完整分级。',
+    qualityGradesTitle:'质量分级', qualityRecommended:'推荐值', qualityRecParses:'解析器上限', sqCumulative:'累计', qualityUseRecommended:'填入推荐值', qualityRecommendedApplied:'已填入解析器推荐值，请点击解析器配额中的保存。', qualityActualCounts:'当前实际数量', sqStatsAssessed:'已评估源', sqStatsUsablePool:'质量池',
+    qualityTimesHint:'按 QUALITY_TIMEZONE 配置的时区执行（默认 Asia/Shanghai，北京时间 UTC+8）。用英文逗号分隔的 HH:MM 时间点，每天最多 12 个。质量池重排周期表示每隔 N 天重测一次质量池源；全量分级周期表示每隔 N 天对所有可搜索源做一次完整分级。',
     qualityRunningNote:'分级正在后台运行，可继续使用本页面。',
     qualityScheduleSaved:'计划已保存', qualityReportRefreshed:'报告已刷新',
     searchQuota:'应用端解析器配额',
-    maxParses:'解析器上限', autoSearchLimit:'自动安全配额', searchQuotaDesc:'这里只控制根配置下发的健康解析器数量；填 0 表示不限制。可搜索源的类型和数量由鉴权码设置决定，根链接不再按全局可搜索源上限裁剪。', sortSearchBySpeed:'按测速速度排序', sortSearchBySpeedDesc:'复用现有站点测速结果，将较快的源排在前面；不会额外发起测速请求。置顶源始终最前。', leanStartup:'轻量启动', leanStartupDesc:'根配置启动阶段去掉远程 JAR/扩展站点，缩短影视仓/TVBox 启动时间；置顶源仍保留。', maxStartupQuickSearchDesc:'根地址启动配置使用的快速搜索上限；0 表示不限制。完整配置仍可通过 /config-full.json 获取。', startupOptimizationDesc:'快速搜索源默认不限制。可搜索源的类型和数量由鉴权码按候选池顺序选择；/config-full.json 保留完整搜索源。', startupMode:'启动模式', startupModeLean:'轻量', startupModeFull:'完整', startupModeDesc:'轻量模式在根地址返回裁剪后的启动配置以加快启动；完整配置仍可通过 /config-full.json 获取。', pruneDeadParses:'剔除失效解析器', pruneDeadParsesDesc:'主动探测解析器地址并剔除确认超时或失效的项，避免客户端启动时逐个等待死解析器。',
+    maxParses:'解析器上限', autoSearchLimit:'自动安全配额', searchQuotaDesc:'这里只控制根配置下发的健康解析器数量；填 0 表示不限制。可搜索源的类型和数量由鉴权码设置决定，根链接不再按全局可搜索源上限裁剪。', sortSearchBySpeed:'按测速速度排序', sortSearchBySpeedDesc:'复用现有站点测速结果，将较快的源排在前面；不会额外发起测速请求。置顶源始终最前。', leanStartup:'轻量启动', leanStartupDesc:'根配置启动阶段去掉远程 JAR/扩展站点，缩短影视仓/TVBox 启动时间；置顶源仍保留。', maxStartupQuickSearchDesc:'根地址启动配置使用的快速搜索上限；0 表示不限制。完整配置仍可通过 /config-full.json 获取。', startupOptimizationDesc:'快速搜索源默认不限制。可搜索源的类型和数量由鉴权码按质量池顺序选择；/config-full.json 保留完整搜索源。', startupMode:'启动模式', startupModeLean:'轻量', startupModeFull:'完整', startupModeDesc:'轻量模式在根地址返回裁剪后的启动配置以加快启动；完整配置仍可通过 /config-full.json 获取。', pruneDeadParses:'剔除失效解析器', pruneDeadParsesDesc:'主动探测解析器地址并剔除确认超时或失效的项，避免客户端启动时逐个等待死解析器。',
     tabSearchQuota:'搜索',
     sqStatsCurrent:'当前实际数量', sqStatsSearchable:'可搜索源', sqStatsQuick:'快速搜索', sqStatsQuickLimit:'自动上限', sqStatsPool:'质量池', sqStatsServerVerified:'服务端已验证', sqStatsClientFallback:'客户端后备', sqStatsParsers:'解析器', sqStatsKept:'最终保留', sqStatsProbed:'探测', sqStatsRemoved:'剔除', sqStatsLimit:'上限', sqStatsUnlimited:'不限制', sqStatsQuality:'质量分级', sqStatsNoData:'执行聚合后显示质量分级和解析器数量。',
     sqKey:'Key', sqName:'名称', sqSource:'来源', sqReason:'原因', sqGrade:'等级 / 质量分', sqSpeedStatus:'速度 / 置信度', sqRank:'排名', sqAction:'操作',
     sqPin:'置顶', sqUnpin:'取消置顶',
     sqBlock:'屏蔽', sqUnblock:'取消屏蔽', sqBlocked:'已屏蔽', sqBlockedDesc:'屏蔽源不会下发到任何客户端，但仍保留在管理列表中，可随时恢复。可按名称/Key 搜索，并按质量等级或“已屏蔽”筛选。', sqSourceFilterPh:'搜索源名称或 Key...', sqFilterAll:'全部等级', sqFilterMatched:'匹配', sqFilterNoMatch:'没有匹配的源',
-    sqPinned:'置顶源', sqPinnedDesc:'上下移动排序，排在前面的源在 TVBox 搜索时优先执行；置顶仍属于原类型并占用该类型配额。', sqOtherSources:'候选源', sqCandidateDesc:'通过质量筛选、可参与下发的候选源。置顶源优先搜索；屏蔽后仍保留在此列表，但不会下发到任何客户端。', sqExcludedSources:'未入选源', sqExcludedDesc:'可搜索但未进入质量候选池的源（超时、不可用或未入选），不会下发到客户端。', sqReasonJsUrlExcluded:'JS URL 已排除', sqReasonTimeout:'超时', sqReasonUnusable:'不可用', sqReasonNotInPool:'不在质量池', sqReasonNotCandidate:'非候选源',
-    sqXmlSources:'XML 源', sqXmlDesc:'TVBox type 0 的 XML 接口源，质量等级只决定其在同一类型内部的排序。', sqJsonSources:'JSON / MacCMS 源', sqJsonDesc:'TVBox type 1 的 JSON 或 MacCMS 接口源。', sqJarSources:'JAR / 扩展源', sqJarDesc:'TVBox type 3 的本地 JAR 或远程扩展源，不包含 API 为 HTTP(S) 的 JS 源。', sqJsSources:'JS URL 源', sqJsDesc:'TVBox type 3 且 API 为 HTTP(S) 的 JS 接口源。', sqRemoteSources:'远程站点源', sqRemoteDesc:'TVBox type 4 的远程站点源。', sqUncategorizedSources:'其他类型源', sqUncategorizedDesc:'无法按接口机制归入上述类型的源，单独列出，不与质量等级混在一起。', sqUnavailableSources:'不可用 / 未入选源', sqUnavailableDesc:'可搜索但已屏蔽、超时、不可用或不在当前质量候选池中的源，不会下发到客户端。', sqBlockedSources:'屏蔽源', sqBlockedDescLong:'屏蔽源不会下发到任何客户端，但仍保留在管理列表中，可随时恢复。', sqXml:'XML', sqJson:'JSON / MacCMS', sqJar:'JAR / 扩展', sqJs:'JS URL', sqRemote:'远程', sqOther:'其他',
+    sqPinned:'置顶源', sqPinnedDesc:'上下移动排序，排在前面的源在 TVBox 搜索时优先执行；置顶仍属于原类型并占用该类型配额。', sqOtherSources:'质量池源', sqCandidateDesc:'已进入统一质量排序、可参与下发选择的源。置顶源优先搜索；屏蔽后仍保留在此列表，但不会下发到任何客户端。', sqExcludedSources:'质量池外源', sqExcludedDesc:'已经评估但未进入质量池的可搜索源，例如超时或不可用，不会下发到客户端。', sqReasonJsUrlExcluded:'JS URL 已排除', sqReasonTimeout:'超时', sqReasonUnusable:'不可用', sqReasonNotInPool:'不在质量池', sqReasonNotCandidate:'质量池外',
+    sqXmlSources:'XML 源', sqXmlDesc:'TVBox type 0 的 XML 接口源，质量等级只决定其在同一类型内部的排序。', sqJsonSources:'JSON / MacCMS 源', sqJsonDesc:'TVBox type 1 的 JSON 或 MacCMS 接口源。', sqJarSources:'JAR / 扩展源', sqJarDesc:'TVBox type 3 的本地 JAR 或远程扩展源，不包含 API 为 HTTP(S) 的 JS 源。', sqJsSources:'JS URL 源', sqJsDesc:'TVBox type 3 且 API 为 HTTP(S) 的 JS 接口源。', sqRemoteSources:'远程站点源', sqRemoteDesc:'TVBox type 4 的远程站点源。', sqUncategorizedSources:'其他类型源', sqUncategorizedDesc:'无法按接口机制归入上述类型的源，单独列出，不与质量等级混在一起。', sqUnavailableSources:'不可用 / 未入选源', sqUnavailableDesc:'可搜索但已屏蔽、超时、不可用或不在当前质量池中的源，不会下发到客户端。', sqBlockedSources:'屏蔽源', sqBlockedDescLong:'屏蔽源不会下发到任何客户端，但仍保留在管理列表中，可随时恢复。', sqXml:'XML', sqJson:'JSON / MacCMS', sqJar:'JAR / 扩展', sqJs:'JS URL', sqRemote:'远程', sqOther:'其他',
     sqLeanRemoved:'轻量剔除',
     channelProbeTitle:'频道级测速（仅 Node/Docker）',
     channelProbeEnable:'启用定时频道测速（每 12 小时）',
@@ -972,7 +972,7 @@ const translations = {
     siteProbeDesc:'深度模式会检查 type0/type1 站点是否返回有效内容。连续失败 3 次的站点会被标记 [⚠]。',
     credentialDistributionTitle:'客户端鉴权与源分发',
     credentialDistributionDesc:'鉴权码只控制下发哪些源，不再保存或注入任何网盘凭证。关闭强制鉴权时，根链接正常下发源；启用后根链接不下发源，必须使用 /auth/<鉴权码>/ 访问。',
-    credentialSourceModeAll:'全部候选源',
+    credentialSourceModeAll:'质量池全部源',
     credentialSourceModeSearch:'仅可搜索源',
     credentialSourceModeSelected:'仅质量池精选源',
     credentialSourceModeCustom:'仅自定义 Key 白名单',
@@ -2239,17 +2239,21 @@ async function loadSearchQuotaReport() {
     const cfg = await cfgRes.json();
     const allSites = Array.isArray(cfg.sites) ? cfg.sites : [];
     rememberCredentialSiteTypes(allSites, [...credentialSiteTypes]);
-    const hasServerCandidateKeys = Array.isArray(cfg.searchQuality && cfg.searchQuality.candidateKeys);
-    const rawCandidateKeys = hasServerCandidateKeys
-      ? cfg.searchQuality.candidateKeys
-      : allSites.filter(s => s.candidate === true).map(s => s.key);
+    const hasQualityPoolKeys = Array.isArray(cfg.searchQuality && cfg.searchQuality.qualityPoolKeys);
+    const rawQualityPoolKeys = hasQualityPoolKeys
+      ? cfg.searchQuality.qualityPoolKeys
+      : (Array.isArray(cfg.searchQuality && cfg.searchQuality.candidateKeys)
+        ? cfg.searchQuality.candidateKeys
+        : allSites.filter(s => s.qualityPoolMember === true || s.candidate === true).map(s => s.key));
     const serverCategoryCounts = cfg.searchQuality && cfg.searchQuality.categoryCounts ? cfg.searchQuality.categoryCounts : {};
-    const serverCandidateCounts = cfg.searchQuality && cfg.searchQuality.candidateCategoryCounts ? cfg.searchQuality.candidateCategoryCounts : {};
+    const serverCandidateCounts = cfg.searchQuality && cfg.searchQuality.qualityPoolCategoryCounts
+      ? cfg.searchQuality.qualityPoolCategoryCounts
+      : (cfg.searchQuality && cfg.searchQuality.candidateCategoryCounts ? cfg.searchQuality.candidateCategoryCounts : {});
     sqBlockedSites = allSites.filter(s => s.searchable === 1 && s.blocked === true);
-    // candidateKeys 是服务端的最终候选集合；空数组也必须尊重，不能回退为全部可搜索源。
-    const candidateKeys = new Set(rawCandidateKeys);
-    sqAllSites = allSites.filter(s => s.searchable === 1 && s.candidate === true && candidateKeys.has(s.key) && s.blocked !== true);
-    sqExcludedSites = allSites.filter(s => s.searchable === 1 && s.blocked !== true && !candidateKeys.has(s.key));
+    // qualityPoolKeys 是服务端的唯一质量池集合；空数组也必须尊重，不能回退为全部可搜索源。
+    const qualityPoolKeys = new Set(rawQualityPoolKeys);
+    sqAllSites = allSites.filter(s => s.searchable === 1 && (s.qualityPoolMember === true || s.candidate === true) && qualityPoolKeys.has(s.key) && s.blocked !== true);
+    sqExcludedSites = allSites.filter(s => s.searchable === 1 && s.blocked !== true && !qualityPoolKeys.has(s.key));
     sqCandidateCount = sqAllSites.length;
     sqCategoryCounts = serverCategoryCounts;
     sqCandidateCategoryCounts = typeof serverCandidateCounts === 'object' && serverCandidateCounts !== null
@@ -2486,7 +2490,7 @@ function renderQualityStats(d) {
     : t('sqStatsUnlimited');
   html += '<div><strong>' + t('qualityActualCounts') + '</strong>: ' + t('sqStatsSearchable') + ' ' + countText(actual.searchable)
     + ' · ' + t('sqStatsParsers') + ' ' + t('sqStatsKept') + ' ' + countText(actual.parsers) + ' (' + t('sqStatsLimit') + ' ' + parserLimitText + ')'
-    + ' · ' + t('sqStatsPool') + ' ' + countText(actual.candidatePool) + ' / ' + t('sqStatsUsablePool') + ' ' + countText(actual.usablePool)
+    + ' · ' + t('sqStatsAssessed') + ' ' + countText(actual.assessedSourceCount) + ' / ' + t('sqStatsPool') + ' ' + countText(actual.qualityPoolCount)
     + ' (' + t('sqStatsServerVerified') + ' ' + countText(actual.serverVerifiedPool) + ', ' + t('sqStatsClientFallback') + ' ' + countText(actual.clientFallbackPool) + ')</div>';
 
   if (!snap || !snap.grades) {
