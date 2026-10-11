@@ -155,7 +155,7 @@ const distribution = {
 function makeApp(overrides = {}) {
   const storage = new MemoryStorage({
     merged_config: JSON.stringify(overrides.mergedConfig || mergedConfig),
-    search_quality_pool: JSON.stringify(overrides.qualityPool || qualityPool),
+    search_quality_pool: JSON.stringify(overrides.qualityPool === undefined ? qualityPool : overrides.qualityPool),
     client_auth_distribution: JSON.stringify(overrides.distribution || distribution),
     ...(overrides.quota ? { search_quota: JSON.stringify(overrides.quota) } : {}),
   });
@@ -232,6 +232,35 @@ async function readSites(response) {
     assert(!keys.includes('source-timeout'), 'full config must not restore timeout sources');
     assert(keys.includes('source-client-fallback'), 'full config should keep the default bounded client-runtime fallback');
     assert(keys.includes('source-plugin'), 'full config may keep non-searchable functional extensions');
+  }
+
+  {
+    const expiredPool = {
+      ...qualityPool,
+      updatedAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString(),
+    };
+    const expiredDistribution = {
+      requireAuth: false,
+      authCodes: [{
+        id: 'auth-expired',
+        label: '过期池',
+        code: 'expired-pool',
+        enabled: true,
+        sourceMode: 'selected',
+        maxSites: -1,
+        maxSearchable: -1,
+        includeGrades: [],
+        siteTypes: [],
+        selectedKeys: [],
+        pinnedKeys: [],
+      }],
+    };
+    const { app } = makeApp({ qualityPool: expiredPool, distribution: expiredDistribution });
+    const sites = await readSites(await app.request('https://box.example/auth/expired-pool/'));
+    const searchable = sites.filter((site) => site.searchable === 1);
+    assert(searchable.length > 0, 'expired quality pool must keep a bounded provisional search pool');
+    assert(searchable.length <= 24, 'expired quality pool provisional pool must remain bounded');
+    assert(searchable.every((site) => site.type !== 3), 'expired quality pool fallback must be directly probeable');
   }
 
   {

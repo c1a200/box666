@@ -51,10 +51,53 @@ export const QUALITY_THRESHOLDS = {
 const DEFAULT_BATCH_SIZE = 80;
 const MAX_SCHEDULE_TIMES = 12;
 const DEFAULT_FULL_REPEAT_DAYS = 7;
+// Daily grading normally runs once per day. Keep a short fresh window, then
+// degrade conservatively instead of silently treating an old snapshot as live.
+export const QUALITY_POOL_FRESH_TTL_MS = 36 * 60 * 60 * 1000;
+export const QUALITY_POOL_STALE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 // JAR/客户端运行时源可以在应用端参与搜索，但服务端无法替它们验活。
 // 默认只给启动配置留一个很小的后备窗口，避免把大量未验证的 JAR
 // 变成应用启动时的串行初始化负担。鉴权码仍可用 0/N/-1 覆盖这个默认值。
 export const DEFAULT_CLIENT_FALLBACK_LIMIT = 4;
+
+export type QualityPoolState = 'fresh' | 'stale' | 'expired' | 'unavailable';
+
+export interface QualityPoolHealth {
+  state: QualityPoolState;
+  ageMs: number | null;
+  ageHours: number | null;
+  updatedAt?: string;
+}
+
+/**
+ * Classify a persisted quality pool by freshness. A missing/invalid timestamp
+ * is intentionally unavailable: it must not silently become an authoritative
+ * ranking after a restart or KV migration.
+ */
+export function getQualityPoolHealth(
+  pool: SearchQualitySnapshot | null | undefined,
+  now = Date.now(),
+): QualityPoolHealth {
+  if (!pool || !Array.isArray(pool.entries) || pool.entries.length === 0) {
+    return { state: 'unavailable', ageMs: null, ageHours: null };
+  }
+  const updatedAtMs = Date.parse(pool.updatedAt);
+  if (!Number.isFinite(updatedAtMs)) {
+    return { state: 'unavailable', ageMs: null, ageHours: null, updatedAt: pool.updatedAt };
+  }
+  const ageMs = Math.max(0, now - updatedAtMs);
+  const state = ageMs <= QUALITY_POOL_FRESH_TTL_MS
+    ? 'fresh'
+    : ageMs <= QUALITY_POOL_STALE_TTL_MS
+      ? 'stale'
+      : 'expired';
+  return {
+    state,
+    ageMs,
+    ageHours: Math.round(ageMs / 360000) / 10,
+    updatedAt: pool.updatedAt,
+  };
+}
 // `untestable` means client-verifiable, not server-verified.  Keep it out of
 // the default high-quality candidate set; callers may explicitly opt into it.
 const CANDIDATE_GRADES = new Set<SiteQualityGrade>(['excellent', 'good', 'usable']);

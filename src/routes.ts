@@ -30,6 +30,7 @@ import {
   distributableKeysFromPool,
   qualityScoreForEntry,
   DEFAULT_CLIENT_FALLBACK_LIMIT,
+  getQualityPoolHealth,
 } from './core/quality';
 import { loadClientDistribution, saveClientDistribution, findClientAuthCode, normalizeClientDistributionConfig, createClientAuthCode } from './core/client-auth-store';
 import { isSiteProbeable } from './core/speedtest';
@@ -515,12 +516,18 @@ export function createApp(deps: AppDeps): Hono {
     // means that category's own top N rather than whichever entries happened
     // to occur first in the merged config.
     const qualityPool = await loadQualityPool(storage).catch(() => null);
-    const qualityEntries = new Map((qualityPool?.entries || []).map((entry) => [entry.key, entry]));
+    const qualityHealth = getQualityPoolHealth(qualityPool);
+    // An expired pool is historical evidence, not an authoritative ranking.
+    // Keep only a bounded provisional set until a fresh quality run completes.
+    const effectiveQualityPool = qualityHealth.state === 'fresh' || qualityHealth.state === 'stale'
+      ? qualityPool
+      : null;
+    const qualityEntries = new Map((effectiveQualityPool?.entries || []).map((entry) => [entry.key, entry]));
     // The persisted pool is already normalized and deterministically sorted.
     // Reuse that order so aggregation, admin previews and client distribution
     // cannot disagree because they recomputed a slightly different score.
     const qualityOrder = new Map<string, number>();
-    (qualityPool?.entries || []).forEach((entry, index) => {
+    (effectiveQualityPool?.entries || []).forEach((entry, index) => {
       if (!qualityOrder.has(entry.key)) qualityOrder.set(entry.key, index);
     });
     // A searchable JAR is valid for the client even though the server cannot
@@ -531,20 +538,21 @@ export function createApp(deps: AppDeps): Hono {
       ? policy.bucketLimits!.quality!.untestable!
       : DEFAULT_CLIENT_FALLBACK_LIMIT;
     const allowUntestable = maxUntestable !== 0;
-    const distributableKeys = distributableKeysFromPool(qualityPool, {
+    const distributableKeys = distributableKeysFromPool(effectiveQualityPool, {
       includeUntestable: allowUntestable,
       maxUntestable,
       eligibleKeys: searchableKeys,
     });
     const qualityHasEntries = qualityEntries.size > 0;
+    let provisionalKeys = new Set<string>();
     // During first boot (or after a failed quality run), expose a small,
     // directly probeable provisional pool instead of either returning zero
     // search sources or leaking the whole merged configuration.
     if (!qualityHasEntries) {
       const provisional = sites
         .filter((site) => site.searchable === 1 && isSiteProbeable(site))
-        .slice(0, 32);
-      const provisionalKeys = new Set(provisional.map((site) => site.key));
+        .slice(0, 24);
+      provisionalKeys = new Set(provisional.map((site) => site.key));
       sites = sites.filter((site) => site.searchable !== 1 || provisionalKeys.has(site.key));
     }
     const isSearchableAllowed = (site: TVBoxSite): boolean => {
@@ -557,7 +565,8 @@ export function createApp(deps: AppDeps): Hono {
     if (mode === 'search') {
       sites = sites.filter((site) => site.searchable === 1);
     } else if (mode === 'selected') {
-      sites = sites.filter((site) => site.searchable !== 1 || distributableKeys.has(site.key));
+      const selectedSearchableKeys = qualityHasEntries ? distributableKeys : provisionalKeys;
+      sites = sites.filter((site) => site.searchable !== 1 || selectedSearchableKeys.has(site.key));
     } else if (mode === 'custom') {
       const selectedKeys = new Set(policy.selectedKeys || []);
       sites = sites.filter((site) => selectedKeys.has(site.key));
@@ -596,7 +605,7 @@ export function createApp(deps: AppDeps): Hono {
 
     // 分桶在质量排序之后执行，保证分类 Top-N 是该分类内的真实 Top-N。
     if (policy.bucketLimits) {
-      const gradeByKey = new Map((qualityPool?.entries || []).map((entry) => [entry.key, entry.grade]));
+      const gradeByKey = new Map((effectiveQualityPool?.entries || []).map((entry) => [entry.key, entry.grade]));
       sites = applySiteBucketLimits(
         sites,
         policy.bucketLimits,
@@ -778,10 +787,17 @@ export function createApp(deps: AppDeps): Hono {
     } catch {
       qualityPool = null;
     }
+    const qualityHealth = getQualityPoolHealth(qualityPool);
+    // Do not let an old snapshot keep controlling the root after a prolonged
+    // outage. The aggregation config remains available, but distribution falls
+    // back to a bounded provisional set until quality grading succeeds again.
+    const effectiveQualityPool = qualityHealth.state === 'fresh' || qualityHealth.state === 'stale'
+      ? qualityPool
+      : null;
 
     const qualityGradeByKey = new Map<string, SiteQualityGrade>();
-    if (qualityPool && Array.isArray(qualityPool.entries)) {
-      for (const entry of qualityPool.entries) {
+    if (effectiveQualityPool && Array.isArray(effectiveQualityPool.entries)) {
+      for (const entry of effectiveQualityPool.entries) {
         if (!qualityGradeByKey.has(entry.key)) qualityGradeByKey.set(entry.key, entry.grade);
       }
     }
@@ -794,7 +810,7 @@ export function createApp(deps: AppDeps): Hono {
       ? distributionBucketLimits!.quality!.untestable!
       : DEFAULT_CLIENT_FALLBACK_LIMIT;
     const allowUntestable = maxUntestable !== 0;
-    const distributableKeys = distributableKeysFromPool(qualityPool, {
+    const distributableKeys = distributableKeysFromPool(effectiveQualityPool, {
       includeUntestable: allowUntestable,
       maxUntestable,
       eligibleKeys: new Set(allSites.filter((site) => site.searchable === 1).map((site) => site.key)),
@@ -824,9 +840,9 @@ export function createApp(deps: AppDeps): Hono {
         : site);
     }
     let orderedSites: TVBoxSite[] = [];
-    if (qualityPool && Array.isArray(qualityPool.entries) && qualityPool.entries.length > 0) {
+    if (effectiveQualityPool && Array.isArray(effectiveQualityPool.entries) && effectiveQualityPool.entries.length > 0) {
       const restored: TVBoxSite[] = [];
-      for (const entry of qualityPool.entries) {
+      for (const entry of effectiveQualityPool.entries) {
         if (blockedKeys.has(entry.key)) continue;
         const site = siteByKey.get(entry.key);
         if (!site) continue;
@@ -846,7 +862,15 @@ export function createApp(deps: AppDeps): Hono {
     } else {
       // 质量池尚未生成时，仍保留功能扩展；可搜索源则只使用当前最终配置
       // 中的条目，避免冷启动阶段把原始全量候选直接泄漏给客户端。
-      orderedSites = allSites.filter((site) => !blockedKeys.has(site.key));
+      const provisional = allSites
+        .filter((site) => !blockedKeys.has(site.key))
+        .filter((site) => site.searchable !== 1 || isSiteProbeable(site))
+        .slice(0, 24);
+      const provisionalKeys = new Set(provisional.map((site) => site.key));
+      orderedSites = allSites.filter((site) =>
+        !blockedKeys.has(site.key)
+        && (site.searchable !== 1 || provisionalKeys.has(site.key))
+      );
     }
 
     // Apply category/grade limits before pinning. A pinned lower-quality source
@@ -950,7 +974,13 @@ export function createApp(deps: AppDeps): Hono {
     const qualityExcluded = new Set<string>();
     try {
       const pool = await loadQualityPool(storage);
-      for (const key of excludedQualityKeys(pool)) qualityExcluded.add(key);
+      const health = getQualityPoolHealth(pool);
+      // An expired snapshot is no longer authoritative. Do not apply its
+      // exclusions before the bounded provisional distribution has a chance
+      // to select a fresh, directly probeable fallback set.
+      if (health.state === 'fresh' || health.state === 'stale') {
+        for (const key of excludedQualityKeys(pool)) qualityExcluded.add(key);
+      }
     } catch {
       // 显式屏蔽仍然生效，质量池缺失不应导致屏蔽失效。
     }
@@ -1808,6 +1838,7 @@ export function createApp(deps: AppDeps): Hono {
         speedSorted: quota.sortBySpeed !== false,
         leanRemoved: 0,
         qualityGrades: qualityPool?.grades ?? null,
+        qualityPoolHealth: getQualityPoolHealth(qualityPool),
         message: raw ? 'Stored report is invalid; derived from current config and quality pool.' : 'No stored report yet; derived from current config and quality pool.',
       };
     }
@@ -1922,7 +1953,7 @@ export function createApp(deps: AppDeps): Hono {
       loadQualitySchedule(storage, config.qualityTimezone),
       loadQualityStatus(storage),
     ]);
-    return c.json({ snapshot, schedule, status });
+    return c.json({ snapshot, schedule, status, poolHealth: getQualityPoolHealth(snapshot) });
   });
 
   // 立即执行质量分级。请求只负责启动后台任务，完整结果通过状态接口轮询。
@@ -3094,10 +3125,17 @@ export function createApp(deps: AppDeps): Hono {
     // 搜索页必须使用与搜索配额、质量池完全相同的候选集合。
     // JS HTTP 入口参与服务端可达性/速度分级；timeout/unusable 不下发。
     const qualityPool = await loadQualityPool(storage);
+    const qualityPoolHealth = getQualityPoolHealth(qualityPool);
     const qualityEntryMap = new Map(
       (qualityPool?.entries || []).map(entry => [entry.key, entry]),
     );
-    const candidateKeySet = candidateKeysFromPool(qualityPool);
+    const qualityRank = new Map<string, number>();
+    (qualityPool?.entries || []).forEach((entry, index) => {
+      if (!qualityRank.has(entry.key)) qualityRank.set(entry.key, index + 1);
+    });
+    const candidateKeySet = qualityPoolHealth.state === 'fresh' || qualityPoolHealth.state === 'stale'
+      ? candidateKeysFromPool(qualityPool)
+      : new Set<string>();
     const finalKeys = new Set((finalParsed.sites || []).map(site => site.key));
 
     const candidateReason = (site: TVBoxSite, blocked: boolean, inFinal: boolean): string => {
@@ -3105,6 +3143,9 @@ export function createApp(deps: AppDeps): Hono {
       const entry = qualityEntryMap.get(site.key);
       if (entry?.grade === 'timeout') return 'timeout';
       if (entry?.grade === 'unusable') return 'unusable';
+      if (qualityPoolHealth.state === 'expired' || qualityPoolHealth.state === 'unavailable') {
+        return 'quality-pool-expired';
+      }
       if (!inFinal) return 'not-in-final';
       if (site.searchable !== 1) return 'not-searchable';
       if (!entry) return 'not-in-quality-pool';
@@ -3148,6 +3189,7 @@ export function createApp(deps: AppDeps): Hono {
       const sourceCategory = classifySearchSource(site);
       const isJs = sourceCategory === 'js';
       const isJar = sourceCategory === 'jar';
+      const entry = qualityEntryMap.get(site.key);
       const candidate = inFinal && !blocked && site.searchable === 1 && candidateKeySet.has(site.key);
       sites.push({
         ...site,
@@ -3161,6 +3203,11 @@ export function createApp(deps: AppDeps): Hono {
         isJs,
         isJar,
         candidate,
+        qualityRank: qualityRank.get(site.key) ?? null,
+        qualityScore: entry?.qualityScore ?? (entry ? qualityScoreForEntry(entry) : null),
+        qualityConfidence: entry?.qualityConfidence ?? null,
+        qualityGrade: entry?.grade ?? null,
+        qualityUpdatedAt: qualityPool?.updatedAt ?? null,
         candidateReason: candidate ? undefined : candidateReason(site, blocked, inFinal),
       });
     }
@@ -3203,6 +3250,7 @@ export function createApp(deps: AppDeps): Hono {
         searchableCount: searchableKeys.length,
         qualityPoolTotal: qualityPool?.grades?.poolTotal ?? 0,
         qualitySnapshotTotal: qualityPool?.total ?? 0,
+        qualityPoolHealth,
         candidateKeys: currentCandidateKeys,
         categoryCounts,
         candidateCategoryCounts,
