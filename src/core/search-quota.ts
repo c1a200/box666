@@ -37,8 +37,8 @@ function isNodeRuntime(): boolean {
 }
 
 function defaultSearchLimit(): number {
-  // 默认不限制搜索源数量，避免自动配额把质量良好但本次测速未覆盖的源截断。
-  // 用户仍可在后台显式设置上限；schema 8 后 autoLimit 已退役。
+  // 全局可搜索源上限已退役。候选源是否下发及其数量由鉴权码策略决定。
+  // 该字段仅为兼容旧 KV 保留，始终归零且不参与裁剪。
   return 0;
 }
 
@@ -134,10 +134,10 @@ export async function loadSearchQuota(storage: Storage): Promise<SearchQuotaConf
       const quotaVersion = parsed.quotaSchemaVersion ?? 1;
       const legacy = quotaVersion < QUOTA_SCHEMA_VERSION;
 
-      // User-facing settings: searchable source cap and parser cap.
-      // Everything else is an automatic performance guard.
+      // Only the parser cap is a global runtime guard now. The legacy
+      // searchable-source cap is ignored so old KV values cannot truncate the pool.
       return {
-        maxSearchable: normalizeLimit(parsed.maxSearchable),
+        maxSearchable: 0,
         maxQuickSearch: fallback.maxQuickSearch,
         maxStartupQuickSearch: fallback.maxStartupQuickSearch,
         // Legacy startup-site values are intentionally ignored after schema 8:
@@ -166,7 +166,7 @@ export async function loadSearchQuota(storage: Storage): Promise<SearchQuotaConf
 export async function saveSearchQuota(storage: Storage, config: SearchQuotaConfig): Promise<void> {
   const fallback = createDefaultSearchQuota();
   await storage.put(KV_SEARCH_QUOTA, JSON.stringify({
-    maxSearchable: normalizeLimit(config.maxSearchable),
+    maxSearchable: 0,
     // Automatic startup/quick-search guards are deployment-specific and are
     // never taken from stale form values.
     maxQuickSearch: fallback.maxQuickSearch,
@@ -349,9 +349,10 @@ export interface SearchQuotaApplyOptions {
  *
  * 1. 置顶源通过全部过滤后优先排到 sites 最前。
  * 2. 复用站点测速结果，把较快的可搜索源排在前面。
- * 3. maxSearchable > 0 时限制全局搜索源；maxQuickSearch > 0 时额外限制快速搜索源。
- * 4. 置顶只影响顺序，仍受质量、分桶和数量上限约束。
- * 5. 名称标识只加给最终仍可搜索的源。
+ * 3. 保留完整质量候选池；全局不再按可搜索源数量截断，数量策略由鉴权码负责。
+ * 4. maxQuickSearch > 0 时只限制快速搜索标记，不删除站点。
+ * 5. 置顶只影响顺序，仍受质量、分桶和快速搜索约束。
+ * 6. 名称标识只加给最终仍可搜索的源。
  */
 export function applySearchQuota(
   sites: TVBoxSite[],
@@ -359,7 +360,6 @@ export function applySearchQuota(
   siteSourceMap: Map<string, string>,
   options: SearchQuotaApplyOptions = {},
 ): { sites: TVBoxSite[]; candidateSites: TVBoxSite[]; quotaReport: SearchQuotaReport } {
-  const limit = normalizeLimit(config.maxSearchable);
   const quickLimit = normalizeLimit(config.maxQuickSearch);
   const speedMap = options.speedMap;
   const totalSites = options.totalSites ?? sites.length;
@@ -464,20 +464,10 @@ export function applySearchQuota(
     });
     speedSorted = candidates.map(site => site.key).join('\n') !== before;
   }
-  // 保存未受 maxSearchable / maxQuickSearch 截断影响的启动候选池。
-  // 置顶源始终在最前；其余源沿用上面的测速顺序。根地址只从
-  // 这个池按后台配置取前 N 个，不会改写最终配置。
+  // 保存完整质量候选池，供根链接和鉴权码从同一份有序数据中选择。
+  // 全局搜索配额不再删除候选源。
   const startupCandidateSites = candidates.slice();
-  let keptCandidates = candidates;
-  let truncated = 0;
-  if (limit > 0) {
-    // 所有源统一按最终顺序截取；置顶只负责排在前面，也占用全局名额。
-    keptCandidates = candidates.slice(0, limit);
-    const keptKeys = new Set(keptCandidates.map(site => site.key));
-    truncated = candidates.filter(site => !keptKeys.has(site.key)).length;
-  }
-
-  const allowedSearchableKeys = new Set(keptCandidates.map(site => site.key));
+  const keptCandidates = candidates;
   const quickCandidates = keptCandidates.filter(site => site.searchable === 1 && site.quickSearch !== 0);
   const allowedQuickKeys = new Set(
     quickLimit > 0
@@ -492,9 +482,6 @@ export function applySearchQuota(
   let quickTruncated = 0;
   sites = orderedSites.map(site => {
     let next = site;
-    if (site.searchable === 1 && !allowedSearchableKeys.has(site.key)) {
-      next = { ...next, searchable: 0 };
-    }
     if (next.searchable !== 1 && next.quickSearch !== 0) {
       next = { ...next, quickSearch: 0 };
     }
@@ -513,8 +500,7 @@ export function applySearchQuota(
   // 来源标识：只给最终仍可搜索的源加标识。
   sites = sites.map(site => withSourceLabel(site, siteSourceMap));
   const labeledCandidates = startupCandidateSites.map(site => withSourceLabel(site, siteSourceMap));
-  // 质量统计覆盖完整的未截断可搜索候选池（置顶源 + 普通候选源），
-  // 不再只统计根地址启动池，便于前端按实际质量区间配置 maxSearchable。
+  // 质量统计覆盖完整候选池，供搜索页分类和鉴权码选择使用。
   const allSearchableCandidates = candidates;
   const qualityGrades = qualityPool?.grades
     ? qualityPool.grades
@@ -532,11 +518,11 @@ export function applySearchQuota(
       jsExcluded: options.jsExcluded ?? 0,
       searchable,
       quickSearchable,
-      maxSearchable: limit,
+      maxSearchable: 0,
       maxQuickSearch: quickLimit,
       autoLimit: config.autoLimit === true,
       pinnedCount,
-      truncated,
+      truncated: 0,
       quickTruncated,
       speedSorted,
       leanRemoved,

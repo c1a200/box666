@@ -138,6 +138,34 @@ function normalizeBucketLimits(value: unknown): SiteBucketLimits | undefined {
   };
 }
 
+function hasBucketGroup(limits: SiteBucketLimits | undefined, group: 'quality' | 'type'): boolean {
+  return !!limits && !!limits[group] && Object.keys(limits[group] || {}).length > 0;
+}
+
+function mergeLegacyClientFilters(
+  limits: SiteBucketLimits | undefined,
+  legacyGrades: SiteQualityGrade[],
+  legacyTypes: SourceCategory[],
+): SiteBucketLimits | undefined {
+  const quality = { ...(limits?.quality || {}) };
+  const type = { ...(limits?.type || {}) };
+  if (!hasBucketGroup(limits, 'quality') && legacyGrades.length > 0) {
+    for (const grade of ['excellent', 'good', 'usable', 'untestable'] as const) {
+      quality[grade] = legacyGrades.includes(grade) ? -1 : 0;
+    }
+  }
+  if (!hasBucketGroup(limits, 'type') && legacyTypes.length > 0) {
+    for (const category of SOURCE_CATEGORIES) {
+      type[category] = legacyTypes.includes(category) ? -1 : 0;
+    }
+  }
+  if (Object.keys(quality).length === 0 && Object.keys(type).length === 0) return undefined;
+  return {
+    ...(Object.keys(quality).length ? { quality } : {}),
+    ...(Object.keys(type).length ? { type } : {}),
+  };
+}
+
 function normalizeSourceMode(value: unknown): SourceDistributionMode {
   return typeof value === 'string' && SOURCE_MODES.has(value as SourceDistributionMode)
     ? value as SourceDistributionMode
@@ -161,6 +189,14 @@ function normalizeAuthCode(raw: unknown, usedCodes: Set<string>, usedIds: Set<st
     ? entry.label.trim().slice(0, 80)
     : code;
 
+  const legacyGrades = normalizeGrades(entry.includeGrades);
+  const legacyTypes = normalizeSiteTypes(entry.siteTypes);
+  const bucketLimits = mergeLegacyClientFilters(
+    normalizeBucketLimits(entry.bucketLimits),
+    legacyGrades,
+    legacyTypes,
+  );
+
   return {
     id,
     label,
@@ -169,9 +205,10 @@ function normalizeAuthCode(raw: unknown, usedCodes: Set<string>, usedIds: Set<st
     sourceMode: normalizeSourceMode(entry.sourceMode),
     maxSites: parseThreeStateInteger(entry.maxSites, -1),
     maxSearchable: parseThreeStateInteger(entry.maxSearchable, -1),
-    bucketLimits: normalizeBucketLimits(entry.bucketLimits),
-    includeGrades: normalizeGrades(entry.includeGrades),
-    siteTypes: normalizeSiteTypes(entry.siteTypes),
+    bucketLimits,
+    // 旧版过滤字段在读取时迁移到 bucketLimits，并留空，避免隐藏配置二次过滤。
+    includeGrades: [],
+    siteTypes: [],
     selectedKeys: normalizeStringArray(entry.selectedKeys, 2000),
     pinnedKeys: normalizeStringArray(entry.pinnedKeys, 2000),
     createdAt,
@@ -211,8 +248,8 @@ export function createClientAuthCode(raw: Partial<ClientAuthCode> = {}): ClientA
     maxSites: parseThreeStateInteger(raw.maxSites, -1),
     maxSearchable: parseThreeStateInteger(raw.maxSearchable, -1),
     bucketLimits: normalizeBucketLimits(raw.bucketLimits),
-    includeGrades: normalizeGrades(raw.includeGrades),
-    siteTypes: normalizeSiteTypes(raw.siteTypes),
+    includeGrades: [],
+    siteTypes: [],
     selectedKeys: normalizeStringArray(raw.selectedKeys, 2000),
     pinnedKeys: normalizeStringArray(raw.pinnedKeys, 2000),
     createdAt: typeof raw.createdAt === 'string' && raw.createdAt ? raw.createdAt : now,

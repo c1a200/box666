@@ -2,7 +2,7 @@
 //
 // 设计目标：
 // 1. 质量分级独立于聚合运行，可对完整可搜索池分批执行并持久化。
-// 2. 根配置只读取已经排好序的快照池，按前端配置的 maxSearchable 取前 N，不临时测速。
+// 2. 根配置读取已排序快照池；可搜索源类型与数量由鉴权码控制，不按全局上限截断。
 // 3. Render/CF 使用各自 KV；CF 通过 cursor 分片续跑，避免一次 cron 超时。
 // 4. 日常只重测候选池；候选池为空或到达全量周期时，再自动回退/执行全量分级。
 import type {
@@ -373,9 +373,9 @@ function buildGrades(entries: SearchQualitySnapshot['entries']): SiteQualityGrad
   return grades;
 }
 
-export function recommendedSearchLimit(grades: SiteQualityGrades): number {
-  // 推荐值直接来自实际可下发候选池，不额外发明固定阈值。
-  return Math.max(0, grades.poolTotal);
+/** @deprecated 全局可搜索源上限已退役，仅保留兼容字段，始终返回 0。 */
+export function recommendedSearchLimit(_grades: SiteQualityGrades): number {
+  return 0;
 }
 
 function normalizeSnapshot(raw: unknown): SearchQualitySnapshot | null {

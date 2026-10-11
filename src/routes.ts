@@ -491,8 +491,6 @@ export function createApp(deps: AppDeps): Hono {
 
     const code = context.authCode;
     const mode: SourceDistributionMode = code.sourceMode || 'all';
-    const allowedGrades = new Set(code.includeGrades || []);
-    const allowedTypes = new Set(code.siteTypes || []);
     let sites = parsed.sites.slice();
 
     if (mode === 'search') {
@@ -510,20 +508,6 @@ export function createApp(deps: AppDeps): Hono {
       sites = sites.filter((site) => selectedKeys.has(site.key));
     }
 
-    if (allowedGrades.size > 0) {
-      try {
-        const pool = await loadQualityPool(storage);
-        const gradeByKey = new Map((pool?.entries || []).map((entry) => [entry.key, entry.grade]));
-        sites = sites.filter((site) => gradeByKey.has(site.key) && allowedGrades.has(gradeByKey.get(site.key)!));
-      } catch {
-        // 质量池缺失时不按等级猜测。
-      }
-    }
-
-    if (allowedTypes.size > 0) {
-      // 鉴权码只接受统一分类；旧数字类型已在存储层迁移。
-      sites = sites.filter((site) => allowedTypes.has(classifySearchSource(site)));
-    }
 
     // 鉴权码置顶只改变顺序，不能绕过任何质量、类型、分桶或数量限制。
     const pinnedOrder = new Map(
@@ -702,7 +686,7 @@ export function createApp(deps: AppDeps): Hono {
 
     // 优先使用全量质量分级池：池内已按“优 > 良 > 可用 > 未探测 > 不可用”
     // 且同级按速度排序。它覆盖过滤不可达之前的完整可搜索池，因此可以
-    // 恢复被旧配额截断的站点，并按前端配置的 maxSearchable 取前 N 个。
+    // 恢复被旧全局配额关掉的站点；实际下发数量由根策略或鉴权码控制。
     let qualityPool = null;
     try {
       qualityPool = await loadQualityPool(storage);
@@ -717,7 +701,7 @@ export function createApp(deps: AppDeps): Hono {
       }
     }
 
-    // KV_MERGED_CONFIG 已经过 applySearchQuota，可能只保留前 N 个搜索源。
+    // KV_MERGED_CONFIG 已经过质量合并，可能保留旧版全局上限关闭过的搜索源。
     // 质量池需要恢复被旧上限截断的站点，因此先以完整候选快照兜底，再用当前
     // 合并配置覆盖同 key 的最新对象（上游字段和代理等可能刚刚更新）。
     let candidateSites: TVBoxSite[] = [];
@@ -756,8 +740,8 @@ export function createApp(deps: AppDeps): Hono {
       orderedSites = allSites.filter((site) => site.searchable === 1 && !blockedKeys.has(site.key));
     }
 
-    // 置顶仅改变顺序。源必须已通过屏蔽、质量、分桶和搜索性规则，
-    // 不得被强制改成 searchable，也不得绕过后续 maxSearchable 截断。
+    // 置顶仅改变顺序。源必须已通过屏蔽、质量和搜索性规则，
+    // 全局不再按数量截断；鉴权码会在独立副本上执行自己的数量策略。
     const pinnedOrder = new Map(
       (quota.pinnedKeys || []).map((key, index) => [key, index] as const),
     );
@@ -785,9 +769,8 @@ export function createApp(deps: AppDeps): Hono {
     if (leanStartup) {
       jarReadyKeys = await loadJarReadyKeys(storage);
       eligibleSites = orderedSites.filter((site) => {
-        // 可搜索源不能因本部署尚未预取 JAR 而从根配置消失，否则
-        // maxSearchable=0 仍会退化成少量启动源。JAR 就绪门槛只用于
-        // 不可搜索的远程扩展，避免它们增加客户端启动等待。
+        // 可搜索源不能因本部署尚未预取 JAR 而从根配置消失；
+        // JAR 就绪门槛只用于不可搜索的远程扩展，避免增加客户端启动等待。
         if (site.type !== 3 || site.searchable === 1) return true;
         const key = getJarKeyForSite(site, parsed.spider);
         // 直连 CDN JAR 无需等待本部署预取；只有实际代理 JAR 才要求 ready。
@@ -796,15 +779,14 @@ export function createApp(deps: AppDeps): Hono {
     }
 
     // 置顶是用户显式选择，轻量启动时也保留；普通候选才按模式门控。
-    // 可选策略开启后，插件/JAR 与客户端专用源按既有质量规则参与上限。
+    // 可搜索源数量由鉴权码控制，全局根配置不再按数量截断。
     // selected 模式仅放行已勾选 key。
-    const limit = quota.maxSearchable ?? 0;
-    const limitedSites = limit > 0 ? eligibleSites.slice(0, limit) : eligibleSites;
+
+    let startupSites = eligibleSites;
 
     // 根配置的快速搜索是独立策略：0=不额外裁剪；非 0 时按最终顺序
     // 仅保留前 N 个 quickSearch 源，其余仅关闭 quickSearch，不删站点。
     const startupQuickLimit = quota.maxStartupQuickSearch ?? 0;
-    let startupSites = limitedSites;
     if (startupQuickLimit > 0) {
       let keptQuick = 0;
       startupSites = startupSites.map((site) => {
@@ -1561,11 +1543,11 @@ export function createApp(deps: AppDeps): Hono {
     try { body = await c.req.json(); } catch { return c.json({ error: 'Invalid JSON' }, 400); }
 
     const current = await loadSearchQuota(storage);
-    if (typeof body.maxSearchable === 'number' && Number.isFinite(body.maxSearchable)) {
-      current.maxSearchable = Math.max(0, Math.floor(body.maxSearchable));
-    }
+    // 全局可搜索源上限已退役；旧客户端即使提交该字段也忽略，源数量由鉴权码控制。
+    current.maxSearchable = 0;
     // 快速搜索上限为 0 时明确不限制；字段缺失则保留当前值，避免管理页
     // 局部保存意外重置。旧版本自动写入的常量已由 loadSearchQuota 迁移。
+
     if (typeof body.maxQuickSearch === 'number' && Number.isFinite(body.maxQuickSearch)) {
       current.maxQuickSearch = Math.max(0, Math.floor(body.maxQuickSearch));
     }
@@ -1807,7 +1789,7 @@ export function createApp(deps: AppDeps): Hono {
       schedule,
       status,
       actual,
-      recommendedMaxSearchable: snapshot?.recommendedMaxSearchable ?? 0,
+      recommendedMaxSearchable: 0,
       recommendedMaxParses,
     });
   });

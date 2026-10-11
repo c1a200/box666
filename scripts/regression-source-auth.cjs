@@ -104,13 +104,20 @@ assert(custom.authCodes[0].selectedKeys.join(',') === 'key-a,key-b', 'selectedKe
 assert(custom.authCodes[0].pinnedKeys.join(',') === 'key-b', 'pinnedKeys should trim and deduplicate');
 assert(custom.authCodes[0].maxSites === -1 && custom.authCodes[0].maxSearchable === -1, 'numeric limits should default to all');
 assert(findClientAuthCode(cfg, 'code-a').sourceMode === 'search', 'code-a policy should persist');
+assert(findClientAuthCode(cfg, 'code-a').bucketLimits.quality.excellent === -1, 'legacy grades should migrate into quality buckets');
 assert(findClientAuthCode(cfg, 'code-b').maxSearchable === 5, 'code-b policy should persist');
+assert(findClientAuthCode(cfg, 'code-b').bucketLimits.type.xml === -1 && findClientAuthCode(cfg, 'code-b').bucketLimits.type.json === -1, 'legacy site types should migrate into type buckets');
 assert(!findClientAuthCode(cfg, 'missing'), 'unknown auth code must not resolve');
 const migrated = normalizeClientDistributionConfig({
   authCodes: [{ code: 'legacy-types', siteTypes: [0, 1, 3, 4], bucketLimits: { type: { 3: 9 } } }],
 });
-assert(migrated.authCodes[0].siteTypes.join(',') === 'xml,json,jar,js,remote', 'legacy numeric site types must migrate to categories');
+assert(migrated.authCodes[0].siteTypes.length === 0, 'legacy siteTypes must be consumed during migration');
 assert(migrated.authCodes[0].bucketLimits.type.jar === 9 && migrated.authCodes[0].bucketLimits.type.js === 9, 'legacy type 3 bucket must expand to JAR and JS');
+const migratedOnly = normalizeClientDistributionConfig({
+  authCodes: [{ code: 'legacy-only-types', siteTypes: [0, 1, 3, 4] }],
+});
+assert(migratedOnly.authCodes[0].siteTypes.length === 0, 'legacy-only siteTypes must be consumed');
+assert(migratedOnly.authCodes[0].bucketLimits.type.xml === -1 && migratedOnly.authCodes[0].bucketLimits.type.json === -1 && migratedOnly.authCodes[0].bucketLimits.type.jar === -1 && migratedOnly.authCodes[0].bucketLimits.type.js === -1 && migratedOnly.authCodes[0].bucketLimits.type.remote === -1, 'legacy numeric site types must migrate to selected type buckets');
 
 const threeState = normalizeClientDistributionConfig({
   authCodes: [{

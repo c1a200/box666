@@ -527,10 +527,8 @@ ${sharedStyles}
     </div>
 
     <div class="section">
-      <div class="section-title" data-i18n="searchQuota">应用端搜索配额</div>
+      <div class="section-title" data-i18n="searchQuota">应用端解析器配额</div>
       <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
-        <label class="form-label" style="margin:0" data-i18n="maxSearchable">可搜索源上限</label>
-        <input type="number" id="maxSearchableInput" class="nt-input" style="width:90px" min="0" max="1000" value="0">
         <label class="form-label" style="margin:0" data-i18n="maxParses">解析器上限</label>
         <input type="number" id="maxParsesInput" class="nt-input" style="width:90px" min="0" max="1000" value="0">
         <button class="btn btn-sm" id="searchQuotaSaveBtn" onclick="saveSearchQuota()" data-i18n="save">保存</button>
@@ -547,7 +545,7 @@ ${sharedStyles}
       <input type="hidden" id="startupModeInput" value="lean">
       <input type="hidden" id="pruneDeadParsesInput">
       <div id="searchQuotaStats" style="margin-top:8px;font-size:0.8rem;color:var(--text-secondary);line-height:1.6"></div>
-      <div style="margin-top:6px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="searchQuotaDesc">只影响下发到应用端的数据：可搜索源上限和解析器上限，0 表示不限制。JS 地址源始终排除；置顶源不参与截断。可在“搜索”页管理置顶源。</div>
+      <div style="margin-top:6px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="searchQuotaDesc">这里只控制根配置下发的健康解析器数量；0 表示不限制。可搜索源类型与数量由鉴权码设置决定，根链接不再按全局可搜索源上限裁剪。</div>
       <div style="margin-top:4px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="qualityGradeDesc">质量分级（后台分块测速，不影响应用端启动速度）：优 ≤1000ms、良 1001-3000ms、可用 3001-6000ms。服务端只做普通 HTTP 质量分级，不保存、不下发也不注入网盘凭证；需要网盘登录的源由应用端自行扫码并使用本地凭证。超时和不可用不进入候选池。</div>
     </div>
 
@@ -793,16 +791,16 @@ const translations = {
     qualityTimes:'Times', qualityTimesPh:'e.g. 04:30, 16:30', qualityRepeatDays:'Candidate pool refresh (days)', qualityFullRepeatDays:'Full grading interval (days)',
     qualityRunCandidate:'Retest candidate pool', qualityRunFull:'Full re-grade', qualityRunNow:'Run now', qualityRefresh:'Refresh grading status', qualityStatusLabel:'Status', qualityStatusMode:'mode',
     qualityScheduleDesc:'Grading runs asynchronously in the background and returns immediately, so the page and other requests are never blocked. Daily runs refresh the candidate pool with ordinary HTTP quality checks. Sources that require cloud-drive login, JAR execution or other client-side capabilities are finally verified by the client. Cloud-drive login and credentials are handled entirely by the client and are never stored, distributed or injected by the server. When the full-grading interval is reached or the candidate pool is empty, a full grading run happens automatically. Both Cloudflare and Node/Render run in small chunks and yield between chunks; Node/Render resumes from the saved cursor after a restart.',
-    qualityGradeDesc:'Quality grades (probed in chunks in the background, no impact on client startup): excellent <=1000ms, good 1001-3000ms, usable 3001-6000ms. The server performs ordinary HTTP quality checks only. Cloud-drive credentials are never stored, distributed or injected by the server; sources that require cloud-drive login use the client’s own login and local credentials. Timeout and unusable are never served. Normally set only two values: searchable-source limit and parser limit; the page shows actual counts, grade breakdown and recommended values.',
+    qualityGradeDesc:'Quality grades (probed in chunks in the background, no impact on client startup): excellent <=1000ms, good 1001-3000ms, usable 3001-6000ms. The server performs ordinary HTTP quality checks only. Cloud-drive credentials are never stored, distributed or injected by the server; sources that require cloud-drive login use the client’s own login and local credentials. Timeout and unusable are never served. Source categories and counts are configured per auth code; the global parser limit is the only global runtime cap.',
     qualityNoSnapshot:'No grading result yet. Run grading once to build the quality pool.',
     qualityStateIdle:'idle', qualityStateRunning:'running', qualityStateDone:'done', qualityStateError:'error',
     qualityLastRun:'Last run', qualityNextRun:'Next run', qualityLastFullRun:'Last full run', qualityNextFullRun:'Next full run', qualityNever:'never',
-    qualityGradesTitle:'Quality grades', qualityRecommended:'Recommended', qualityRecSearchable:'searchable limit', qualityRecParses:'parser limit', sqCumulative:'cumulative', qualityUseRecommended:'Fill recommended values', qualityRecommendedApplied:'Recommended values filled in; click Save in Search Quota.', qualityActualCounts:'Current actual counts', sqStatsUsablePool:'usable pool',
+    qualityGradesTitle:'Quality grades', qualityRecommended:'Recommended', qualityRecParses:'parser limit', sqCumulative:'cumulative', qualityUseRecommended:'Fill recommended value', qualityRecommendedApplied:'Recommended parser limit filled in; click Save in Parser Quota.', qualityActualCounts:'Current actual counts', sqStatsUsablePool:'usable pool',
     qualityTimesHint:'Uses the timezone configured by QUALITY_TIMEZONE (default Asia/Shanghai, UTC+8). Comma-separated HH:MM, up to 12 per day. Candidate pool refresh re-tests candidate sources every N days. Full grading re-grades all searchable sources every N days.',
     qualityRunningNote:'Grading is running in the background; you can keep using the page.',
     qualityScheduleSaved:'Schedule saved', qualityReportRefreshed:'Report refreshed',
-    searchQuota:'Client Search Quota',
-    maxSearchable:'Searchable sources', maxQuickSearch:'Quick-search sources', maxStartupQuickSearch:'Startup quick-search sources', startupSiteLimit:'Startup source count', maxParses:'Parser limit', autoSearchLimit:'Auto safe limit', searchQuotaDesc:'This only controls what is served to clients: searchable-source limit and parser limit. Searchable sources = 0 serves every searchable source that passed quality filtering; above 0 keeps them in quality order excellent > good > usable > untestable. Timeout and unusable sources are never served. Untestable means the server cannot prove final playback with a plain HTTP check; cloud-drive login, JAR execution or final media playback still needs the client. It does not mean the source was skipped. Parser limit defaults to 3; 0 means unlimited. Cloud-drive credentials are managed entirely by the client and are never stored, distributed or injected by the server. Quick-search and startup quick-search limits default to 0 (unlimited); non-zero values are explicit advanced caps.', sortSearchBySpeed:'Sort by speed', sortSearchBySpeedDesc:'Uses existing site speed-test results to put faster sources first; no extra network requests. Pinned sources stay first.', leanStartup:'Lean startup', leanStartupDesc:'Removes remote JAR/extension sites from the root startup config to shorten TVBox startup; pinned sources are kept.', maxStartupQuickSearchDesc:'Quick-search cap used by the root startup config; 0 means unlimited. Full config remains available at /config-full.json.', startupOptimizationDesc:'Quick-search and root-startup limits default to unlimited. The root address may still be trimmed by the searchable-source limit; /config-full.json contains the full searchable set.', startupMode:'Startup mode', startupModeLean:'Lean', startupModeFull:'Full', startupModeDesc:'Lean serves a trimmed config at the root address for faster startup. Full is still available at /config-full.json.', pruneDeadParses:'Prune dead parsers', pruneDeadParsesDesc:'Probes parser endpoints and removes confirmed failures/timeouts so clients do not wait for each dead parser during startup.',
+    searchQuota:'Client Parser Quota',
+    maxParses:'Parser limit', autoSearchLimit:'Auto safe limit', searchQuotaDesc:'This only controls how many healthy parsers the root config serves. 0 means unlimited. Searchable source categories and counts are controlled per auth code; the root URL is no longer trimmed by a global searchable-source limit.', sortSearchBySpeed:'Sort by speed', sortSearchBySpeedDesc:'Uses existing site speed-test results to put faster sources first; no extra network requests. Pinned sources stay first.', leanStartup:'Lean startup', leanStartupDesc:'Removes remote JAR/extension sites from the root startup config to shorten TVBox startup; pinned sources are kept.', maxStartupQuickSearchDesc:'Quick-search cap used by the root startup config; 0 means unlimited. Full config remains available at /config-full.json.', startupOptimizationDesc:'Quick-search and root-startup limits default to unlimited. Searchable source categories and counts are selected per auth code; /config-full.json contains the full searchable set.', startupMode:'Startup mode', startupModeLean:'Lean', startupModeFull:'Full', startupModeDesc:'Lean serves a trimmed config at the root address for faster startup. Full is still available at /config-full.json.', pruneDeadParses:'Prune dead parsers', pruneDeadParsesDesc:'Probes parser endpoints and removes confirmed failures/timeouts so clients do not wait for each dead parser during startup.',
     tabSearchQuota:'Search',
     sqStatsCurrent:'Current actual counts', sqStatsSearchable:'searchable', sqStatsQuick:'quick-search', sqStatsQuickLimit:'auto cap', sqStatsPool:'candidate pool', sqStatsParsers:'Parsers', sqStatsKept:'kept', sqStatsProbed:'probed', sqStatsRemoved:'removed', sqStatsLimit:'limit', sqStatsUnlimited:'unlimited', sqStatsQuality:'Quality grades', sqStatsNoData:'Run aggregation to show quality grades and parser counts.',
     sqKey:'Key', sqName:'Name', sqSource:'Source', sqReason:'Reason', sqGrade:'Grade', sqSpeedStatus:'Speed / Status', sqAction:'Action',
@@ -937,16 +935,16 @@ const translations = {
     qualityTimes:'执行时间', qualityTimesPh:'例如 04:30, 16:30', qualityRepeatDays:'候选池重排周期（天）', qualityFullRepeatDays:'全量分级周期（天）',
     qualityRunCandidate:'重测候选池', qualityRunFull:'全量重测', qualityRunNow:'立即执行', qualityRefresh:'刷新分级状态', qualityStatusLabel:'状态', qualityStatusMode:'模式',
     qualityScheduleDesc:'分级在后台异步执行，点击后立即返回，不会阻塞网页或其他请求。日常重测候选池中的源；需要网盘登录、JAR 运行或其他客户端能力的源由应用端最终验证。网盘登录和凭证处理完全由应用端完成，服务端不会保存、下发或注入凭证。到达全量周期或候选池为空时自动全量分级。Cloudflare 和 Node/Render 都按小分片执行并在分片间让出事件循环；Node/Render 异常重启后会从已保存游标继续。',
-    qualityGradeDesc:'质量分级（后台分块测速，不影响应用端启动速度）：优 ≤1000ms；良 1001-3000ms；可用 3001-6000ms。服务端只做普通 HTTP 质量分级，不保存、不下发也不注入网盘凭证。需要网盘登录的源由应用端自行扫码并使用本地凭证。超时和不可用不进入候选池。日常只需填写可搜索源上限和解析器上限；页面会显示实际数量、分级统计和推荐值。',
+    qualityGradeDesc:'质量分级（后台分块测速，不影响应用端启动速度）：优 ≤1000ms；良 1001-3000ms；可用 3001-6000ms。服务端只做普通 HTTP 质量分级，不保存、不下发也不注入网盘凭证。需要网盘登录的源由应用端自行扫码并使用本地凭证。超时和不可用不进入候选池。源类型与数量请在鉴权码中按需选择。',
     qualityNoSnapshot:'尚无分级结果，先执行一次分级以建立质量池。',
     qualityStateIdle:'空闲', qualityStateRunning:'运行中', qualityStateDone:'已完成', qualityStateError:'错误',
     qualityLastRun:'上次执行', qualityNextRun:'下次执行', qualityLastFullRun:'上次全量', qualityNextFullRun:'下次全量', qualityNever:'从未',
-    qualityGradesTitle:'质量分级', qualityRecommended:'推荐值', qualityRecSearchable:'可搜索源上限', qualityRecParses:'解析器上限', sqCumulative:'累计', qualityUseRecommended:'填入推荐值', qualityRecommendedApplied:'已填入推荐值，请点击搜索配额中的保存。', qualityActualCounts:'当前实际数量', sqStatsUsablePool:'可用池',
+    qualityGradesTitle:'质量分级', qualityRecommended:'推荐值', qualityRecParses:'解析器上限', sqCumulative:'累计', qualityUseRecommended:'填入推荐值', qualityRecommendedApplied:'已填入解析器推荐值，请点击解析器配额中的保存。', qualityActualCounts:'当前实际数量', sqStatsUsablePool:'可用池',
     qualityTimesHint:'按 QUALITY_TIMEZONE 配置的时区执行（默认 Asia/Shanghai，北京时间 UTC+8）。用英文逗号分隔的 HH:MM 时间点，每天最多 12 个。候选池重排周期表示每隔 N 天重测一次候选源；全量分级周期表示每隔 N 天对所有可搜索源做一次完整分级。',
     qualityRunningNote:'分级正在后台运行，可继续使用本页面。',
     qualityScheduleSaved:'计划已保存', qualityReportRefreshed:'报告已刷新',
-    searchQuota:'应用端搜索配额',
-    maxSearchable:'可搜索源上限', maxQuickSearch:'快速搜索源上限', maxStartupQuickSearch:'启动快速源上限', startupSiteLimit:'启动源数量', maxParses:'解析器上限', autoSearchLimit:'自动安全配额', searchQuotaDesc:'这里只影响下发到应用端的数量：可搜索源上限和解析器上限。可搜索源上限填 0 表示下发全部通过质量筛选的搜索源；填写大于 0 时，按“优 > 良 > 可用 > 仅客户端最终确认”的质量顺序保留，超时和不可用不会下发。“仅客户端最终确认”表示服务端无需或无法用普通 HTTP 检查完成最终验证，网盘登录、JAR 执行或最终播放仍需客户端确认，并不是被服务端跳过。解析器上限默认推荐 3；填 0 表示不限制。网盘凭证完全由应用端管理，不会由服务端保存、下发或注入。快速搜索源和启动快速源默认 0（不限制）；填写大于 0 时才作为高级上限显式生效。', sortSearchBySpeed:'按测速速度排序', sortSearchBySpeedDesc:'复用现有站点测速结果，将较快的源排在前面；不会额外发起测速请求。置顶源始终最前。', leanStartup:'轻量启动', leanStartupDesc:'根配置启动阶段去掉远程 JAR/扩展站点，缩短影视仓/TVBox 启动时间；置顶源仍保留。', maxStartupQuickSearchDesc:'根地址启动配置使用的快速搜索上限；0 表示不限制。完整配置仍可通过 /config-full.json 获取。', startupOptimizationDesc:'快速搜索源和根地址启动源默认不限制；根地址仍会受可搜索源上限裁剪，/config-full.json 保留完整搜索源。', startupMode:'启动模式', startupModeLean:'轻量', startupModeFull:'完整', startupModeDesc:'轻量模式在根地址返回裁剪后的启动配置以加快启动；完整配置仍可通过 /config-full.json 获取。', pruneDeadParses:'剔除失效解析器', pruneDeadParsesDesc:'主动探测解析器地址并剔除确认超时或失效的项，避免客户端启动时逐个等待死解析器。',
+    searchQuota:'应用端解析器配额',
+    maxParses:'解析器上限', autoSearchLimit:'自动安全配额', searchQuotaDesc:'这里只控制根配置下发的健康解析器数量；填 0 表示不限制。可搜索源的类型和数量由鉴权码设置决定，根链接不再按全局可搜索源上限裁剪。', sortSearchBySpeed:'按测速速度排序', sortSearchBySpeedDesc:'复用现有站点测速结果，将较快的源排在前面；不会额外发起测速请求。置顶源始终最前。', leanStartup:'轻量启动', leanStartupDesc:'根配置启动阶段去掉远程 JAR/扩展站点，缩短影视仓/TVBox 启动时间；置顶源仍保留。', maxStartupQuickSearchDesc:'根地址启动配置使用的快速搜索上限；0 表示不限制。完整配置仍可通过 /config-full.json 获取。', startupOptimizationDesc:'快速搜索源默认不限制。可搜索源的类型和数量由鉴权码按候选池顺序选择；/config-full.json 保留完整搜索源。', startupMode:'启动模式', startupModeLean:'轻量', startupModeFull:'完整', startupModeDesc:'轻量模式在根地址返回裁剪后的启动配置以加快启动；完整配置仍可通过 /config-full.json 获取。', pruneDeadParses:'剔除失效解析器', pruneDeadParsesDesc:'主动探测解析器地址并剔除确认超时或失效的项，避免客户端启动时逐个等待死解析器。',
     tabSearchQuota:'搜索',
     sqStatsCurrent:'当前实际数量', sqStatsSearchable:'可搜索源', sqStatsQuick:'快速搜索', sqStatsQuickLimit:'自动上限', sqStatsPool:'候选池', sqStatsParsers:'解析器', sqStatsKept:'最终保留', sqStatsProbed:'探测', sqStatsRemoved:'剔除', sqStatsLimit:'上限', sqStatsUnlimited:'不限制', sqStatsQuality:'质量分级', sqStatsNoData:'执行聚合后显示质量分级和解析器数量。',
     sqKey:'Key', sqName:'名称', sqSource:'来源', sqReason:'原因', sqGrade:'等级', sqSpeedStatus:'速度 / 状态', sqAction:'操作',
@@ -2150,7 +2148,6 @@ async function loadSearchQuota() {
     const res = await auth.authFetch('/admin/search-quota');
     if (!res.ok) return;
     const d = await res.json();
-    $('maxSearchableInput').value = d.maxSearchable ?? 0;
     // 保留实际值再原样回传，避免后台只改其他字段时把快速搜索上限重置。
     $('maxQuickSearchInput').value = d.maxQuickSearch ?? 0;
     $('maxStartupQuickSearchInput').value = d.maxStartupQuickSearch ?? 0;
@@ -2170,8 +2167,7 @@ async function saveSearchQuota() {
   const status = $('searchQuotaStatus');
   status.textContent = '';
   const data = {
-    maxSearchable: parseInt($('maxSearchableInput').value) || 0,
-    maxQuickSearch: parseInt($('maxQuickSearchInput').value) || 0,
+   maxQuickSearch: parseInt($('maxQuickSearchInput').value) || 0,
     maxStartupQuickSearch: parseInt($('maxStartupQuickSearchInput').value) || 0,
     startupSiteLimit: parseInt($('startupSiteLimitInput').value) || 0,
     maxParses: parseInt($('maxParsesInput').value) || 0,
@@ -2385,12 +2381,9 @@ function renderQualitySchedule(schedule) {
 function applyRecommendedQuota() {
   const d = qualityReportCache;
   if (!d) return;
-  const maxSearch = d.recommendedMaxSearchable ?? d.snapshot?.recommendedMaxSearchable ?? 0;
-  const maxParses = d.recommendedMaxParses ?? d.snapshot?.recommendedMaxParses ?? 3;
-  const searchInput = $('maxSearchableInput');
-  const parseInput = $('maxParsesInput');
-  if (searchInput) searchInput.value = String(maxSearch);
-  if (parseInput) parseInput.value = String(maxParses);
+ const maxParses = d.recommendedMaxParses ?? d.snapshot?.recommendedMaxParses ?? 3;
+ const parseInput = $('maxParsesInput');
+ if (parseInput) parseInput.value = String(maxParses);
   const status = $('qualityScheduleStatus');
   if (status) {
     status.textContent = t('qualityRecommendedApplied');
@@ -2514,9 +2507,8 @@ function renderQualityStats(d) {
   const coveragePct = testable > 0 ? Math.min(100, Math.round((probed / testable) * 100)) : 0;
   html += '<div>' + t('qualityCoverage') + ': ' + coveragePct + '% · ' + t('qualityTestable') + ' ' + countText(coverage.testable) + ' · ' + t('qualityProbed') + ' ' + countText(coverage.probed) + ' · ' + t('qualityNotProbed') + ' ' + countText(coverage.notProbed) + ' · ' + t('qualityUntestable') + ' ' + countText(coverage.untestable) + '</div>';
   html += '<div>' + t('sqPoolTotal') + ': ' + g.poolTotal + ' · ' + t('sqQuality') + ' ' + snap.graded + '/' + snap.total + ' · ' + fmtLocalTime(snap.updatedAt, sched?.timezone) + '</div>';
-  const recSearch = d.recommendedMaxSearchable ?? snap.recommendedMaxSearchable ?? 0;
-  const recParse = d.recommendedMaxParses ?? snap.recommendedMaxParses ?? 3;
-  html += '<div>' + t('qualityRecommended') + ': ' + t('qualityRecSearchable') + ' ' + recSearch + ' · ' + t('qualityRecParses') + ' ' + recParse + '</div>';
+ const recParse = d.recommendedMaxParses ?? snap.recommendedMaxParses ?? 3;
+  html += '<div>' + t('qualityRecommended') + ': ' + t('qualityRecParses') + ' ' + recParse + '</div>';
   html += '<div style="margin-top:2px">' + t('qualityTimesHint') + '</div>';
   box.innerHTML = html;
 }
