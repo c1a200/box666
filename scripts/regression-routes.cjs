@@ -191,6 +191,89 @@ async function readSites(response) {
   }
 
   {
+    const bulkSites = Array.from({ length: 120 }, (_, index) => ({
+      key: 'bulk-source-' + String(index).padStart(3, '0'),
+      name: '批量源 ' + index,
+      type: index < 5 ? 3 : 1,
+      api: index < 5 ? 'csp_Bulk' + index : 'https://bulk.example/api/' + index,
+      jar: index < 5 ? 'https://bulk.example/' + index + '.jar' : undefined,
+      searchable: 1,
+    }));
+    const entries = bulkSites.map((site, index) => ({
+      key: site.key,
+      name: site.name,
+      grade: index === 118 ? 'timeout' : index === 119 ? 'unusable' : index < 5 ? 'untestable' : 'excellent',
+      speedMs: index < 5 || index >= 118 ? null : 100 + index,
+      result: index === 118 ? 'timeout' : index === 119 ? 'error' : index < 5 ? 'not_probed' : 'ok',
+      consecutiveFailures: index >= 118 ? 1 : 0,
+    }));
+    const allDistribution = {
+      requireAuth: false,
+      authCodes: [{
+        id: 'auth-bulk-all', label: '全部源', code: 'bulk-all', enabled: true,
+        sourceMode: 'all', selectionMode: 'simple', maxSites: -1,
+        selectedKeys: [], pinnedKeys: [],
+        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      }],
+    };
+    const { app } = makeApp({
+      mergedConfig: { sites: bulkSites, lives: [] },
+      qualityPool: { updatedAt: new Date().toISOString(), entries },
+      distribution: allDistribution,
+      quota: { startupMode: 'full', leanStartup: false, selectionMode: 'simple', maxSites: -1 },
+    });
+    const rootSites = await readSites(await app.request('https://box.example/'));
+    const authSites = await readSites(await app.request('https://box.example/auth/bulk-all/'));
+    const rootKeys = rootSites.map((site) => site.key).sort();
+    const authKeys = authSites.map((site) => site.key).sort();
+    assert(rootSites.length === 118, 'root full selection must distribute every eligible source above the old 50-source range; got ' + rootSites.length);
+    assert(authSites.length === rootSites.length, 'auth full selection must match root full selection count');
+    assert(authKeys.join(',') === rootKeys.join(','), 'auth and root full selection must distribute the same deduplicated eligible source set');
+    assert(authSites.filter((site) => site.type === 3).length === 5, 'auth full selection must retain every eligible searchable JAR source');
+    assert(!authKeys.includes('bulk-source-118') && !authKeys.includes('bulk-source-119'), 'auth full selection must exclude timeout and unusable sources just like root');
+
+    const limitedDistribution = {
+      ...allDistribution,
+      authCodes: [{ ...allDistribution.authCodes[0], id: 'auth-bulk-limited', code: 'bulk-limited', maxSites: 17 }],
+    };
+    const limitedApp = makeApp({
+      mergedConfig: { sites: bulkSites, lives: [] },
+      qualityPool: { updatedAt: new Date().toISOString(), entries },
+      distribution: limitedDistribution,
+      quota: { startupMode: 'full', leanStartup: false, selectionMode: 'simple', maxSites: 17 },
+    }).app;
+    const limitedRoot = await readSites(await limitedApp.request('https://box.example/'));
+    const limitedAuth = await readSites(await limitedApp.request('https://box.example/auth/bulk-limited/'));
+    assert(limitedRoot.filter((site) => site.searchable === 1).length === 17, 'root explicit simple count must still cap searchable sources');
+    assert(limitedAuth.filter((site) => site.searchable === 1).length === 17, 'auth explicit simple count must apply the same Top-N rule');
+    assert(limitedAuth.map((site) => site.key).join(',') === limitedRoot.map((site) => site.key).join(','), 'matching root and auth limits must preserve identical quality ordering');
+
+    const categorySites = [...bulkSites, {
+      key: 'bulk-functional-plugin', name: '非搜索插件', type: 3,
+      api: 'csp_Functional', searchable: 0,
+    }];
+    const categoryEntries = [...entries, {
+      key: 'bulk-functional-plugin', name: '非搜索插件', grade: 'untestable',
+      speedMs: null, result: 'not_probed', consecutiveFailures: 0,
+    }];
+    const categoryLimits = { quality: { excellent: 8, untestable: -1 }, type: { jar: 0 } };
+    const categoryDistribution = {
+      ...allDistribution,
+      authCodes: [{ ...allDistribution.authCodes[0], id: 'auth-bulk-category', code: 'bulk-category', selectionMode: 'category', bucketLimits: categoryLimits }],
+    };
+    const categoryApp = makeApp({
+      mergedConfig: { sites: categorySites, lives: [] },
+      qualityPool: { updatedAt: new Date().toISOString(), entries: categoryEntries },
+      distribution: categoryDistribution,
+      quota: { startupMode: 'full', leanStartup: false, selectionMode: 'category', bucketLimits: categoryLimits },
+    }).app;
+    const categoryRoot = await readSites(await categoryApp.request('https://box.example/'));
+    const categoryAuth = await readSites(await categoryApp.request('https://box.example/auth/bulk-category/'));
+    assert(categoryRoot.map((site) => site.key).join(',') === categoryAuth.map((site) => site.key).join(','), 'matching category policies must select the same source set and order for root and auth');
+    assert(categoryAuth.some((site) => site.key === 'bulk-functional-plugin'), 'category limits must not remove non-searchable functional plugins from auth output');
+  }
+
+  {
     const quota = {
       maxQuickSearch: 20,
       maxStartupQuickSearch: 20,
@@ -329,7 +412,8 @@ async function readSites(response) {
   {
     const { app } = makeApp();
     const a = await readSites(await app.request('https://box.example/auth/code-a/'));
-    assert(a.length === 1 && a[0].key === 'source-excellent', 'code-a should receive only excellent sites');
+    assert(a.some((site) => site.key === 'source-excellent') && !a.some((site) => site.key === 'source-good'), 'code-a should receive only excellent searchable sites');
+    assert(a.some((site) => site.key === 'source-plugin'), 'quality-only auth policies must retain non-searchable functional plugins');
 
     const b = await readSites(await app.request('https://box.example/auth/code-b/'));
     assert(b.some((site) => site.key === 'source-plugin'), 'code-b should retain non-searchable type 3 plugins');
@@ -605,7 +689,7 @@ async function readSites(response) {
     };
     const { app } = makeApp({ distribution: pinnedPolicyDistribution });
     const sites = await readSites(await app.request('https://box.example/auth/pinned-policy/'));
-    assert(sites.length === 0, 'pinned keys must not bypass grade, type, or bucket exclusions, got ' + sites.map((site) => site.key).join(','));
+    assert(sites.map((site) => site.key).sort().join(',') === 'source-plugin,source-quick-only', 'pinned keys must not bypass searchable-source exclusions, while functional non-searchable plugins remain available; got ' + sites.map((site) => site.key).join(','));
 
     const pinnedLimitDistribution = {
       requireAuth: false,

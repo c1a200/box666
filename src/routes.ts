@@ -519,7 +519,8 @@ export function createApp(deps: AppDeps): Hono {
     const qualityPool = await loadQualityPool(storage).catch(() => null);
     const qualityHealth = getQualityPoolHealth(qualityPool);
     // An expired pool is historical evidence, not an authoritative ranking.
-    // Keep only a bounded provisional set until a fresh quality run completes.
+    // If no usable snapshot exists, the caller below falls back to the complete
+    // deduplicated candidate set; it must not silently reintroduce a small cap.
     const effectiveQualityPool = qualityHealth.state === 'fresh' || qualityHealth.state === 'stale'
       ? qualityPool
       : null;
@@ -545,9 +546,9 @@ export function createApp(deps: AppDeps): Hono {
     });
     const qualityHasEntries = qualityEntries.size > 0;
     let provisionalKeys = new Set<string>();
-    // During first boot (or after a failed quality run), expose a small,
-    // directly probeable provisional pool instead of either returning zero
-    // search sources or leaking the whole merged configuration.
+    // During first boot (or after a failed quality run), keep the complete
+    // deduplicated searchable candidate set. It is not yet quality-ranked,
+    // but a full selection must not silently become a small provisional pool.
     if (!qualityHasEntries) {
       // 质量池不可用时不以“小型临时池”暗中截断全选策略；所有去重的
       // searchable 候选都保留，排序退回聚合顺序，待质量任务恢复后再排序。
@@ -608,7 +609,7 @@ export function createApp(deps: AppDeps): Hono {
         sites,
         effectiveBucketLimits,
         (site) => gradeByKey.get(site.key) || 'untestable',
-        !context.authCode,
+        true,
       );
     }
 
@@ -784,8 +785,8 @@ export function createApp(deps: AppDeps): Hono {
     }
     const qualityHealth = getQualityPoolHealth(qualityPool);
     // Do not let an old snapshot keep controlling the root after a prolonged
-    // outage. The aggregation config remains available, but distribution falls
-    // back to a bounded provisional set until quality grading succeeds again.
+    // outage. The aggregation config remains available, and full selection
+    // falls back to the complete deduplicated candidate set until grading recovers.
     const effectiveQualityPool = qualityHealth.state === 'fresh' || qualityHealth.state === 'stale'
       ? qualityPool
       : null;
@@ -973,8 +974,8 @@ export function createApp(deps: AppDeps): Hono {
       const pool = await loadQualityPool(storage);
       const health = getQualityPoolHealth(pool);
       // An expired snapshot is no longer authoritative. Do not apply its
-      // exclusions before the bounded provisional distribution has a chance
-      // to select a fresh, directly probeable fallback set.
+      // exclusions before the complete provisional distribution has a chance
+      // to select the current deduplicated fallback set.
       if (health.state === 'fresh' || health.state === 'stale') {
         for (const key of excludedQualityKeys(pool)) qualityExcluded.add(key);
       }

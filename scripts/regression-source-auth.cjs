@@ -191,7 +191,7 @@ assert(conflictingLimits.authCodes[0].maxSites === 2, 'current maxSites must win
   await runQualityGrading(softJarStorage, [{ key: 'soft-jar', name: '临时不可探测 JAR', type: 3, api: 'csp_Soft', jar: 'https://jar.example/soft.jar', searchable: 1 }], { mode: 'full', markRun: false });
   const softJarSnapshot = JSON.parse(softJarData.get('search_quality_pool'));
   assert(softJarSnapshot.entries[0].grade === 'untestable', 'temporary server-side JAR probe failure must remain client-verifiable');
-  global.fetch = async () => new Response('gone', { status: 503 });
+  global.fetch = async () => new Response('gone', { status: 404 });
   const hardJarData = new Map();
   const hardJarStorage = {
     async get(key) { return hardJarData.has(key) ? hardJarData.get(key) : null; },
