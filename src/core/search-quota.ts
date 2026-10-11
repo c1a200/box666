@@ -235,6 +235,7 @@ export function applySiteBucketLimits(
   sites: TVBoxSite[],
   limits: SearchQuotaConfig['bucketLimits'] | ClientAuthCode['bucketLimits'],
   gradeForSite: (site: TVBoxSite) => SiteQualityGrade,
+  preserveNonSearchable = false,
 ): TVBoxSite[] {
   if (!limits) return sites;
   const qualityLimits = limits.quality || {};
@@ -242,6 +243,10 @@ export function applySiteBucketLimits(
   const qualityCounts: Record<string, number> = {};
   const typeCounts: Record<string, number> = {};
   return sites.filter((site) => {
+    // Bucket limits control searchable-source distribution only. Functional
+    // extensions (for example a non-searchable JAR) must stay available for
+    // clients that need them and must not consume a search/type/grade slot.
+    if (preserveNonSearchable && site.searchable !== 1) return true;
     const grade = gradeForSite(site);
     const qualityLimit = qualityLimits[grade as keyof typeof qualityLimits];
     if (qualityLimit === 0) return false;
@@ -275,6 +280,8 @@ function createEmptyQualityGrades(): SiteQualityGrades {
     timeout: { count: 0, cumulative: 0 },
     unusable: { count: 0, cumulative: 0 },
     poolTotal: 0,
+    serverVerifiedTotal: 0,
+    clientFallbackTotal: 0,
   };
 }
 
@@ -324,7 +331,11 @@ function buildQualityGrades(
   for (const site of candidateSites) {
     const grade = getSiteQualityGrade(site, probeMap, healthMap);
     grades[grade].count++;
-    if (grade !== 'timeout' && grade !== 'unusable') grades.poolTotal++;
+    if (grade !== 'timeout' && grade !== 'unusable') {
+      grades.poolTotal++;
+      if (grade === 'untestable') grades.clientFallbackTotal++;
+      else grades.serverVerifiedTotal++;
+    }
   }
 
   let cumulative = 0;
@@ -380,16 +391,6 @@ export function applySearchQuota(
     return getSiteQualityGrade(site, options.probeMap, options.healthMap);
   };
 
-  // 显式分桶在配额内部应用，保证聚合结果、根启动配置和 /config-full.json
-  // 使用同一套规则：0=该桶不选，-1=全选，正数=保留前 N 个。
-  if (config.bucketLimits) {
-    sites = applySiteBucketLimits(
-      sites,
-      config.bucketLimits,
-      gradeForSite
-    );
-  }
-
   // 置顶只影响最终顺序，不改变可搜索性、质量过滤或任何配额语义。
   const pinnedKeySet = new Set(config.pinnedKeys || []);
   const pinnedOrder = new Map((config.pinnedKeys || []).map((key, index) => [key, index]));
@@ -440,8 +441,6 @@ export function applySearchQuota(
   };
   if (hasQualityData) {
     candidates = [...candidates].sort((a, b) => {
-      const pinnedDiff = compareWithPinned(a, b);
-      if (pinnedDiff !== 0) return pinnedDiff;
       if (hasPool) {
         const aOrder = qualityOrder.get(a.key) ?? Number.MAX_SAFE_INTEGER;
         const bOrder = qualityOrder.get(b.key) ?? Number.MAX_SAFE_INTEGER;
@@ -451,6 +450,8 @@ export function applySearchQuota(
         const bRank = qualityRank[gradeForSite(b)];
         if (aRank !== bRank) return aRank - bRank;
       }
+      const pinnedDiff = compareWithPinned(a, b);
+      if (pinnedDiff !== 0) return pinnedDiff;
       const speedDiff = compareSpeed(a, b);
       if (speedDiff !== 0) return speedDiff;
       return a.key.localeCompare(b.key);
@@ -478,6 +479,20 @@ export function applySearchQuota(
   const orderedKeys = new Set(keptCandidates.map(site => site.key));
   const rest = sites.filter(site => !orderedKeys.has(site.key));
   let orderedSites = [...keptCandidates, ...rest];
+  // Apply limits after the quality order is established, otherwise upstream
+  // ordering can consume a category bucket before its best entries arrive.
+  if (config.bucketLimits) {
+    orderedSites = applySiteBucketLimits(orderedSites, config.bucketLimits, gradeForSite, true);
+  }
+  // Pinning is an execution-order preference only. Apply it after bucket
+  // selection so a pinned but lower-quality source cannot consume a Top-N slot.
+  if (pinnedOrder.size > 0) {
+    const pinned = orderedSites
+      .filter((site) => pinnedOrder.has(site.key))
+      .sort((a, b) => (pinnedOrder.get(a.key) as number) - (pinnedOrder.get(b.key) as number));
+    const pinnedKeys = new Set(pinned.map((site) => site.key));
+    orderedSites = [...pinned, ...orderedSites.filter((site) => !pinnedKeys.has(site.key))];
+  }
 
   let quickTruncated = 0;
   sites = orderedSites.map(site => {

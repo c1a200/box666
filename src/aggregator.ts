@@ -353,29 +353,6 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     // 永远无法累计 consecutiveFailures，也就无法在后续轮次进入 unusable。
     await updateSiteHealth(storage, siteProbeMap, preProbeSites, merged);
 
-    // 复用本轮站点探测结果做质量分级，不额外发起网络请求。质量池按
-    // “优 > 良 > 可用 > 未探测 > 不可用”排序并持久化，根配置只读该顺序。
-    try {
-      const healthMap = await loadSiteHealthMap(storage);
-      const snapshot = await runQualityGrading(storage, preProbeSites, {
-        probeMap: siteProbeMap,
-        healthMap,
-        markRun: false,
-        timezone: config.qualityTimezone,
-      });
-      logger.infoFields('aggregation', 'quality-grading', {
-        total: snapshot.total,
-        graded: snapshot.graded,
-        excellent: snapshot.grades.excellent.count,
-        good: snapshot.grades.good.count,
-        usable: snapshot.grades.usable.count,
-        timeout: snapshot.grades.timeout.count,
-        unusable: snapshot.grades.unusable.count,
-      });
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.warn('aggregation', 'Quality grading failed (non-fatal): ' + msg);
-    }
   } else {
     logger.info('aggregation', 'Step 6: No sites to test');
   }
@@ -400,6 +377,36 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     logger.infoFields('aggregation', 'similar-dedup-done', { sites: merged.sites.length });
   } else {
     logger.info('aggregation', 'Step 6.2: Similar-name dedup disabled, skipping');
+  }
+
+  // Build the persisted quality pool after deduplication so its key set is a
+  // subset of the configuration that will actually be published. Health is
+  // still updated from preProbeSites above, so removed entries retain failure
+  // history without leaking back into distribution.
+  if (merged.sites && merged.sites.length > 0) {
+    try {
+      const healthMap = await loadSiteHealthMap(storage);
+      const snapshot = await runQualityGrading(storage, merged.sites, {
+        probeMap: siteProbeMap,
+        healthMap,
+        globalSpider: merged.spider,
+        markRun: false,
+        timezone: config.qualityTimezone,
+      });
+      logger.infoFields('aggregation', 'quality-grading', {
+        total: snapshot.total,
+        graded: snapshot.graded,
+        excellent: snapshot.grades.excellent.count,
+        good: snapshot.grades.good.count,
+        usable: snapshot.grades.usable.count,
+        untestable: snapshot.grades.untestable.count,
+        timeout: snapshot.grades.timeout.count,
+        unusable: snapshot.grades.unusable.count,
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn('aggregation', 'Quality grading failed (non-fatal): ' + msg);
+    }
   }
 
 

@@ -18,6 +18,8 @@ import type {
 import type { Storage } from '../storage/interface';
 import { batchSiteSpeedTest, isSiteProbeable, type SiteProbeResult } from './speedtest';
 import { probeJarHealth, applyJarProbeToEntry, isRemoteJarSite, type JarProbeResult } from './jar-health';
+import { classifySearchSource } from './search-quota';
+import { calculateQualityScore, compareQualityEntries, normalizeQualityGrade, qualityConfidenceForEntry, qualityScoreForEntry } from './quality-ranking';
 import {
   KV_SEARCH_QUALITY_CANDIDATES,
   KV_SEARCH_QUALITY_POOL,
@@ -49,8 +51,13 @@ export const QUALITY_THRESHOLDS = {
 const DEFAULT_BATCH_SIZE = 80;
 const MAX_SCHEDULE_TIMES = 12;
 const DEFAULT_FULL_REPEAT_DAYS = 7;
-const CANDIDATE_GRADES = new Set<SiteQualityGrade>(['excellent', 'good', 'usable', 'untestable']);
-const SERVER_PROBE_GRADES = new Set<SiteQualityGrade>(['excellent', 'good', 'usable']);
+// JAR/客户端运行时源可以在应用端参与搜索，但服务端无法替它们验活。
+// 默认只给启动配置留一个很小的后备窗口，避免把大量未验证的 JAR
+// 变成应用启动时的串行初始化负担。鉴权码仍可用 0/N/-1 覆盖这个默认值。
+export const DEFAULT_CLIENT_FALLBACK_LIMIT = 4;
+// `untestable` means client-verifiable, not server-verified.  Keep it out of
+// the default high-quality candidate set; callers may explicitly opt into it.
+const CANDIDATE_GRADES = new Set<SiteQualityGrade>(['excellent', 'good', 'usable']);
 
 function isNodeRuntime(): boolean {
   return typeof process !== 'undefined' && !!process.env.PORT;
@@ -306,15 +313,12 @@ function createEmptyGrades(): SiteQualityGrades {
     timeout: { count: 0, cumulative: 0 },
     unusable: { count: 0, cumulative: 0 },
     poolTotal: 0,
+    serverVerifiedTotal: 0,
+    clientFallbackTotal: 0,
   };
 }
 
-function normalizeGrade(value: unknown): SiteQualityGrade {
-  if (value === 'unknown') return 'timeout';
-  if (value === 'credential-ready') return 'untestable';
-  if (value === 'excellent' || value === 'good' || value === 'usable' || value === 'untestable' || value === 'timeout' || value === 'unusable') return value;
-  return 'timeout';
-}
+const normalizeGrade = normalizeQualityGrade;
 
 export function gradeForProbe(probe: SiteProbeResult | undefined, historicalFailures = 0): SiteQualityGrade {
   if (!probe || probe.result === 'not_probed') {
@@ -334,26 +338,11 @@ export function gradeForProbe(probe: SiteProbeResult | undefined, historicalFail
   return 'timeout';
 }
 
-function compareGrade(a: SiteQualityGrade, b: SiteQualityGrade): number {
-  const rank: Record<SiteQualityGrade, number> = {
-    excellent: 0,
-    good: 1,
-    usable: 2,
-    untestable: 3,
-    timeout: 4,
-    unusable: 5,
-  };
-  return rank[a] - rank[b];
-}
+export { qualityScoreForEntry, qualityConfidenceForEntry } from './quality-ranking';
 
 function sortQualityEntries(entries: SearchQualitySnapshot['entries']): SearchQualitySnapshot['entries'] {
   return [...entries].sort((a, b) => {
-    const gradeDiff = compareGrade(a.grade, b.grade);
-    if (gradeDiff !== 0) return gradeDiff;
-    const aSpeed = typeof a.speedMs === 'number' ? a.speedMs : Number.POSITIVE_INFINITY;
-    const bSpeed = typeof b.speedMs === 'number' ? b.speedMs : Number.POSITIVE_INFINITY;
-    if (aSpeed !== bSpeed) return aSpeed - bSpeed;
-    return a.key.localeCompare(b.key);
+    return compareQualityEntries(a, b);
   });
 }
 
@@ -362,7 +351,11 @@ function buildGrades(entries: SearchQualitySnapshot['entries']): SiteQualityGrad
   for (const entry of entries) {
     const grade = normalizeGrade(entry.grade);
     grades[grade].count++;
-    if (CANDIDATE_GRADES.has(grade)) grades.poolTotal++;
+    if (grade !== 'timeout' && grade !== 'unusable') {
+      grades.poolTotal++;
+      if (grade === 'untestable') grades.clientFallbackTotal++;
+      else grades.serverVerifiedTotal++;
+    }
   }
   let cumulative = 0;
   for (const grade of ['excellent', 'good', 'usable', 'untestable', 'timeout'] as const) {
@@ -390,6 +383,9 @@ function normalizeSnapshot(raw: unknown): SearchQualitySnapshot | null {
       ? entry.result
       : 'not_probed',
     consecutiveFailures: typeof entry.consecutiveFailures === 'number' ? entry.consecutiveFailures : 0,
+    qualityScore: typeof entry.qualityScore === 'number' ? entry.qualityScore : undefined,
+    qualityConfidence: typeof entry.qualityConfidence === 'number' ? entry.qualityConfidence : undefined,
+    category: typeof entry.category === 'string' ? entry.category : undefined,
   })) as SearchQualitySnapshot['entries'];
   const sorted = sortQualityEntries(entries);
   const grades = buildGrades(sorted);
@@ -477,7 +473,35 @@ export function candidateKeysFromPool(pool: SearchQualitySnapshot | null): Set<s
   if (!pool || !Array.isArray(pool.entries)) return keys;
   for (const entry of pool.entries) {
     const grade = normalizeGrade(entry.grade);
-    if (CANDIDATE_GRADES.has(grade)) keys.add(entry.key);
+    if (CANDIDATE_GRADES.has(grade) && qualityScoreForEntry(entry) > 0) keys.add(entry.key);
+  }
+  return keys;
+}
+
+/**
+ * Return keys eligible for distribution.  Client-verifiable sources are an
+ * explicit fallback only; they never silently join the server-verified pool.
+ */
+export function distributableKeysFromPool(
+  pool: SearchQualitySnapshot | null,
+  options: { includeUntestable?: boolean; maxUntestable?: number; eligibleKeys?: Set<string> } = {},
+): Set<string> {
+  const keys = new Set<string>();
+  if (!pool || !Array.isArray(pool.entries)) return keys;
+  const maxUntestable = options.maxUntestable ?? 0;
+  let untestable = 0;
+  for (const entry of pool.entries) {
+    if (options.eligibleKeys && !options.eligibleKeys.has(entry.key)) continue;
+    const grade = normalizeGrade(entry.grade);
+    if (CANDIDATE_GRADES.has(grade) && qualityScoreForEntry(entry) > 0) {
+      keys.add(entry.key);
+      continue;
+    }
+    if (options.includeUntestable && grade === 'untestable' && qualityScoreForEntry(entry) > 0
+      && (maxUntestable < 0 || untestable < maxUntestable)) {
+      keys.add(entry.key);
+      untestable++;
+    }
   }
   return keys;
 }
@@ -508,6 +532,7 @@ export async function runQualityGrading(
     deep?: boolean;
     probeMap?: Map<string, SiteProbeResult>;
     healthMap?: SiteHealthMap;
+    globalSpider?: string;
     markRun?: boolean;
     timezone?: string;
     onProgress?: (processed: number, total: number) => Promise<void> | void;
@@ -544,8 +569,8 @@ export async function runQualityGrading(
   }
 
   const healthMap = options.healthMap ?? await loadHealthMap(storage);
-  const jarProbeMap = await probeJarHealth(storage, allSearchable, previousEntries);
-  const entries = buildQualityEntries(allSearchable, probeMap, previousEntries, healthMap, jarProbeMap);
+  const jarProbeMap = await probeJarHealth(storage, allSearchable, previousEntries, options.globalSpider);
+  const entries = buildQualityEntries(allSearchable, probeMap, previousEntries, healthMap, jarProbeMap, options.globalSpider);
   const snapshot = buildSnapshot(allSearchable.length, entries, allSearchable);
   await persistQualitySnapshot(storage, snapshot);
   await persistQualityCandidates(storage, allSearchable);
@@ -559,11 +584,12 @@ function buildQualityEntries(
   previousEntries: Map<string, SearchQualitySnapshot['entries'][number]>,
   healthMap: SiteHealthMap,
   jarProbeMap: Map<string, JarProbeResult> = new Map(),
+  globalSpider?: string,
 ): SearchQualitySnapshot['entries'] {
   const now = new Date().toISOString();
   return searchable.map((site) => {
     if (!isSiteProbeable(site)) {
-      return {
+      const entry: SearchQualitySnapshot['entries'][number] = {
         key: site.key,
         name: site.name || site.key,
         grade: 'untestable',
@@ -571,7 +597,25 @@ function buildQualityEntries(
         result: 'not_probed',
         probedAt: undefined,
         consecutiveFailures: 0,
+        qualityScore: undefined,
+        qualityConfidence: 0.25,
+        category: classifySearchSource(site),
       };
+      const jarProbe = jarProbeMap.get(site.key);
+      if (jarProbe) {
+        entry.jarProbeResult = jarProbe.result;
+        if (jarProbe.result !== 'ok') {
+          entry.grade = 'unusable';
+          entry.qualityConfidence = 0.9;
+        } else {
+          entry.qualityConfidence = 0.55;
+        }
+      }
+      const result = applyJarProbeToEntry(entry, jarProbe);
+      result.qualityScore = result.grade === 'unusable'
+        ? 0
+        : calculateQualityScore(result);
+      return result;
     }
     const probe = probeMap.get(site.key);
     const previousEntry = previousEntries.get(site.key);
@@ -599,10 +643,20 @@ function buildQualityEntries(
       result: effectiveProbe?.result ?? 'not_probed',
       probedAt: freshProbe ? now : previousEntry?.probedAt,
       consecutiveFailures,
+      qualityScore: 0,
+      qualityConfidence: 0,
+      category: classifySearchSource(site),
     };
     const jarProbe = jarProbeMap.get(site.key);
     if (jarProbe) entry.jarProbeResult = jarProbe.result;
-    return isRemoteJarSite(site) ? applyJarProbeToEntry(entry, jarProbe) : entry;
+    const result = isRemoteJarSite(site, globalSpider) ? applyJarProbeToEntry(entry, jarProbe) : entry;
+    result.qualityConfidence = result.grade === 'unusable' ? 0 : (result.result === 'ok' ? 0.9 : 0.35);
+    if (result.jarProbeResult && result.jarProbeResult !== 'ok') {
+      result.grade = 'unusable';
+      result.qualityConfidence = 0.9;
+    }
+    result.qualityScore = result.grade === 'unusable' ? 0 : calculateQualityScore(result);
+    return result;
   });
 }
 
@@ -720,6 +774,7 @@ export async function runQualityGradingChunk(
   batchSize = 40,
   requestedMode: SearchQualityRunMode = 'candidate',
   timezone = QUALITY_TIMEZONE,
+  globalSpider?: string,
 ): Promise<{ done: boolean; cursor: number; processed: number; targetTotal: number; mode: SearchQualityRunMode; snapshot?: SearchQualitySnapshot }> {
   const allSearchable = collectSearchableSites(sites);
   const previous = await loadQualityPool(storage);
@@ -732,7 +787,7 @@ export async function runQualityGradingChunk(
   }
   const start = Math.max(0, Math.floor(cursor));
   if (start >= target.length) {
-    const entries = buildQualityEntries(allSearchable, new Map(), previousEntries, await loadHealthMap(storage), await probeJarHealth(storage, allSearchable, previousEntries));
+    const entries = buildQualityEntries(allSearchable, new Map(), previousEntries, await loadHealthMap(storage), await probeJarHealth(storage, allSearchable, previousEntries, globalSpider), globalSpider);
     const snapshot = buildSnapshot(allSearchable.length, entries, allSearchable);
     await persistQualitySnapshot(storage, snapshot);
     await persistQualityCandidates(storage, allSearchable);
@@ -743,7 +798,8 @@ export async function runQualityGradingChunk(
   const batch = target.slice(start, start + Math.max(1, batchSize));
   const probeMap = await batchSiteSpeedTest(batch, 3000, false, 6, 25000);
   const healthMap = await loadHealthMap(storage);
-  const entries = buildQualityEntries(allSearchable, probeMap, previousEntries, healthMap);
+    const jarProbeMap = await probeJarHealth(storage, allSearchable, previousEntries, globalSpider);
+    const entries = buildQualityEntries(allSearchable, probeMap, previousEntries, healthMap, jarProbeMap, globalSpider);
   const snapshot = buildSnapshot(allSearchable.length, entries, allSearchable);
   await persistQualitySnapshot(storage, snapshot);
   const done = start + batch.length >= target.length;

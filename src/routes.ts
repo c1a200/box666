@@ -27,6 +27,9 @@ import {
   updateQualityStatus,
   excludedQualityKeys,
   candidateKeysFromPool,
+  distributableKeysFromPool,
+  qualityScoreForEntry,
+  DEFAULT_CLIENT_FALLBACK_LIMIT,
 } from './core/quality';
 import { loadClientDistribution, saveClientDistribution, findClientAuthCode, normalizeClientDistributionConfig, createClientAuthCode } from './core/client-auth-store';
 import { isSiteProbeable } from './core/speedtest';
@@ -480,7 +483,7 @@ export function createApp(deps: AppDeps): Hono {
    * 鉴权链接在启动裁剪之后再按鉴权码的等级、类型、数量和置顶规则裁剪。
    */
   async function applySourceDistribution(raw: string, context: ClientAuthContext): Promise<string> {
-    if (!context.authCode || !raw) return raw;
+    if (!raw) return raw;
     let parsed: TVBoxConfig;
     try {
       parsed = JSON.parse(raw) as TVBoxConfig;
@@ -489,29 +492,122 @@ export function createApp(deps: AppDeps): Hono {
     }
     if (!Array.isArray(parsed.sites)) return raw;
 
-    const code = context.authCode;
-    const mode: SourceDistributionMode = code.sourceMode || 'all';
+    // The root URL has no auth code, but must use the same conservative
+    // quality gate as authenticated URLs. `all` means verified candidates,
+    // never literally every merged source.
+    const rootQuota = context.authCode ? null : await loadSearchQuota(storage);
+    const policy = context.authCode || {
+      sourceMode: 'all' as SourceDistributionMode,
+      maxSites: -1,
+      maxSearchable: -1,
+      bucketLimits: rootQuota?.bucketLimits,
+      selectedKeys: [] as string[],
+      pinnedKeys: rootQuota?.pinnedKeys || [],
+    };
+    const mode: SourceDistributionMode = policy.sourceMode || 'all';
     let sites = parsed.sites.slice();
+    const searchableKeys = new Set(
+      sites.filter((site) => site.searchable === 1).map((site) => site.key),
+    );
+
+    // Distribution always starts from the same quality-ranked pool.  Category
+    // and count limits are applied after this ordering, so a per-category N
+    // means that category's own top N rather than whichever entries happened
+    // to occur first in the merged config.
+    const qualityPool = await loadQualityPool(storage).catch(() => null);
+    const qualityEntries = new Map((qualityPool?.entries || []).map((entry) => [entry.key, entry]));
+    // The persisted pool is already normalized and deterministically sorted.
+    // Reuse that order so aggregation, admin previews and client distribution
+    // cannot disagree because they recomputed a slightly different score.
+    const qualityOrder = new Map<string, number>();
+    (qualityPool?.entries || []).forEach((entry, index) => {
+      if (!qualityOrder.has(entry.key)) qualityOrder.set(entry.key, index);
+    });
+    // A searchable JAR is valid for the client even though the server cannot
+    // execute it. Keep a bounded client-runtime fallback window; an explicit
+    // 0/N/-1 policy still overrides this conservative default.
+    const hasUntestableLimit = policy.bucketLimits?.quality?.untestable !== undefined;
+    const maxUntestable = hasUntestableLimit
+      ? policy.bucketLimits!.quality!.untestable!
+      : DEFAULT_CLIENT_FALLBACK_LIMIT;
+    const allowUntestable = maxUntestable !== 0;
+    const distributableKeys = distributableKeysFromPool(qualityPool, {
+      includeUntestable: allowUntestable,
+      maxUntestable,
+      eligibleKeys: searchableKeys,
+    });
+    const qualityHasEntries = qualityEntries.size > 0;
+    // During first boot (or after a failed quality run), expose a small,
+    // directly probeable provisional pool instead of either returning zero
+    // search sources or leaking the whole merged configuration.
+    if (!qualityHasEntries) {
+      const provisional = sites
+        .filter((site) => site.searchable === 1 && isSiteProbeable(site))
+        .slice(0, 32);
+      const provisionalKeys = new Set(provisional.map((site) => site.key));
+      sites = sites.filter((site) => site.searchable !== 1 || provisionalKeys.has(site.key));
+    }
+    const isSearchableAllowed = (site: TVBoxSite): boolean => {
+      if (site.searchable !== 1) return true;
+      if (!qualityHasEntries) return true;
+      return distributableKeys.has(site.key);
+    };
+    sites = sites.filter(isSearchableAllowed);
 
     if (mode === 'search') {
       sites = sites.filter((site) => site.searchable === 1);
     } else if (mode === 'selected') {
-      try {
-        const pool = await loadQualityPool(storage);
-        const selectedKeys = new Set(candidateKeysFromPool(pool));
-        sites = sites.filter((site) => selectedKeys.has(site.key));
-      } catch {
-        // 质量池缺失时不做额外裁剪，避免错误地清空客户端源。
-      }
+      sites = sites.filter((site) => site.searchable !== 1 || distributableKeys.has(site.key));
     } else if (mode === 'custom') {
-      const selectedKeys = new Set(code.selectedKeys || []);
+      const selectedKeys = new Set(policy.selectedKeys || []);
       sites = sites.filter((site) => selectedKeys.has(site.key));
     }
 
+    if (qualityEntries.size > 0) {
+      sites = sites.slice().sort((a, b) => {
+        const aOrder = qualityOrder.get(a.key);
+        const bOrder = qualityOrder.get(b.key);
+        if (aOrder !== undefined || bOrder !== undefined) {
+          if (aOrder === undefined) return 1;
+          if (bOrder === undefined) return -1;
+          if (aOrder !== bOrder) return aOrder - bOrder;
+        }
+        const aEntry = qualityEntries.get(a.key);
+        const bEntry = qualityEntries.get(b.key);
+        const aScore = aEntry ? qualityScoreForEntry(aEntry) : -1;
+        const bScore = bEntry ? qualityScoreForEntry(bEntry) : -1;
+        if (aScore !== bScore) return bScore - aScore;
+        return a.key.localeCompare(b.key);
+      });
+    }
 
-    // 鉴权码置顶只改变顺序，不能绕过任何质量、类型、分桶或数量限制。
+    // The quality pool intentionally contains searchable sources only. Keep
+    // functional, non-searchable extensions alongside that pool so a quality
+    // refresh cannot make client-side plugins disappear from startup config.
+    if (qualityEntries.size > 0) {
+      const functionalSites = sites.filter((site) => site.searchable !== 1);
+      const existingKeys = new Set(sites.map((site) => site.key));
+      sites = [
+        ...sites,
+        ...functionalSites.filter((site) => !existingKeys.has(site.key)),
+      ];
+    }
+
+
+    // 分桶在质量排序之后执行，保证分类 Top-N 是该分类内的真实 Top-N。
+    if (policy.bucketLimits) {
+      const gradeByKey = new Map((qualityPool?.entries || []).map((entry) => [entry.key, entry.grade]));
+      sites = applySiteBucketLimits(
+        sites,
+        policy.bucketLimits,
+        (site) => gradeByKey.get(site.key) || 'untestable',
+        !context.authCode,
+      );
+    }
+
+    // 鉴权码置顶只改变已筛选结果的顺序，不能绕过任何质量、类型、分桶或数量限制。
     const pinnedOrder = new Map(
-      (code.pinnedKeys || []).map((key, index) => [key, index] as const),
+      (policy.pinnedKeys || []).map((key, index) => [key, index] as const),
     );
     if (pinnedOrder.size > 0) {
       const pinned = sites
@@ -521,25 +617,8 @@ export function createApp(deps: AppDeps): Hono {
       sites = [...pinned, ...sites.filter((site) => !pinnedKeys.has(site.key))];
     }
 
-    // 分桶限制：0=不选该桶，-1=该桶全选，正数=按当前质量顺序保留前 N 个。
-    // 等级/类型过滤之后、总量上限之前应用，避免被 maxSites 截断后分桶统计失真。
-    if (code.bucketLimits) {
-      let gradeByKey = new Map<string, SiteQualityGrade>();
-      try {
-        const pool = await loadQualityPool(storage);
-        gradeByKey = new Map((pool?.entries || []).map((entry) => [entry.key, entry.grade]));
-      } catch {
-        // 质量池缺失时只能按 untestable 归类；不阻止明确的分桶策略。
-      }
-      sites = applySiteBucketLimits(
-        sites,
-        code.bucketLimits,
-        (site) => gradeByKey.get(site.key) || 'untestable',
-      );
-    }
-
-    const maxSearchable = typeof code.maxSearchable === 'number' && Number.isFinite(code.maxSearchable)
-      ? Math.floor(code.maxSearchable)
+    const maxSearchable = typeof policy.maxSearchable === 'number' && Number.isFinite(policy.maxSearchable)
+      ? Math.floor(policy.maxSearchable)
       : -1;
     if (maxSearchable === 0) {
       sites = sites.filter((site) => site.searchable !== 1);
@@ -554,8 +633,8 @@ export function createApp(deps: AppDeps): Hono {
     }
 
     // 未分类数量语义：0=所有源都不下发；-1=全部；正数=保留前 N 个。
-    const maxSites = typeof code.maxSites === 'number' && Number.isFinite(code.maxSites)
-      ? Math.floor(code.maxSites)
+    const maxSites = typeof policy.maxSites === 'number' && Number.isFinite(policy.maxSites)
+      ? Math.floor(policy.maxSites)
       : -1;
     if (maxSites === 0) {
       sites = [];
@@ -564,7 +643,12 @@ export function createApp(deps: AppDeps): Hono {
       sites = sites.slice(0, maxSites);
     }
 
-    parsed.sites = sites;
+    const seenSiteKeys = new Set<string>();
+    parsed.sites = sites.filter((site) => {
+      if (seenSiteKeys.has(site.key)) return false;
+      seenSiteKeys.add(site.key);
+      return true;
+    });
     return JSON.stringify(parsed);
   }
 
@@ -663,7 +747,7 @@ export function createApp(deps: AppDeps): Hono {
    * 客户端启动配置裁剪。完整聚合结果始终保存在 KV_MERGED_CONFIG，
    * 根地址默认只返回启动必需项，避免影视仓串行初始化大量远程 JAR/解析器。
    */
-  async function buildStartupConfig(cached: string): Promise<string> {
+  async function buildStartupConfig(cached: string, authCode?: ClientAuthCode): Promise<string> {
     let quota: SearchQuotaConfig;
     try {
       quota = await loadSearchQuota(storage);
@@ -678,7 +762,8 @@ export function createApp(deps: AppDeps): Hono {
       return cached;
     }
 
-    const pinnedKeys = new Set(quota.pinnedKeys || []);
+    const distributionBucketLimits = authCode?.bucketLimits ?? quota.bucketLimits;
+    const distributionPinnedKeys = authCode?.pinnedKeys ?? quota.pinnedKeys;
     const blockedKeys = new Set(
       (quota.blockedKeys || []).filter((key): key is string => typeof key === 'string')
     );
@@ -700,6 +785,20 @@ export function createApp(deps: AppDeps): Hono {
         if (!qualityGradeByKey.has(entry.key)) qualityGradeByKey.set(entry.key, entry.grade);
       }
     }
+
+    // Searchable JAR/client-runtime sources are useful to the application but
+    // cannot be verified by this server. Keep a small default fallback window;
+    // an explicit 0/N/-1 remains authoritative for each root/auth policy.
+    const hasUntestableLimit = distributionBucketLimits?.quality?.untestable !== undefined;
+    const maxUntestable = hasUntestableLimit
+      ? distributionBucketLimits!.quality!.untestable!
+      : DEFAULT_CLIENT_FALLBACK_LIMIT;
+    const allowUntestable = maxUntestable !== 0;
+    const distributableKeys = distributableKeysFromPool(qualityPool, {
+      includeUntestable: allowUntestable,
+      maxUntestable,
+      eligibleKeys: new Set(allSites.filter((site) => site.searchable === 1).map((site) => site.key)),
+    });
 
     // KV_MERGED_CONFIG 已经过质量合并，可能保留旧版全局上限关闭过的搜索源。
     // 质量池需要恢复被旧上限截断的站点，因此先以完整候选快照兜底，再用当前
@@ -729,21 +828,40 @@ export function createApp(deps: AppDeps): Hono {
       const restored: TVBoxSite[] = [];
       for (const entry of qualityPool.entries) {
         if (blockedKeys.has(entry.key)) continue;
-        if (entry.grade === 'timeout' || entry.grade === 'unusable') continue;
         const site = siteByKey.get(entry.key);
         if (!site) continue;
+        // Functional, non-searchable extensions are not part of the search
+        // quality pool. Keep them available for clients that need the JAR or
+        // plugin, while searchable sources must pass the same quality gate as
+        // authenticated distribution.
+        if (site.searchable === 1 && !distributableKeys.has(entry.key)) continue;
         restored.push(site);
       }
-      orderedSites = restored;
+      const functionalSites = allSites.filter((site) => site.searchable !== 1 && !blockedKeys.has(site.key));
+      const restoredKeys = new Set(restored.map((site) => site.key));
+      orderedSites = [
+        ...restored,
+        ...functionalSites.filter((site) => !restoredKeys.has(site.key)),
+      ];
     } else {
-      // 质量池尚未生成时保持旧行为：只使用最终配置中仍可搜索的源。
-      orderedSites = allSites.filter((site) => site.searchable === 1 && !blockedKeys.has(site.key));
+      // 质量池尚未生成时，仍保留功能扩展；可搜索源则只使用当前最终配置
+      // 中的条目，避免冷启动阶段把原始全量候选直接泄漏给客户端。
+      orderedSites = allSites.filter((site) => !blockedKeys.has(site.key));
     }
 
-    // 置顶仅改变顺序。源必须已通过屏蔽、质量和搜索性规则，
-    // 全局不再按数量截断；鉴权码会在独立副本上执行自己的数量策略。
+    // Apply category/grade limits before pinning. A pinned lower-quality source
+    // may move ahead within the already selected set, but cannot consume a
+    // category or grade Top-N slot that belongs to a better source.
+    if (distributionBucketLimits) {
+      orderedSites = applySiteBucketLimits(
+        orderedSites,
+        distributionBucketLimits,
+        (site) => qualityGradeByKey.get(site.key) || 'untestable',
+        true,
+      );
+    }
     const pinnedOrder = new Map(
-      (quota.pinnedKeys || []).map((key, index) => [key, index] as const),
+      (distributionPinnedKeys || []).map((key, index) => [key, index] as const),
     );
     const pinnedSites = orderedSites
       .filter((site) => pinnedOrder.has(site.key) && !blockedKeys.has(site.key))
@@ -753,13 +871,6 @@ export function createApp(deps: AppDeps): Hono {
       ...pinnedSites,
       ...orderedSites.filter((site) => !pinnedKeySet.has(site.key) && !blockedKeys.has(site.key)),
     ];
-    if (quota.bucketLimits) {
-      orderedSites = applySiteBucketLimits(
-        orderedSites,
-        quota.bucketLimits,
-        (site) => qualityGradeByKey.get(site.key) || 'untestable',
-      );
-    }
     // 轻量启动要等远程 JAR 已落到本部署缓存后再下发，避免客户端逐个等待
     // 慢速上游；完整启动模式不做这层裁剪。客户端插件 type=3 源始终保留，
     // 因为它们在客户端登录后可直接使用。/config-full.json 始终保留完整配置。
@@ -822,8 +933,9 @@ export function createApp(deps: AppDeps): Hono {
 
     return JSON.stringify(parsed);
   }
-  // 完整配置仍要排除质量分级里的超时/不可用源，保证 /config-full.json
-  // 不会把客户端不可用的搜索源重新带回来。
+  // 完整配置保留非搜索扩展等功能性内容，但搜索源仍必须经过统一质量
+  // 分发边界；applySourceDistribution 会排除不在质量候选池中的 searchable
+  // 源，untestable 也只有鉴权策略显式允许时才会进入输出。
   async function filterExcludedQualitySites(cached: string): Promise<string> {
     let quota: SearchQuotaConfig;
     try {
@@ -832,17 +944,18 @@ export function createApp(deps: AppDeps): Hono {
       return cached;
     }
 
-    const excluded = new Set<string>(
+    const blocked = new Set<string>(
       (quota.blockedKeys || []).filter((key): key is string => typeof key === 'string')
     );
+    const qualityExcluded = new Set<string>();
     try {
       const pool = await loadQualityPool(storage);
-      for (const key of excludedQualityKeys(pool)) excluded.add(key);
+      for (const key of excludedQualityKeys(pool)) qualityExcluded.add(key);
     } catch {
       // 显式屏蔽仍然生效，质量池缺失不应导致屏蔽失效。
     }
 
-    if (excluded.size === 0) return cached;
+    if (blocked.size === 0 && qualityExcluded.size === 0) return cached;
 
     let parsed: TVBoxConfig;
     try {
@@ -851,7 +964,13 @@ export function createApp(deps: AppDeps): Hono {
       return cached;
     }
     if (!Array.isArray(parsed.sites)) return cached;
-    parsed.sites = parsed.sites.filter((site) => !excluded.has(site.key));
+    parsed.sites = parsed.sites.filter((site) => {
+      if (blocked.has(site.key)) return false;
+      // A non-searchable JAR/plugin is a functional extension, not a search
+      // candidate. Keep it in /config-full.json even when its quality pool
+      // entry is untestable or stale; searchable entries are still removed.
+      return site.searchable !== 1 || !qualityExcluded.has(site.key);
+    });
     return JSON.stringify(parsed);
   }
 
@@ -887,7 +1006,7 @@ export function createApp(deps: AppDeps): Hono {
     }
 
     cached = await repairCfSeparatedLives(cached);
-    cached = await buildStartupConfig(cached);
+    cached = await buildStartupConfig(cached, ctx.authCode);
     cached = await applyClientContextToConfigBody(cached, ctx);
 
     return configBody(cached, {
@@ -1160,7 +1279,7 @@ export function createApp(deps: AppDeps): Hono {
       return c.json({ error: 'No config available yet.' }, 503);
     }
     cached = await repairCfSeparatedLives(cached);
-    cached = await buildStartupConfig(cached);
+    cached = await buildStartupConfig(cached, ctx.authCode);
     cached = await applyClientContextToConfigBody(cached, ctx);
     return configBody(cached, {
       'Content-Type': 'application/json; charset=utf-8',
@@ -1172,8 +1291,8 @@ export function createApp(deps: AppDeps): Hono {
   app.get('/index.json', handleIndexConfig);
   app.get('/auth/:code/index.json', handleIndexConfig);
 
-  // 完整配置入口：不受轻量启动模式影响，始终返回最终聚合结果。
-  // 仍然排除质量分级中的“超时/不可用”源，避免客户端拿到不可用搜索源。
+  // 完整配置入口：不受轻量启动模式影响，始终返回功能完整但质量受控的
+  // 聚合结果。它不会把质量池之外的 searchable 源重新带回客户端。
   const handleFullConfig = async (c: any) => {
     let stage = 'base-url';
     try {
@@ -1772,6 +1891,8 @@ export function createApp(deps: AppDeps): Hono {
       parserLimit: parseLimit,
       candidatePool: snapshot?.total ?? null,
       usablePool: snapshot?.grades?.poolTotal ?? null,
+      serverVerifiedPool: snapshot?.grades?.serverVerifiedTotal ?? null,
+      clientFallbackPool: snapshot?.grades?.clientFallbackTotal ?? null,
       testable: snapshot?.coverage?.testable ?? null,
       probed: snapshot?.coverage?.probed ?? null,
       notProbed: snapshot?.coverage?.notProbed ?? null,

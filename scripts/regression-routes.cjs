@@ -61,6 +61,13 @@ const mergedConfig = {
       ext: '{"site":"https://source.example/site"}',
     },
     {
+      key: 'source-client-fallback',
+      name: '客户端后备源',
+      type: 3,
+      api: 'csp_ClientFallback',
+      searchable: 1,
+    },
+    {
       key: 'source-quick-only',
       name: '仅快速搜索标记',
       type: 1,
@@ -73,6 +80,20 @@ const mergedConfig = {
       name: '自定义类型源',
       type: 9,
       api: 'https://source.example/custom-type',
+      searchable: 1,
+    },
+    {
+      key: 'source-xml-good',
+      name: '次优 XML 源',
+      type: 0,
+      api: 'https://source.example/xml-good',
+      searchable: 1,
+    },
+    {
+      key: 'source-timeout',
+      name: '超时源',
+      type: 1,
+      api: 'https://source.example/timeout',
       searchable: 1,
     },
   ],
@@ -90,7 +111,10 @@ const qualityPool = {
     { key: 'source-excellent', name: '优秀源', grade: 'excellent', speedMs: 100, result: 'ok', consecutiveFailures: 0 },
     { key: 'source-good', name: '良好源', grade: 'good', speedMs: 2000, result: 'ok', consecutiveFailures: 0 },
     { key: 'source-plugin', name: '插件源', grade: 'untestable', speedMs: null, result: 'not_probed', consecutiveFailures: 0 },
+    { key: 'source-client-fallback', name: '客户端后备源', grade: 'untestable', speedMs: null, result: 'not_probed', consecutiveFailures: 0 },
     { key: 'source-custom-type', name: '自定义类型源', grade: 'good', speedMs: 1500, result: 'ok', consecutiveFailures: 0 },
+    { key: 'source-xml-good', name: '次优 XML 源', grade: 'good', speedMs: 2500, result: 'ok', consecutiveFailures: 0 },
+    { key: 'source-timeout', name: '超时源', grade: 'timeout', speedMs: null, result: 'timeout', consecutiveFailures: 1 },
   ],
 };
 
@@ -130,9 +154,10 @@ const distribution = {
 
 function makeApp(overrides = {}) {
   const storage = new MemoryStorage({
-    merged_config: JSON.stringify(mergedConfig),
-    search_quality_pool: JSON.stringify(qualityPool),
+    merged_config: JSON.stringify(overrides.mergedConfig || mergedConfig),
+    search_quality_pool: JSON.stringify(overrides.qualityPool || qualityPool),
     client_auth_distribution: JSON.stringify(overrides.distribution || distribution),
+    ...(overrides.quota ? { search_quota: JSON.stringify(overrides.quota) } : {}),
   });
   const config = {
     adminToken: 'test-token',
@@ -161,6 +186,52 @@ async function readSites(response) {
     const { app } = makeApp();
     const sites = await readSites(await app.request('https://box.example/'));
     assert(sites.length >= 2, 'root link should receive enabled startup sites when requireAuth is false');
+    const keys = sites.map((site) => site.key);
+    assert(keys.includes('source-client-fallback'), 'root link should include a bounded client-runtime fallback');
+    assert(!keys.includes('source-timeout'), 'root link must never distribute timeout sources');
+    assert(keys.indexOf('source-excellent') < keys.indexOf('source-good'), 'root link must preserve the quality-pool order');
+  }
+
+  {
+    const quota = {
+      maxSearchable: 0,
+      maxQuickSearch: 20,
+      maxStartupQuickSearch: 20,
+      maxParses: 3,
+      bucketLimits: { type: { xml: 1 }, quality: { untestable: 1 } },
+      pinnedKeys: ['source-xml-good', 'source-client-fallback'],
+      sortBySpeed: true,
+      leanStartup: false,
+      startupMode: 'full',
+      quotaSchemaVersion: 8,
+    };
+    const { app } = makeApp({ quota });
+    const sites = await readSites(await app.request('https://box.example/'));
+    const keys = sites.map((site) => site.key);
+    assert(keys.includes('source-client-fallback'), 'explicit untestable quota should allow a bounded client fallback');
+    assert(!keys.includes('source-xml-good'), 'lower-quality pinned source must not consume the XML Top-N slot');
+    assert(keys.includes('source-excellent'), 'XML Top-N must keep the best XML source');
+    assert(keys.indexOf('source-client-fallback') < keys.indexOf('source-excellent'), 'pinning should reorder only after bucket selection');
+  }
+
+  {
+    const mergedWithUnranked = {
+      ...mergedConfig,
+      sites: [...mergedConfig.sites, {
+        key: 'source-outside-pool',
+        name: '质量池外源',
+        type: 1,
+        api: 'https://source.example/outside-pool',
+        searchable: 1,
+      }],
+    };
+    const { app } = makeApp({ mergedConfig: mergedWithUnranked });
+    const sites = await readSites(await app.request('https://box.example/config-full.json'));
+    const keys = sites.map((site) => site.key);
+    assert(!keys.includes('source-outside-pool'), 'full config must not restore searchable sources outside the quality pool');
+    assert(!keys.includes('source-timeout'), 'full config must not restore timeout sources');
+    assert(keys.includes('source-client-fallback'), 'full config should keep the default bounded client-runtime fallback');
+    assert(keys.includes('source-plugin'), 'full config may keep non-searchable functional extensions');
   }
 
   {
@@ -237,7 +308,117 @@ async function readSites(response) {
     assert(a.length === 1 && a[0].key === 'source-excellent', 'code-a should receive only excellent sites');
 
     const b = await readSites(await app.request('https://box.example/auth/code-b/'));
-    assert(b.length === 1 && b[0].key === 'source-plugin', 'code-b should receive only type 3 sites');
+    assert(b.some((site) => site.key === 'source-plugin'), 'code-b should retain non-searchable type 3 plugins');
+    assert(b.some((site) => site.key === 'source-client-fallback'), 'code-b should retain searchable client-runtime sources');
+  }
+
+  {
+    const controlledFallback = {
+      requireAuth: false,
+      authCodes: [{
+        id: 'auth-controlled-fallback',
+        label: '受控客户端后备',
+        code: 'controlled-fallback',
+        enabled: true,
+        sourceMode: 'search',
+        maxSites: -1,
+        maxSearchable: -1,
+        bucketLimits: { quality: { excellent: -1, good: -1, usable: -1, untestable: 1 } },
+        selectedKeys: [],
+        pinnedKeys: ['source-client-fallback'],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }],
+    };
+    const { app } = makeApp({ distribution: controlledFallback });
+    const sites = await readSites(await app.request('https://box.example/auth/controlled-fallback/'));
+    const fallbackCount = sites.filter((site) => site.key === 'source-client-fallback').length;
+    assert(fallbackCount === 1, 'explicit untestable policy should include at most the configured count: ' + sites.map((site) => site.key).join(','));
+    assert(!sites.some((site) => site.key === 'source-timeout'), 'timeout sources must remain excluded under fallback policy');
+  }
+
+  {
+    const fallbackSites = Array.from({ length: 6 }, (_, index) => ({
+      key: 'source-extra-fallback-' + (index + 1),
+      name: 'Client fallback ' + (index + 1),
+      type: 3,
+      api: 'csp_ClientFallback' + (index + 1),
+      searchable: 1,
+    }));
+    const fallbackEntries = fallbackSites.map((site) => ({
+      key: site.key,
+      name: site.name,
+      grade: 'untestable',
+      speedMs: null,
+      result: 'not_probed',
+      consecutiveFailures: 0,
+    }));
+    const expandedMergedConfig = {
+      ...mergedConfig,
+      sites: [...mergedConfig.sites, ...fallbackSites],
+    };
+    const expandedQualityPool = {
+      ...qualityPool,
+      entries: [...qualityPool.entries, ...fallbackEntries],
+    };
+
+    const { app: defaultApp } = makeApp({
+      mergedConfig: expandedMergedConfig,
+      qualityPool: expandedQualityPool,
+    });
+    const defaultSites = await readSites(await defaultApp.request('https://box.example/'));
+    const defaultFallbacks = defaultSites.filter((site) => site.key.startsWith('source-extra-fallback-'));
+    const allDefaultFallbacks = defaultSites.filter((site) => site.key === 'source-client-fallback' || site.key.startsWith('source-extra-fallback-'));
+    assert(defaultFallbacks.length === 3 && allDefaultFallbacks.length === 4,
+      'default distribution must cap untestable searchable JARs at four: ' + allDefaultFallbacks.map((site) => site.key).join(','));
+    assert(defaultSites.findIndex((site) => site.key === 'source-excellent')
+      < defaultSites.findIndex((site) => site.key === defaultFallbacks[0].key),
+    'server-verified sources must precede client-runtime fallbacks');
+
+    const explicitZero = {
+      requireAuth: false,
+      authCodes: [{
+        id: 'auth-no-fallback',
+        label: 'No fallback',
+        code: 'no-fallback',
+        enabled: true,
+        sourceMode: 'search',
+        maxSites: -1,
+        maxSearchable: -1,
+        bucketLimits: { quality: { untestable: 0 } },
+        selectedKeys: [],
+        pinnedKeys: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }],
+    };
+    const { app: zeroApp } = makeApp({
+      mergedConfig: expandedMergedConfig,
+      qualityPool: expandedQualityPool,
+      distribution: explicitZero,
+    });
+    const zeroSites = await readSites(await zeroApp.request('https://box.example/auth/no-fallback/'));
+    assert(!zeroSites.some((site) => site.key.startsWith('source-extra-fallback-')),
+      'explicit untestable=0 must exclude every client-runtime fallback');
+
+    const explicitAll = {
+      ...explicitZero,
+      authCodes: [{
+        ...explicitZero.authCodes[0],
+        id: 'auth-all-fallback',
+        code: 'all-fallback',
+        label: 'All fallback',
+        bucketLimits: { quality: { untestable: -1 } },
+      }],
+    };
+    const { app: allApp } = makeApp({
+      mergedConfig: expandedMergedConfig,
+      qualityPool: expandedQualityPool,
+      distribution: explicitAll,
+    });
+    const allSites = await readSites(await allApp.request('https://box.example/auth/all-fallback/'));
+    assert(allSites.filter((site) => site.key.startsWith('source-extra-fallback-')).length === 6,
+      'explicit untestable=-1 must include every client-runtime fallback');
   }
 
   {
@@ -261,7 +442,7 @@ async function readSites(response) {
     const { app } = makeApp({ distribution: searchModeDistribution });
     const searchable = await readSites(await app.request('https://box.example/auth/search-only/'));
     const keys = searchable.map((site) => site.key).sort().join(',');
-    assert(keys === 'source-custom-type,source-excellent,source-good', 'search mode should include only searchable sites, got ' + keys);
+    assert(keys === 'source-client-fallback,source-custom-type,source-excellent,source-good,source-xml-good', 'search mode should include only searchable sites, got ' + keys);
   }
 
   {

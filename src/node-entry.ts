@@ -437,6 +437,14 @@ async function main() {
         });
       }
 
+      let globalSpider: string | undefined;
+      const mergedConfigRaw = await storage.get(KV_MERGED_CONFIG);
+      if (mergedConfigRaw) {
+        try {
+          const mergedConfig = JSON.parse(mergedConfigRaw) as { spider?: unknown };
+          if (typeof mergedConfig.spider === 'string') globalSpider = mergedConfig.spider;
+        } catch { /* keep undefined */ }
+      }
       let result = await runQualityGradingChunk(
         storage,
         allSites,
@@ -444,6 +452,7 @@ async function main() {
         DEFAULT_QUALITY_PROBE_CHUNK_SIZE,
         mode,
         config.qualityTimezone,
+        globalSpider,
       );
       cursor = result.cursor;
       let processed = cursor;
@@ -464,6 +473,7 @@ async function main() {
           DEFAULT_QUALITY_PROBE_CHUNK_SIZE,
           result.mode,
           config.qualityTimezone,
+          globalSpider,
         );
         cursor = result.cursor;
         processed = cursor;

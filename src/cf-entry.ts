@@ -4,7 +4,7 @@ import { createApp } from './routes';
 import { KVStorage } from './storage/kv';
 import { runAggregation } from './aggregator';
 import { probeLiveUrlsBounded } from './core/channel-probe';
-import { DEFAULT_SPEED_TIMEOUT_MS, DEFAULT_SITE_TIMEOUT_MS, DEFAULT_FETCH_TIMEOUT_MS, DEFAULT_SPEED_TEST_CONCURRENCY, DEFAULT_SPEED_TEST_BUDGET_MS, KV_CRON_INTERVAL, KV_LAST_UPDATE, KV_AGGREGATION_STATUS, DEFAULT_CRON_INTERVAL } from './core/config';
+import { DEFAULT_SPEED_TIMEOUT_MS, DEFAULT_SITE_TIMEOUT_MS, DEFAULT_FETCH_TIMEOUT_MS, DEFAULT_SPEED_TEST_CONCURRENCY, DEFAULT_SPEED_TEST_BUDGET_MS, KV_CRON_INTERVAL, KV_LAST_UPDATE, KV_AGGREGATION_STATUS, KV_MERGED_CONFIG, DEFAULT_CRON_INTERVAL } from './core/config';
 import { currentAggregationPhase } from './core/logger';
 import {
   beginQualityRun,
@@ -209,7 +209,15 @@ async function runQualityChunkWithStatus(storage: KVStorage, requestedMode?: Sea
     status = await beginQualityRun(storage, sites.length, QUALITY_CHUNK_SIZE, mode);
   }
   await updateQualityStatus(storage, { state: 'running', mode, cursor, batchSize: QUALITY_CHUNK_SIZE });
-  const result = await runQualityGradingChunk(storage, sites, cursor, QUALITY_CHUNK_SIZE, mode, timezone);
+  let globalSpider: string | undefined;
+  const mergedConfigRaw = await storage.get(KV_MERGED_CONFIG);
+  if (mergedConfigRaw) {
+    try {
+      const mergedConfig = JSON.parse(mergedConfigRaw) as { spider?: unknown };
+      if (typeof mergedConfig.spider === 'string') globalSpider = mergedConfig.spider;
+    } catch { /* keep undefined */ }
+  }
+  const result = await runQualityGradingChunk(storage, sites, cursor, QUALITY_CHUNK_SIZE, mode, timezone, globalSpider);
   const targetTotal = result.targetTotal || sites.length;
   const processed = result.done ? targetTotal : Math.max(status.processed || 0, result.cursor);
   if (result.done) {

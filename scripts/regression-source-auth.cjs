@@ -154,6 +154,30 @@ assert(threeState.authCodes[0].bucketLimits.type.js === 7, 'JS bucket must be pr
   assert(persisted.has('search_quality_candidates'), 'quality grading must persist candidate sites');
   const snapshot = JSON.parse(persisted.get('search_quality_pool'));
   assert(snapshot.entries[0].key === 'quality-key', 'persisted quality pool must contain graded site');
+  assert(snapshot.entries[0].qualityScore > 900, 'fresh graded entries must use the unified score calculator');
+  assert(snapshot.grades.serverVerifiedTotal === 1, 'server-verified count should include excellent/good/usable only');
+  assert(snapshot.grades.clientFallbackTotal === 0, 'server-verifiable test must not create a client fallback');
+
+  const legacyStorage = {
+    async get(key) {
+      if (key !== 'search_quality_pool') return null;
+      return JSON.stringify({
+        updatedAt: new Date().toISOString(),
+        total: 2,
+        entries: [
+          { key: 'legacy-untestable', name: '旧客户端源', grade: 'credential-ready', speedMs: null, result: 'not_probed', consecutiveFailures: 0 },
+          { key: 'legacy-good', name: '旧优质源', grade: 'good', speedMs: 1200, result: 'ok', consecutiveFailures: 0 },
+        ],
+      });
+    },
+    async put() {},
+  };
+  const { loadQualitySnapshot } = require(path.join(outDir, 'quality.cjs'));
+  const legacy = await loadQualitySnapshot(legacyStorage);
+  assert(legacy.grades.poolTotal === 2, 'legacy snapshots must rebuild the complete quality pool count');
+  assert(legacy.grades.serverVerifiedTotal === 1, 'legacy snapshots must classify verified grades');
+  assert(legacy.grades.clientFallbackTotal === 1, 'legacy credential-ready grade must migrate to client fallback');
+  assert(legacy.entries[0].key === 'legacy-good', 'legacy snapshots must be deterministically re-sorted');
   console.log('regression: source merge and client auth policy checks passed');
 })().catch((error) => {
   console.error(error && error.stack ? error.stack : error);

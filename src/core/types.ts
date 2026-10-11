@@ -325,7 +325,9 @@ export interface SiteQualityGrades {
   untestable: SiteQualityGradeBucket; // 无法由服务端直接探测（如客户端 JAR/网盘登录源）
   timeout: SiteQualityGradeBucket;   // 超时：>6000ms、无结果或未完成探测
   unusable: SiteQualityGradeBucket;  // 不可用：连续失败/明确错误
-  poolTotal: number;                 // 可下发候选池总数（优/良/可用/不可测试）
+  poolTotal: number;                 // 质量池总数（服务端验证 + 客户端后备）
+  serverVerifiedTotal: number;      // excellent/good/usable，可默认下发
+  clientFallbackTotal: number;      // untestable，只有显式策略才下发
 }
 // 搜索源质量分级快照
 export interface SearchQualityEntry {
@@ -344,6 +346,12 @@ export interface SearchQualityEntry {
   jarMd5Verified?: boolean;
   jarZipValid?: boolean;
   jarCached?: boolean;
+  /** 0-1000 unified ranking score; higher is better. */
+  qualityScore?: number;
+  /** Confidence of the server-side assessment, 0-1. */
+  qualityConfidence?: number;
+  /** Source category captured at grading time for stable per-category selection. */
+  category?: SourceCategory;
 }
 
 export interface SearchQualityThresholds {
