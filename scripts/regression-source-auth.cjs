@@ -172,6 +172,32 @@ assert(threeState.authCodes[0].bucketLimits.type.js === 7, 'JS bucket must be pr
     },
     async put() {},
   };
+  bundle('src/core/speedtest.ts', 'speedtest.cjs', 'true');
+  const { isSiteProbeable } = require(path.join(outDir, 'speedtest.cjs'));
+  assert(!isSiteProbeable({ key: 'js-http', type: 3, api: 'https://example.com/api', searchable: 1 }), 'type=3 HTTP runtime sources must not be treated as server-probeable');
+  assert(isSiteProbeable({ key: 'json-http', type: 1, api: 'https://example.com/api', searchable: 1 }), 'type=1 HTTP API sources should remain server-probeable');
+
+  const originalFetch = global.fetch;
+  global.fetch = async () => { throw new Error('temporary upstream failure'); };
+  const softJarData = new Map();
+  const softJarStorage = {
+    async get(key) { return softJarData.has(key) ? softJarData.get(key) : null; },
+    async put(key, value) { softJarData.set(key, String(value)); },
+  };
+  await runQualityGrading(softJarStorage, [{ key: 'soft-jar', name: '临时不可探测 JAR', type: 3, api: 'csp_Soft', jar: 'https://jar.example/soft.jar', searchable: 1 }], { mode: 'full', markRun: false });
+  const softJarSnapshot = JSON.parse(softJarData.get('search_quality_pool'));
+  assert(softJarSnapshot.entries[0].grade === 'untestable', 'temporary server-side JAR probe failure must remain client-verifiable');
+  global.fetch = async () => new Response('gone', { status: 503 });
+  const hardJarData = new Map();
+  const hardJarStorage = {
+    async get(key) { return hardJarData.has(key) ? hardJarData.get(key) : null; },
+    async put(key, value) { hardJarData.set(key, String(value)); },
+  };
+  await runQualityGrading(hardJarStorage, [{ key: 'hard-jar', name: '明确拒绝 JAR', type: 3, api: 'csp_Hard', jar: 'https://jar.example/hard.jar', searchable: 1 }], { mode: 'full', markRun: false });
+  const hardJarSnapshot = JSON.parse(hardJarData.get('search_quality_pool'));
+  assert(hardJarSnapshot.entries[0].grade === 'unusable', 'explicit HTTP rejection should mark a client JAR unusable');
+  global.fetch = originalFetch;
+
   const { loadQualitySnapshot } = require(path.join(outDir, 'quality.cjs'));
   const legacy = await loadQualitySnapshot(legacyStorage);
   assert(legacy.grades.poolTotal === 2, 'legacy snapshots must rebuild the complete quality pool count');

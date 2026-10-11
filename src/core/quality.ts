@@ -578,6 +578,15 @@ export async function runQualityGrading(
   return snapshot;
 }
 
+function isHardJarProbeFailure(probe: JarProbeResult): boolean {
+  // 网络超时、Render 到上游的临时失败，只说明本次服务端无法完成预检，
+  // 不能推断客户端也无法下载/执行。只有明确的 HTTP 拒绝、ZIP 损坏或
+  // 声明 MD5 不匹配，才足以把“客户端 JAR”标成 unusable。
+  return (typeof probe.httpStatus === 'number' && probe.httpStatus >= 400)
+    || probe.zipValid === false
+    || probe.md5Verified === false;
+}
+
 function buildQualityEntries(
   searchable: TVBoxSite[],
   probeMap: Map<string, SiteProbeResult>,
@@ -604,11 +613,15 @@ function buildQualityEntries(
       const jarProbe = jarProbeMap.get(site.key);
       if (jarProbe) {
         entry.jarProbeResult = jarProbe.result;
-        if (jarProbe.result !== 'ok') {
-          entry.grade = 'unusable';
-          entry.qualityConfidence = 0.9;
-        } else {
+        if (jarProbe.result === 'ok') {
           entry.qualityConfidence = 0.55;
+        } else if (isHardJarProbeFailure(jarProbe)) {
+          // 明确损坏/拒绝的 JAR 才进入 unusable；服务端网络失败仍是
+          // 客户端可验证的 untestable 后备源。
+          entry.grade = 'unusable';
+          entry.qualityConfidence = 0.75;
+        } else {
+          entry.qualityConfidence = 0.2;
         }
       }
       const result = applyJarProbeToEntry(entry, jarProbe);
@@ -651,9 +664,11 @@ function buildQualityEntries(
     if (jarProbe) entry.jarProbeResult = jarProbe.result;
     const result = isRemoteJarSite(site, globalSpider) ? applyJarProbeToEntry(entry, jarProbe) : entry;
     result.qualityConfidence = result.grade === 'unusable' ? 0 : (result.result === 'ok' ? 0.9 : 0.35);
+    // JAR 元数据预检是附加证据，不应覆盖 API 本身的搜索质量。
+    // 特别是 Render/CF 无法访问 JAR 时，客户端仍可能因网络出口、
+    // Header 或缓存不同而正常执行；这里保留原 grade，仅降低置信度。
     if (result.jarProbeResult && result.jarProbeResult !== 'ok') {
-      result.grade = 'unusable';
-      result.qualityConfidence = 0.9;
+      result.qualityConfidence = Math.min(result.qualityConfidence, 0.35);
     }
     result.qualityScore = result.grade === 'unusable' ? 0 : calculateQualityScore(result);
     return result;

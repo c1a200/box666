@@ -231,8 +231,17 @@ export async function batchSiteSpeedTest(
   return probeMap;
 }
 
-/** 是否具备可执行的站点探测条件。type=3 的本地 JS 扩展没有可请求的 HTTP API。 */
+/**
+ * 是否具备可靠的服务端站点探测条件。
+ *
+ * type=3 是客户端插件/JS 运行时，不等价于标准 HTTP API。即使 api
+ * 字段恰好是 http(s) 地址，客户端仍可能需要执行脚本、注入请求头、
+ * 登录态或 JAR 才能完成搜索；对它做普通 GET 会产生“接口很快但应用
+ * 实际不可用”的假阳性。因此 type=3 一律交给客户端验证，不能进入
+ * 服务端 excellent/good/usable 排名。
+ */
 export function isSiteProbeable(site: TVBoxSite): boolean {
+  if (site.type === 3) return false;
   return getTestableUrl(site) !== null;
 }
 
@@ -295,10 +304,10 @@ export function getTestableUrl(site: TVBoxSite): string | null {
     return api.includes('?') ? `${api}&ac=list` : `${api}?ac=list`;
   }
 
-  if (site.type === 3) {
-    if (api.startsWith('http://') || api.startsWith('https://')) return api;
-    return null;
-  }
+  // type=3 is a client runtime/plugin, not a standard HTTP API. A direct
+  // GET can be fast while the application still needs JS/JAR execution,
+  // headers or login state. Never use it as a server-side quality probe.
+  if (site.type === 3) return null;
 
   return null;
 }
