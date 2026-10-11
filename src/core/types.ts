@@ -267,7 +267,6 @@ export interface ClientDistributionConfig {
 
 // 搜索配额配置（持久化到 KV）
 export interface SearchQuotaConfig {
-  maxSearchable: number;        // 可搜索源上限，0 = 不限制
   maxQuickSearch?: number;      // 快速搜索源上限，0 = 不限制
   maxStartupQuickSearch?: number; // 根配置启动阶段快速搜索源上限，0 = 不额外裁剪
   startupSiteLimit?: number;      // 根配置启动源数量；0 = 使用启动快速源上限
@@ -288,12 +287,11 @@ export interface SearchQuotaReport {
   jsExcluded: number;           // JS 源排除数
   searchable: number;           // 最终可搜索数
   quickSearchable: number;      // 最终快速搜索数
-  maxSearchable: number;        // 当前配置的搜索源上限，0 = 不限制
   maxQuickSearch: number;       // 当前配置的快速搜索源上限，0 = 不限制
   autoLimit: boolean;           // 是否使用自动安全上限
   pinnedCount: number;          // 置顶源命中数
   blockedCount?: number;        // 显式屏蔽源数量
-  truncated: number;            // 被截断数（maxSearchable > 0 时）
+  truncated: number;            // 因全局源数量限制被截断数（当前固定为 0）
   quickTruncated: number;       // 快速搜索被截断数
   speedSorted: boolean;         // 是否实际按测速结果排序
   leanRemoved: number;          // 轻量启动剔除的远程扩展站点数

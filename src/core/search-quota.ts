@@ -60,7 +60,6 @@ function defaultParseLimit(): number {
 
 function createDefaultSearchQuota(): SearchQuotaConfig {
   return {
-    maxSearchable: defaultSearchLimit(),
     maxQuickSearch: defaultQuickSearchLimit(),
     maxStartupQuickSearch: defaultStartupQuickSearchLimit(),
     maxParses: defaultParseLimit(),
@@ -129,7 +128,7 @@ export async function loadSearchQuota(storage: Storage): Promise<SearchQuotaConf
   const raw = await storage.get(KV_SEARCH_QUOTA);
   if (raw) {
     try {
-      const parsed = JSON.parse(raw) as Partial<SearchQuotaConfig>;
+      const parsed = JSON.parse(raw) as Partial<SearchQuotaConfig> & { maxSearchable?: unknown };
       const fallback = createDefaultSearchQuota();
       const quotaVersion = parsed.quotaSchemaVersion ?? 1;
       const legacy = quotaVersion < QUOTA_SCHEMA_VERSION;
@@ -137,7 +136,6 @@ export async function loadSearchQuota(storage: Storage): Promise<SearchQuotaConf
       // Only the parser cap is a global runtime guard now. The legacy
       // searchable-source cap is ignored so old KV values cannot truncate the pool.
       return {
-        maxSearchable: 0,
         maxQuickSearch: fallback.maxQuickSearch,
         maxStartupQuickSearch: fallback.maxStartupQuickSearch,
         // Legacy startup-site values are intentionally ignored after schema 8:
@@ -166,7 +164,6 @@ export async function loadSearchQuota(storage: Storage): Promise<SearchQuotaConf
 export async function saveSearchQuota(storage: Storage, config: SearchQuotaConfig): Promise<void> {
   const fallback = createDefaultSearchQuota();
   await storage.put(KV_SEARCH_QUOTA, JSON.stringify({
-    maxSearchable: 0,
     // Automatic startup/quick-search guards are deployment-specific and are
     // never taken from stale form values.
     maxQuickSearch: fallback.maxQuickSearch,
@@ -370,7 +367,7 @@ export function applySearchQuota(
   config: SearchQuotaConfig,
   siteSourceMap: Map<string, string>,
   options: SearchQuotaApplyOptions = {},
-): { sites: TVBoxSite[]; candidateSites: TVBoxSite[]; quotaReport: SearchQuotaReport } {
+): { sites: TVBoxSite[]; qualityPoolSites: TVBoxSite[]; quotaReport: SearchQuotaReport } {
   const quickLimit = normalizeLimit(config.maxQuickSearch);
   const speedMap = options.speedMap;
   const totalSites = options.totalSites ?? sites.length;
@@ -527,13 +524,11 @@ export function applySearchQuota(
 
   return {
     sites,
-    candidateSites: labeledCandidates,
     quotaReport: {
       totalSites,
       jsExcluded: options.jsExcluded ?? 0,
       searchable,
       quickSearchable,
-      maxSearchable: 0,
       maxQuickSearch: quickLimit,
       autoLimit: config.autoLimit === true,
       pinnedCount,
@@ -543,6 +538,7 @@ export function applySearchQuota(
       leanRemoved,
       qualityGrades,
     },
+    qualityPoolSites: labeledCandidates,
   };
 }
 export interface ParseHealthReport {

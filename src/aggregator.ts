@@ -642,7 +642,7 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     const siteHealthMap: SiteHealthMap = await loadSiteHealthMap(storage);
     const qualityPool = await loadQualityPool(storage);
 
-    const { sites: quotaSites, candidateSites, quotaReport } = applySearchQuota(merged.sites, quotaConfig, siteSourceMap, {
+    const { sites: quotaSites, qualityPoolSites, quotaReport } = applySearchQuota(merged.sites, quotaConfig, siteSourceMap, {
       speedMap: siteSpeedMap,
       probeMap: siteProbeMap,
       healthMap: siteHealthMap,
@@ -650,18 +650,15 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     });
     merged.sites = quotaSites;
 
-    // 保存动态根配置候选池：已做健康/去重/归一化并按测速排序，但未按
-    // maxSearchable / maxQuickSearch 截断。根地址只读这份池，并按后台
+    // 保存动态质量池：已做健康/去重/归一化并按测速排序，但未按
+    // maxQuickSearch 截断。根地址只读这份池，并按后台
     // 启动源数量取前 N 个，不会反向修改最终配置或另一套部署的 KV。
     await storage.put(KV_STARTUP_SITE_POOL, JSON.stringify({
       updatedAt: new Date().toISOString(),
-      sites: publicSites(candidateSites),
+      sites: publicSites(qualityPoolSites),
     }));
 
     // autoLimit=false 时 0 表示明确不限制；开启时保存前必须满足最终不变量。
-    if (quotaConfig.autoLimit && quotaReport.maxSearchable > 0 && quotaReport.searchable > quotaReport.maxSearchable) {
-      throw new Error(`search quota invariant failed: searchable=${quotaReport.searchable} max=${quotaReport.maxSearchable}`);
-    }
     if (quotaConfig.autoLimit && quotaReport.maxQuickSearch > 0 && quotaReport.quickSearchable > quotaReport.maxQuickSearch) {
       throw new Error(`quick-search quota invariant failed: quickSearchable=${quotaReport.quickSearchable} max=${quotaReport.maxQuickSearch}`);
     }

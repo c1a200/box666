@@ -1682,8 +1682,6 @@ export function createApp(deps: AppDeps): Hono {
     try { body = await c.req.json(); } catch { return c.json({ error: 'Invalid JSON' }, 400); }
 
     const current = await loadSearchQuota(storage);
-    // 全局可搜索源上限已退役；旧客户端即使提交该字段也忽略，源数量由鉴权码控制。
-    current.maxSearchable = 0;
     // 快速搜索上限为 0 时明确不限制；字段缺失则保留当前值，避免管理页
     // 局部保存意外重置。旧版本自动写入的常量已由 loadSearchQuota 迁移。
 
@@ -1818,7 +1816,6 @@ export function createApp(deps: AppDeps): Hono {
         jsExcluded: 0,
         searchable,
         quickSearchable,
-        maxSearchable: quota.maxSearchable,
         maxQuickSearch: quota.maxQuickSearch,
         autoLimit: quota.autoLimit === true,
         pinnedCount: (quota.pinnedKeys || []).filter(key => searchableKeys.has(key)).length,
@@ -1975,10 +1972,6 @@ export function createApp(deps: AppDeps): Hono {
       probed: snapshot?.coverage?.probed ?? null,
       notProbed: snapshot?.coverage?.notProbed ?? null,
       untestable: snapshot?.coverage?.untestable ?? null,
-      // Keep the old names for older admin pages; new clients must use the
-      // explicit assessed/quality-pool names above.
-      candidatePool: snapshot?.total ?? null,
-      usablePool: snapshot?.grades?.poolTotal ?? null,
     };
 
     // 推荐解析器上限：客户端启动时会串行初始化解析器，保留 3 个已足够；
@@ -2072,7 +2065,7 @@ export function createApp(deps: AppDeps): Hono {
     try {
       const report = JSON.parse(raw) as Record<string, unknown>;
       const quota = await loadSearchQuota(storage);
-      return c.json({ enabled: true, ...report, maxSearchable: quota.maxSearchable, maxQuickSearch: quota.maxQuickSearch, startupSiteLimit: quota.startupSiteLimit ?? 0, maxParses: quota.maxParses, autoLimit: quota.autoLimit, blockedCount: (quota.blockedKeys || []).length });
+      return c.json({ enabled: true, ...report, maxQuickSearch: quota.maxQuickSearch, startupSiteLimit: quota.startupSiteLimit ?? 0, maxParses: quota.maxParses, autoLimit: quota.autoLimit, blockedCount: (quota.blockedKeys || []).length });
     } catch {
       return c.json({ enabled: false });
     }
@@ -3150,7 +3143,7 @@ export function createApp(deps: AppDeps): Hono {
 
     // 管理页需要看到“所有历史源”，包括被黑名单屏蔽的源，因此列表数据以
     // 黑名单过滤前的完整快照为主。候选资格、屏蔽状态和最终是否真实下发
-    // 分别通过 inFinal / blocked / candidate 字段计算，避免把完整快照的
+    // 分别通过 inFinal / blocked / inQualityPool 字段计算，避免把完整快照的
     // 源数量误当成最终下发数量。
     const full = await storage.get(KV_MERGED_CONFIG_FULL);
     const finalRaw = await storage.get(KV_MERGED_CONFIG);
@@ -3189,7 +3182,7 @@ export function createApp(deps: AppDeps): Hono {
       : new Set<string>();
     const finalKeys = new Set((finalParsed.sites || []).map(site => site.key));
 
-    const candidateReason = (site: TVBoxSite, blocked: boolean, inFinal: boolean): string => {
+    const qualityReason = (site: TVBoxSite, blocked: boolean, inFinal: boolean): string => {
       if (blocked) return 'blocked';
       const entry = qualityEntryMap.get(site.key);
       if (entry?.grade === 'timeout') return 'timeout';
@@ -3241,7 +3234,7 @@ export function createApp(deps: AppDeps): Hono {
       const isJs = sourceCategory === 'js';
       const isJar = sourceCategory === 'jar';
       const entry = qualityEntryMap.get(site.key);
-      const qualityPoolMember = inFinal && !blocked && site.searchable === 1 && qualityPoolKeySet.has(site.key);
+      const inQualityPool = inFinal && !blocked && site.searchable === 1 && qualityPoolKeySet.has(site.key);
       sites.push({
         ...site,
         fingerprint: fp,
@@ -3253,16 +3246,13 @@ export function createApp(deps: AppDeps): Hono {
         sourceCategory,
         isJs,
         isJar,
-        // `candidate` remains as a read-only compatibility alias. The public
-        // meaning is qualityPoolMember: the one ordered pool used for choice.
-        candidate: qualityPoolMember,
-        qualityPoolMember,
+        inQualityPool,
         qualityRank: qualityRank.get(site.key) ?? null,
         qualityScore: entry?.qualityScore ?? (entry ? qualityScoreForEntry(entry) : null),
         qualityConfidence: entry?.qualityConfidence ?? null,
         qualityGrade: entry?.grade ?? null,
         qualityUpdatedAt: qualityPool?.updatedAt ?? null,
-        candidateReason: qualityPoolMember ? undefined : candidateReason(site, blocked, inFinal),
+        qualityReason: inQualityPool ? undefined : qualityReason(site, blocked, inFinal),
       });
     }
 
@@ -3279,23 +3269,23 @@ export function createApp(deps: AppDeps): Hono {
     const siteByKey = new Map(sites.map(site => [site.key, site]));
     // Preserve the persisted quality order. This is the single source order
     // used by both simple total limits and per-category limits.
-    const currentCandidateKeys = (qualityPool?.entries || [])
-      .filter(entry => siteByKey.get(entry.key)?.qualityPoolMember === true)
+    const qualityPoolKeys = (qualityPool?.entries || [])
+      .filter(entry => siteByKey.get(entry.key)?.inQualityPool === true)
       .map(entry => entry.key);
     const searchableKeys = sites
       .filter(site => site.inFinal && !site.blocked && site.searchable === 1)
       .map(site => site.key);
-    const categoryCounts: Record<string, number> = {};
+    const searchableCategoryCounts: Record<string, number> = {};
     const qualityPoolCategoryCounts: Record<string, number> = {};
     for (const category of SEARCH_SOURCE_CATEGORIES) {
-      categoryCounts[category] = 0;
+      searchableCategoryCounts[category] = 0;
       qualityPoolCategoryCounts[category] = 0;
     }
     for (const site of sites) {
       if (!site.inFinal || site.blocked || site.searchable !== 1) continue;
       const category = site.sourceCategory || 'other';
-      categoryCounts[category] = (categoryCounts[category] || 0) + 1;
-      if (site.qualityPoolMember === true) qualityPoolCategoryCounts[category] = (qualityPoolCategoryCounts[category] || 0) + 1;
+      searchableCategoryCounts[category] = (searchableCategoryCounts[category] || 0) + 1;
+      if (site.inQualityPool === true) qualityPoolCategoryCounts[category] = (qualityPoolCategoryCounts[category] || 0) + 1;
     }
 
     return c.json({
@@ -3303,19 +3293,13 @@ export function createApp(deps: AppDeps): Hono {
       parses,
       lives,
       searchQuality: {
-        qualityPoolCount: currentCandidateKeys.length,
+        qualityPoolCount: qualityPoolKeys.length,
         searchableCount: searchableKeys.length,
         assessedSourceCount: qualityPool?.total ?? 0,
-        qualityPoolTotal: currentCandidateKeys.length,
-        qualitySnapshotTotal: qualityPool?.total ?? 0,
         qualityPoolHealth,
-        qualityPoolKeys: currentCandidateKeys,
+        qualityPoolKeys,
         qualityPoolCategoryCounts,
-        // Compatibility fields for older admin pages/scripts.
-        candidateKeys: currentCandidateKeys,
-        categoryCounts,
-        candidateCount: currentCandidateKeys.length,
-        candidateCategoryCounts: qualityPoolCategoryCounts,
+        searchableCategoryCounts,
       },
     });
   });
