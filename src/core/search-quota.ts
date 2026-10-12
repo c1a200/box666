@@ -239,11 +239,15 @@ export function excludeJsUrlSites(sites: TVBoxSite[]): { sites: TVBoxSite[]; jsE
 // 对已排序的源应用质量等级/站点类型分桶上限。
 // 未配置=不限制；0=该桶明确不选；正数=桶内保留前 N 个；-1=全选/不限制。
 // 置顶源不能绕过 0 的明确排除；正数上限中置顶源占用名额，不会突破上限。
+//
+// 类型分桶覆盖配置文件中的全部站点，包括不可搜索的 JAR/扩展。质量分桶
+// 仍只对可搜索源计数，因为不可搜索源没有可比较的搜索质量。这样“JAR=0”
+// 会真正移除 JAR 扩展，“JAR=N”会保留按当前顺序排列的前 N 个 JAR。
 export function applySiteBucketLimits(
   sites: TVBoxSite[],
   limits: SearchQuotaConfig['bucketLimits'] | ClientAuthCode['bucketLimits'],
   gradeForSite: (site: TVBoxSite) => SiteQualityGrade,
-  preserveNonSearchable = false,
+  options: { enforceTypeOnNonSearchable?: boolean } = {},
 ): TVBoxSite[] {
   if (!limits) return sites;
   const qualityLimits = limits.quality || {};
@@ -251,26 +255,37 @@ export function applySiteBucketLimits(
   const qualityCounts: Record<string, number> = {};
   const typeCounts: Record<string, number> = {};
   return sites.filter((site) => {
-    // Bucket limits control searchable-source distribution only. Functional
-    // extensions (for example a non-searchable JAR) must stay available for
-    // clients that need them and must not consume a search/type/grade slot.
-    if (preserveNonSearchable && site.searchable !== 1) return true;
-    const grade = gradeForSite(site);
-    const qualityLimit = qualityLimits[grade as keyof typeof qualityLimits];
-    if (qualityLimit === 0) return false;
-    if (typeof qualityLimit === 'number' && qualityLimit > 0) {
-      const count = qualityCounts[grade] || 0;
-      if (count >= qualityLimit) return false;
-    }
+    const searchable = site.searchable === 1;
     const typeKey = classifySearchSource(site);
     const typeLimit = typeLimits[typeKey];
-    if (typeLimit === 0) return false;
-    if (typeof typeLimit === 'number' && typeLimit > 0) {
-      const count = typeCounts[typeKey] || 0;
-      if (count >= typeLimit) return false;
+
+    // 可搜索源始终受类型限制；不可搜索扩展仅在调用方明确要求时纳入，
+    // 以保持聚合阶段内部使用的旧行为可控。
+    const typeControlled = searchable || options.enforceTypeOnNonSearchable === true;
+    if (typeControlled) {
+      if (typeLimit === 0) return false;
+      if (typeof typeLimit === 'number' && typeLimit > 0) {
+        const count = typeCounts[typeKey] || 0;
+        if (count >= typeLimit) return false;
+      }
     }
-    if (typeof qualityLimit === 'number' && qualityLimit > 0) qualityCounts[grade] = (qualityCounts[grade] || 0) + 1;
-    if (typeof typeLimit === 'number' && typeLimit > 0) typeCounts[typeKey] = (typeCounts[typeKey] || 0) + 1;
+
+    if (searchable) {
+      const grade = gradeForSite(site);
+      const qualityLimit = qualityLimits[grade as keyof typeof qualityLimits];
+      if (qualityLimit === 0) return false;
+      if (typeof qualityLimit === 'number' && qualityLimit > 0) {
+        const count = qualityCounts[grade] || 0;
+        if (count >= qualityLimit) return false;
+      }
+      if (typeof qualityLimit === 'number' && qualityLimit > 0) {
+        qualityCounts[grade] = (qualityCounts[grade] || 0) + 1;
+      }
+    }
+
+    if (typeControlled && typeof typeLimit === 'number' && typeLimit > 0) {
+      typeCounts[typeKey] = (typeCounts[typeKey] || 0) + 1;
+    }
     return true;
   });
 }
@@ -490,7 +505,7 @@ export function applySearchQuota(
   // Apply limits after the quality order is established, otherwise upstream
   // ordering can consume a category bucket before its best entries arrive.
   if (config.bucketLimits) {
-    orderedSites = applySiteBucketLimits(orderedSites, config.bucketLimits, gradeForSite, true);
+    orderedSites = applySiteBucketLimits(orderedSites, config.bucketLimits, gradeForSite, { enforceTypeOnNonSearchable: true });
   }
   // Pinning is an execution-order preference only. Apply it after bucket
   // selection so a pinned but lower-quality source cannot consume a Top-N slot.

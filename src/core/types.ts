@@ -249,7 +249,7 @@ export interface ClientAuthCode {
   enabled: boolean;
   sourceMode: SourceDistributionMode;
   selectionMode?: SourceSelectionMode;
-  /** Maximum number of searchable sources selected from the quality pool. */
+  /** 简单模式最终下发的站点总数上限，包含 JAR/扩展；0=不下发，-1=不限制。 */
   maxSites: number;
   bucketLimits?: SiteBucketLimits;
   includeGrades: SiteQualityGrade[];
@@ -281,6 +281,7 @@ export interface SearchQuotaConfig {
   maxParses?: number;           // 健康解析器上限，0 = 不限制
   bucketLimits?: SiteBucketLimits; // 根链接按质量等级/站点类型的数量上限
   selectionMode?: SourceSelectionMode;
+  /** 根链接简单模式最终下发的站点总数上限，包含 JAR/扩展；0=不下发，-1=不限制。 */
   maxSites?: number;
   blockedKeys?: string[];            // 显式屏蔽的源 key：优先于置顶/质量分级，仍保留在后台列表中以便恢复
   quotaSchemaVersion?: number;  // 自动配额迁移版本

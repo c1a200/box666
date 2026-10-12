@@ -97,6 +97,7 @@ const mergedConfig = {
       searchable: 1,
     },
   ],
+  spider: 'https://source.example/spider.jar',
   lives: [
     {
       name: '测试直播',
@@ -171,12 +172,16 @@ function makeApp(overrides = {}) {
   return { app, storage };
 }
 
-async function readSites(response) {
+async function readConfig(response) {
   assert(response.status === 200, 'expected 200, got ' + response.status);
   const body = await response.json();
   assert(Array.isArray(body.sites), 'response should contain sites');
   assert(!JSON.stringify(body).includes('__upstreamNames'), 'internal upstream marker must not leak');
-  return body.sites;
+  return body;
+}
+
+async function readSites(response) {
+  return (await readConfig(response)).sites;
 }
 
 (async () => {
@@ -267,10 +272,27 @@ async function readSites(response) {
       distribution: categoryDistribution,
       quota: { startupMode: 'full', leanStartup: false, selectionMode: 'category', bucketLimits: categoryLimits },
     }).app;
-    const categoryRoot = await readSites(await categoryApp.request('https://box.example/'));
-    const categoryAuth = await readSites(await categoryApp.request('https://box.example/auth/bulk-category/'));
-    assert(categoryRoot.map((site) => site.key).join(',') === categoryAuth.map((site) => site.key).join(','), 'matching category policies must select the same source set and order for root and auth');
-    assert(categoryAuth.some((site) => site.key === 'bulk-functional-plugin'), 'category limits must not remove non-searchable functional plugins from auth output');
+    const categoryRootConfig = await readConfig(await categoryApp.request('https://box.example/'));
+    const categoryAuthConfig = await readConfig(await categoryApp.request('https://box.example/auth/bulk-category/'));
+    assert(categoryRootConfig.sites.map((site) => site.key).join(',') === categoryAuthConfig.sites.map((site) => site.key).join(','), 'matching category policies must select the same source set and order for root and auth');
+    assert(!categoryAuthConfig.sites.some((site) => site.type === 3), 'JAR=0 must remove every type=3 site, including non-searchable plugins');
+    assert(!('spider' in categoryAuthConfig), 'JAR=0 must remove the global spider when no type=3 site remains');
+    const jarOneLimits = { type: { jar: 1 } };
+    const jarOneDistribution = {
+      ...allDistribution,
+      authCodes: [{ ...allDistribution.authCodes[0], id: 'auth-bulk-jar-one', code: 'bulk-jar-one', selectionMode: 'category', bucketLimits: jarOneLimits }],
+    };
+    const jarOneApp = makeApp({
+      mergedConfig: { sites: categorySites, lives: [], spider: 'https://source.example/spider.jar' },
+      qualityPool: { updatedAt: new Date().toISOString(), entries: categoryEntries },
+      distribution: jarOneDistribution,
+      quota: { startupMode: 'full', leanStartup: false, selectionMode: 'category', bucketLimits: jarOneLimits },
+    }).app;
+    const jarOneConfig = await readConfig(await jarOneApp.request('https://box.example/auth/bulk-jar-one/'));
+    const keptType3 = jarOneConfig.sites.filter((site) => site.type === 3);
+    assert(keptType3.length === 1, 'JAR=1 must retain exactly one type=3 site');
+    assert(keptType3[0].key === 'bulk-source-000', 'JAR=1 must retain the highest-ranked type=3 site');
+    assert(jarOneConfig.spider === 'https://source.example/spider.jar', 'a remaining type=3 site must keep the global spider for client compatibility');
   }
 
   {
@@ -569,9 +591,9 @@ async function readSites(response) {
     };
     const { app } = makeApp({ distribution: limitedDistribution });
     const limited = await readSites(await app.request('https://box.example/auth/limit-search/'));
-    assert(limited.filter((site) => site.searchable === 1).length === 1, 'maxSites should count actual searchable sites only');
-    assert(limited.filter((site) => site.searchable === 1).length === 1, 'maxSites must apply only to searchable sites');
-    assert(limited.some((site) => site.key === 'source-plugin'), 'maxSites should keep non-searchable sites');
+    assert(limited.length === 1, 'maxSites=1 must cap the total distributed site count including JAR/plugins');
+    assert(limited[0].searchable === 1, 'simple Top-1 must take the highest-ranked source available after filtering');
+    assert(!limited.some((site) => site.key === 'source-plugin'), 'simple maxSites must not silently append a non-searchable plugin beyond N');
   }
 
   {

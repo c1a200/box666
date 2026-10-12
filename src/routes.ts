@@ -589,27 +589,16 @@ export function createApp(deps: AppDeps): Hono {
       });
     }
 
-    // The quality pool intentionally contains searchable sources only. Keep
-    // functional, non-searchable extensions alongside that pool so a quality
-    // refresh cannot make client-side plugins disappear from startup config.
-    if (qualityEntries.size > 0) {
-      const functionalSites = sites.filter((site) => site.searchable !== 1);
-      const existingKeys = new Set(sites.map((site) => site.key));
-      sites = [
-        ...sites,
-        ...functionalSites.filter((site) => !existingKeys.has(site.key)),
-      ];
-    }
-
-
     // 分桶在质量排序之后执行，保证分类 Top-N 是该分类内的真实 Top-N。
+    // 类型分桶覆盖可搜索源和不可搜索 JAR/扩展，因此鉴权码明确选择
+    // “JAR 不选”或指定数量时，不会再被后续逻辑悄悄补回扩展源。
     if (selectionMode === 'category' && effectiveBucketLimits) {
       const gradeByKey = new Map((effectiveQualityPool?.entries || []).map((entry) => [entry.key, entry.grade]));
       sites = applySiteBucketLimits(
         sites,
         effectiveBucketLimits,
         (site) => gradeByKey.get(site.key) || 'untestable',
-        true,
+        { enforceTypeOnNonSearchable: true },
       );
     }
 
@@ -620,14 +609,9 @@ export function createApp(deps: AppDeps): Hono {
       ? Math.floor(policy.maxSites)
       : -1;
     if (selectionMode === 'simple' && maxSites >= 0) {
-      if (maxSites === 0) {
-        // “不下发”必须同时覆盖可搜索源和功能型非搜索源。
-        sites = [];
-      } else {
-        const searchableSites = sites.filter((site) => site.searchable === 1);
-        const functionalSites = sites.filter((site) => site.searchable !== 1);
-        sites = [...searchableSites.slice(0, maxSites), ...functionalSites];
-      }
+      // 简单模式从完整、已排序的可下发集合中取前 N。JAR/扩展也占用名额，
+      // 不能再把未选中的功能插件无上限追加回来。
+      sites = maxSites === 0 ? [] : sites.slice(0, maxSites);
     }
 
     // Pinning is an order preference only. Apply it after the quality,
@@ -650,6 +634,13 @@ export function createApp(deps: AppDeps): Hono {
       seenSiteKeys.add(site.key);
       return true;
     });
+    // TVBox 的 type=3 + csp_* 通常依赖全局 spider。当前项目无法安全地从整包
+    // JAR 中剥离未选类，因此 JAR 配额只精确控制 type=3 站点列表：
+    // 仍有 type=3 时保留原全局 spider 以兼容客户端；全部移除时才删除它，
+    // 避免客户端下载和初始化未使用的整包插件。
+    if (!parsed.sites.some((site) => site.type === 3)) {
+      delete parsed.spider;
+    }
     return JSON.stringify(parsed);
   }
 
@@ -838,27 +829,22 @@ export function createApp(deps: AppDeps): Hono {
     }
     let orderedSites: TVBoxSite[] = [];
     if (effectiveQualityPool && Array.isArray(effectiveQualityPool.entries) && effectiveQualityPool.entries.length > 0) {
+      // 质量池只包含可搜索源；先按质量池顺序恢复它们，再补入不能由服务端
+      // 测速、但可能承载 JAR/扩展功能的非搜索源。类型数量限制会在这份
+      // 完整有序列表之后执行，保证“不选/前 N”对扩展源同样有效。
       const restored: TVBoxSite[] = [];
+      const restoredKeys = new Set<string>();
       for (const entry of effectiveQualityPool.entries) {
         if (blockedKeys.has(entry.key)) continue;
         const site = siteByKey.get(entry.key);
-        if (!site) continue;
-        // Functional, non-searchable extensions are not part of the search
-        // quality pool. Keep them available for clients that need the JAR or
-        // plugin, while searchable sources must pass the same quality gate as
-        // authenticated distribution.
-        if (site.searchable === 1 && !distributableKeys.has(entry.key)) continue;
+        if (!site || site.searchable !== 1 || !distributableKeys.has(entry.key)) continue;
         restored.push(site);
+        restoredKeys.add(site.key);
       }
-      const functionalSites = allSites.filter((site) => site.searchable !== 1 && !blockedKeys.has(site.key));
-      const restoredKeys = new Set(restored.map((site) => site.key));
-      orderedSites = [
-        ...restored,
-        ...functionalSites.filter((site) => !restoredKeys.has(site.key)),
-      ];
+      const functionalSites = [...siteByKey.values()].filter((site) => site.searchable !== 1 && !blockedKeys.has(site.key) && !restoredKeys.has(site.key));
+      orderedSites = [...restored, ...functionalSites];
     } else {
-      // 质量池尚未生成/已过期时不另设隐式 24 源上限，也不能漏掉 JAR。
-      // 合并当前配置与完整候选快照并按 key 去重；之后有新质量快照再排序。
+      // 质量池尚未生成/已过期时不另设隐式上限，合并当前配置与候选快照并按 key 去重。
       const fallbackByKey = new Map<string, TVBoxSite>();
       for (const site of [...allSites, ...candidateSites]) {
         if (blockedKeys.has(site.key)) continue;
@@ -876,18 +862,12 @@ export function createApp(deps: AppDeps): Hono {
         orderedSites,
         distributionBucketLimits,
         (site) => qualityGradeByKey.get(site.key) || 'untestable',
-        true,
+        { enforceTypeOnNonSearchable: true },
       );
     }
     if (distributionSelectionMode === 'simple' && distributionMaxSites >= 0) {
-      if (distributionMaxSites === 0) {
-        // 根链接与鉴权码一致：0 表示不向客户端下发任何源。
-        orderedSites = [];
-      } else {
-        const searchable = orderedSites.filter((site) => site.searchable === 1);
-        const functional = orderedSites.filter((site) => site.searchable !== 1);
-        orderedSites = [...searchable.slice(0, distributionMaxSites), ...functional];
-      }
+      // 根链接与鉴权码一致：简单模式直接取完整有序列表前 N，0 表示不下发。
+      orderedSites = distributionMaxSites === 0 ? [] : orderedSites.slice(0, distributionMaxSites);
     }
     const pinnedOrder = new Map(
       (distributionPinnedKeys || []).map((key, index) => [key, index] as const),
@@ -954,12 +934,11 @@ export function createApp(deps: AppDeps): Hono {
     const maxParses = quota.maxParses ?? 0;
     parsed.parses = maxParses > 0 ? parses.slice(0, maxParses) : parses;
 
-    // 只有最终完全没有 type=3 源时才移除根 spider。type=3 站点可能
-    // 不写自己的 jar 字段而依赖全局 spider，不能仅凭 jar/ext 字段判断。
+    // 只有最终仍存在 type=3 源时才保留全局 spider；没有任何 JAR/扩展站点时，
+    // 必须移除，避免客户端下载与初始化未使用的整包插件。
     if (!parsed.sites.some((site) => site.type === 3)) {
       delete parsed.spider;
     }
-
     return JSON.stringify(parsed);
   }
   // 完整配置保留非搜索扩展等功能性内容，但搜索源仍必须经过统一质量
@@ -3298,13 +3277,19 @@ export function createApp(deps: AppDeps): Hono {
       .map(site => site.key);
     const searchableCategoryCounts: Record<string, number> = {};
     const qualityPoolCategoryCounts: Record<string, number> = {};
+    const distributableCategoryCounts: Record<string, number> = {};
     for (const category of SEARCH_SOURCE_CATEGORIES) {
       searchableCategoryCounts[category] = 0;
       qualityPoolCategoryCounts[category] = 0;
+      distributableCategoryCounts[category] = 0;
     }
     for (const site of sites) {
-      if (!site.inFinal || site.blocked || site.searchable !== 1) continue;
+      if (!site.inFinal || site.blocked) continue;
       const category = site.sourceCategory || 'other';
+      // 类型限制作用于全部可下发站点；JAR/扩展即使不可搜索也必须计入，
+      // 否则前端会显示 0 个可用，但服务端仍可能保留它们。
+      distributableCategoryCounts[category] = (distributableCategoryCounts[category] || 0) + 1;
+      if (site.searchable !== 1) continue;
       searchableCategoryCounts[category] = (searchableCategoryCounts[category] || 0) + 1;
       if (site.inQualityPool === true) qualityPoolCategoryCounts[category] = (qualityPoolCategoryCounts[category] || 0) + 1;
     }
@@ -3321,6 +3306,7 @@ export function createApp(deps: AppDeps): Hono {
         qualityPoolKeys,
         qualityPoolCategoryCounts,
         searchableCategoryCounts,
+        distributableCategoryCounts,
       },
     });
   });

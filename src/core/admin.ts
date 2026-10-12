@@ -480,7 +480,7 @@ ${sharedStyles}
       <div class="credential-help" data-i18n="rootSourceSelectionHint">简单方式按统一质量排序从前向后取源；精细方式按质量等级和源类型分别取各自排序靠前的源。两种方式互斥。</div>
       <div class="source-policy-summary">
         <span class="credential-pill" id="rootSourceSelectionSummary">全部 / 不限</span>
-        <button class="btn btn-sm" onclick="copyClientLink(window.location.origin + '/config.json')" data-i18n="credentialCopyRoot">复制根链接</button>
+        <button class="btn btn-sm" onclick="copyClientLink(window.location.origin + '/')" data-i18n="credentialCopyRoot">复制根链接</button>
         <button class="btn btn-sm" id="rootSourceSelectionToggle" onclick="toggleRootSourcePolicyDetails()" aria-expanded="false">设置源选择</button>
         <button class="btn btn-sm" onclick="saveSearchQuota('root')" data-i18n="save">保存根链接选择</button>
         <span class="status-text" id="rootSourceSelectionStatus" style="font-size:0.8rem"></span>
@@ -904,7 +904,7 @@ const translations = {
     credentialRootPolicyFree:'Root link enabled',
     credentialSelectedKeysRequired:'Custom source mode requires at least one selected key.',
     credentialBucketLimits:'Per-category limits',
-    credentialBucketLimitsHint:'Each label shows the independent usable count in the final quality pool. Custom accepts 1 to that count; when both a quality grade and a site type are limited, the intersection is served. Non-searchable function plugins do not occupy these category slots.',
+    credentialBucketLimitsHint:'Each label shows the final distributable count for that category, including non-searchable JAR/plugin entries. Custom accepts 1 to that count; when both a quality grade and a site type are limited, the intersection is served. Choosing “none” removes that type completely and it is never silently restored.',
     sourceBucketAvailableCount:'{count} available',
     sourceBucketNoAvailable:'No sources',
     credentialBucketAll:'All / no limit',
@@ -1057,7 +1057,7 @@ const translations = {
     credentialRootPolicyFree:'根链接已启用',
     credentialSelectedKeysRequired:'“自定义源标识白名单”模式至少需要填写一个源标识。',
     credentialBucketLimits:'分类源数量',
-    credentialBucketLimitsHint:'每个分类后的数字是最终质量池中该分类的独立可用数量；自定义范围为 1 到该数量。质量等级与站点类型同时设置时按交集下发；非搜索功能插件不占分类名额。未设置的项目默认全部下发，根链接与鉴权码规则一致。',
+    credentialBucketLimitsHint:'每个分类后的数字是该分类最终可下发数量，已包含不可搜索的 JAR/插件；自定义范围为 1 到该数量。质量等级与站点类型同时设置时按交集下发；选择“不选”会彻底移除该类型，系统不会补回未选中的插件。未设置的项目默认全部下发，根链接与鉴权码规则一致。',
     sourceBucketAvailableCount:'{count} 个可用',
     sourceBucketNoAvailable:'无可用源',
     credentialBucketAll:'全选 / 不限',
@@ -2222,11 +2222,14 @@ function sourceBucketAvailableCount(group, key) {
     }, 0);
   }
   if (group === 'type') {
-    const serverCount = sqQualityPoolCategoryCounts && typeof sqQualityPoolCategoryCounts[key] === 'number'
-      ? Math.floor(sqQualityPoolCategoryCounts[key])
+    // 类型限制作用于全部最终可下发站点（含不可搜索 JAR/插件），
+    // 不能使用只统计可搜索质量池的计数。
+    const serverCount = sqDistributableCategoryCounts && typeof sqDistributableCategoryCounts[key] === 'number'
+      ? Math.floor(sqDistributableCategoryCounts[key])
       : null;
     if (serverCount !== null && serverCount >= 0) return serverCount;
-    return sites.reduce(function(count, site) {
+    const finalSites = sites.filter(function(site) { return site.inFinal !== false && site.blocked !== true; });
+    return finalSites.reduce(function(count, site) {
       return count + (sourceCategoryOf(site) === key ? 1 : 0);
     }, 0);
   }
@@ -2495,6 +2498,9 @@ async function loadSearchQuotaReport() {
     const serverQualityPoolCounts = cfg.searchQuality && cfg.searchQuality.qualityPoolCategoryCounts
       ? cfg.searchQuality.qualityPoolCategoryCounts
       : {};
+    const serverDistributableCounts = cfg.searchQuality && cfg.searchQuality.distributableCategoryCounts
+      ? cfg.searchQuality.distributableCategoryCounts
+      : {};
     sqBlockedSites = allSites.filter(s => s.searchable === 1 && s.blocked === true);
     // qualityPoolKeys 是服务端的唯一质量池集合；空数组也必须尊重，不能回退为全部可搜索源。
     const qualityPoolKeys = new Set(rawQualityPoolKeys);
@@ -2506,6 +2512,9 @@ async function loadSearchQuotaReport() {
     sqQualityPoolCategoryCounts = typeof serverQualityPoolCounts === 'object' && serverQualityPoolCounts !== null
       ? serverQualityPoolCounts
       : countSearchCategories(sqAllSites);
+    sqDistributableCategoryCounts = typeof serverDistributableCounts === 'object' && serverDistributableCounts !== null
+      ? serverDistributableCounts
+      : countSearchCategories(allSites.filter(function(site) { return site.inFinal === true && site.blocked !== true; }));
     renderSearchSources();
     refreshSourceBucketControls();
   } catch {}
@@ -2777,6 +2786,7 @@ let sqBlockedSites = [];
 let sqQualityPoolCount = 0;
 let sqCategoryCounts = {};
 let sqQualityPoolCategoryCounts = {};
+let sqDistributableCategoryCounts = {};
 let sqSearchRenderPending = false;
 let sqLastRenderedHtml = '';
 const sqScrollPositions = {};
@@ -3097,8 +3107,8 @@ function renderSearchSources() {
   const noSearchFilter = !query && gradeFilter === 'all';
   const countFor = function(category, filteredItems) {
     if (!noSearchFilter) return filteredItems.length;
-    const serverCount = sqQualityPoolCategoryCounts && typeof sqQualityPoolCategoryCounts[category] === 'number'
-      ? sqQualityPoolCategoryCounts[category]
+    const serverCount = sqDistributableCategoryCounts && typeof sqDistributableCategoryCounts[category] === 'number'
+      ? sqDistributableCategoryCounts[category]
       : null;
     const localCount = filteredItems.length;
     return serverCount === null ? localCount : serverCount;

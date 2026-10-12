@@ -1,6 +1,6 @@
 {
   "name": "tvbox-source-aggregator",
-  "version": "3.3.8",
+  "version": "3.3.9",
   "private": true,
   "scripts": {
     "dev:cf": "wrangler dev",
@@ -15,7 +15,8 @@
     "release:minor": "bash scripts/release.sh minor",
     "release:major": "bash scripts/release.sh major",
     "check:admin": "node scripts/check-admin-inline-scripts.js",
-    "check:quality": "node scripts/regression-quality-pool.cjs"
+    "check:quality": "node scripts/regression-quality-pool.cjs",
+    "check:routes": "node scripts/regression-routes.cjs"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.0",
