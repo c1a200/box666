@@ -5,7 +5,7 @@ import { SOURCE_CATEGORIES } from './types';
 import { isSiteProbeable, type SiteProbeResult } from './speedtest';
 import type { Storage } from '../storage/interface';
 import { KV_SEARCH_QUOTA } from './config';
-const QUOTA_SCHEMA_VERSION = 8;
+const QUOTA_SCHEMA_VERSION = 9;
 
 export type SearchSourceCategory = SourceCategory;
 
@@ -137,8 +137,14 @@ export async function loadSearchQuota(storage: Storage): Promise<SearchQuotaConf
       const parsed = JSON.parse(raw) as Partial<SearchQuotaConfig> & { maxSearchable?: unknown };
       const fallback = createDefaultSearchQuota();
       const quotaVersion = parsed.quotaSchemaVersion ?? 1;
-      const legacy = quotaVersion < QUOTA_SCHEMA_VERSION;
+      const legacyParserSchema = quotaVersion < 8;
+      const legacyFallbackSchema = quotaVersion < 9;
       const bucketLimits = normalizeSiteBucketLimits(parsed.bucketLimits);
+      // Schema <= 8 used untestable:0 as an implicit client-fallback cap.
+      // Migrate that old default to unlimited; explicit schema 9 choices remain.
+      if (legacyFallbackSchema && bucketLimits?.quality?.untestable === 0) {
+        bucketLimits.quality.untestable = -1;
+      }
 
       // Only the parser cap is a global runtime guard now. The legacy
       // searchable-source cap is ignored so old KV values cannot truncate the pool.
@@ -148,7 +154,7 @@ export async function loadSearchQuota(storage: Storage): Promise<SearchQuotaConf
         // Legacy startup-site values are intentionally ignored after schema 8:
         // the root startup config is always derived from the automatic quick cap.
         startupSiteLimit: 0,
-        maxParses: legacy
+        maxParses: legacyParserSchema
           ? fallback.maxParses
           : normalizeLimit(parsed.maxParses),
         bucketLimits,
@@ -502,11 +508,11 @@ export function applySearchQuota(
   const orderedKeys = new Set(keptCandidates.map(site => site.key));
   const rest = sites.filter(site => !orderedKeys.has(site.key));
   let orderedSites = [...keptCandidates, ...rest];
-  // Apply limits after the quality order is established, otherwise upstream
-  // ordering can consume a category bucket before its best entries arrive.
-  if (config.bucketLimits) {
-    orderedSites = applySiteBucketLimits(orderedSites, config.bucketLimits, gradeForSite, { enforceTypeOnNonSearchable: true });
-  }
+  // Bucket limits are a serving policy, not a pool-membership rule. Applying
+  // them here would remove candidates before the root/auth distribution layer
+  // gets a chance to expose them, which is how untestable sources became
+  // invisible in CF. Keep the complete ordered candidate set; distribution
+  // applies the explicit policy at request time.
   // Pinning is an execution-order preference only. Apply it after bucket
   // selection so a pinned but lower-quality source cannot consume a Top-N slot.
   if (pinnedOrder.size > 0) {

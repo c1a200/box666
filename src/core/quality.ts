@@ -396,7 +396,7 @@ function buildGrades(entries: SearchQualitySnapshot['entries']): SiteQualityGrad
   for (const entry of entries) {
     const grade = normalizeGrade(entry.grade);
     grades[grade].count++;
-    if (grade !== 'timeout') {
+    if (grade !== 'timeout' && grade !== 'unusable') {
       grades.poolTotal++;
       if (grade === 'excellent' || grade === 'good' || grade === 'usable') grades.serverVerifiedTotal++;
       else if (grade === 'untestable') grades.clientFallbackTotal++;
@@ -576,11 +576,11 @@ export function distributableKeysFromPool(
   for (const entry of pool.entries) {
     if (options.eligibleKeys && !options.eligibleKeys.has(entry.key)) continue;
     const grade = normalizeGrade(entry.grade);
-    if (SERVER_VERIFIED_GRADES.has(grade) && qualityScoreForEntry(entry) > 0) {
+    if (SERVER_VERIFIED_GRADES.has(grade)) {
       keys.add(entry.key);
       continue;
     }
-    if (options.includeUntestable && grade === 'untestable' && qualityScoreForEntry(entry) > 0
+    if (options.includeUntestable && grade === 'untestable'
       && (maxUntestable < 0 || untestable < maxUntestable)) {
       keys.add(entry.key);
       untestable++;

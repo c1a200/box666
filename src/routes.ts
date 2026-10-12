@@ -482,6 +482,29 @@ export function createApp(deps: AppDeps): Hono {
    * 按当前鉴权码裁剪站点。根链接只做基础启动裁剪，不额外按鉴权码筛选；
    * 鉴权链接在启动裁剪之后再按鉴权码的等级、类型、数量和置顶规则裁剪。
    */
+  async function loadFullCandidateSites(): Promise<TVBoxSite[]> {
+    try {
+      const raw = await storage.get(KV_MERGED_CONFIG_FULL);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw) as TVBoxConfig;
+      return Array.isArray(parsed.sites) ? parsed.sites : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function mergeSiteObjects(primary: TVBoxSite[], fallback: TVBoxSite[]): TVBoxSite[] {
+    const merged = new Map<string, TVBoxSite>();
+    // Full snapshot first; the current/final config is newer and must win.
+    for (const site of fallback) {
+      if (site && typeof site.key === 'string') merged.set(site.key, site);
+    }
+    for (const site of primary) {
+      if (site && typeof site.key === 'string') merged.set(site.key, site);
+    }
+    return [...merged.values()];
+  }
+
   async function applySourceDistribution(raw: string, context: ClientAuthContext): Promise<string> {
     if (!raw) return raw;
     let parsed: TVBoxConfig;
@@ -507,7 +530,11 @@ export function createApp(deps: AppDeps): Hono {
     const selectionMode: SourceSelectionMode = policy.selectionMode === 'category' ? 'category' : 'simple';
     // 简单选择独立于历史分类限制，避免旧配置与总数量策略叠加。
     const effectiveBucketLimits = selectionMode === 'category' ? policy.bucketLimits : undefined;
-    let sites = parsed.sites.slice();
+    // The final merged config may have been truncated by an old pool policy.
+    // Restore objects from the pre-quota snapshot, then let the current config
+    // override duplicate keys with newer upstream fields.
+    const fullCandidateSites = await loadFullCandidateSites();
+    let sites = mergeSiteObjects(parsed.sites, fullCandidateSites);
     const searchableKeys = new Set(
       sites.filter((site) => site.searchable === 1).map((site) => site.key),
     );
@@ -791,6 +818,22 @@ export function createApp(deps: AppDeps): Hono {
       }
     }
 
+    const [candidateSites, fullCandidateSites] = await Promise.all([
+      loadQualityCandidates(storage).catch(() => []),
+      loadFullCandidateSites(),
+    ]);
+    // The current/final config wins for mutable fields, while the complete
+    // snapshots restore source objects that a legacy quota removed.
+    const mergedCandidateSites = mergeSiteObjects(
+      [...candidateSites, ...allSites],
+      fullCandidateSites,
+    );
+    const candidateSearchableKeys = new Set(
+      mergedCandidateSites
+        .filter((site) => site.searchable === 1 && !blockedKeys.has(site.key))
+        .map((site) => site.key),
+    );
+
     // 根链接和鉴权码默认都保留全部客户端后备源；质量池顺序仍然决定优先级。
     // 只有明确的 0/N/-1 才会关闭、限制或全选 untestable。
     const hasUntestableLimit = distributionBucketLimits?.quality?.untestable !== undefined;
@@ -801,32 +844,26 @@ export function createApp(deps: AppDeps): Hono {
     const distributableKeys = distributableKeysFromPool(effectiveQualityPool, {
       includeUntestable: allowUntestable,
       maxUntestable,
-      eligibleKeys: new Set(allSites.filter((site) => site.searchable === 1).map((site) => site.key)),
+      eligibleKeys: candidateSearchableKeys,
     });
 
-    // KV_MERGED_CONFIG 已经过质量合并，可能保留旧版全局上限关闭过的搜索源。
-    // 质量池需要恢复被旧上限截断的站点，因此先以完整候选快照兜底，再用当前
-    // 合并配置覆盖同 key 的最新对象（上游字段和代理等可能刚刚更新）。
-    let candidateSites: TVBoxSite[] = [];
-    try {
-      candidateSites = await loadQualityCandidates(storage);
-    } catch {
-      candidateSites = [];
-    }
     const candidateByKey = new Map(
-      candidateSites.filter((site) => !blockedKeys.has(site.key)).map((site) => [site.key, site])
+      mergedCandidateSites
+        .filter((site) => !blockedKeys.has(site.key))
+        .map((site) => [site.key, site]),
     );
     const siteByKey = new Map(candidateByKey);
-    for (const site of allSites) {
-      if (blockedKeys.has(site.key)) continue;
-      // 合并配置中的对象可能已被 maxQuickSearch 把 quickSearch 改为 0；
-      // 根启动配置需要按 maxStartupQuickSearch 独立决策，因此以质量池
-      // 的原始 quickSearch 为准，其余字段仍采用最新配置。
-      const original = candidateByKey.get(site.key);
-      siteByKey.set(site.key, original
-        ? { ...site, quickSearch: original.quickSearch }
-        : site);
+    // Restore the original quickSearch marker from the quality snapshots;
+    // maxQuickSearch may have zeroed it in the current merged config.
+    const originalQuickSearch = new Map<string, number | undefined>();
+    for (const site of [...candidateSites, ...fullCandidateSites]) {
+      if (!originalQuickSearch.has(site.key)) originalQuickSearch.set(site.key, site.quickSearch);
     }
+    for (const [key, site] of siteByKey) {
+      if (originalQuickSearch.has(key)) siteByKey.set(key, { ...site, quickSearch: originalQuickSearch.get(key) });
+    }
+
+
     let orderedSites: TVBoxSite[] = [];
     if (effectiveQualityPool && Array.isArray(effectiveQualityPool.entries) && effectiveQualityPool.entries.length > 0) {
       // 质量池只包含可搜索源；先按质量池顺序恢复它们，再补入不能由服务端
@@ -1849,36 +1886,19 @@ export function createApp(deps: AppDeps): Hono {
     // final-config changes. Expose the effective pool explicitly so admin UI
     // never treats the snapshot total as the currently selectable total.
     const effectiveQualityPool = await loadQualityPool(storage);
-    const effectiveConfigRaw = await storage.get(KV_MERGED_CONFIG);
-    let effectiveSearchableKeys: Set<string> | null = null;
-    if (effectiveConfigRaw) {
-      try {
-        const effectiveConfig = JSON.parse(effectiveConfigRaw) as TVBoxConfig;
-        effectiveSearchableKeys = new Set(
-          (effectiveConfig.sites || []).filter((site) => site.searchable === 1).map((site) => site.key),
-        );
-      } catch {
-        effectiveSearchableKeys = null;
-      }
-    }
     const effectivePoolKeys = qualityPoolKeysFromPool(effectiveQualityPool);
-    const effectivePoolEntries = effectiveQualityPool?.entries.filter((entry) =>
-      effectivePoolKeys.has(entry.key)
-      && (effectiveSearchableKeys === null || effectiveSearchableKeys.has(entry.key)),
-    ) || [];
-    report.qualityPoolCount = effectiveQualityPool
-      ? (effectiveSearchableKeys === null ? effectiveQualityPool.grades.poolTotal : effectivePoolEntries.length)
-      : null;
+    const effectivePoolEntries = effectiveQualityPool?.entries.filter((entry) => effectivePoolKeys.has(entry.key)) || [];
+    // Quality-pool membership is authoritative for distribution. The legacy
+    // merged config may still be truncated by an old quota, so do not intersect
+    // the pool with that snapshot.
+    report.qualityPoolCount = effectiveQualityPool ? effectivePoolEntries.length : null;
     report.qualityPoolServerVerified = effectiveQualityPool
-      ? (effectiveSearchableKeys === null
-        ? effectiveQualityPool.grades.serverVerifiedTotal
-        : effectivePoolEntries.filter((entry) => entry.grade !== 'untestable').length)
+      ? effectivePoolEntries.filter((entry) => entry.grade !== 'untestable').length
       : null;
     report.qualityPoolClientFallback = effectiveQualityPool
-      ? (effectiveSearchableKeys === null
-        ? effectiveQualityPool.grades.clientFallbackTotal
-        : effectivePoolEntries.filter((entry) => entry.grade === 'untestable').length)
+      ? effectivePoolEntries.filter((entry) => entry.grade === 'untestable').length
       : null;
+
     return c.json(report);
   });
 
@@ -1938,36 +1958,25 @@ export function createApp(deps: AppDeps): Hono {
       typeof value === 'number' && Number.isFinite(value) ? value : null;
     const parseLimit = numberOrNull(parseReport?.parseLimit) ?? (quota.maxParses ?? 0);
     const parsers = numberOrNull(parseReport?.parseKept);
-    let finalSearchableKeys: Set<string> | null = null;
-    if (mergedRaw) {
-      try {
-        const merged = JSON.parse(mergedRaw) as TVBoxConfig;
-        finalSearchableKeys = new Set(
-          (merged.sites || []).filter((site) => site.searchable === 1).map((site) => site.key),
-        );
-      } catch {
-        finalSearchableKeys = null;
-      }
-    }
     const poolKeys = qualityPoolKeysFromPool(snapshot);
-    const actualPoolEntries = snapshot?.entries.filter((entry) =>
-      poolKeys.has(entry.key) && (finalSearchableKeys === null || finalSearchableKeys.has(entry.key)),
-    ) || [];
+    const actualPoolEntries = snapshot?.entries.filter((entry) => poolKeys.has(entry.key)) || [];
     const actualServerVerifiedPool = actualPoolEntries.filter((entry) => entry.grade !== 'untestable').length;
     const actualClientFallbackPool = actualPoolEntries.filter((entry) => entry.grade === 'untestable').length;
-    const actualQualityPoolCount = snapshot
-      ? (finalSearchableKeys === null ? snapshot.grades.poolTotal : actualPoolEntries.length)
-      : null;
+    const actualQualityPoolCount = snapshot ? actualPoolEntries.length : null;
+    // The static merged config may still have been truncated by a legacy
+    // quota. Quality-pool membership is the source of truth for what the
+    // root/auth runtime can restore and distribute.
+    const actualSearchableCount = actualQualityPoolCount ?? numberOrNull(quotaReport?.searchable);
     const actual = {
-      searchable: numberOrNull(quotaReport?.searchable),
+      searchable: actualSearchableCount,
       parsers,
       parserLimit: parseLimit,
       // `assessedSourceCount` is the full searchable set included in grading;
       // `qualityPoolCount` is the ordered set eligible for selection/output.
       assessedSourceCount: snapshot?.total ?? null,
       qualityPoolCount: actualQualityPoolCount,
-      serverVerifiedPool: snapshot ? (finalSearchableKeys === null ? snapshot.grades.serverVerifiedTotal : actualServerVerifiedPool) : null,
-      clientFallbackPool: snapshot ? (finalSearchableKeys === null ? snapshot.grades.clientFallbackTotal : actualClientFallbackPool) : null,
+      serverVerifiedPool: snapshot ? actualServerVerifiedPool : null,
+      clientFallbackPool: snapshot ? actualClientFallbackPool : null,
       testable: snapshot?.coverage?.testable ?? null,
       probed: snapshot?.coverage?.probed ?? null,
       notProbed: snapshot?.coverage?.notProbed ?? null,
@@ -3180,9 +3189,13 @@ export function createApp(deps: AppDeps): Hono {
     const qualityPoolKeySet = qualityPoolHealth.state === 'fresh' || qualityPoolHealth.state === 'stale'
       ? qualityPoolKeysFromPool(qualityPool)
       : new Set<string>();
+    const mergedCandidateSites = mergeSiteObjects(
+      [...(listingParsed.sites || []), ...(finalParsed.sites || [])],
+      await loadFullCandidateSites(),
+    );
     const finalKeys = new Set((finalParsed.sites || []).map(site => site.key));
 
-    const qualityReason = (site: TVBoxSite, blocked: boolean, inFinal: boolean): string => {
+    const qualityReason = (site: TVBoxSite, blocked: boolean, inRuntimePool: boolean): string => {
       if (blocked) return 'blocked';
       const entry = qualityEntryMap.get(site.key);
       if (entry?.grade === 'timeout') return 'timeout';
@@ -3190,10 +3203,9 @@ export function createApp(deps: AppDeps): Hono {
       if (qualityPoolHealth.state === 'expired' || qualityPoolHealth.state === 'unavailable') {
         return 'quality-pool-expired';
       }
-      if (!inFinal) return 'not-in-final';
       if (site.searchable !== 1) return 'not-searchable';
       if (!entry) return 'not-in-quality-pool';
-      if (!qualityPoolKeySet.has(site.key)) return 'not-in-quality-pool';
+      if (!inRuntimePool) return 'not-in-quality-pool';
       return '';
     };
 
@@ -3208,7 +3220,7 @@ export function createApp(deps: AppDeps): Hono {
     // Build sites with fingerprint + blocked status + group.
     const sites = [];
     const seenSiteKeys = new Set<string>();
-    for (const site of listingParsed.sites || []) {
+    for (const site of mergedCandidateSites) {
       if (seenSiteKeys.has(site.key)) continue;
       seenSiteKeys.add(site.key);
       const fp = await siteFingerprint(site);
@@ -3229,12 +3241,13 @@ export function createApp(deps: AppDeps): Hono {
         }
       }
       const blocked = fpBlocked || regexBlocked;
-      const inFinal = finalKeys.has(site.key);
+      const inRuntimePool = !blocked && site.searchable === 1 && qualityPoolKeySet.has(site.key);
+      const inFinal = finalKeys.has(site.key) || inRuntimePool;
       const sourceCategory = classifySearchSource(site);
       const isJs = sourceCategory === 'js';
       const isJar = sourceCategory === 'jar';
       const entry = qualityEntryMap.get(site.key);
-      const inQualityPool = inFinal && !blocked && site.searchable === 1 && qualityPoolKeySet.has(site.key);
+      const inQualityPool = inRuntimePool && !!entry;
       sites.push({
         ...site,
         fingerprint: fp,
@@ -3252,7 +3265,7 @@ export function createApp(deps: AppDeps): Hono {
         qualityConfidence: entry?.qualityConfidence ?? null,
         qualityGrade: entry?.grade ?? null,
         qualityUpdatedAt: qualityPool?.updatedAt ?? null,
-        qualityReason: inQualityPool ? undefined : qualityReason(site, blocked, inFinal),
+        qualityReason: inQualityPool ? undefined : qualityReason(site, blocked, inRuntimePool),
       });
     }
 

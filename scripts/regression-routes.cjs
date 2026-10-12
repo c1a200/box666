@@ -154,6 +154,7 @@ const distribution = {
 function makeApp(overrides = {}) {
   const storage = new MemoryStorage({
     merged_config: JSON.stringify(overrides.mergedConfig || mergedConfig),
+    merged_config_full: JSON.stringify(overrides.mergedConfigFull || overrides.mergedConfig || mergedConfig),
     search_quality_pool: JSON.stringify(overrides.qualityPool === undefined ? qualityPool : overrides.qualityPool),
     client_auth_distribution: JSON.stringify(overrides.distribution || distribution),
     ...(overrides.quota ? { search_quota: JSON.stringify(overrides.quota) } : {}),
@@ -257,10 +258,10 @@ async function readSites(response) {
       key: 'bulk-functional-plugin', name: '非搜索插件', type: 3,
       api: 'csp_Functional', searchable: 0,
     }];
-    const categoryEntries = [...entries, {
-      key: 'bulk-functional-plugin', name: '非搜索插件', grade: 'untestable',
-      speedMs: null, result: 'not_probed', consecutiveFailures: 0,
-    }];
+    // Non-searchable functional plugins are not quality-pool entries. They are
+    // appended after the ranked searchable pool and may only use leftover type
+    // capacity; they must never displace a searchable JAR from the Top-N.
+    const categoryEntries = [...entries];
     const categoryLimits = { quality: { excellent: 8, untestable: -1 }, type: { jar: 0 } };
     const categoryDistribution = {
       ...allDistribution,
@@ -293,6 +294,124 @@ async function readSites(response) {
     assert(keptType3.length === 1, 'JAR=1 must retain exactly one type=3 site');
     assert(keptType3[0].key === 'bulk-source-000', 'JAR=1 must retain the highest-ranked type=3 site');
     assert(jarOneConfig.spider === 'https://source.example/spider.jar', 'a remaining type=3 site must keep the global spider for client compatibility');
+  }
+
+  {
+    // Production CF shape: the final merged config was truncated by an old
+    // quota, while the full snapshot and quality pool still hold every source.
+    const verifiedSites = Array.from({ length: 27 }, (_, index) => ({
+      key: 'cf-verified-' + String(index).padStart(3, '0'),
+      name: 'CF verified ' + index,
+      type: 1,
+      api: 'https://cf.example/verified/' + index,
+      searchable: 1,
+    }));
+    const clientSites = Array.from({ length: 273 }, (_, index) => ({
+      key: 'cf-client-' + String(index).padStart(3, '0'),
+      name: 'CF client ' + index,
+      type: 3,
+      api: 'csp_CFClient' + index,
+      searchable: 1,
+    }));
+    const allCfSites = [...verifiedSites, ...clientSites];
+    const cfEntries = [
+      ...verifiedSites.map((site, index) => ({
+        key: site.key, name: site.name, grade: 'excellent', speedMs: 100 + index,
+        result: 'ok', consecutiveFailures: 0,
+      })),
+      ...clientSites.map((site) => ({
+        key: site.key, name: site.name, grade: 'untestable', speedMs: null,
+        result: 'not_probed', consecutiveFailures: 0,
+      })),
+    ];
+    const cfDistribution = {
+      requireAuth: false,
+      authCodes: [{
+        id: 'auth-cf-full', label: 'CF full', code: 'cf-full', enabled: true,
+        sourceMode: 'all', selectionMode: 'simple', maxSites: -1,
+        selectedKeys: [], pinnedKeys: [],
+        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      }, {
+        id: 'auth-cf-category', label: 'CF category', code: 'cf-category', enabled: true,
+        sourceMode: 'all', selectionMode: 'category',
+        maxSites: -1, bucketLimits: { quality: { untestable: 12 } },
+        selectedKeys: [], pinnedKeys: [],
+        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      }],
+    };
+    const { app } = makeApp({
+      mergedConfig: { sites: verifiedSites, lives: [] },
+      mergedConfigFull: { sites: allCfSites, lives: [] },
+      qualityPool: { updatedAt: new Date().toISOString(), entries: cfEntries },
+      distribution: cfDistribution,
+      quota: {
+        startupMode: 'full', leanStartup: false, selectionMode: 'simple', maxSites: -1,
+        quotaSchemaVersion: 9, bucketLimits: { quality: { untestable: -1 } },
+      },
+    });
+    const rootSites = await readSites(await app.request('https://box.example/'));
+    assert(rootSites.length === 300, 'CF root must restore all 300 quality-pool sources; got ' + rootSites.length);
+    assert(rootSites.filter((site) => site.key.startsWith('cf-client-')).length === 273,
+      'CF root must restore all 273 client-verifiable JAR sources');
+
+    const categorySites = await readSites(await app.request('https://box.example/auth/cf-category/'));
+    assert(categorySites.filter((site) => site.key.startsWith('cf-client-')).length === 12,
+      'CF category mode must apply the explicit untestable Top-N');
+
+    const report = await (await app.request('https://box.example/admin/quality-report', {
+      headers: { Authorization: 'Bearer test-token' },
+    })).json();
+    assert(report.actual.qualityPoolCount === 300, 'quality report must count client-verifiable sources in the pool');
+    assert(report.actual.serverVerifiedPool === 27, 'quality report must separate server-verified sources');
+    assert(report.actual.clientFallbackPool === 273, 'quality report must expose client-verifiable sources');
+
+    const data = await (await app.request('https://box.example/admin/config-data', {
+      headers: { Authorization: 'Bearer test-token' },
+    })).json();
+    const clientRows = data.sites.filter((site) => site.key.startsWith('cf-client-'));
+    assert(clientRows.length === 273, 'config-data must list all 273 client-verifiable sources');
+    assert(clientRows.every((site) => site.inFinal === true && site.inQualityPool === true),
+      'client-verifiable sources must be marked selectable in config-data');
+    assert(data.searchQuality.qualityPoolCount === 300, 'config-data quality pool count must include client-verifiable sources');
+  }
+  {
+    // Schema 8 used untestable:0 as an implicit cap. It must migrate to
+    // unlimited so old KV values do not hide all client-verifiable sources.
+    const legacyQuota = {
+      maxQuickSearch: 20,
+      maxStartupQuickSearch: 20,
+      maxParses: 3,
+      bucketLimits: { quality: { untestable: 0 } },
+      pinnedKeys: [],
+      sortBySpeed: true,
+      leanStartup: false,
+      startupMode: 'full',
+      quotaSchemaVersion: 8,
+    };
+    const { app } = makeApp({ quota: legacyQuota });
+    const sites = await readSites(await app.request('https://box.example/'));
+    assert(sites.some((site) => site.key === 'source-client-fallback'),
+      'schema 8 untestable:0 must migrate to unlimited client fallback');
+  }
+
+  {
+    // Schema 9 is explicit: untestable:0 means the operator chose no client
+    // fallback, and must remain an exclusion rather than being migrated.
+    const explicitQuota = {
+      maxQuickSearch: 20,
+      maxStartupQuickSearch: 20,
+      maxParses: 3,
+      bucketLimits: { quality: { untestable: 0 } },
+      pinnedKeys: [],
+      sortBySpeed: true,
+      leanStartup: false,
+      startupMode: 'full',
+      quotaSchemaVersion: 9,
+    };
+    const { app } = makeApp({ quota: explicitQuota });
+    const sites = await readSites(await app.request('https://box.example/'));
+    assert(!sites.some((site) => site.key === 'source-client-fallback'),
+      'schema 9 untestable:0 must explicitly exclude client fallback');
   }
 
   {
