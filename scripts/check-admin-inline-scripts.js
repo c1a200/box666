@@ -50,6 +50,9 @@ function checkAdminInlineScripts() {
   if (!searchPanel.includes("saveSearchQuota('root')")) {
     throw new Error('root source selection must have its own save action on the search page');
   }
+  if (!searchPanel.includes('id="rootSourceCountInput"') || !searchPanel.includes('oninput="syncRootSourceCountInput()"') || !html.includes('function syncRootSourceCountInput()') || !html.includes('rootSourceSelection.maxSites = rootLimitValue(rootCount.value, rootCountInput)')) {
+    throw new Error('root simple source count must read the current custom value before saving');
+  }
   if (!searchPanel.includes('sqRankingHint') || !html.includes('sqQualityOrder = rawQualityPoolKeys.slice()') || !html.includes('compareByQualityPoolOrder')) {
     throw new Error('search source ranking must explain and use the server quality-pool order');
   }

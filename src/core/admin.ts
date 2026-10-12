@@ -498,7 +498,7 @@ ${sharedStyles}
             <option value="none" data-i18n-text="credentialBucketNone">不下发</option>
             <option value="custom" data-i18n-text="credentialBucketCustom">自定义数量</option>
           </select>
-          <input type="number" id="rootSourceCountInput" class="nt-input" style="width:90px" min="1" placeholder="数量" data-i18n-placeholder="sourceCountPlaceholder">
+          <input type="number" id="rootSourceCountInput" class="nt-input" style="width:90px" min="1" placeholder="数量" data-i18n-placeholder="sourceCountPlaceholder" oninput="syncRootSourceCountInput()">
         </div>
         <div id="rootSourceBuckets" style="display:none;margin-top:8px"></div>
         <div style="margin-top:6px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="searchQuotaDesc">这里只控制根配置下发的健康解析器数量；源选择方式决定根链接下发哪些质量池源。</div>
@@ -2368,6 +2368,15 @@ function toggleRootSourceSelection() {
   refreshRootSourcePolicySummary();
 }
 
+function syncRootSourceCountInput() {
+  const select = $('rootSourceCountModeInput'); const input = $('rootSourceCountInput');
+  if (!select || select.value !== 'custom') return;
+  const parsed = input ? parseInt(input.value, 10) : NaN;
+  // 仅在已有有效数字时同步，允许用户清空后重新输入，避免中间态被改写为 1。
+  if (Number.isFinite(parsed) && parsed >= 1) rootSourceSelection.maxSites = Math.floor(parsed);
+  refreshRootSourcePolicySummary();
+}
+
 function toggleRootSourceCount() {
   const select = $('rootSourceCountModeInput'); const input = $('rootSourceCountInput'); if (!select) return;
   if (input) { input.disabled = select.value !== 'custom'; input.style.display = select.value === 'custom' ? '' : 'none'; }
@@ -2404,6 +2413,10 @@ async function loadSearchQuota() {
 async function saveSearchQuota(scope) {
   const status = $(scope === 'root' ? 'rootSourceSelectionStatus' : 'searchQuotaStatus');
   status.textContent = '';
+  if (rootSourceSelection.selectionMode === 'simple') {
+    const rootCount = $('rootSourceCountModeInput'); const rootCountInput = $('rootSourceCountInput');
+    if (rootCount) rootSourceSelection.maxSites = rootLimitValue(rootCount.value, rootCountInput);
+  }
   if (rootSourceSelection.selectionMode === 'category') {
     rootSourceSelection.bucketLimits = normalizeClientBucketLimitsForAvailable(rootSourceSelection.bucketLimits);
   }
