@@ -89,6 +89,15 @@ ${sharedStyles}
 .credential-platform-grid label{display:flex;align-items:center;gap:6px;padding:6px 8px;background:var(--surface);border:1px solid var(--border);border-radius:4px;font-size:0.8rem;color:var(--text-secondary)}
 .credential-auth-list{display:grid;gap:12px;margin-top:10px}
 .credential-auth-card{padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:6px}
+.credential-auth-card.collapsed{padding-bottom:10px}
+.credential-card-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.credential-card-title{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
+.credential-card-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.credential-details{display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--border)}
+.credential-details.open{display:block}
+.source-policy-summary{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}
+.source-policy-details{display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--border)}
+.source-policy-details.open{display:block}
 .credential-auth-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-top:8px}
 .credential-auth-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
 .credential-pill{font-family:var(--mono);font-size:0.65rem;padding:2px 6px;border-radius:8px;background:rgba(80,250,123,0.12);color:var(--green)}
@@ -266,6 +275,7 @@ ${sharedStyles}
     <div class="tab" data-tab="maccms" onclick="switchTab('maccms')"><span data-i18n="tabMacCMS">MacCMS</span> <span class="badge" id="badgeMacCMS">0</span></div>
     <div class="tab" data-tab="live" onclick="switchTab('live')"><span data-i18n="tabLive">直播</span> <span class="badge" id="badgeLive">0</span></div>
     <div class="tab" data-tab="searchQuota" onclick="switchTab('searchQuota')" id="tabSearchQuota"><span data-i18n="tabSearchQuota">搜索</span> <span class="badge" id="badgeSearchQuota">0</span></div>
+    <div class="tab" data-tab="sourceDistribution" onclick="switchTab('sourceDistribution')"><span data-i18n="tabSourceDistribution">源下发</span></div>
     <div class="tab" data-tab="settings" onclick="switchTab('settings')"><span data-i18n="tabSettings">设置</span></div>
     <div class="tab" data-tab="aggLogs" onclick="switchTab('aggLogs')"><span data-i18n="tabAggLogs">日志</span></div>
   </div>
@@ -441,30 +451,6 @@ ${sharedStyles}
   <!-- Search Quota Tab -->
   <div class="tab-panel" id="panelSearchQuota">
     <div class="section">
-      <div class="section-title" style="margin-top:14px" data-i18n="rootSourceSelectionTitle">根链接源选择</div>
-      <div class="credential-help" data-i18n="rootSourceSelectionHint">简单方式按统一质量排序从前向后取源；精细方式按质量等级和源类型分别取各自排序靠前的源。两种方式互斥。</div>
-      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px">
-        <label class="form-label" style="margin:0" data-i18n="sourceSelectionMode">选择方式</label>
-        <select id="rootSourceSelectionModeInput" class="nt-input" style="width:250px" onchange="toggleRootSourceSelection()">
-          <option value="simple" data-i18n-text="sourceSelectionSimple">简单选择：按质量池总排序</option>
-          <option value="category" data-i18n-text="sourceSelectionCategory">精细选择：按分类分别选择</option>
-        </select>
-        <label class="form-label" style="margin:0" data-i18n="rootSourceCount">下发源数量</label>
-        <select id="rootSourceCountModeInput" class="nt-input" style="width:130px" onchange="toggleRootSourceCount()">
-          <option value="all" data-i18n-text="credentialBucketAll">全部</option>
-          <option value="none" data-i18n-text="credentialBucketNone">不下发</option>
-          <option value="custom" data-i18n-text="credentialBucketCustom">自定义数量</option>
-        </select>
-        <input type="number" id="rootSourceCountInput" class="nt-input" style="width:90px" min="1" placeholder="数量" data-i18n-placeholder="sourceCountPlaceholder">
-        <button class="btn btn-sm" onclick="saveSearchQuota('root')" data-i18n="save">保存根链接选择</button>
-        <span class="status-text" id="rootSourceSelectionStatus" style="font-size:0.8rem"></span>
-      </div>
-      <div id="rootSourceBuckets" style="display:none;margin-top:8px"></div>
-      <div style="margin-top:6px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="searchQuotaDesc">这里只控制根配置下发的健康解析器数量；源选择方式决定根链接下发哪些质量池源。</div>
-      <div style="margin-top:4px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="qualityGradeDesc">质量分级（后台分块测速，不影响应用端启动速度）：优 ≤1000ms、良 1001-3000ms、可用 3001-6000ms。服务端只验证可直接请求的源；可搜索 JAR/客户端运行时源无法由服务端直接确认，但仍参与客户端搜索；默认全部按质量排序下发，只有超时和屏蔽源排除。</div>
-    </div>
-
-    <div class="section">
       <div class="section-title" data-i18n="sqSelected">质量池</div>
       <div id="sqSelectedInfo" style="margin-bottom:8px;font-size:0.8rem;color:var(--text-secondary)"></div>
       <div style="margin-bottom:8px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="sqRankingHint">所有列表按质量池总排名排列；每个分类表同时显示该分类内排名。置顶源按已保存的置顶顺序显示。</div>
@@ -487,8 +473,37 @@ ${sharedStyles}
     </div>
   </div>
 
-  <!-- Settings Tab -->
-  <div class="tab-panel" id="panelSettings">
+  <!-- Source Distribution Tab -->
+  <div class="tab-panel" id="panelSourceDistribution">
+    <div class="section">
+      <div class="section-title" data-i18n="rootSourceSelectionTitle">根链接源选择</div>
+      <div class="credential-help" data-i18n="rootSourceSelectionHint">简单方式按统一质量排序从前向后取源；精细方式按质量等级和源类型分别取各自排序靠前的源。两种方式互斥。</div>
+      <div class="source-policy-summary">
+        <span class="credential-pill" id="rootSourceSelectionSummary">全部 / 不限</span>
+        <button class="btn btn-sm" id="rootSourceSelectionToggle" onclick="toggleRootSourcePolicyDetails()" aria-expanded="false">设置源选择</button>
+        <button class="btn btn-sm" onclick="saveSearchQuota('root')" data-i18n="save">保存根链接选择</button>
+        <span class="status-text" id="rootSourceSelectionStatus" style="font-size:0.8rem"></span>
+      </div>
+      <div class="source-policy-details" id="rootSourceSelectionDetails">
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <label class="form-label" style="margin:0" data-i18n="sourceSelectionMode">选择方式</label>
+          <select id="rootSourceSelectionModeInput" class="nt-input" style="width:250px" onchange="toggleRootSourceSelection()">
+            <option value="simple" data-i18n-text="sourceSelectionSimple">简单选择：按质量池总排序</option>
+            <option value="category" data-i18n-text="sourceSelectionCategory">精细选择：按分类分别选择</option>
+          </select>
+          <label class="form-label" style="margin:0" data-i18n="rootSourceCount">下发源数量</label>
+          <select id="rootSourceCountModeInput" class="nt-input" style="width:130px" onchange="toggleRootSourceCount()">
+            <option value="all" data-i18n-text="credentialBucketAll">全部</option>
+            <option value="none" data-i18n-text="credentialBucketNone">不下发</option>
+            <option value="custom" data-i18n-text="credentialBucketCustom">自定义数量</option>
+          </select>
+          <input type="number" id="rootSourceCountInput" class="nt-input" style="width:90px" min="1" placeholder="数量" data-i18n-placeholder="sourceCountPlaceholder">
+        </div>
+        <div id="rootSourceBuckets" style="display:none;margin-top:8px"></div>
+        <div style="margin-top:6px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="searchQuotaDesc">这里只控制根配置下发的健康解析器数量；源选择方式决定根链接下发哪些质量池源。</div>
+        <div style="margin-top:4px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="qualityGradeDesc">质量分级（后台分块测速，不影响应用端启动速度）：优 ≤1000ms、良 1001-3000ms、可用 3001-6000ms。服务端只验证可直接请求的源；可搜索 JAR/客户端运行时源无法由服务端直接确认，但仍参与客户端搜索；默认全部按质量排序下发，只有超时和屏蔽源排除。</div>
+      </div>
+    </div>
 
     <div class="section">
       <div class="section-title" data-i18n="credentialDistributionTitle">客户端鉴权与源分发</div>
@@ -504,7 +519,10 @@ ${sharedStyles}
       </div>
       <div id="credentialDistributionList" class="credential-auth-list" style="margin-top:12px"></div>
     </div>
+  </div>
 
+  <!-- Settings Tab -->
+  <div class="tab-panel" id="panelSettings">
     <div class="section">
         <div class="section-title" data-i18n="cronInterval">源聚合计划</div>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
@@ -757,7 +775,8 @@ const translations = {
     invalidToken:'Invalid token', enterToken:'Enter admin token', login:'Login',
     connectionFailed:'Connection failed', connecting:'Connecting', connected:'Connected', disconnected:'Disconnected',
     headerLabel:'Admin Console', navConfigEditor:'Config Editor', navDashboard:'Dashboard',
-    tabSources:'Sources', tabMacCMS:'MacCMS', tabLive:'Live', tabSettings:'Settings', tabAggLogs:'Logs',
+    tabSources:'Sources', tabMacCMS:'MacCMS', tabLive:'Live', tabSettings:'Settings', tabAggLogs:'Logs', tabSourceDistribution:'Source Delivery',
+    showSourceSettings:'Source settings', hideSourceSettings:'Hide source settings', rootSourcePolicySummary:'Root: {policy}', credentialConfiguredSources:'{count} auth code(s)',
     aggLogsTitle:'Aggregation Logs', clearLogs:'Clear All', liveLogsTitle:'Live Logs', connectLogs:'Connect', disconnectLogs:'Disconnect',
     dedupConfigTitle:'Similar Name Dedup', similarDedupLabel:'Enable similar-name dedup (keep fastest)', dedupThreshold:'Threshold',
     groupOrderTitle:'Site Group Order', groupOrderEnabled:'Enable group ordering', groupOrderAdd:'+ Add Rule',
@@ -856,6 +875,7 @@ const translations = {
     credentialSourceModeSearch:'Searchable sources only',
     credentialSourceModeSelected:'Selected quality-pool sources only',
     credentialSourceModeCustom:'Custom key whitelist only',
+    credentialLegacyCustomNotice:'This is a legacy custom-key policy. Saving will keep it; choosing simple/detailed above will migrate the auth code to the shared root-link policy.',
     credentialMaxSites:'Quality pool source limit',
     credentialSiteTypes:'Allowed site types',
     credentialSiteTypesHint:'Leave all unchecked to allow every site type. Checked types are the only site types served.',
@@ -904,7 +924,8 @@ const translations = {
     invalidToken:'无效的令牌', enterToken:'请输入管理令牌', login:'登录',
     connectionFailed:'连接失败',
     headerLabel:'管理控制台', navConfigEditor:'配置编辑', navBuilder:'配置构建', navDashboard:'运行状态',
-    tabSources:'源', tabMacCMS:'MacCMS', tabLive:'直播', tabSettings:'设置', tabAggLogs:'日志',
+    tabSources:'源', tabMacCMS:'MacCMS', tabLive:'直播', tabSettings:'设置', tabAggLogs:'日志', tabSourceDistribution:'源下发',
+    showSourceSettings:'设置源选择', hideSourceSettings:'收起源选择', rootSourcePolicySummary:'根链接：{policy}', credentialConfiguredSources:'{count} 个鉴权码',
     aggLogsTitle:'聚合日志', clearLogs:'清空', liveLogsTitle:'实时日志', connectLogs:'连接', disconnectLogs:'断开',
     dedupConfigTitle:'相似名称去重', similarDedupLabel:'启用相似名称去重（保留最快）', dedupThreshold:'阈值',
     groupOrderTitle:'站点分组排序', groupOrderEnabled:'启用分组排序', groupOrderAdd:'+ 添加规则',
@@ -1005,6 +1026,7 @@ const translations = {
     credentialSourceModeSearch:'仅可搜索源',
     credentialSourceModeSelected:'仅质量池精选源',
     credentialSourceModeCustom:'仅自定义源标识白名单',
+    credentialLegacyCustomNotice:'这是旧版自定义源标识策略；保存会保留当前行为，切换上面的选择方式后会迁移为与根链接一致的分发规则。',
     credentialMaxSites:'质量池源数量上限',
     credentialSiteTypes:'允许的站点类型',
     credentialSiteTypesHint:'全部不勾选表示允许所有站点类型；勾选后只下发所选的站点类型。',
@@ -1070,7 +1092,8 @@ const tabLoaders = {
   maccms: () => loadMacCMS(),
   live: () => Promise.all([loadLives(), loadLiveDisabled(), loadLiveMergeMode(), loadIgnoreAggregatedLives(), loadChannelProbe()]),
   searchQuota: () => Promise.all([loadSearchQuota(), loadQualityReport()]),
-  settings: () => Promise.all([loadCredentialDistribution(), loadNameTransform(), loadBgSettings(), loadCronInterval(), loadSpeedTest(), loadEdgeProxies(), loadDedupConfig(), loadGroupOrder(), loadStorageDiagnostics(), loadSmartBaseUrl(), loadProbeDepth(), loadAutoClean()]),
+  sourceDistribution: () => Promise.all([loadSearchQuota(), loadCredentialDistribution()]),
+  settings: () => Promise.all([loadNameTransform(), loadBgSettings(), loadCronInterval(), loadSpeedTest(), loadEdgeProxies(), loadDedupConfig(), loadGroupOrder(), loadStorageDiagnostics(), loadSmartBaseUrl(), loadProbeDepth(), loadAutoClean()]),
   aggLogs: () => loadAggLogs(),
 };
 const loadedTabs = new Set();
@@ -2183,29 +2206,95 @@ function rootLimitValue(mode, input) {
   return -1;
 }
 
-function renderRootSourceBuckets() {
-  const box = $('rootSourceBuckets');
-  if (!box) return;
-  box.innerHTML = '';
+function renderSourceBucketControls(container, limits, onChange) {
+  if (!container) return;
+  container.innerHTML = '';
   const groups = [
     { name: t('sqQuality'), group: 'quality', keys: ['excellent', 'good', 'usable', 'untestable'], labels: [t('sqExcellent'), t('sqGood'), t('sqUsable'), t('sqUntestable')] },
     { name: t('credentialSiteTypes'), group: 'type', keys: SOURCE_CATEGORY_KEYS, labels: SOURCE_CATEGORY_KEYS.map(credentialTypeLabel) },
   ];
   groups.forEach((set) => {
-    const title = document.createElement('div'); title.className = 'form-label'; title.textContent = set.name; box.appendChild(title);
-    const row = document.createElement('div'); row.className = 'credential-platform-grid';
+    const title = document.createElement('div');
+    title.className = 'form-label';
+    title.textContent = set.name;
+    container.appendChild(title);
+    const row = document.createElement('div');
+    row.className = 'credential-platform-grid';
     set.keys.forEach((key, index) => {
-      const wrap = document.createElement('div'); const label = document.createElement('label'); label.className = 'form-label'; label.textContent = set.labels[index];
-      const select = document.createElement('select'); select.className = 'nt-input';
-      [['all', t('credentialBucketAll')], ['none', t('credentialBucketNone')], ['custom', t('credentialBucketCustom')]].forEach(([value, text]) => { const option = document.createElement('option'); option.value = value; option.textContent = text; select.appendChild(option); });
-      const number = document.createElement('input'); number.type = 'number'; number.min = '1'; number.className = 'nt-input'; number.placeholder = t('sourceCountPlaceholder');
-      const current = rootSourceSelection.bucketLimits && rootSourceSelection.bucketLimits[set.group] && rootSourceSelection.bucketLimits[set.group][key];
-      select.value = current === 0 ? 'none' : (typeof current === 'number' && current > 0 ? 'custom' : 'all'); if (select.value === 'custom') number.value = String(current); number.disabled = select.value !== 'custom';
-      const commit = () => { if (!rootSourceSelection.bucketLimits) rootSourceSelection.bucketLimits = {}; if (!rootSourceSelection.bucketLimits[set.group]) rootSourceSelection.bucketLimits[set.group] = {}; rootSourceSelection.bucketLimits[set.group][key] = select.value === 'none' ? 0 : (select.value === 'custom' ? Math.max(1, parseInt(number.value, 10) || 1) : -1); number.disabled = select.value !== 'custom'; };
-      select.onchange = commit; number.oninput = commit; wrap.appendChild(label); wrap.appendChild(select); wrap.appendChild(number); row.appendChild(wrap);
+      const wrap = document.createElement('div');
+      const label = document.createElement('label');
+      label.className = 'form-label';
+      label.textContent = set.labels[index];
+      const select = document.createElement('select');
+      select.className = 'nt-input';
+      [['all', t('credentialBucketAll')], ['none', t('credentialBucketNone')], ['custom', t('credentialBucketCustom')]].forEach(([value, text]) => {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = text;
+        select.appendChild(option);
+      });
+      const number = document.createElement('input');
+      number.type = 'number';
+      number.min = '1';
+      number.className = 'nt-input';
+      number.placeholder = t('sourceCountPlaceholder');
+      const current = limits && limits[set.group] ? limits[set.group][key] : undefined;
+      select.value = current === 0 ? 'none' : (typeof current === 'number' && current > 0 ? 'custom' : 'all');
+      if (select.value === 'custom') number.value = String(current);
+      number.disabled = select.value !== 'custom';
+      const commit = () => {
+        const value = select.value === 'none' ? 0 : (select.value === 'custom' ? Math.max(1, parseInt(number.value, 10) || 1) : -1);
+        onChange(set.group, key, value);
+        number.disabled = select.value !== 'custom';
+      };
+      select.onchange = commit;
+      number.oninput = commit;
+      wrap.appendChild(label);
+      wrap.appendChild(select);
+      wrap.appendChild(number);
+      row.appendChild(wrap);
     });
-    box.appendChild(row);
+    container.appendChild(row);
   });
+}
+
+function renderRootSourceBuckets() {
+  renderSourceBucketControls($('rootSourceBuckets'), rootSourceSelection.bucketLimits, (group, key, value) => {
+    if (!rootSourceSelection.bucketLimits) rootSourceSelection.bucketLimits = {};
+    if (!rootSourceSelection.bucketLimits[group]) rootSourceSelection.bucketLimits[group] = {};
+    rootSourceSelection.bucketLimits[group][key] = value;
+  });
+}
+
+let rootSourcePolicyExpanded = false;
+const credentialDetailsExpanded = new Set();
+
+function rootSourcePolicySummary() {
+  if (rootSourceSelection.selectionMode === 'category') {
+    const quality = rootSourceSelection.bucketLimits && rootSourceSelection.bucketLimits.quality || {};
+    const type = rootSourceSelection.bucketLimits && rootSourceSelection.bucketLimits.type || {};
+    const selected = [...Object.values(quality), ...Object.values(type)].filter((value) => value !== -1 && value !== undefined).length;
+    return t('sourceSelectionCategory') + ' · ' + t('credentialBucketLimits') + ' ' + selected;
+  }
+  const label = rootSourceSelection.maxSites === -1
+    ? t('credentialBucketAll')
+    : (rootSourceSelection.maxSites === 0 ? t('credentialBucketNone') : t('credentialBucketCustom') + ' ' + rootSourceSelection.maxSites);
+  return t('sourceSelectionSimple') + ' · ' + t('rootSourceCount') + ' ' + label;
+}
+
+function refreshRootSourcePolicySummary() {
+  const summary = $('rootSourceSelectionSummary');
+  if (summary) summary.textContent = rootSourcePolicySummary();
+}
+
+function toggleRootSourcePolicyDetails() {
+  const details = $('rootSourceSelectionDetails');
+  const toggle = $('rootSourceSelectionToggle');
+  if (!details || !toggle) return;
+  rootSourcePolicyExpanded = !rootSourcePolicyExpanded;
+  details.classList.toggle('open', rootSourcePolicyExpanded);
+  toggle.setAttribute('aria-expanded', rootSourcePolicyExpanded ? 'true' : 'false');
+  toggle.textContent = rootSourcePolicyExpanded ? t('hideSourceSettings') : t('showSourceSettings');
 }
 
 function toggleRootSourceSelection() {
@@ -2213,12 +2302,14 @@ function toggleRootSourceSelection() {
   const count = $('rootSourceCountModeInput'); const countInput = $('rootSourceCountInput'); const category = rootSourceSelection.selectionMode === 'category';
   if (count) count.style.display = category ? 'none' : ''; if (countInput) countInput.style.display = category ? 'none' : '';
   const box = $('rootSourceBuckets'); if (box) box.style.display = category ? '' : 'none'; if (category) renderRootSourceBuckets();
+  refreshRootSourcePolicySummary();
 }
 
 function toggleRootSourceCount() {
   const select = $('rootSourceCountModeInput'); const input = $('rootSourceCountInput'); if (!select) return;
   if (input) { input.disabled = select.value !== 'custom'; input.style.display = select.value === 'custom' ? '' : 'none'; }
   rootSourceSelection.maxSites = rootLimitValue(select.value, input);
+  refreshRootSourcePolicySummary();
 }
 
 async function loadSearchQuota() {
@@ -2236,7 +2327,7 @@ async function loadSearchQuota() {
     const rootCount = $('rootSourceCountModeInput'); const rootCountInput = $('rootSourceCountInput');
     if (rootCount) rootCount.value = rootSourceSelection.maxSites === 0 ? 'none' : (rootSourceSelection.maxSites > 0 ? 'custom' : 'all');
     if (rootCountInput && rootSourceSelection.maxSites > 0) rootCountInput.value = String(rootSourceSelection.maxSites);
-    toggleRootSourceCount(); toggleRootSourceSelection();
+    toggleRootSourceCount(); toggleRootSourceSelection(); refreshRootSourcePolicySummary();
     $('autoSearchLimitInput').checked = false;
     $('sortSearchBySpeedInput').checked = true;
     $('leanStartupInput').checked = true;
@@ -3255,11 +3346,19 @@ function sourceModeLabel(mode) {
 }
 
 function credentialModeSummary(item) {
-  const parts = [sourceModeLabel(item.sourceMode), item.selectionMode === 'category' ? t('sourceSelectionCategory') : t('sourceSelectionSimple')];
-  parts.push(t('credentialMaxSites') + ' ' + clientLimitLabel(item.maxSites));
-  if (item.includeGrades && item.includeGrades.length) parts.push(item.includeGrades.map((grade) => qualityGradeLabel(grade)).join(' / '));
-  if (item.siteTypes && item.siteTypes.length) parts.push(t('credentialSiteTypes') + ' ' + item.siteTypes.map((value) => credentialTypeLabel(String(value))).join(' / '));
-  if (item.selectedKeys && item.selectedKeys.length) parts.push(t('credentialSelectedKeys') + ' ' + item.selectedKeys.length);
+  const isCategory = item.selectionMode === 'category';
+  const parts = [isCategory ? t('sourceSelectionCategory') : t('sourceSelectionSimple')];
+  if (isCategory) {
+    const quality = item.bucketLimits && item.bucketLimits.quality || {};
+    const type = item.bucketLimits && item.bucketLimits.type || {};
+    const selected = [...Object.values(quality), ...Object.values(type)].filter((value) => value !== -1 && value !== undefined).length;
+    parts.push(t('credentialBucketLimits') + ' ' + selected);
+  } else {
+    parts.push(t('rootSourceCount') + ' ' + clientLimitLabel(item.maxSites));
+  }
+  if (item.sourceMode === 'custom' && item.selectedKeys && item.selectedKeys.length) {
+    parts.push(t('credentialSourceModeCustom') + ' ' + item.selectedKeys.length);
+  }
   return parts.join(' · ');
 }
 
@@ -3287,7 +3386,7 @@ function createCredentialLimitControl(labelText, value, onChange) {
   const select = document.createElement('select');
   select.className = 'nt-input';
   select.style.minWidth = '112px';
-  [['none', t('credentialBucketNone')], ['all', t('credentialBucketAll')], ['custom', t('credentialBucketCustom')]].forEach(([optionValue, text]) => {
+  [['all', t('credentialBucketAll')], ['none', t('credentialBucketNone')], ['custom', t('credentialBucketCustom')]].forEach(([optionValue, text]) => {
     const option = document.createElement('option');
     option.value = optionValue;
     option.textContent = text;
@@ -3354,13 +3453,13 @@ function renderCredentialDistribution() {
     const item = normalizeClientAuthCode(rawItem, index);
     codes[index] = item;
     const card = document.createElement('div');
-    card.className = 'credential-auth-card';
+    const isExpanded = credentialDetailsExpanded.has(item.id);
+    card.className = 'credential-auth-card' + (isExpanded ? '' : ' collapsed');
 
     const top = document.createElement('div');
-    top.className = 'credential-inline';
-    top.style.justifyContent = 'space-between';
+    top.className = 'credential-card-head';
     const title = document.createElement('div');
-    title.className = 'credential-inline';
+    title.className = 'credential-card-title';
     const enabled = document.createElement('input');
     enabled.type = 'checkbox';
     enabled.checked = item.enabled !== false;
@@ -3374,13 +3473,33 @@ function renderCredentialDistribution() {
     title.appendChild(enabled);
     title.appendChild(titleText);
     title.appendChild(summary);
+
+    const summaryActions = document.createElement('div');
+    summaryActions.className = 'credential-card-actions';
+    const toggleDetails = document.createElement('button');
+    toggleDetails.className = 'btn btn-sm';
+    toggleDetails.textContent = isExpanded ? t('hideSourceSettings') : t('showSourceSettings');
+    toggleDetails.setAttribute('aria-expanded', isExpanded ? 'true' : 'false');
     const remove = document.createElement('button');
     remove.className = 'btn btn-sm btn-danger';
     remove.textContent = t('credentialDelete');
-    remove.onclick = () => { credentialDistribution.authCodes.splice(index, 1); renderCredentialDistribution(); };
+    remove.onclick = () => { credentialDistribution.authCodes.splice(index, 1); credentialDetailsExpanded.delete(item.id); renderCredentialDistribution(); };
+    summaryActions.appendChild(toggleDetails);
+    summaryActions.appendChild(remove);
     top.appendChild(title);
-    top.appendChild(remove);
+    top.appendChild(summaryActions);
     card.appendChild(top);
+
+    const details = document.createElement('div');
+    details.className = 'credential-details' + (isExpanded ? ' open' : '');
+    toggleDetails.onclick = () => {
+      const next = !credentialDetailsExpanded.has(item.id);
+      if (next) credentialDetailsExpanded.add(item.id); else credentialDetailsExpanded.delete(item.id);
+      details.classList.toggle('open', next);
+      card.classList.toggle('collapsed', !next);
+      toggleDetails.textContent = next ? t('hideSourceSettings') : t('showSourceSettings');
+      toggleDetails.setAttribute('aria-expanded', next ? 'true' : 'false');
+    };
 
     const grid = document.createElement('div');
     grid.className = 'credential-auth-grid';
@@ -3397,26 +3516,31 @@ function renderCredentialDistribution() {
     codeInput.oninput = () => { item.code = codeInput.value.trim(); item.updatedAt = new Date().toISOString(); };
     addLabeledInput(grid, t('credentialCodeValue'), codeInput);
 
-    const modeSelect = document.createElement('select');
-    modeSelect.className = 'nt-input';
-    for (const value of CLIENT_SOURCE_MODES) {
-      const option = document.createElement('option');
-      option.value = value;
-      option.textContent = sourceModeLabel(value);
-      modeSelect.appendChild(option);
-    }
-    modeSelect.value = item.sourceMode;
-    modeSelect.onchange = () => { item.sourceMode = modeSelect.value; item.updatedAt = new Date().toISOString(); renderCredentialDistribution(); };
-    addLabeledInput(grid, t('credentialSourceMode'), modeSelect);
-
     const selectionSelect = document.createElement('select');
     selectionSelect.className = 'nt-input';
     [['simple', t('sourceSelectionSimple')], ['category', t('sourceSelectionCategory')]].forEach(([value, text]) => { const option = document.createElement('option'); option.value = value; option.textContent = text; selectionSelect.appendChild(option); });
     selectionSelect.value = item.selectionMode;
-    selectionSelect.onchange = () => { item.selectionMode = selectionSelect.value; if (item.selectionMode === 'simple') item.bucketLimits = undefined; item.updatedAt = new Date().toISOString(); renderCredentialDistribution(); };
+    selectionSelect.onchange = () => {
+      item.selectionMode = selectionSelect.value;
+      // 根链接与鉴权码统一使用同一套选择模型。旧版 all/search/selected
+      // 源模式在用户修改选择后自然迁移为统一质量池模式。
+      item.sourceMode = 'all';
+      if (item.selectionMode === 'simple') item.bucketLimits = undefined;
+      item.updatedAt = new Date().toISOString();
+      renderCredentialDistribution();
+    };
     addLabeledInput(grid, t('sourceSelectionMode'), selectionSelect);
 
-    const simpleLimit = createCredentialLimitControl(t('credentialMaxSites'), item.maxSites, (value) => {
+    if (item.sourceMode === 'custom' && item.selectedKeys && item.selectedKeys.length) {
+      const legacy = document.createElement('div');
+      legacy.className = 'credential-help';
+      legacy.style.gridColumn = '1 / -1';
+      legacy.textContent = t('credentialLegacyCustomNotice') + ' (' + item.selectedKeys.length + ')';
+      grid.appendChild(legacy);
+    }
+
+    const simpleLimit = createCredentialLimitControl(t('rootSourceCount'), item.maxSites, (value) => {
+      item.sourceMode = 'all';
       item.maxSites = value;
       item.updatedAt = new Date().toISOString();
       summary.textContent = credentialModeSummary(item);
@@ -3424,166 +3548,30 @@ function renderCredentialDistribution() {
     simpleLimit.style.display = item.selectionMode === 'simple' ? '' : 'none';
     grid.appendChild(simpleLimit);
 
-
-    // 分桶数量：全选=-1，不选=0，正数=保留前 N 个。
     const bucketPanel = document.createElement('div');
-    bucketPanel.className = 'credential-platform-grid';
+    bucketPanel.className = 'credential-bucket-panel';
     bucketPanel.style.gridColumn = '1 / -1';
     bucketPanel.style.display = item.selectionMode === 'category' ? '' : 'none';
     const bucketTitle = document.createElement('div');
     bucketTitle.className = 'form-label';
-    bucketTitle.style.gridColumn = '1 / -1';
     bucketTitle.textContent = t('credentialBucketLimits');
     bucketPanel.appendChild(bucketTitle);
     const bucketHint = document.createElement('div');
     bucketHint.className = 'credential-help';
-    bucketHint.style.gridColumn = '1 / -1';
-    bucketHint.textContent = t('credentialBucketLimitsHint') + ' ' + t('credentialUncategorizedZero');
+    bucketHint.textContent = t('credentialBucketLimitsHint');
     bucketPanel.appendChild(bucketHint);
-    const qualityBuckets = [
-      { key: 'excellent', label: t('sqExcellent') },
-      { key: 'good', label: t('sqGood') },
-      { key: 'usable', label: t('sqUsable') },
-      { key: 'untestable', label: t('sqUntestable') },
-    ];
-    const typeBuckets = SOURCE_CATEGORY_KEYS
-      .filter(key => credentialSiteTypes.has(key))
-      .map((key) => ({ key, label: credentialTypeLabel(key) }));
-    function addBucketRow(key, label, group) {
-      const row = document.createElement('div');
-      row.className = 'credential-inline';
-      row.style.gap = '6px';
-      const name = document.createElement('span');
-      name.style.minWidth = '128px';
-      name.style.fontSize = '0.8rem';
-      name.textContent = label;
-      const select = document.createElement('select');
-      select.className = 'nt-input';
-      select.style.width = '112px';
-      [['all', t('credentialBucketAll')], ['none', t('credentialBucketNone')], ['custom', t('credentialBucketCustom')]].forEach(([value, text]) => {
-        const option = document.createElement('option');
-        option.value = value;
-        option.textContent = text;
-        select.appendChild(option);
-      });
-      const number = document.createElement('input');
-      number.type = 'number';
-      number.min = '1';
-      number.className = 'nt-input';
-      number.style.width = '88px';
-      number.placeholder = 'N';
-      const current = item.bucketLimits && item.bucketLimits[group] ? item.bucketLimits[group][key] : undefined;
-      const setBucket = (value) => {
-        if (!item.bucketLimits) item.bucketLimits = {};
-        if (!item.bucketLimits[group]) item.bucketLimits[group] = {};
-        item.bucketLimits[group][key] = value;
-        item.updatedAt = new Date().toISOString();
-        summary.textContent = credentialModeSummary(item);
-      };
-      if (typeof current === 'number' && current > 0) {
-        select.value = 'custom';
-        number.value = String(current);
-      } else if (current === 0) {
-        select.value = 'none';
-      } else if (current === -1) {
-        select.value = 'all';
-      } else {
-        select.value = 'all';
-      }
-      number.disabled = select.value !== 'custom';
-      select.onchange = () => {
-        if (select.value === 'all') setBucket(-1);
-        else if (select.value === 'none') setBucket(0);
-        else setBucket(Math.max(1, parseInt(number.value, 10) || 1));
-        number.disabled = select.value !== 'custom';
-        if (select.value === 'custom' && !number.value) number.value = '1';
-      };
-      number.oninput = () => {
-        if (select.value !== 'custom') return;
-        setBucket(Math.max(1, parseInt(number.value, 10) || 1));
-      };
-      row.appendChild(name);
-      row.appendChild(select);
-      row.appendChild(number);
-      bucketPanel.appendChild(row);
-    }
-    qualityBuckets.forEach((bucket) => addBucketRow(bucket.key, bucket.label, 'quality'));
-    typeBuckets.forEach((bucket) => addBucketRow(bucket.key, bucket.label, 'type'));
-    card.appendChild(bucketPanel);
-
-    const typesBox = document.createElement('div');
-    typesBox.className = 'credential-platform-grid';
-    typesBox.style.gridColumn = '1 / -1';
-    const typesTitle = document.createElement('div');
-    typesTitle.className = 'form-label';
-    typesTitle.style.gridColumn = '1 / -1';
-    typesTitle.textContent = t('credentialSiteTypes');
-    typesBox.appendChild(typesTitle);
-    const typesHint = document.createElement('div');
-    typesHint.className = 'credential-help';
-    typesHint.style.gridColumn = '1 / -1';
-    typesHint.textContent = t('credentialSiteTypesHint');
-    typesBox.appendChild(typesHint);
-    const selectedTypes = new Set(item.siteTypes || []);
-    for (const bucket of typeBuckets) {
-      const label = document.createElement('label');
-      const checkbox = document.createElement('input');
-      checkbox.type = 'checkbox';
-      checkbox.checked = selectedTypes.has(bucket.key);
-      checkbox.onchange = () => {
-        const next = new Set(item.siteTypes || []);
-        if (checkbox.checked) next.add(bucket.key);
-        else next.delete(bucket.key);
-        item.siteTypes = SOURCE_CATEGORY_KEYS.filter(key => next.has(key));
-        item.updatedAt = new Date().toISOString();
-        summary.textContent = credentialModeSummary(item);
-      };
-      const span = document.createElement('span');
-      span.textContent = bucket.label;
-      label.appendChild(checkbox);
-      label.appendChild(span);
-      typesBox.appendChild(label);
-    }
-    grid.appendChild(typesBox);
-
-    const selectedInput = document.createElement('input');
-    selectedInput.className = 'nt-input';
-    selectedInput.placeholder = t('selectedKeysPlaceholder');
-    selectedInput.value = (item.selectedKeys || []).join(',');
-    selectedInput.oninput = () => {
-      item.selectedKeys = [...new Set(selectedInput.value.split(',').map((value) => value.trim()).filter(Boolean))];
+    const bucketControls = document.createElement('div');
+    bucketPanel.appendChild(bucketControls);
+    renderSourceBucketControls(bucketControls, item.bucketLimits, (group, key, value) => {
+      item.sourceMode = 'all';
+      if (!item.bucketLimits) item.bucketLimits = {};
+      if (!item.bucketLimits[group]) item.bucketLimits[group] = {};
+      item.bucketLimits[group][key] = value;
       item.updatedAt = new Date().toISOString();
-    };
-    addLabeledInput(grid, t('credentialSelectedKeys'), selectedInput);
-
-    card.appendChild(grid);
-
-    const gradesBox = document.createElement('div');
-    gradesBox.className = 'credential-platform-grid';
-    const gradeTitle = document.createElement('div');
-    gradeTitle.className = 'form-label';
-    gradeTitle.style.gridColumn = '1 / -1';
-    gradeTitle.textContent = t('credentialIncludeGrades');
-    gradesBox.appendChild(gradeTitle);
-    for (const grade of CLIENT_GRADES) {
-      const label = document.createElement('label');
-      const checkbox = document.createElement('input');
-      checkbox.type = 'checkbox';
-      checkbox.checked = (item.includeGrades || []).includes(grade);
-      checkbox.onchange = () => {
-        const set = new Set(item.includeGrades || []);
-        if (checkbox.checked) set.add(grade); else set.delete(grade);
-        item.includeGrades = CLIENT_GRADES.filter((value) => set.has(value));
-        item.updatedAt = new Date().toISOString();
-        renderCredentialDistribution();
-      };
-      const span = document.createElement('span');
-      span.textContent = qualityGradeLabel(grade);
-      label.appendChild(checkbox);
-      label.appendChild(span);
-      gradesBox.appendChild(label);
-    }
-    card.appendChild(gradesBox);
+      summary.textContent = credentialModeSummary(item);
+    });
+    details.appendChild(grid);
+    details.appendChild(bucketPanel);
 
     const actions = document.createElement('div');
     actions.className = 'credential-auth-actions';
@@ -3592,17 +3580,23 @@ function renderCredentialDistribution() {
     copyAuth.textContent = t('credentialCopyAuth');
     copyAuth.onclick = () => copyClientLink(window.location.origin + '/auth/' + encodeURIComponent(item.code || '') + '/');
     actions.appendChild(copyAuth);
-    card.appendChild(actions);
+    details.appendChild(actions);
+    card.appendChild(details);
     list.appendChild(card);
   });
 
   const status = $('credentialDistributionStatus');
-  if (status) status.textContent = requireEl && requireEl.checked ? t('credentialRequireAuth') : t('credentialRootPolicyFree');
+  if (status) {
+    const summary = t('credentialConfiguredSources').replace('{count}', String(codes.length));
+    status.textContent = summary + ' · ' + (requireEl && requireEl.checked ? t('credentialRequireAuth') : t('credentialRootPolicyFree'));
+  }
 }
 
 function addCredentialAuthCode() {
   if (!Array.isArray(credentialDistribution.authCodes)) credentialDistribution.authCodes = [];
-  credentialDistribution.authCodes.push(newCredentialAuthCode());
+  const item = newCredentialAuthCode();
+  credentialDistribution.authCodes.push(item);
+  credentialDetailsExpanded.add(item.id);
   renderCredentialDistribution();
 }
 

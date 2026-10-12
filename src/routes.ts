@@ -620,12 +620,14 @@ export function createApp(deps: AppDeps): Hono {
       ? Math.floor(policy.maxSites)
       : -1;
     if (selectionMode === 'simple' && maxSites >= 0) {
-      const searchableSites = sites.filter((site) => site.searchable === 1);
-      const functionalSites = sites.filter((site) => site.searchable !== 1);
-      sites = [
-        ...(maxSites === 0 ? [] : searchableSites.slice(0, maxSites)),
-        ...functionalSites,
-      ];
+      if (maxSites === 0) {
+        // “不下发”必须同时覆盖可搜索源和功能型非搜索源。
+        sites = [];
+      } else {
+        const searchableSites = sites.filter((site) => site.searchable === 1);
+        const functionalSites = sites.filter((site) => site.searchable !== 1);
+        sites = [...searchableSites.slice(0, maxSites), ...functionalSites];
+      }
     }
 
     // Pinning is an order preference only. Apply it after the quality,
@@ -878,9 +880,14 @@ export function createApp(deps: AppDeps): Hono {
       );
     }
     if (distributionSelectionMode === 'simple' && distributionMaxSites >= 0) {
-      const searchable = orderedSites.filter((site) => site.searchable === 1);
-      const functional = orderedSites.filter((site) => site.searchable !== 1);
-      orderedSites = [...searchable.slice(0, distributionMaxSites), ...functional];
+      if (distributionMaxSites === 0) {
+        // 根链接与鉴权码一致：0 表示不向客户端下发任何源。
+        orderedSites = [];
+      } else {
+        const searchable = orderedSites.filter((site) => site.searchable === 1);
+        const functional = orderedSites.filter((site) => site.searchable !== 1);
+        orderedSites = [...searchable.slice(0, distributionMaxSites), ...functional];
+      }
     }
     const pinnedOrder = new Map(
       (distributionPinnedKeys || []).map((key, index) => [key, index] as const),

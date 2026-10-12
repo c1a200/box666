@@ -575,30 +575,7 @@ async function readSites(response) {
   }
 
   {
-    const zeroSearchDistribution = {
-      requireAuth: false,
-      authCodes: [{
-        id: 'auth-zero-search',
-        label: '不下发可搜索源',
-        code: 'zero-search',
-        enabled: true,
-        sourceMode: 'all',
-        maxSites: 0,
-        includeGrades: [],
-        siteTypes: [],
-        pinnedKeys: [],
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      }],
-    };
-    const { app } = makeApp({ distribution: zeroSearchDistribution });
-    const sites = await readSites(await app.request('https://box.example/auth/zero-search/'));
-    assert(sites.every((site) => site.searchable !== 1), 'maxSites=0 must exclude every searchable site');
-    assert(sites.some((site) => site.key === 'source-plugin'), 'maxSites=0 must keep non-searchable sites');
-  }
-
-  {
-    const zeroTotalDistribution = {
+    const zeroAuthDistribution = {
       requireAuth: false,
       authCodes: [{
         id: 'auth-zero-total',
@@ -606,6 +583,7 @@ async function readSites(response) {
         code: 'zero-total',
         enabled: true,
         sourceMode: 'all',
+        selectionMode: 'simple',
         maxSites: 0,
         includeGrades: [],
         siteTypes: [],
@@ -614,12 +592,13 @@ async function readSites(response) {
         updatedAt: new Date().toISOString(),
       }],
     };
-    const { app } = makeApp({ distribution: zeroTotalDistribution });
-    const sites = await readSites(await app.request('https://box.example/auth/zero-total/'));
-    assert(sites.filter((site) => site.searchable === 1).length === 0, 'maxSites=0 must exclude every searchable source');
-    assert(sites.some((site) => site.key === 'source-plugin'), 'maxSites=0 must keep non-searchable functional sources');
+    const zeroQuota = { startupMode: 'full', leanStartup: false, selectionMode: 'simple', maxSites: 0 };
+    const { app } = makeApp({ distribution: zeroAuthDistribution, quota: zeroQuota });
+    const authSites = await readSites(await app.request('https://box.example/auth/zero-total/'));
+    const rootSites = await readSites(await app.request('https://box.example/'));
+    assert(authSites.length === 0, 'maxSites=0 must distribute no sources at all through auth links');
+    assert(rootSites.length === 0, 'maxSites=0 must distribute no sources at all through the root link');
   }
-
   {
     const customDistribution = {
       requireAuth: false,
