@@ -50,6 +50,17 @@ function checkAdminInlineScripts() {
   if (!searchPanel.includes("saveSearchQuota('root')")) {
     throw new Error('root source selection must have its own save action on the search page');
   }
+  const sourcesPanelStart = html.indexOf('id="panelSources"');
+  const sourcesPanelEnd = html.indexOf('id="panelMaccms"');
+  if (sourcesPanelStart < 0 || sourcesPanelEnd <= sourcesPanelStart) {
+    throw new Error('admin sources panel could not be located');
+  }
+  const sourcesPanel = html.slice(sourcesPanelStart, sourcesPanelEnd);
+  const sourceListStart = sourcesPanel.indexOf('data-i18n="sourcesList"');
+  const importSection = sourceListStart >= 0 ? sourcesPanel.slice(0, sourceListStart) : '';
+  if (!importSection.includes('data-i18n="importConfig"') || !importSection.includes('id="importInput"') || !importSection.includes('id="exportBtn"') || !importSection.includes('id="restoreBtn"') || !importSection.includes('data-i18n="backupHelp"')) {
+    throw new Error('source backup and restore actions must live inside the collapsible batch import panel');
+  }
   if (!searchPanel.includes('id="rootSourceCountInput"') || !searchPanel.includes('oninput="syncRootSourceCountInput()"') || !html.includes('function syncRootSourceCountInput()') || !html.includes('rootSourceSelection.maxSites = rootLimitValue(rootCount.value, rootCountInput)')) {
     throw new Error('root simple source count must read the current custom value before saving');
   }

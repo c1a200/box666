@@ -293,27 +293,22 @@ ${sharedStyles}
           <button class="btn" id="addBtn" onclick="addSource()" data-i18n="add">Add</button>
         </div>
       </div>
-      <!-- Backup & Restore (always visible) -->
-      <div class="section" style="margin-top:16px">
-        <div class="section-title" data-i18n="backupRestore">Source Backup &amp; Restore</div>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <button class="btn btn-sm" id="exportBtn" onclick="exportConfig()" data-i18n="export">Download Backup</button>
-          <input type="file" id="restoreFile" accept=".json,application/json" style="display:none" onchange="loadRestoreFile(this)">
-          <button class="btn btn-sm secondary" type="button" onclick="document.getElementById('restoreFile').click()" data-i18n="chooseBackup">Choose backup file</button>
-          <button class="btn btn-sm secondary" id="restoreBtn" onclick="restoreSources()" data-i18n="restoreBackup">Restore Backup</button>
-          <span class="status-text" id="restoreFileName" style="font-family:var(--mono);font-size:0.75rem"></span>
-          <span class="status-text" id="importResult" style="font-family:var(--mono);font-size:0.75rem"></span>
-        </div>
-        <div class="source-help" data-i18n="backupHelp">Download Backup saves all movie sources. Restore replaces the current list, so download a backup first.</div>
-      </div>
-
-      <!-- Batch import (collapsible) -->
+      <!-- Batch import / backup restore (collapsible) -->
       <div class="collapsible-toggle" onclick="toggleCollapsible(this)" data-i18n="importConfig">Batch Import</div>
       <div class="collapsible-body">
         <textarea id="importInput" class="import-textarea" placeholder="每行一个源：源名 URL / URL 源名 / 仅 URL；也可粘贴旧版 JSON 或远程配置 URL。" data-i18n-placeholder="importPlaceholder"></textarea>
         <div class="source-help" data-i18n="sourceListHelp">每行一个源，支持“源名 URL”“URL 源名”或仅 URL；单行 URL 仍按远程配置抓取。导入默认合并，重复 URL 不会覆盖现有源。</div>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <button class="btn btn-sm" id="importBtn" onclick="importConfig()" data-i18n="import">Import</button>
+        </div>
+        <div class="source-help" data-i18n="backupHelp">Download Backup saves all movie sources. Restore replaces the current list, so download a backup first.</div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding-top:8px;border-top:1px solid var(--border)">
+          <button class="btn btn-sm" id="exportBtn" onclick="exportConfig()" data-i18n="export">Download Backup</button>
+          <input type="file" id="restoreFile" accept=".json,application/json" style="display:none" onchange="loadRestoreFile(this)">
+          <button class="btn btn-sm secondary" type="button" onclick="document.getElementById('restoreFile').click()" data-i18n="chooseBackup">Choose backup file</button>
+          <button class="btn btn-sm secondary" id="restoreBtn" onclick="restoreSources()" data-i18n="restoreBackup">Restore Backup</button>
+          <span class="status-text" id="restoreFileName" style="font-family:var(--mono);font-size:0.75rem"></span>
+          <span class="status-text" id="importResult" style="font-family:var(--mono);font-size:0.75rem"></span>
         </div>
       </div>
 
