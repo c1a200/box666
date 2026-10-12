@@ -480,6 +480,7 @@ ${sharedStyles}
       <div class="credential-help" data-i18n="rootSourceSelectionHint">简单方式按统一质量排序从前向后取源；精细方式按质量等级和源类型分别取各自排序靠前的源。两种方式互斥。</div>
       <div class="source-policy-summary">
         <span class="credential-pill" id="rootSourceSelectionSummary">全部 / 不限</span>
+        <button class="btn btn-sm" onclick="copyClientLink(window.location.origin + '/config.json')" data-i18n="credentialCopyRoot">复制根链接</button>
         <button class="btn btn-sm" id="rootSourceSelectionToggle" onclick="toggleRootSourcePolicyDetails()" aria-expanded="false">设置源选择</button>
         <button class="btn btn-sm" onclick="saveSearchQuota('root')" data-i18n="save">保存根链接选择</button>
         <span class="status-text" id="rootSourceSelectionStatus" style="font-size:0.8rem"></span>
@@ -903,7 +904,9 @@ const translations = {
     credentialRootPolicyFree:'Root link enabled',
     credentialSelectedKeysRequired:'Custom source mode requires at least one selected key.',
     credentialBucketLimits:'Per-category limits',
-    credentialBucketLimitsHint:'Quality grades and site types can each be set to all, none, or a custom N. Custom keeps the first N in the final quality order; unconfigured entries add no extra limit.',
+    credentialBucketLimitsHint:'Each label shows the independent usable count in the final quality pool. Custom accepts 1 to that count; when both a quality grade and a site type are limited, the intersection is served. Non-searchable function plugins do not occupy these category slots.',
+    sourceBucketAvailableCount:'{count} available',
+    sourceBucketNoAvailable:'No sources',
     credentialBucketAll:'All / no limit',
     credentialBucketNone:'Do not serve',
     credentialBucketCustom:'Custom amount',
@@ -1054,7 +1057,9 @@ const translations = {
     credentialRootPolicyFree:'根链接已启用',
     credentialSelectedKeysRequired:'“自定义源标识白名单”模式至少需要填写一个源标识。',
     credentialBucketLimits:'分类源数量',
-    credentialBucketLimitsHint:'质量等级和站点类型均可设置为全选、不选或自定义 N；自定义按最终质量顺序保留前 N 个，未设置的项目不额外限制。未设置时全部下发；根链接与鉴权码规则一致。',
+    credentialBucketLimitsHint:'每个分类后的数字是最终质量池中该分类的独立可用数量；自定义范围为 1 到该数量。质量等级与站点类型同时设置时按交集下发；非搜索功能插件不占分类名额。未设置的项目默认全部下发，根链接与鉴权码规则一致。',
+    sourceBucketAvailableCount:'{count} 个可用',
+    sourceBucketNoAvailable:'无可用源',
     credentialBucketAll:'全选 / 不限',
     credentialBucketNone:'不选',
     credentialBucketCustom:'自定义数量',
@@ -2206,6 +2211,44 @@ function rootLimitValue(mode, input) {
   return -1;
 }
 
+function sourceBucketAvailableCount(group, key) {
+  const sites = Array.isArray(sqAllSites) ? sqAllSites : [];
+  if (group === 'quality') {
+    const qualityMap = qualityEntryByKey();
+    return sites.reduce(function(count, site) {
+      const entry = qualityMap.get(site.key);
+      const grade = (entry && entry.grade) || site.qualityGrade;
+      return count + (grade === key ? 1 : 0);
+    }, 0);
+  }
+  if (group === 'type') {
+    const serverCount = sqQualityPoolCategoryCounts && typeof sqQualityPoolCategoryCounts[key] === 'number'
+      ? Math.floor(sqQualityPoolCategoryCounts[key])
+      : null;
+    if (serverCount !== null && serverCount >= 0) return serverCount;
+    return sites.reduce(function(count, site) {
+      return count + (sourceCategoryOf(site) === key ? 1 : 0);
+    }, 0);
+  }
+  return 0;
+}
+
+function refreshSourceBucketControls() {
+  const rootBox = $('rootSourceBuckets');
+  if (rootBox && rootBox.style.display !== 'none') renderRootSourceBuckets();
+  const credentialBoxes = document.querySelectorAll('.credential-bucket-panel');
+  credentialBoxes.forEach(function(panel) {
+    if (panel.style.display === 'none') return;
+    const controls = panel.querySelector('.credential-bucket-controls');
+    const owner = panel.closest('.credential-card');
+    if (!controls || !owner) return;
+    const item = (credentialDistribution.authCodes || []).find(function(candidate) {
+      return String(candidate.id) === String(owner.getAttribute('data-auth-id'));
+    });
+    if (item) renderCredentialBucketControls(controls, item);
+  });
+}
+
 function renderSourceBucketControls(container, limits, onChange) {
   if (!container) return;
   container.innerHTML = '';
@@ -2224,8 +2267,13 @@ function renderSourceBucketControls(container, limits, onChange) {
       const wrap = document.createElement('div');
       const label = document.createElement('label');
       label.className = 'form-label';
-      label.textContent = set.labels[index];
+      const availableCount = sourceBucketAvailableCount(set.group, key);
+      const labelId = 'sourceBucket_' + set.group + '_' + key + '_' + Math.random().toString(36).slice(2, 8);
+      label.htmlFor = labelId;
+      label.textContent = set.labels[index] + ' · ' + t('sourceBucketAvailableCount').replace('{count}', String(availableCount));
       const select = document.createElement('select');
+      select.id = labelId;
+      select.name = 'sourceBucket_' + set.group + '_' + key;
       select.className = 'nt-input';
       [['all', t('credentialBucketAll')], ['none', t('credentialBucketNone')], ['custom', t('credentialBucketCustom')]].forEach(([value, text]) => {
         const option = document.createElement('option');
@@ -2236,16 +2284,28 @@ function renderSourceBucketControls(container, limits, onChange) {
       const number = document.createElement('input');
       number.type = 'number';
       number.min = '1';
+      number.max = String(Math.max(1, availableCount));
+      number.name = 'sourceBucketAmount_' + set.group + '_' + key;
       number.className = 'nt-input';
-      number.placeholder = t('sourceCountPlaceholder');
+      number.placeholder = availableCount > 0 ? ('1-' + availableCount) : t('sourceBucketNoAvailable');
+      number.title = number.placeholder;
       const current = limits && limits[set.group] ? limits[set.group][key] : undefined;
       select.value = current === 0 ? 'none' : (typeof current === 'number' && current > 0 ? 'custom' : 'all');
       if (select.value === 'custom') number.value = String(current);
-      number.disabled = select.value !== 'custom';
+      if (availableCount === 0) {
+        select.value = 'none';
+        number.value = '';
+      } else if (select.value === 'custom' && (current < 1 || current > availableCount)) {
+        number.value = String(Math.min(availableCount, Math.max(1, current || 1)));
+      }
+      const customOption = Array.from(select.options).find(option => option.value === 'custom');
+      if (customOption) customOption.disabled = availableCount === 0;
+      number.disabled = select.value !== 'custom' || availableCount === 0;
       const commit = () => {
-        const value = select.value === 'none' ? 0 : (select.value === 'custom' ? Math.max(1, parseInt(number.value, 10) || 1) : -1);
+        const raw = select.value === 'custom' ? (parseInt(number.value, 10) || 1) : null;
+        const value = select.value === 'none' ? 0 : (select.value === 'custom' ? Math.min(availableCount, Math.max(1, raw)) : -1);
         onChange(set.group, key, value);
-        number.disabled = select.value !== 'custom';
+        number.disabled = select.value !== 'custom' || availableCount === 0;
       };
       select.onchange = commit;
       number.oninput = commit;
@@ -2341,6 +2401,9 @@ async function loadSearchQuota() {
 async function saveSearchQuota(scope) {
   const status = $(scope === 'root' ? 'rootSourceSelectionStatus' : 'searchQuotaStatus');
   status.textContent = '';
+  if (rootSourceSelection.selectionMode === 'category') {
+    rootSourceSelection.bucketLimits = normalizeClientBucketLimitsForAvailable(rootSourceSelection.bucketLimits);
+  }
   const data = {
    maxQuickSearch: parseInt($('maxQuickSearchInput').value) || 0,
     maxStartupQuickSearch: parseInt($('maxStartupQuickSearchInput').value) || 0,
@@ -2444,6 +2507,7 @@ async function loadSearchQuotaReport() {
       ? serverQualityPoolCounts
       : countSearchCategories(sqAllSites);
     renderSearchSources();
+    refreshSourceBucketControls();
   } catch {}
 }
 
@@ -2492,6 +2556,7 @@ async function loadQualityReport() {
     renderQualitySchedule(d.schedule);
     renderQualityStats(d);
     if (sqAllSites.length > 0) renderSearchSources();
+    refreshSourceBucketControls();
     if (d.status && d.status.state === 'running') startQualityPolling();
     else setQualityButtonsRunning(false);
   } catch {}
@@ -2520,6 +2585,7 @@ function startQualityPolling() {
       renderQualitySchedule(d.schedule);
       renderQualityStats(qualityReportCache);
       renderSearchSources();
+      refreshSourceBucketControls();
 
       if (d.status && d.status.state === 'running') {
         qualityPollTimer = setTimeout(poll, 2000);
@@ -3236,6 +3302,40 @@ function credentialTypeLabel(key) {
   return sourceCategoryLabel(key);
 }
 
+function normalizeClientBucketMap(raw, allowedKeys) {
+  const out = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  for (const key of allowedKeys || []) {
+    const value = raw[key];
+    if (typeof value !== 'number' || !Number.isFinite(value)) continue;
+    const limit = Math.floor(value);
+    if (limit === -1) out[key] = -1;
+    else if (limit >= 0) out[key] = limit;
+  }
+  return out;
+}
+
+function normalizeClientBucketLimitsForAvailable(raw) {
+  const normalized = normalizeClientBucketLimits(raw);
+  if (!normalized) return undefined;
+  const result = {};
+  for (const group of ['quality', 'type']) {
+    const source = normalized[group];
+    if (!source) continue;
+    const next = {};
+    for (const key of Object.keys(source)) {
+      const value = source[key];
+      if (typeof value === 'number' && value > 0 && sourceBucketAvailableCount(group, key) === 0) {
+        next[key] = 0;
+      } else {
+        next[key] = value;
+      }
+    }
+    if (Object.keys(next).length) result[group] = next;
+  }
+  return Object.keys(result).length ? result : undefined;
+}
+
 function normalizeClientBucketTypeMap(raw) {
   const out = {};
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
@@ -3435,6 +3535,20 @@ function createCredentialLimitControl(labelText, value, onChange) {
   return wrap;
 }
 
+function renderCredentialBucketControls(container, item) {
+  if (!container || !item) return;
+  renderSourceBucketControls(container, item.bucketLimits, function(group, key, value) {
+    item.sourceMode = 'all';
+    if (!item.bucketLimits) item.bucketLimits = {};
+    if (!item.bucketLimits[group]) item.bucketLimits[group] = {};
+    item.bucketLimits[group][key] = value;
+    item.updatedAt = new Date().toISOString();
+    const card = container.closest('.credential-card');
+    const summary = card && card.querySelector('.credential-pill');
+    if (summary) summary.textContent = credentialModeSummary(item);
+  });
+}
+
 function renderCredentialDistribution() {
   const requireEl = $('credentialRequireAuth');
   if (requireEl) credentialDistribution.requireAuth = requireEl.checked;
@@ -3454,7 +3568,8 @@ function renderCredentialDistribution() {
     codes[index] = item;
     const card = document.createElement('div');
     const isExpanded = credentialDetailsExpanded.has(item.id);
-    card.className = 'credential-auth-card' + (isExpanded ? '' : ' collapsed');
+    card.className = 'credential-auth-card credential-card' + (isExpanded ? '' : ' collapsed');
+    card.setAttribute('data-auth-id', item.id);
 
     const top = document.createElement('div');
     top.className = 'credential-card-head';
@@ -3476,6 +3591,10 @@ function renderCredentialDistribution() {
 
     const summaryActions = document.createElement('div');
     summaryActions.className = 'credential-card-actions';
+    const copyAuth = document.createElement('button');
+    copyAuth.className = 'btn btn-sm';
+    copyAuth.textContent = t('credentialCopyAuth');
+    copyAuth.onclick = () => copyClientLink(window.location.origin + '/auth/' + encodeURIComponent(item.code || '') + '/');
     const toggleDetails = document.createElement('button');
     toggleDetails.className = 'btn btn-sm';
     toggleDetails.textContent = isExpanded ? t('hideSourceSettings') : t('showSourceSettings');
@@ -3484,6 +3603,7 @@ function renderCredentialDistribution() {
     remove.className = 'btn btn-sm btn-danger';
     remove.textContent = t('credentialDelete');
     remove.onclick = () => { credentialDistribution.authCodes.splice(index, 1); credentialDetailsExpanded.delete(item.id); renderCredentialDistribution(); };
+    summaryActions.appendChild(copyAuth);
     summaryActions.appendChild(toggleDetails);
     summaryActions.appendChild(remove);
     top.appendChild(title);
@@ -3561,26 +3681,12 @@ function renderCredentialDistribution() {
     bucketHint.textContent = t('credentialBucketLimitsHint');
     bucketPanel.appendChild(bucketHint);
     const bucketControls = document.createElement('div');
+    bucketControls.className = 'credential-bucket-controls';
     bucketPanel.appendChild(bucketControls);
-    renderSourceBucketControls(bucketControls, item.bucketLimits, (group, key, value) => {
-      item.sourceMode = 'all';
-      if (!item.bucketLimits) item.bucketLimits = {};
-      if (!item.bucketLimits[group]) item.bucketLimits[group] = {};
-      item.bucketLimits[group][key] = value;
-      item.updatedAt = new Date().toISOString();
-      summary.textContent = credentialModeSummary(item);
-    });
+    renderCredentialBucketControls(bucketControls, item);
     details.appendChild(grid);
     details.appendChild(bucketPanel);
 
-    const actions = document.createElement('div');
-    actions.className = 'credential-auth-actions';
-    const copyAuth = document.createElement('button');
-    copyAuth.className = 'btn btn-sm';
-    copyAuth.textContent = t('credentialCopyAuth');
-    copyAuth.onclick = () => copyClientLink(window.location.origin + '/auth/' + encodeURIComponent(item.code || '') + '/');
-    actions.appendChild(copyAuth);
-    details.appendChild(actions);
     card.appendChild(details);
     list.appendChild(card);
   });
@@ -3626,6 +3732,7 @@ async function loadCredentialDistribution() {
     ]);
     rememberCredentialSiteTypes(cfg.sites, configuredTypes);
     syncCredentialDistributionForm();
+    refreshSourceBucketControls();
   } catch {}
 }
 
@@ -3634,6 +3741,12 @@ async function saveCredentialDistribution() {
   const requireEl = $('credentialRequireAuth');
   if (!status || !requireEl) return;
   credentialDistribution.requireAuth = requireEl.checked;
+  credentialDistribution.authCodes = (credentialDistribution.authCodes || []).map(function(item) {
+    if (item.selectionMode === 'category') {
+      item.bucketLimits = normalizeClientBucketLimitsForAvailable(item.bucketLimits);
+    }
+    return item;
+  });
   if (credentialDistribution.requireAuth && !(credentialDistribution.authCodes || []).some((item) => item.enabled !== false)) {
     toast(t('credentialRootRequired'), 'error');
     return;
