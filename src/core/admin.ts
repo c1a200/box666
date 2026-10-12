@@ -841,7 +841,7 @@ const translations = {
     searchQuota:'Client Parser Quota',
     maxParses:'Parser limit', autoSearchLimit:'Auto safe limit', searchQuotaDesc:'This only controls how many healthy parsers the root config serves. 0 means unlimited. Searchable source categories and counts are controlled per auth code; the root URL is no longer trimmed by a global searchable-source limit.', sortSearchBySpeed:'Sort by speed', sortSearchBySpeedDesc:'Uses existing site speed-test results to put faster sources first; no extra network requests. Pinned sources stay first.', leanStartup:'Lean startup', leanStartupDesc:'Removes remote JAR/extension sites from the root startup config to shorten TVBox startup; pinned sources are kept.', maxStartupQuickSearchDesc:'Quick-search cap used by the root startup config; 0 means unlimited. Full config remains available at /config-full.json.', startupOptimizationDesc:'Quick-search and root-startup limits default to unlimited. Searchable source categories and counts are selected per auth code; /config-full.json contains the full searchable set.', startupMode:'Startup mode', startupModeLean:'Lean', startupModeFull:'Full', startupModeDesc:'Lean serves a trimmed config at the root address for faster startup. Full is still available at /config-full.json.', pruneDeadParses:'Prune dead parsers', pruneDeadParsesDesc:'Probes parser endpoints and removes confirmed failures/timeouts so clients do not wait for each dead parser during startup.',
     tabSearchQuota:'Search',
-    sqStatsCurrent:'Current actual counts', sqStatsSearchable:'searchable sources', sqStatsQuick:'quick search', sqStatsQuickLimit:'automatic limit', sqStatsPool:'quality pool', sqStatsServerVerified:'server verified', sqStatsClientFallback:'client fallback', sqStatsParsers:'Parsers', sqStatsKept:'kept', sqStatsProbed:'probed', sqStatsRemoved:'removed', sqStatsLimit:'limit', sqStatsUnlimited:'unlimited', sqStatsQuality:'Quality grades', sqStatsNoData:'Run aggregation to show quality grades and parser counts.', sqPoolTotal:'Total quality-pool sources', sqQuality:'graded',
+    sqStatsCurrent:'Current actual counts', sqStatsSearchable:'searchable sources', sqStatsQuick:'quick search', sqStatsQuickLimit:'automatic limit', sqStatsPool:'quality pool', sqStatsServerVerified:'server verified', sqStatsClientFallback:'client fallback', sqStatsParsers:'Parsers', sqStatsKept:'kept', sqStatsProbed:'probed', sqStatsRemoved:'removed', sqStatsLimit:'limit', sqStatsUnlimited:'unlimited', sqStatsQuality:'Quality grades', sqStatsNoData:'Run aggregation to show quality grades and parser counts.', sqPoolTotal:'Total quality-pool sources', sqStatsDistributable:'actual distributable', sqStatsBlocked:'blacklist blocked', sqQuality:'graded',
     sqKey:'Source identifier', sqName:'Source name', sqSource:'Source type', sqReason:'Exclusion reason', sqGrade:'Quality grade / score', sqSpeedStatus:'Response speed / confidence', sqRank:'Overall / category rank', sqAction:'Action',
     sqPin:'Pin', sqUnpin:'Unpin',
     sqBlock:'Block', sqUnblock:'Unblock', sqBlocked:'Blocked', sqBlockedDesc:'Blocked sources are excluded from all client outputs but remain here so they can be restored.', sqSourceFilterPh:'Search source name or key...', sqFilterAll:'All grades', sqFilterMatched:'Matched', sqFilterNoMatch:'No matching sources',
@@ -992,7 +992,7 @@ const translations = {
     searchQuota:'应用端解析器配额',
     maxParses:'解析器上限', autoSearchLimit:'自动安全配额', searchQuotaDesc:'这里只控制根配置下发的健康解析器数量；填 0 表示不限制。可搜索源的类型和数量由鉴权码设置决定，根链接不再按全局可搜索源上限裁剪。', sortSearchBySpeed:'按测速速度排序', sortSearchBySpeedDesc:'复用现有站点测速结果，将较快的源排在前面；不会额外发起测速请求。置顶源始终最前。', leanStartup:'轻量启动', leanStartupDesc:'根配置启动阶段去掉远程 JAR/扩展站点，缩短影视仓/TVBox 启动时间；置顶源仍保留。', maxStartupQuickSearchDesc:'根地址启动配置使用的快速搜索上限；0 表示不限制。完整配置仍可通过 /config-full.json 获取。', startupOptimizationDesc:'快速搜索源默认不限制。可搜索源的类型和数量由鉴权码按质量池顺序选择；/config-full.json 保留完整搜索源。', startupMode:'启动模式', startupModeLean:'轻量', startupModeFull:'完整', startupModeDesc:'轻量模式在根地址返回裁剪后的启动配置以加快启动；完整配置仍可通过 /config-full.json 获取。', pruneDeadParses:'剔除失效解析器', pruneDeadParsesDesc:'主动探测解析器地址并剔除确认超时或失效的项，避免客户端启动时逐个等待死解析器。',
     tabSearchQuota:'搜索',
-    sqStatsCurrent:'当前实际数量', sqStatsSearchable:'可搜索源', sqStatsQuick:'快速搜索', sqStatsQuickLimit:'自动上限', sqStatsPool:'质量池', sqStatsServerVerified:'服务端已验证', sqStatsClientFallback:'客户端后备', sqStatsParsers:'解析器', sqStatsKept:'最终保留', sqStatsProbed:'探测', sqStatsRemoved:'剔除', sqStatsLimit:'上限', sqStatsUnlimited:'不限制', sqStatsQuality:'质量分级', sqStatsNoData:'执行聚合后显示质量分级和解析器数量。', sqPoolTotal:'质量池总数', sqQuality:'已分级',
+    sqStatsCurrent:'当前实际数量', sqStatsSearchable:'可搜索源', sqStatsQuick:'快速搜索', sqStatsQuickLimit:'自动上限', sqStatsPool:'质量池', sqStatsServerVerified:'服务端已验证', sqStatsClientFallback:'客户端后备', sqStatsParsers:'解析器', sqStatsKept:'最终保留', sqStatsProbed:'探测', sqStatsRemoved:'剔除', sqStatsLimit:'上限', sqStatsUnlimited:'不限制', sqStatsQuality:'质量分级', sqStatsNoData:'执行聚合后显示质量分级和解析器数量。', sqPoolTotal:'质量池总数', sqStatsDistributable:'实际可下发', sqStatsBlocked:'黑名单屏蔽', sqQuality:'已分级',
     sqExcellent:'优', sqGood:'良', sqUsable:'可用', sqUntestable:'待客户端最终验证', sqTimeout:'超时', sqUnusable:'不可用', sqCumulative:'累计',
     sqReasonBlocked:'已屏蔽', sqReasonNotInFinal:'未进入最终列表', sqReasonNotSearchable:'不可搜索',
     sqKey:'源标识', sqName:'源名称', sqSource:'源类型', sqReason:'未入选原因', sqGrade:'质量等级 / 分数', sqSpeedStatus:'响应速度 / 可信度', sqRank:'总排名 / 分类排名', sqAction:'操作',
@@ -2474,7 +2474,12 @@ async function loadSearchQuotaReport() {
         ? d.qualityPoolClientFallback
         : (typeof q.clientFallbackTotal === 'number' ? q.clientFallbackTotal : untestableCount);
       const qualityPoolCount = typeof d.qualityPoolCount === 'number' ? d.qualityPoolCount : q.poolTotal;
-      const qualityText = t('sqStatsQuality') + ': ' + t('sqExcellent') + ' ' + q.excellent.count + ' (' + q.excellent.cumulative + ') / ' + t('sqGood') + ' ' + q.good.count + ' (' + q.good.cumulative + ') / ' + t('sqUsable') + ' ' + q.usable.count + ' (' + q.usable.cumulative + ') / ' + t('sqUntestable') + ' ' + untestableCount + ' (' + q.untestable.cumulative + ') / ' + t('sqTimeout') + ' ' + q.timeout.count + ' (' + q.timeout.cumulative + ') / ' + t('sqUnusable') + ' ' + q.unusable.count + ' · ' + t('sqStatsPool') + ': ' + qualityPoolCount + ' (' + t('sqStatsServerVerified') + ' ' + serverVerified + ', ' + t('sqStatsClientFallback') + ' ' + clientFallback + ')';
+      const distributablePoolCount = typeof d.distributablePoolCount === 'number' ? d.distributablePoolCount : null;
+      const blockedPoolCount = typeof d.blockedPoolCount === 'number' ? d.blockedPoolCount : null;
+      const servableText = distributablePoolCount === null
+        ? ''
+        : ' / ' + t('sqStatsDistributable') + ': ' + distributablePoolCount + (blockedPoolCount ? ' (' + t('sqStatsBlocked') + ' ' + blockedPoolCount + ')' : '');
+      const qualityText = t('sqStatsQuality') + ': ' + t('sqExcellent') + ' ' + q.excellent.count + ' (' + q.excellent.cumulative + ') / ' + t('sqGood') + ' ' + q.good.count + ' (' + q.good.cumulative + ') / ' + t('sqUsable') + ' ' + q.usable.count + ' (' + q.usable.cumulative + ') / ' + t('sqUntestable') + ' ' + untestableCount + ' (' + q.untestable.cumulative + ') / ' + t('sqTimeout') + ' ' + q.timeout.count + ' (' + q.timeout.cumulative + ') / ' + t('sqUnusable') + ' ' + q.unusable.count + ' · ' + t('sqStatsPool') + ': ' + qualityPoolCount + ' (' + t('sqStatsServerVerified') + ' ' + serverVerified + ', ' + t('sqStatsClientFallback') + ' ' + clientFallback + ')' + servableText;
       $('sqQualityGrades').textContent = qualityText;
       const stats = $('searchQuotaStats');
       if (stats) {
@@ -2483,7 +2488,7 @@ async function loadSearchQuotaReport() {
         const parserText = typeof d.parseKept === 'number'
           ? t('sqStatsParsers') + ': ' + t('sqStatsKept') + ' ' + d.parseKept + (typeof d.parseProbed === 'number' ? ', ' + t('sqStatsProbed') + ' ' + d.parseProbed : '') + (typeof d.parseRemoved === 'number' && d.parseRemoved > 0 ? ', ' + t('sqStatsRemoved') + ' ' + d.parseRemoved : '') + (typeof d.parseLimit === 'number' && d.parseLimit > 0 ? ', ' + t('sqStatsLimit') + ' ' + d.parseLimit : ', ' + t('sqStatsUnlimited'))
           : t('sqStatsParsers') + ': ' + t('sqStatsNoData');
-        stats.textContent = t('sqStatsCurrent') + ': ' + t('sqStatsSearchable') + ' ' + d.searchable + ' · ' + t('sqStatsPool') + ' ' + qualityPoolCount + ' (' + t('sqStatsServerVerified') + ' ' + serverVerified + ', ' + t('sqStatsClientFallback') + ' ' + clientFallback + ') · ' + t('sqStatsQuick') + ' ' + quickCount + quickLimit + '. ' + parserText + '. ' + t('sqStatsQuality') + ': ' + t('sqExcellent') + ' ' + q.excellent.count + ', ' + t('sqGood') + ' ' + q.good.count + ', ' + t('sqUsable') + ' ' + q.usable.count + ', ' + t('sqUntestable') + ' ' + untestableCount + ', ' + t('sqTimeout') + ' ' + q.timeout.count + ', ' + t('sqUnusable') + ' ' + q.unusable.count + '.';
+        stats.textContent = t('sqStatsCurrent') + ': ' + t('sqStatsSearchable') + ' ' + d.searchable + ' · ' + t('sqStatsPool') + ' ' + qualityPoolCount + ' (' + t('sqStatsServerVerified') + ' ' + serverVerified + ', ' + t('sqStatsClientFallback') + ' ' + clientFallback + ')' + servableText + ' · ' + t('sqStatsQuick') + ' ' + quickCount + quickLimit + '. ' + parserText + '. ' + t('sqStatsQuality') + ': ' + t('sqExcellent') + ' ' + q.excellent.count + ', ' + t('sqGood') + ' ' + q.good.count + ', ' + t('sqUsable') + ' ' + q.usable.count + ', ' + t('sqUntestable') + ' ' + untestableCount + ', ' + t('sqTimeout') + ' ' + q.timeout.count + ', ' + t('sqUnusable') + ' ' + q.unusable.count + '.';
       }
     } else {
       $('sqQualityGrades').textContent = '';
@@ -2506,19 +2511,28 @@ async function loadSearchQuotaReport() {
     const serverQualityPoolCounts = cfg.searchQuality && cfg.searchQuality.qualityPoolCategoryCounts
       ? cfg.searchQuality.qualityPoolCategoryCounts
       : {};
+    const serverDistributablePoolCounts = cfg.searchQuality && cfg.searchQuality.distributablePoolCategoryCounts
+      ? cfg.searchQuality.distributablePoolCategoryCounts
+      : {};
     const serverDistributableCounts = cfg.searchQuality && cfg.searchQuality.distributableCategoryCounts
       ? cfg.searchQuality.distributableCategoryCounts
       : {};
-    sqBlockedSites = allSites.filter(s => s.searchable === 1 && s.blocked === true);
-    // qualityPoolKeys 是服务端的唯一质量池集合；空数组也必须尊重，不能回退为全部可搜索源。
+    // qualityPoolKeys 是质量池成员全集（可能含黑名单）；可下发列表另用
+    // distributablePoolKeys，避免把“池成员”和“实际可选”混成一个数字。
     const qualityPoolKeys = new Set(rawQualityPoolKeys);
     sqQualityOrder = rawQualityPoolKeys.slice();
-    sqAllSites = allSites.filter(s => s.searchable === 1 && s.inQualityPool === true && qualityPoolKeys.has(s.key) && s.blocked !== true);
+    sqBlockedSites = allSites.filter(s => s.searchable === 1 && s.blocked === true);
+    // sqAllSites 保留完整质量池成员（含已屏蔽），用于列表、排序和池总数；
+    // 实际可下发数量由 distributablePoolKeys 单独决定，不能用黑名单后集合冒充池。
+    sqAllSites = allSites.filter(s => s.searchable === 1 && s.inQualityPool === true && qualityPoolKeys.has(s.key));
     sqExcludedSites = allSites.filter(s => s.searchable === 1 && s.blocked !== true && !qualityPoolKeys.has(s.key));
     sqQualityPoolCount = sqAllSites.length;
     sqCategoryCounts = serverSearchableCounts;
     sqQualityPoolCategoryCounts = typeof serverQualityPoolCounts === 'object' && serverQualityPoolCounts !== null
       ? serverQualityPoolCounts
+      : countSearchCategories(allSites.filter(function(site) { return site.inQualityPool === true; }));
+    sqDistributablePoolCategoryCounts = typeof serverDistributablePoolCounts === 'object' && serverDistributablePoolCounts !== null
+      ? serverDistributablePoolCounts
       : countSearchCategories(sqAllSites);
     sqDistributableCategoryCounts = typeof serverDistributableCounts === 'object' && serverDistributableCounts !== null
       ? serverDistributableCounts
@@ -2755,10 +2769,12 @@ function renderQualityStats(d) {
   const parserLimitText = typeof actual.parserLimit === 'number' && actual.parserLimit > 0
     ? String(actual.parserLimit)
     : t('sqStatsUnlimited');
-  html += '<div><strong>' + t('qualityActualCounts') + '</strong>: ' + t('sqStatsSearchable') + ' ' + countText(actual.searchable)
-    + ' · ' + t('sqStatsParsers') + ' ' + t('sqStatsKept') + ' ' + countText(actual.parsers) + ' (' + t('sqStatsLimit') + ' ' + parserLimitText + ')'
-    + ' · ' + t('sqStatsAssessed') + ' ' + countText(actual.assessedSourceCount) + ' / ' + t('sqStatsPool') + ' ' + countText(actual.qualityPoolCount)
-    + ' (' + t('sqStatsServerVerified') + ' ' + countText(actual.serverVerifiedPool) + ', ' + t('sqStatsClientFallback') + ' ' + countText(actual.clientFallbackPool) + ')</div>';
+  html += '<div><strong>' + t('qualityActualCounts') + '</strong>: ' + t('sqStatsAssessed') + ' ' + countText(actual.assessedSourceCount)
+    + ' · ' + t('sqStatsPool') + ' ' + countText(actual.qualityPoolCount)
+    + ' (' + t('sqStatsServerVerified') + ' ' + countText(actual.serverVerifiedPool) + ', ' + t('sqStatsClientFallback') + ' ' + countText(actual.clientFallbackPool) + ')'
+    + ' · ' + t('sqStatsDistributable') + ' ' + countText(actual.distributablePoolCount)
+    + ' (' + t('sqStatsBlocked') + ' ' + countText(actual.blockedPoolCount) + ')'
+    + ' · ' + t('sqStatsParsers') + ' ' + t('sqStatsKept') + ' ' + countText(actual.parsers) + ' (' + t('sqStatsLimit') + ' ' + parserLimitText + ')</div>';
 
   if (!snap || !snap.grades) {
     html += '<div>' + t('qualityNoSnapshot') + '</div>';
@@ -2780,7 +2796,7 @@ function renderQualityStats(d) {
   const probed = typeof coverage.probed === 'number' ? coverage.probed : 0;
   const coveragePct = testable > 0 ? Math.min(100, Math.round((probed / testable) * 100)) : 0;
   html += '<div>' + t('qualityCoverage') + ': ' + coveragePct + '% · ' + t('qualityTestable') + ' ' + countText(coverage.testable) + ' · ' + t('qualityProbed') + ' ' + countText(coverage.probed) + ' · ' + t('qualityNotProbed') + ' ' + countText(coverage.notProbed) + ' · ' + t('qualityUntestable') + ' ' + countText(coverage.untestable) + '</div>';
-  html += '<div>' + t('sqPoolTotal') + ': ' + countText(actual.qualityPoolCount) + ' · ' + t('sqQuality') + ' ' + snap.graded + '/' + snap.total + ' · ' + fmtLocalTime(snap.updatedAt, sched?.timezone) + '</div>';
+  html += '<div>' + t('sqPoolTotal') + ': ' + countText(actual.qualityPoolCount) + ' · ' + t('sqStatsDistributable') + ': ' + countText(actual.distributablePoolCount) + ' (' + t('sqStatsBlocked') + ' ' + countText(actual.blockedPoolCount) + ') · ' + t('sqQuality') + ' ' + snap.graded + '/' + snap.total + ' · ' + fmtLocalTime(snap.updatedAt, sched?.timezone) + '</div>';
  const recParse = d.recommendedMaxParses ?? snap.recommendedMaxParses ?? 3;
   html += '<div>' + t('qualityRecommended') + ': ' + t('qualityRecParses') + ' ' + recParse + '</div>';
   html += '<div style="margin-top:2px">' + t('qualityTimesHint') + '</div>';
@@ -2794,6 +2810,7 @@ let sqBlockedSites = [];
 let sqQualityPoolCount = 0;
 let sqCategoryCounts = {};
 let sqQualityPoolCategoryCounts = {};
+let sqDistributablePoolCategoryCounts = {};
 let sqDistributableCategoryCounts = {};
 let sqSearchRenderPending = false;
 let sqLastRenderedHtml = '';
@@ -3038,7 +3055,7 @@ function renderSearchSources() {
     if (aPinned && bPinned) return (pinnedOrder.get(a.key) || 0) - (pinnedOrder.get(b.key) || 0);
     return compareByQualityPoolOrder(a, b, qualityMap, rankMaps);
   };
-  const allSites = sqAllSites.slice().sort(compare);
+  const allSites = sqAllSites.filter(s => !(sqBlockedKeys.has(s.key) || s.blocked === true)).sort(compare);
   const blockedAll = (sqBlockedSites || []).slice().sort(function(a, b) {
     return compareByQualityPoolOrder(a, b, qualityMap, rankMaps);
   });

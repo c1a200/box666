@@ -493,6 +493,22 @@ export function createApp(deps: AppDeps): Hono {
     }
   }
 
+  async function loadStoredFinalSiteKeys(): Promise<Set<string>> {
+    const keys = new Set<string>();
+    try {
+      const raw = await storage.get(KV_MERGED_CONFIG);
+      if (!raw) return keys;
+      const parsed = JSON.parse(raw) as TVBoxConfig;
+      for (const site of parsed.sites || []) {
+        if (site && typeof site.key === 'string') keys.add(site.key);
+      }
+    } catch {
+      // A missing/corrupt final config means we cannot trust anything; the
+      // caller then re-checks every restored candidate against the blacklist.
+    }
+    return keys;
+  }
+
   function mergeSiteObjects(primary: TVBoxSite[], fallback: TVBoxSite[]): TVBoxSite[] {
     const merged = new Map<string, TVBoxSite>();
     // Full snapshot first; the current/final config is newer and must win.
@@ -535,6 +551,45 @@ export function createApp(deps: AppDeps): Hono {
     // override duplicate keys with newer upstream fields.
     const fullCandidateSites = await loadFullCandidateSites();
     let sites = mergeSiteObjects(parsed.sites, fullCandidateSites);
+    // Only the persisted final config is guaranteed to have passed the
+    // blacklist. `parsed.sites` has already been merged with the full snapshot
+    // by the startup builder, so trusting it would let a previously blocked
+    // source slip back in. Re-check only the keys that are NOT present in the
+    // stored final config, instead of hashing every served site.
+    const trustedKeys = await loadStoredFinalSiteKeys();
+    const restoredKeys = new Set(
+      sites.filter((site) => !trustedKeys.has(site.key)).map((site) => site.key),
+    );
+    const sourceBlacklist = await loadBlacklist(storage);
+    const hasFingerprintBlacklist = sourceBlacklist.sites.length > 0;
+    const activeRegexRules = sourceBlacklist.regexRules.filter((rule) => rule.enabled);
+    if (restoredKeys.size > 0 && (hasFingerprintBlacklist || activeRegexRules.length > 0)) {
+      const blacklistedFingerprints = new Set(sourceBlacklist.sites);
+      const overrideSet = new Set(sourceBlacklist.regexBlockOverrides);
+      const restored = sites.filter((site) => restoredKeys.has(site.key));
+      sites = sites.filter((site) => !restoredKeys.has(site.key));
+      for (const site of restored) {
+        if (hasFingerprintBlacklist && blacklistedFingerprints.has(await siteFingerprint(site))) continue;
+        if (overrideSet.has(site.name || '')) {
+          sites.push(site);
+          continue;
+        }
+        let blockedByRegex = false;
+        for (const rule of activeRegexRules) {
+          try {
+            const re = new RegExp(rule.pattern, 'i');
+            const value = String((site as unknown as Record<string, unknown>)[rule.field] || '');
+            if (re.test(value)) {
+              blockedByRegex = true;
+              break;
+            }
+          } catch {
+            // Ignore malformed historical regex rules at serving time.
+          }
+        }
+        if (!blockedByRegex) sites.push(site);
+      }
+    }
     const searchableKeys = new Set(
       sites.filter((site) => site.searchable === 1).map((site) => site.key),
     );
@@ -980,7 +1035,7 @@ export function createApp(deps: AppDeps): Hono {
   }
   // 完整配置保留非搜索扩展等功能性内容，但搜索源仍必须经过统一质量
   // 分发边界；applySourceDistribution 会排除不在质量池中的 searchable
-  // 源，untestable 也只有鉴权策略显式允许时才会进入输出。
+  // 源，untestable 默认保留、只有鉴权/根策略显式设为 0 时才排除。
   async function filterExcludedQualitySites(cached: string): Promise<string> {
     let quota: SearchQuotaConfig;
     try {
@@ -1890,8 +1945,36 @@ export function createApp(deps: AppDeps): Hono {
     const effectivePoolEntries = effectiveQualityPool?.entries.filter((entry) => effectivePoolKeys.has(entry.key)) || [];
     // Quality-pool membership is authoritative for distribution. The legacy
     // merged config may still be truncated by an old quota, so do not intersect
-    // the pool with that snapshot.
+    // the pool with that snapshot. Explicit blacklist entries remain excluded from
+    // the effective distributable count; the raw grading count is reported
+    // separately so operators can distinguish coverage from serving.
+    const configuredBlacklist = await loadBlacklist(storage);
+    const blacklistedFingerprints = new Set(configuredBlacklist.sites);
+    const qualityCandidateSites = await loadQualityCandidates(storage).catch(() => []);
+    const candidateKeySet = new Set(effectiveQualityPool ? effectivePoolEntries.map((entry) => entry.key) : []);
+    const candidateByKey = new Map(
+      qualityCandidateSites
+        .filter((site) => candidateKeySet.has(site.key))
+        .map((site) => [site.key, site]),
+    );
+    const distributablePoolEntries = effectiveQualityPool
+      ? (await Promise.all(effectivePoolEntries.map(async (entry) => {
+          const site = candidateByKey.get(entry.key);
+          if (!site) return entry;
+          const fingerprint = await siteFingerprint(site);
+          return blacklistedFingerprints.has(fingerprint) ? null : entry;
+        }))).filter((entry): entry is NonNullable<typeof entry> => entry !== null)
+      : [];
+    // `qualityPoolCount` is the full valid pool ledger (including sources the
+    // operator later blacklisted). `distributablePoolCount` is what root/auth
+    // may actually send. Keeping them separate stops the admin UI from
+    // reporting a selectable count that includes blocked entries.
+    report.qualityPoolAssessedCount = effectiveQualityPool ? effectivePoolEntries.length : null;
     report.qualityPoolCount = effectiveQualityPool ? effectivePoolEntries.length : null;
+    report.distributablePoolCount = effectiveQualityPool ? distributablePoolEntries.length : null;
+    report.blockedPoolCount = effectiveQualityPool
+      ? effectivePoolEntries.length - distributablePoolEntries.length
+      : null;
     report.qualityPoolServerVerified = effectiveQualityPool
       ? effectivePoolEntries.filter((entry) => entry.grade !== 'untestable').length
       : null;
@@ -1963,18 +2046,40 @@ export function createApp(deps: AppDeps): Hono {
     const actualServerVerifiedPool = actualPoolEntries.filter((entry) => entry.grade !== 'untestable').length;
     const actualClientFallbackPool = actualPoolEntries.filter((entry) => entry.grade === 'untestable').length;
     const actualQualityPoolCount = snapshot ? actualPoolEntries.length : null;
-    // The static merged config may still have been truncated by a legacy
-    // quota. Quality-pool membership is the source of truth for what the
-    // root/auth runtime can restore and distribute.
-    const actualSearchableCount = actualQualityPoolCount ?? numberOrNull(quotaReport?.searchable);
+
+    // Pool membership and client-visible distribution are separate contracts:
+    // blacklist entries stay in the pool ledger but are never sent to a
+    // client. Count distributable entries from the same authoritative quality
+    // order used by root/auth, not from a possibly truncated merged config.
+    const configuredBlacklist = await loadBlacklist(storage);
+    const blacklistedFingerprints = new Set(configuredBlacklist.sites);
+    const qualityCandidateSites = await loadQualityCandidates(storage).catch(() => []);
+    const candidateByKey = new Map(qualityCandidateSites.map((site) => [site.key, site]));
+    const distributablePoolEntries = snapshot
+      ? (await Promise.all(actualPoolEntries.map(async (entry) => {
+          const site = candidateByKey.get(entry.key);
+          if (!site) return entry;
+          const fingerprint = await siteFingerprint(site);
+          return blacklistedFingerprints.has(fingerprint) ? null : entry;
+        }))).filter((entry): entry is NonNullable<typeof entry> => entry !== null)
+      : [];
+    const actualDistributableCount = snapshot ? distributablePoolEntries.length : null;
+    const actualBlockedPoolCount = snapshot
+      ? actualPoolEntries.length - distributablePoolEntries.length
+      : null;
+    const actualSearchableCount = actualDistributableCount ?? numberOrNull(quotaReport?.searchable);
     const actual = {
       searchable: actualSearchableCount,
       parsers,
       parserLimit: parseLimit,
       // `assessedSourceCount` is the full searchable set included in grading;
-      // `qualityPoolCount` is the ordered set eligible for selection/output.
+      // `qualityPoolCount` is the full valid pool ledger, while
+      // `distributablePoolCount` is what root/auth may actually send.
       assessedSourceCount: snapshot?.total ?? null,
+      qualityPoolAssessedCount: actualQualityPoolCount,
       qualityPoolCount: actualQualityPoolCount,
+      distributablePoolCount: actualDistributableCount,
+      blockedPoolCount: actualBlockedPoolCount,
       serverVerifiedPool: snapshot ? actualServerVerifiedPool : null,
       clientFallbackPool: snapshot ? actualClientFallbackPool : null,
       testable: snapshot?.coverage?.testable ?? null,
@@ -3241,13 +3346,15 @@ export function createApp(deps: AppDeps): Hono {
         }
       }
       const blocked = fpBlocked || regexBlocked;
-      const inRuntimePool = !blocked && site.searchable === 1 && qualityPoolKeySet.has(site.key);
+      const entry = qualityEntryMap.get(site.key);
+      // Pool membership is independent of the blacklist: blocked sources stay
+      // in the ledger so the admin can unblock them without a re-aggregation.
+      const inQualityPool = site.searchable === 1 && qualityPoolKeySet.has(site.key) && !!entry;
+      const inRuntimePool = !blocked && inQualityPool;
       const inFinal = finalKeys.has(site.key) || inRuntimePool;
       const sourceCategory = classifySearchSource(site);
       const isJs = sourceCategory === 'js';
       const isJar = sourceCategory === 'jar';
-      const entry = qualityEntryMap.get(site.key);
-      const inQualityPool = inRuntimePool && !!entry;
       sites.push({
         ...site,
         fingerprint: fp,
@@ -3285,16 +3392,30 @@ export function createApp(deps: AppDeps): Hono {
     const qualityPoolKeys = (qualityPool?.entries || [])
       .filter(entry => siteByKey.get(entry.key)?.inQualityPool === true)
       .map(entry => entry.key);
+    // The selectable/distributable set is the pool minus explicit blacklist
+    // entries. Keep both keys and category counts so the UI never derives one
+    // contract from the other.
+    const distributablePoolKeys = qualityPoolKeys.filter(key => siteByKey.get(key)?.blocked !== true);
     const searchableKeys = sites
       .filter(site => site.inFinal && !site.blocked && site.searchable === 1)
       .map(site => site.key);
     const searchableCategoryCounts: Record<string, number> = {};
     const qualityPoolCategoryCounts: Record<string, number> = {};
+    const distributablePoolCategoryCounts: Record<string, number> = {};
     const distributableCategoryCounts: Record<string, number> = {};
     for (const category of SEARCH_SOURCE_CATEGORIES) {
       searchableCategoryCounts[category] = 0;
       qualityPoolCategoryCounts[category] = 0;
+      distributablePoolCategoryCounts[category] = 0;
       distributableCategoryCounts[category] = 0;
+    }
+    for (const site of sites) {
+      if (site.inQualityPool !== true) continue;
+      const category = site.sourceCategory || 'other';
+      qualityPoolCategoryCounts[category] = (qualityPoolCategoryCounts[category] || 0) + 1;
+      if (!site.blocked) {
+        distributablePoolCategoryCounts[category] = (distributablePoolCategoryCounts[category] || 0) + 1;
+      }
     }
     for (const site of sites) {
       if (!site.inFinal || site.blocked) continue;
@@ -3304,7 +3425,6 @@ export function createApp(deps: AppDeps): Hono {
       distributableCategoryCounts[category] = (distributableCategoryCounts[category] || 0) + 1;
       if (site.searchable !== 1) continue;
       searchableCategoryCounts[category] = (searchableCategoryCounts[category] || 0) + 1;
-      if (site.inQualityPool === true) qualityPoolCategoryCounts[category] = (qualityPoolCategoryCounts[category] || 0) + 1;
     }
 
     return c.json({
@@ -3313,11 +3433,15 @@ export function createApp(deps: AppDeps): Hono {
       lives,
       searchQuality: {
         qualityPoolCount: qualityPoolKeys.length,
+        distributablePoolCount: distributablePoolKeys.length,
+        blockedPoolCount: qualityPoolKeys.length - distributablePoolKeys.length,
         searchableCount: searchableKeys.length,
         assessedSourceCount: qualityPool?.total ?? 0,
         qualityPoolHealth,
         qualityPoolKeys,
+        distributablePoolKeys,
         qualityPoolCategoryCounts,
+        distributablePoolCategoryCounts,
         searchableCategoryCounts,
         distributableCategoryCounts,
       },

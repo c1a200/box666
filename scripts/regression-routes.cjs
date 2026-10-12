@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { buildSync } = require('esbuild');
+const crypto = require('crypto');
 
 const root = path.resolve(__dirname, '..');
 const outDir = path.join(root, '.tmp-regression-build');
@@ -32,6 +33,12 @@ class MemoryStorage {
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+function siteFingerprint(site) {
+  const ext = typeof site.ext === 'string' ? site.ext : JSON.stringify(site.ext || '');
+  const raw = `${site.api}|${ext}|${site.jar || ''}`;
+  return crypto.createHash('sha256').update(raw).digest('hex').slice(0, 16);
 }
 
 const mergedConfig = {
@@ -158,6 +165,8 @@ function makeApp(overrides = {}) {
     search_quality_pool: JSON.stringify(overrides.qualityPool === undefined ? qualityPool : overrides.qualityPool),
     client_auth_distribution: JSON.stringify(overrides.distribution || distribution),
     ...(overrides.quota ? { search_quota: JSON.stringify(overrides.quota) } : {}),
+    ...(overrides.blacklist ? { blacklist: JSON.stringify(overrides.blacklist) } : {}),
+    ...(overrides.qualityCandidates ? { search_quality_candidates: JSON.stringify({ updatedAt: new Date().toISOString(), sites: overrides.qualityCandidates }) } : {}),
   });
   const config = {
     adminToken: 'test-token',
@@ -373,6 +382,69 @@ async function readSites(response) {
     assert(clientRows.every((site) => site.inFinal === true && site.inQualityPool === true),
       'client-verifiable sources must be marked selectable in config-data');
     assert(data.searchQuality.qualityPoolCount === 300, 'config-data quality pool count must include client-verifiable sources');
+  }
+  {
+    // A blacklist entry must not be silently restored into root/auth output by
+    // the full-candidate snapshot, and pool membership vs distributable count
+    // must be reported separately.
+    const verifiedSites2 = Array.from({ length: 5 }, (_, index) => ({
+      key: 'bk-verified-' + index,
+      name: 'BK verified ' + index,
+      type: 1,
+      api: 'https://bk.example/v/' + index,
+      searchable: 1,
+    }));
+    const blockedSite = { key: 'bk-blocked', name: 'BK blocked', type: 1, api: 'https://bk.example/blocked', searchable: 1 };
+    const allBkSites = [...verifiedSites2, blockedSite];
+    const bkEntries = [
+      ...verifiedSites2.map((site, index) => ({
+        key: site.key, name: site.name, grade: 'excellent', speedMs: 100 + index,
+        result: 'ok', consecutiveFailures: 0,
+      })),
+      { key: blockedSite.key, name: blockedSite.name, grade: 'excellent', speedMs: 500, result: 'ok', consecutiveFailures: 0 },
+    ];
+    const bkDistribution = {
+      requireAuth: false,
+      authCodes: [{
+        id: 'bk-all', label: 'BK all', code: 'bk-all', enabled: true,
+        sourceMode: 'all', selectionMode: 'simple', maxSites: -1,
+        selectedKeys: [], pinnedKeys: [],
+        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      }],
+    };
+    const { app } = makeApp({
+      mergedConfig: { sites: verifiedSites2, lives: [] },
+      mergedConfigFull: { sites: allBkSites, lives: [] },
+      qualityPool: { updatedAt: new Date().toISOString(), entries: bkEntries },
+      qualityCandidates: allBkSites,
+      distribution: bkDistribution,
+      blacklist: { sites: [siteFingerprint(blockedSite)], parses: [], lives: [], regexRules: [], regexBlockOverrides: [] },
+      quota: {
+        startupMode: 'full', leanStartup: false, selectionMode: 'simple', maxSites: -1,
+        quotaSchemaVersion: 9, bucketLimits: { quality: { untestable: -1 } },
+      },
+    });
+    const rootSites = await readSites(await app.request('https://box.example/'));
+    assert(!rootSites.some((site) => site.key === 'bk-blocked'), 'root must not restore a blacklisted source from the full snapshot');
+    assert(rootSites.some((site) => site.key === 'bk-verified-0'), 'root must still serve non-blocked restored sources');
+
+    const authSites = await readSites(await app.request('https://box.example/auth/bk-all/'));
+    assert(!authSites.some((site) => site.key === 'bk-blocked'), 'auth link must not restore a blacklisted source');
+
+    const report = await (await app.request('https://box.example/admin/quality-report', {
+      headers: { Authorization: 'Bearer test-token' },
+    })).json();
+    assert(report.actual.qualityPoolCount === 6, 'quality pool count must include the blocked member; got ' + report.actual.qualityPoolCount);
+    assert(report.actual.distributablePoolCount === 5, 'distributable count must exclude the blocked member; got ' + report.actual.distributablePoolCount);
+    assert(report.actual.blockedPoolCount === 1, 'blocked pool count must equal 1; got ' + report.actual.blockedPoolCount);
+    assert(report.actual.searchable === 5, 'actual searchable must equal the distributable count; got ' + report.actual.searchable);
+
+    const quotaReport = await (await app.request('https://box.example/admin/search-quota/report', {
+      headers: { Authorization: 'Bearer test-token' },
+    })).json();
+    assert(quotaReport.qualityPoolCount === 6, 'search-quota report must report full pool membership; got ' + quotaReport.qualityPoolCount);
+    assert(quotaReport.distributablePoolCount === 5, 'search-quota report must report the distributable subset; got ' + quotaReport.distributablePoolCount);
+    assert(quotaReport.blockedPoolCount === 1, 'search-quota report must report the blocked count; got ' + quotaReport.blockedPoolCount);
   }
   {
     // Schema 8 used untestable:0 as an implicit cap. It must migrate to
@@ -883,13 +955,16 @@ async function readSites(response) {
     assert(body.searchQuality && body.searchQuality.searchableCategoryCounts, 'config-data should expose searchable source category counts');
     assert(Array.isArray(body.searchQuality.qualityPoolKeys), 'config-data should expose quality pool keys');
     assert(body.searchQuality.qualityPoolCategoryCounts, 'config-data should expose quality pool category counts');
+    assert(body.searchQuality.distributablePoolCategoryCounts, 'config-data should expose distributable pool category counts');
+    assert(Array.isArray(body.searchQuality.distributablePoolKeys), 'config-data should expose distributable pool keys');
     assert(typeof body.searchQuality.assessedSourceCount === 'number', 'config-data should expose assessed source count');
     assert(typeof body.searchQuality.qualityPoolCount === 'number', 'config-data should expose quality pool count');
-    assert(body.searchQuality.qualityPoolCategoryCounts, 'config-data should expose quality pool category counts');
+    assert(typeof body.searchQuality.distributablePoolCount === 'number', 'config-data should expose distributable pool count');
     const categories = ['xml', 'json', 'jar', 'js', 'remote', 'other'];
     const sumCounts = (counts) => categories.reduce((sum, key) => sum + (Number(counts[key]) || 0), 0);
     assert(sumCounts(body.searchQuality.searchableCategoryCounts) === body.searchQuality.searchableCount, 'searchable category counts must equal searchable count');
     assert(sumCounts(body.searchQuality.qualityPoolCategoryCounts) === body.searchQuality.qualityPoolCount, 'quality pool category counts must equal quality pool count');
+    assert(sumCounts(body.searchQuality.distributablePoolCategoryCounts) === body.searchQuality.distributablePoolCount, 'distributable pool category counts must equal distributable pool count');
     assert(body.searchQuality.assessedSourceCount === qualityPool.entries.length, 'assessed source count must equal quality snapshot total');
     assert(!('candidateKeys' in body.searchQuality), 'config-data must not expose duplicate candidate keys');
     assert(!('candidateCount' in body.searchQuality), 'config-data must not expose duplicate candidate count');
