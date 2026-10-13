@@ -14,6 +14,7 @@ import {
   KV_CHANNEL_PROBE_ENABLED,
   KV_CHANNEL_MERGED_TREE,
   KV_CHANNEL_RUNTIME_TREE,
+  KV_CHANNEL_CANDIDATE_URLS,
   KV_LIVE_MERGE_MODE,
   KV_LIVE_MERGED_TXT,
   KV_LIVE_MERGED_TXT_VERSION,
@@ -24,9 +25,13 @@ import {
   TVBOX_UA,
 } from './config';
 import {
+  bareLiveSourceUrl,
   extractAllUrls,
+  extractPreferredLiveUrls,
   extractUrlsForSourceLabels,
   normalizeSourceLabelKey,
+  parseLiveCandidatePool,
+  parseLiveGroupsFromTxt,
 } from './live-merger';
 import { rebuildLiveOutput } from './live-output';
 import { listAllLiveProxyEntries, liveProxyEntryLabel } from './live-source';
@@ -222,13 +227,38 @@ function parseMergedGroups(raw: string | null): TVBoxLiveGroup[] {
 }
 
 /**
- * 候选池始终优先读取完整合并树。
- * 兼容升级前的部署：旧版本只有 channel_merged_tree 时仍可继续运行。
+ * 候选池恢复顺序：
+ * 1. 本进程/本机仍有完整合并树时优先使用；
+ * 2. Render 重启后完整树丢失，优先使用持久化的结构化候选快照，恢复完整树；
+ * 3. 仅旧版裸 URL 索引时，与运行时前沿合并后仅供补测，不用于重建输出。
  */
 async function loadCandidateTree(storage: Storage): Promise<TVBoxLiveGroup[]> {
   const merged = parseMergedGroups(await storage.get(KV_CHANNEL_MERGED_TREE));
   if (merged.length > 0) return merged;
-  return parseMergedGroups(await storage.get(KV_CHANNEL_RUNTIME_TREE));
+
+  const persisted = parseLiveCandidatePool(await storage.get(KV_CHANNEL_CANDIDATE_URLS));
+  if (persisted.source === 'structured') return persisted.groups;
+
+  const runtime = parseMergedGroups(await storage.get(KV_CHANNEL_RUNTIME_TREE));
+  const runtimeTxt = runtime.length === 0 ? await storage.get(KV_LIVE_MERGED_TXT) : null;
+  const recoveredGroups = runtime.length > 0
+    ? runtime
+    : runtimeTxt
+      ? parseLiveGroupsFromTxt(runtimeTxt)
+      : [];
+  const candidateUrls = persisted.source === 'legacy-urls' ? persisted.urls : [];
+  if (candidateUrls.length === 0) return recoveredGroups;
+  if (recoveredGroups.length === 0) {
+    return [{ group: '候选恢复', channels: [{ name: '全部线路', urls: candidateUrls }] }];
+  }
+
+  // 运行时 TXT 只保留当前下发前沿（每频道最多 9 条），候选索引保留完整去重线路。
+  // 将前沿未覆盖的 URL 补进“候选恢复”分组，专门供后台补测；输出重建仍使用
+  // 带频道结构的运行时树，不会把这两个候选线路误当成正式频道下发。
+  const frontierUrls = new Set(extractAllUrls(recoveredGroups));
+  const remaining = candidateUrls.filter((url) => !frontierUrls.has(bareLiveSourceUrl(url)));
+  if (remaining.length === 0) return recoveredGroups;
+  return [...recoveredGroups, { group: '候选恢复', channels: [{ name: '全部线路', urls: remaining }] }];
 }
 
 /**
@@ -359,7 +389,41 @@ export async function runChannelProbe(
     const label = liveProxyEntryLabel(entry, groups);
     if (label) selectedLabels.add(normalizeSourceLabelKey(label));
   }
-  const priorityUrls = extractUrlsForSourceLabels(groups, selectedLabels);
+
+  // 优先集合的用途是“尽快让真正进入下发的频道线路得到速度证据”，
+  // 不是“把所选源的全部线路先测一遍”。单线路频道没有线路选择价值，
+  // 因此优先阶段只覆盖多线路频道，每频道最多取前 2 条；其余线路均由后台补测。
+  const speedMap = pruneExpired(await loadSpeedMap(storage));
+  const runtimeTxt = await storage.get(KV_LIVE_MERGED_TXT);
+  const currentFrontier = runtimeTxt ? parseLiveGroupsFromTxt(runtimeTxt) : [];
+  const priority = new Set<string>();
+  const multiLineOnly = (source: readonly TVBoxLiveGroup[]): TVBoxLiveGroup[] =>
+    source
+      .map((group) => ({
+        group: group.group,
+        channels: (group.channels || []).filter((channel) => (channel.urls || []).length > 1),
+      }))
+      .filter((group) => group.channels.length > 0);
+  for (const url of extractPreferredLiveUrls(multiLineOnly(currentFrontier), speedMap, 2)) {
+    priority.add(url);
+  }
+
+  const selectedBareUrls = selectedLabels.size > 0
+    ? new Set(extractUrlsForSourceLabels(groups, selectedLabels))
+    : new Set<string>();
+  if (selectedBareUrls.size > 0) {
+    const selectedCandidateGroups: TVBoxLiveGroup[] = groups.map((group) => ({
+      group: group.group,
+      channels: (group.channels || []).map((channel) => ({
+        name: channel.name,
+        urls: (channel.urls || []).filter((url) => selectedBareUrls.has(bareLiveSourceUrl(url))),
+      })),
+    }));
+    for (const url of extractPreferredLiveUrls(multiLineOnly(selectedCandidateGroups), speedMap, 2)) {
+      priority.add(url);
+    }
+  }
+  const priorityUrls = Array.from(priority);
   const prioritySet = new Set(priorityUrls);
 
   running = true;

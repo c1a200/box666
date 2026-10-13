@@ -659,6 +659,43 @@ export function formatAggregatedLiveGroupsAsTxt(groups: TVBoxLiveGroup[]): strin
   return formatLiveGroupsAsTxtInternal(normalized, true);
 }
 
+/**
+ * 将运行时 TXT 恢复为最小频道树。
+ *
+ * /live 输出中每条线路形如 `URL#源标签`，而 parseLiveContent 的 TXT 分支
+ * 会按 URL 拆分并丢弃标签。这里反序列化时重新拼回运行时标签形态，
+ * 以保证重启后仍可提取当前下发前沿并继续做频道级测速。
+ */
+export function parseLiveGroupsFromTxt(content: string): TVBoxLiveGroup[] {
+  const groups = new Map<string, TVBoxLiveChannel[]>();
+  let currentGroup = '其他';
+  for (const raw of content.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const idx = line.indexOf(',');
+    if (idx <= 0) continue;
+    const name = line.slice(0, idx).trim();
+    const right = line.slice(idx + 1).trim();
+    if (right === '#genre#') {
+      currentGroup = name || '其他';
+      continue;
+    }
+    // 运行时 TXT 形如 `URL$源名#短哈希#URL$源名#短哈希`，必须按“下一个 URL”
+    // 切分，不能按裸 `#` 切分，否则会丢掉源标签，导致重启后无法按源过滤与匹配测速。
+    const urls = right
+      .split(/#(?=https?:\/\/)/i)
+      .map((value) => value.trim())
+      .filter((value) => /^https?:\/\//i.test(value));
+    if (!name || urls.length === 0) continue;
+    const list = groups.get(currentGroup) || [];
+    list.push({ name, urls });
+    groups.set(currentGroup, list);
+  }
+  return Array.from(groups.entries())
+    .filter(([, channels]) => channels.length > 0)
+    .map(([group, channels]) => ({ group, channels }));
+}
+
 /** 自动识别 m3u 还是 txt */
 export function parseLiveContent(content: string, source: string, sourceSpeedMs?: number): ChannelEntry[] {
   if (content.includes('#EXTM3U') || content.includes('#EXTINF')) {
@@ -1365,6 +1402,92 @@ function bareLiveUrl(url: string): string {
   return splitLiveUrlLabel(url).bare;
 }
 
+/** 提取线路所属的裸 URL，供标签过滤与候选索引复用。 */
+export function bareLiveSourceUrl(url: string): string {
+  return bareLiveUrl(url);
+}
+
+export interface LiveCandidatePoolSnapshot {
+  version: 1;
+  groups: TVBoxLiveGroup[];
+}
+
+export interface ParsedLiveCandidatePool {
+  groups: TVBoxLiveGroup[];
+  urls: string[];
+  source: 'structured' | 'legacy-urls' | 'none';
+}
+
+function normalizeCandidateGroups(value: unknown): TVBoxLiveGroup[] {
+  if (!Array.isArray(value)) return [];
+  const groups: TVBoxLiveGroup[] = [];
+  for (const rawGroup of value) {
+    if (!rawGroup || typeof rawGroup !== 'object') continue;
+    const groupValue = rawGroup as Record<string, unknown>;
+    const groupName = typeof groupValue.group === 'string' ? groupValue.group.trim() : '';
+    if (!groupName || !Array.isArray(groupValue.channels)) continue;
+    const channels: TVBoxLiveChannel[] = [];
+    for (const rawChannel of groupValue.channels) {
+      if (!rawChannel || typeof rawChannel !== 'object') continue;
+      const channelValue = rawChannel as Record<string, unknown>;
+      const name = typeof channelValue.name === 'string' ? channelValue.name.trim() : '';
+      if (!name || !Array.isArray(channelValue.urls)) continue;
+      const urls = channelValue.urls
+        .filter((url): url is string => typeof url === 'string')
+        .map((url) => url.trim())
+        .filter(Boolean);
+      if (urls.length > 0) channels.push({ name, urls });
+    }
+    if (channels.length > 0) groups.push({ group: groupName, channels });
+  }
+  return groups;
+}
+
+/** 序列化可持久化的完整候选树；旧版裸 URL 数组仍可被解析函数兼容。 */
+export function serializeLiveCandidatePool(groups: readonly TVBoxLiveGroup[]): string {
+  const snapshot: LiveCandidatePoolSnapshot = {
+    version: 1,
+    groups: normalizeCandidateGroups(groups),
+  };
+  return JSON.stringify(snapshot);
+}
+
+/**
+ * 解析持久化候选池。
+ *
+ * 新格式保留分组、频道与 `$源标签`，重启后可完整重建下发输出；旧格式只有裸 URL，
+ * 仅能恢复探测面，不能冒充完整频道树。这样可在升级过渡期避免错误下发。
+ */
+export function parseLiveCandidatePool(raw: string | null): ParsedLiveCandidatePool {
+  if (!raw) return { groups: [], urls: [], source: 'none' };
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (Array.isArray(parsed)) {
+      const urls = Array.from(new Set(
+        parsed
+          .filter((url): url is string => typeof url === 'string')
+          .map((url) => url.trim())
+          .filter(Boolean),
+      ));
+      const groups = urls.length > 0
+        ? [{ group: '候选恢复', channels: [{ name: '全部线路', urls }] }]
+        : [];
+      return { groups, urls, source: urls.length > 0 ? 'legacy-urls' : 'none' };
+    }
+    if (!parsed || typeof parsed !== 'object') return { groups: [], urls: [], source: 'none' };
+    const snapshot = parsed as Record<string, unknown>;
+    if (snapshot.version !== 1) return { groups: [], urls: [], source: 'none' };
+    const groups = normalizeCandidateGroups(snapshot.groups);
+    if (groups.length === 0) return { groups: [], urls: [], source: 'none' };
+    const urls = Array.from(new Set(groups.flatMap((group) =>
+      group.channels.flatMap((channel) => channel.urls.map((url) => bareLiveUrl(url).trim()).filter(Boolean)),
+    )));
+    return { groups, urls, source: 'structured' };
+  } catch {
+    return { groups: [], urls: [], source: 'none' };
+  }
+}
+
 export function extractAllUrls(groups: TVBoxLiveGroup[]): string[] {
   const set = new Set<string>();
   for (const g of groups) {
@@ -1425,6 +1548,56 @@ export function applyChannelSpeedToGroups(
   }
 
   return output;
+}
+
+/**
+ * 从候选树中按频道提取优先探测线路。
+ *
+ * 目标是先覆盖“当前最可能被下发”的线路，而不是一次性测完整个候选池：
+ * - 已成功且速度可用的线路优先，按速度从快到慢；
+ * - 未知线路随后保留，保证新源有机会进入前沿；
+ * - 已明确失败的线路不进入优先集合；
+ * - 每个频道最多取 limit 条，避免单一热门频道吞掉全部预算。
+ */
+export function extractPreferredLiveUrls(
+  groups: readonly TVBoxLiveGroup[],
+  speedMap: ChannelSpeedMap = {},
+  limitPerChannel = 2,
+): string[] {
+  const maxPerChannel = Math.max(1, limitPerChannel);
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const group of groups) {
+    for (const channel of group.channels || []) {
+      const ranked: Array<{ bare: string; speed?: number; index: number }> = [];
+      const channelSeen = new Set<string>();
+      for (const [index, raw] of (channel.urls || []).entries()) {
+        const parsed = splitLiveUrlLabel(raw);
+        const bare = parsed.bare.trim();
+        if (!bare || channelSeen.has(bare)) continue;
+        channelSeen.add(bare);
+        const entry = speedMap[raw] ?? speedMap[bare];
+        if (entry?.kind === 'fail') continue;
+        ranked.push({
+          bare,
+          speed: entry && Number.isFinite(entry.speedMs) ? entry.speedMs : undefined,
+          index,
+        });
+      }
+      ranked.sort((a, b) => {
+        if (a.speed != null && b.speed != null && a.speed !== b.speed) return a.speed - b.speed;
+        if (a.speed != null && b.speed == null) return -1;
+        if (a.speed == null && b.speed != null) return 1;
+        return a.index - b.index;
+      });
+      for (const item of ranked.slice(0, maxPerChannel)) {
+        if (seen.has(item.bare)) continue;
+        seen.add(item.bare);
+        result.push(item.bare);
+      }
+    }
+  }
+  return result;
 }
 
 export function normalizeSourceLabelKey(value: string): string {

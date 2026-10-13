@@ -87,6 +87,7 @@ export const KV_CHANNEL_PROBE_ENABLED = 'channel_probe_enabled';
 export const KV_CHANNEL_PROBE_STATUS = 'channel_probe_status';
 export const KV_CHANNEL_MERGED_TREE = 'channel_merged_tree'; // 主聚合产出的完整源树（probe 只能读，不能被过滤结果覆盖）
 export const KV_CHANNEL_RUNTIME_TREE = 'channel_runtime_tree'; // 应用测速/过滤后的运行时频道树（/live 输出与版本使用）
+export const KV_CHANNEL_CANDIDATE_URLS = 'channel_candidate_urls'; // 可持久化的完整候选树快照（兼容旧版裸 URL 索引）
 export const KV_LIVE_MERGE_REPORT = 'live_merge_report'; // 最近一次直播聚合统计报告
 export const KV_LIVE_SOURCE_CACHE = 'live_source_cache'; // m3u/txt 下载缓存
 export const KV_LIVE_MERGED_TXT_VERSION = 'live_merged_txt_version'; // 预生成直播 TXT 内容版本

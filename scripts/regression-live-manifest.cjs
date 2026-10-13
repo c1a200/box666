@@ -303,9 +303,14 @@ const {
 const {
   AGGREGATED_MAX_URLS_PER_CHANNEL,
   applyChannelSpeedToGroups,
+  extractAllUrls,
+  extractPreferredLiveUrls,
   extractUrlsForSourceLabels,
   filterGroupsBySourceLabels,
+  parseLiveCandidatePool,
+  parseLiveGroupsFromTxt,
   reorderGroupsBySourcePriority,
+  serializeLiveCandidatePool,
   normalizeSourceLabelKey,
 } = require(liveMergerOutfile);
 
@@ -420,5 +425,59 @@ const preparedWithLabel = prepareManifestEntries([
   { name: '源C', url: 'https://live.example/labeled.txt' },
 ], undefined, labels);
 assert(preparedWithLabel[0].label === '源C#cccccccc', 'prepareManifestEntries must persist merged output label');
+
+// 运行时 TXT 恢复：必须保留每条线路的 $源标签，不能按裸 # 拆散。
+const restoredTxtGroups = parseLiveGroupsFromTxt(
+  '央视,#genre#\nCCTV-1,http://a$源A#aaaaaaaa#http://b$源B#bbbbbbbb\n',
+);
+assert(restoredTxtGroups.length === 1, 'runtime TXT must restore group structure');
+assert(restoredTxtGroups[0].channels[0].urls.length === 2, 'runtime TXT must restore both lines');
+assert(restoredTxtGroups[0].channels[0].urls[0].endsWith('$源A#aaaaaaaa'), 'runtime TXT must preserve first source label');
+assert(restoredTxtGroups[0].channels[0].urls[1].endsWith('$源B#bbbbbbbb'), 'runtime TXT must preserve second source label');
+assert(extractAllUrls(restoredTxtGroups).join(',') === 'http://a,http://b', 'runtime TXT restore must expose bare URLs for probing');
+
+// 优先测速：每频道限流、失败线不优先、已知快线排前；单线路频道应被上层排除。
+const preferred = extractPreferredLiveUrls(speedGroups, speedMap, 2);
+assert(preferred.length === 2, 'priority extraction must honor the per-channel limit, got ' + preferred.length);
+assert(preferred[0] === 'http://fast.example/live', 'fastest known line must be first priority candidate');
+assert(preferred[1] === 'http://slow.example/live', 'second priority candidate must be the next usable line');
+assert(!preferred.includes('http://failed.example/live'), 'failed line must never enter priority probing');
+assert(!preferred.includes('http://unknown.example/live') || preferred.length === 2, 'unknown line may only appear after known usable lines and within limit');
+const noSingleLine = [{ group: '测试', channels: [{ name: '单线路', urls: ['http://only.example/live$源O#12345678'] }] }];
+assert(extractPreferredLiveUrls(noSingleLine, {}, 2).length === 1, 'helper itself extracts single-line channels');
+const filteredSingle = noSingleLine.map((group) => ({
+  group: group.group,
+  channels: group.channels.filter((channel) => channel.urls.length > 1),
+})).filter((group) => group.channels.length > 0);
+assert(filteredSingle.length === 0, 'multi-line priority filter must exclude single-line channels');
+
+// 持久化完整候选池：结构化快照必须保留分组、频道和源标签，供重启后从少量
+// 下发扩展为全量时恢复；旧版裸 URL 数组只能恢复探测面，不能冒充频道树。
+const candidateSnapshot = serializeLiveCandidatePool([
+  {
+    group: '央视',
+    channels: [{
+      name: 'CCTV-1',
+      urls: ['http://a.example/cctv1$源A#aaaaaaaa', 'http://b.example/cctv1$源B#bbbbbbbb'],
+    }],
+  },
+  {
+    group: '卫视',
+    channels: [{ name: '湖南卫视', urls: ['http://c.example/hunan$源C#cccccccc'] }],
+  },
+]);
+const restoredSnapshot = parseLiveCandidatePool(candidateSnapshot);
+assert(restoredSnapshot.source === 'structured', 'structured candidate snapshot must be detected');
+assert(restoredSnapshot.groups.length === 2, 'structured candidate snapshot must restore every group');
+assert(restoredSnapshot.groups[0].channels[0].urls.length === 2, 'structured candidate snapshot must restore every line');
+assert(restoredSnapshot.groups[0].channels[0].urls[0].endsWith('$源A#aaaaaaaa'), 'structured candidate snapshot must preserve source label');
+assert(restoredSnapshot.urls.length === 3, 'structured candidate snapshot must expose three unique bare URLs');
+assert(restoredSnapshot.urls.includes('http://a.example/cctv1'), 'structured candidate snapshot must expose bare URLs for probing');
+
+const legacyCandidateSnapshot = parseLiveCandidatePool(JSON.stringify(['http://legacy-a.example/live', 'http://legacy-b.example/live']));
+assert(legacyCandidateSnapshot.source === 'legacy-urls', 'legacy URL array must remain parseable');
+assert(legacyCandidateSnapshot.groups.length === 1, 'legacy URL array must expose a probe-only group');
+assert(legacyCandidateSnapshot.urls.length === 2, 'legacy URL array must restore both probe URLs');
+assert(parseLiveCandidatePool('not-json').source === 'none', 'invalid candidate snapshot must fail closed');
 
 console.log('regression: live manifest + distribution passed');

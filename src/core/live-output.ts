@@ -3,6 +3,7 @@ import type { TVBoxLiveGroup } from './types';
 import {
   KV_CHANNEL_MERGED_TREE,
   KV_CHANNEL_RUNTIME_TREE,
+  KV_CHANNEL_CANDIDATE_URLS,
   KV_CHANNEL_SPEED_MAP,
   KV_LIVE_MERGED_TXT,
   KV_LIVE_MERGED_TXT_VERSION,
@@ -21,6 +22,8 @@ import {
   formatAggregatedLiveGroupsAsTxt,
   normalizeSourceLabelKey,
   filterGroupsBySourceLabels,
+  parseLiveCandidatePool,
+  parseLiveGroupsFromTxt,
   reorderGroupsBySourcePriority,
 } from './live-merger';
 import { loadSpeedMap } from './channel-probe';
@@ -50,8 +53,30 @@ function parseGroups(raw: string | null): TVBoxLiveGroup[] {
   }
 }
 
+/**
+ * 输出重建使用的候选结构恢复顺序：
+ * 本机完整合并树 -> 持久化结构化候选快照 -> 本机运行时树 -> 运行时 TXT。
+ *
+ * Render 重启后 `channel_merged_tree` / `channel_runtime_tree` 属于本地缓存，
+ * 因此必须优先从 durable 的 `channel_candidate_urls` 恢复完整频道树；这样策略
+ * 从小集合扩展到全量时不会丢源。旧版裸 URL 数组不含频道结构，仍禁止用它重建。
+ */
 async function loadCandidateGroups(storage: Storage): Promise<TVBoxLiveGroup[]> {
-  return parseGroups(await storage.get(KV_CHANNEL_MERGED_TREE));
+  const merged = parseGroups(await storage.get(KV_CHANNEL_MERGED_TREE));
+  if (merged.length > 0) return merged;
+
+  const persisted = parseLiveCandidatePool(await storage.get(KV_CHANNEL_CANDIDATE_URLS));
+  if (persisted.source === 'structured') {
+    // 进程内合并树已丢失时，持久快照比运行时前沿更完整：后者可能只是此前
+    // 少量下发策略派生出的子集，若先采用它，后续切换全量仍会永久漏源。
+    return persisted.groups;
+  }
+
+  const runtime = parseGroups(await storage.get(KV_CHANNEL_RUNTIME_TREE));
+  if (runtime.length > 0) return runtime;
+
+  const runtimeTxt = await storage.get(KV_LIVE_MERGED_TXT);
+  return runtimeTxt ? parseLiveGroupsFromTxt(runtimeTxt) : [];
 }
 
 function stablePolicyKey(policy: LiveDistributionPolicy): string {
@@ -72,7 +97,8 @@ function stablePolicyKey(policy: LiveDistributionPolicy): string {
 async function fingerprint(storage: Storage, policy: LiveDistributionPolicy): Promise<string> {
   const [
     manifestRaw,
-    candidateRaw,
+    mergedTreeRaw,
+    candidatePoolRaw,
     speedRaw,
     modeRaw,
     disabledRaw,
@@ -80,6 +106,7 @@ async function fingerprint(storage: Storage, policy: LiveDistributionPolicy): Pr
   ] = await Promise.all([
     storage.get('live_proxy_manifest'),
     storage.get(KV_CHANNEL_MERGED_TREE),
+    storage.get(KV_CHANNEL_CANDIDATE_URLS),
     storage.get(KV_CHANNEL_SPEED_MAP),
     storage.get(KV_LIVE_MERGE_MODE),
     storage.get(KV_LIVE_DISABLED),
@@ -94,7 +121,7 @@ async function fingerprint(storage: Storage, policy: LiveDistributionPolicy): Pr
     ignoreAggregatedRaw || 'false',
     stablePolicyKey(policy),
     manifestRaw || '',
-    candidateRaw || '',
+    [mergedTreeRaw || '', candidatePoolRaw || ''].join('\n'),
     speedRaw || '',
   ].join('\n');
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
