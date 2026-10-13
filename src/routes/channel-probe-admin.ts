@@ -2,7 +2,7 @@
 
 import type { Hono } from 'hono';
 import type { Storage } from '../storage/interface';
-import type { AppConfig } from '../core/types';
+import type { AppConfig, ChannelProbeTrigger } from '../core/types';
 import {
   isProbeEnabled,
   setProbeEnabled,
@@ -21,10 +21,13 @@ function verifyAdmin(request: Request, config: AppConfig): boolean {
 export interface ChannelProbeRouteDeps {
   storage: Storage;
   config: AppConfig;
+  triggerChannelProbe?: (
+    trigger?: ChannelProbeTrigger,
+  ) => Promise<void>;
 }
 
 export function mountChannelProbeRoutes(app: Hono, deps: ChannelProbeRouteDeps): void {
-  const { storage, config } = deps;
+  const { storage, config, triggerChannelProbe } = deps;
 
   // GET /admin/channel-probe/status — 查询状态 + 开关
   app.get('/admin/channel-probe/status', async (c) => {
@@ -59,16 +62,23 @@ export function mountChannelProbeRoutes(app: Hono, deps: ChannelProbeRouteDeps):
   // POST /admin/channel-probe/trigger — 手动触发（异步启动，不阻塞响应）
   app.post('/admin/channel-probe/trigger', async (c) => {
     if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
-    if (isRunning()) {
-      return c.json({ success: false, error: 'Already running' }, 409);
-    }
     if (!(await isProbeEnabled(storage))) {
       return c.json({ success: false, error: 'Probe is disabled, enable it first' }, 400);
     }
-    // 异步启动
-    runChannelProbe(storage).catch((err) => {
-      console.error('[channel-probe-admin] Trigger error:', err);
+    // 统一调度器负责串行门禁；已有任务运行时，本次手动触发会排队执行。
+    if (triggerChannelProbe) {
+      void triggerChannelProbe('manual').catch((err) => {
+        console.error('[channel-probe-admin] Trigger error:', err);
+      });
+    } else {
+      void runChannelProbe(storage, { trigger: 'manual' }).catch((err) => {
+        console.error('[channel-probe-admin] Trigger error:', err);
+      });
+    }
+    return c.json({
+      success: true,
+      running: isRunning(),
+      message: isRunning() ? 'Probe queued' : 'Probe started',
     });
-    return c.json({ success: true, message: 'Probe started' });
   });
 }

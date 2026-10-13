@@ -492,6 +492,8 @@ export interface RegexRule {
 // 频道测速任务状态
 export type ChannelProbeState = 'idle' | 'running' | 'done' | 'error';
 
+export type ChannelProbeTrigger = 'startup' | 'post-aggregation' | 'manual' | 'cron' | 'bounded';
+
 export interface ChannelProbeStatus {
   state: ChannelProbeState;
   startedAt?: string;
@@ -499,6 +501,10 @@ export interface ChannelProbeStatus {
   durationMs?: number;
   totalUrls: number;
   probed: number;            // 当前已测完数
+  priorityUrls?: number;     // 本轮优先集合大小（当前下发池关联线路）
+  priorityProbed?: number;   // 已测完的优先线路数
+  backgroundProbed?: number; // 已测完的后台补测线路数
+  trigger?: ChannelProbeTrigger;
   success: number;           // 成功
   failed: number;            // 超时/失败
   totalChannels: number;     // 合并后频道数

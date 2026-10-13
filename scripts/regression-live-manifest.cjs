@@ -301,6 +301,9 @@ const {
   prepareManifestEntries,
 } = require(outfile);
 const {
+  AGGREGATED_MAX_URLS_PER_CHANNEL,
+  applyChannelSpeedToGroups,
+  extractUrlsForSourceLabels,
   filterGroupsBySourceLabels,
   reorderGroupsBySourcePriority,
   normalizeSourceLabelKey,
@@ -363,6 +366,54 @@ const priorityGroups = [
 ];
 const priorityResult = reorderGroupsBySourcePriority(priorityGroups, ['优质#44444444', '低质#33333333']);
 assert(priorityResult[0].channels[0].urls[0].includes('优质#44444444'), 'higher-ranked source must be first line after filtering');
+
+// 精确标签提取：只允许本次实际选择的源进入优先测速集合。
+const extractedPriority = extractUrlsForSourceLabels(
+  mergedGroups,
+  new Set([normalizeSourceLabelKey('源A#aaaaaaaa')]),
+);
+assert(extractedPriority.length === 2, 'priority extraction must return unique bare URLs for selected label only');
+assert(extractedPriority.every((url) => url === 'http://a.example/cctv1' || url === 'http://c.example/cctv1'), 'priority extraction must not leak unselected labels');
+assert(extractUrlsForSourceLabels(mergedGroups, new Set()).length === 0, 'empty selected-label set must produce no priority URLs');
+const hashLabeledGroups = [{
+  group: '央视',
+  channels: [{
+    name: 'CCTV-HashLabel',
+    urls: ['http://a.example/cctv1#源A#aaaaaaaa', 'http://b.example/cctv1#源B#bbbbbbbb'],
+  }],
+}];
+assert(
+  extractUrlsForSourceLabels(hashLabeledGroups, new Set([normalizeSourceLabelKey('源A#aaaaaaaa')])).length === 1,
+  'runtime #source-label form must be parsed without treating the whole hash as a bare URL',
+);
+
+// 频道级排序：已知快线优先、未知线路保留在后、明确失败线路剔除、每频道限流。
+const speedGroups = [{
+  group: '央视',
+  channels: [{
+    name: 'CCTV-Test',
+    urls: [
+      'http://unknown.example/live#源U#ffffffff',
+      'http://slow.example/live#源S#11111111',
+      'http://failed.example/live#源F#22222222',
+      'http://fast.example/live#源Q#33333333',
+    ],
+  }],
+}];
+const speedMap = {
+  'http://slow.example/live': { speedMs: 1800, probedAt: '2026-10-13T00:00:00.000Z', kind: 'm3u8' },
+  'http://failed.example/live': { speedMs: 0, probedAt: '2026-10-13T00:00:00.000Z', kind: 'fail' },
+  'http://fast.example/live': { speedMs: 120, probedAt: '2026-10-13T00:00:00.000Z', kind: 'tcp' },
+};
+const speedApplied = applyChannelSpeedToGroups(speedGroups, speedMap, 5000, AGGREGATED_MAX_URLS_PER_CHANNEL);
+assert(speedApplied[0].channels[0].urls[0].includes('fast.example'), 'known fastest line must be first after channel speed probe');
+assert(speedApplied[0].channels[0].urls[1].includes('slow.example'), 'known slower line must follow faster line');
+assert(speedApplied[0].channels[0].urls[2].includes('unknown.example'), 'unknown line must remain after known successful lines');
+assert(!speedApplied[0].channels[0].urls.some((url) => url.includes('failed.example')), 'known failed line must be removed from output');
+
+const manyLines = [{ group: '测试', channels: [{ name: '限量', urls: Array.from({ length: AGGREGATED_MAX_URLS_PER_CHANNEL + 4 }, (_, i) => 'http://line' + i + '.example/live#abc' + i) }] }];
+const limitedLines = applyChannelSpeedToGroups(manyLines, {}, 5000, AGGREGATED_MAX_URLS_PER_CHANNEL);
+assert(limitedLines[0].channels[0].urls.length === AGGREGATED_MAX_URLS_PER_CHANNEL, 'merged output must cap each channel at AGGREGATED_MAX_URLS_PER_CHANNEL');
 
 const labels = { 'https://live.example/labeled.txt': '源C#cccccccc' };
 const preparedWithLabel = prepareManifestEntries([

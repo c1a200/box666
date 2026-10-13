@@ -2,7 +2,12 @@
 // 独立模块：不阻塞主聚合，失败不影响聚合产出
 
 import type { Storage } from '../storage/interface';
-import type { TVBoxLiveGroup, ChannelSpeedMap, ChannelProbeStatus } from './types';
+import type {
+  TVBoxLiveGroup,
+  ChannelSpeedMap,
+  ChannelProbeStatus,
+  ChannelProbeTrigger,
+} from './types';
 import {
   KV_CHANNEL_SPEED_MAP,
   KV_CHANNEL_PROBE_STATUS,
@@ -18,9 +23,22 @@ import {
   CHANNEL_SPEED_TTL_MS,
   TVBOX_UA,
 } from './config';
-import { extractAllUrls } from './live-merger';
+import {
+  extractAllUrls,
+  extractUrlsForSourceLabels,
+  normalizeSourceLabelKey,
+} from './live-merger';
 import { rebuildLiveOutput } from './live-output';
-import { loadSpeedMap, saveSpeedMap, pruneExpired, selectProbeCandidates, CHANNEL_FAILURE_RETRY_MS } from './live-speed-store';
+import { listAllLiveProxyEntries, liveProxyEntryLabel } from './live-source';
+import { loadLiveDistribution, toLiveDistributionPolicy } from './live-distribution-store';
+import { selectLiveDistribution } from './live-quality';
+import {
+  loadSpeedMap,
+  saveSpeedMap,
+  pruneExpired,
+  selectProbeCandidates,
+  CHANNEL_FAILURE_RETRY_MS,
+} from './live-speed-store';
 
 // ─── 开关/状态 ─────────────────────────────────────────
 
@@ -282,25 +300,26 @@ export async function probeLiveUrlsBounded(
 
 let running = false;
 
-export async function runChannelProbe(storage: Storage): Promise<ChannelProbeStatus> {
+export async function runChannelProbe(
+  storage: Storage,
+  options: { trigger?: ChannelProbeTrigger } = {},
+): Promise<ChannelProbeStatus> {
+  const trigger = options.trigger ?? 'manual';
   if (running) {
     console.log('[channel-probe] Already running, skipping');
     return loadStatus(storage);
   }
-
-  // loadStatus 已会把重启遗留的 running 纠正为 error，这里无需再次处理。
 
   if (!(await isProbeEnabled(storage))) {
     console.log('[channel-probe] Disabled by user, skipping');
     return loadStatus(storage);
   }
 
-  // 读取主聚合产出的完整候选池，而不是已被测速过滤过的运行时树。
   const groups = await loadCandidateTree(storage);
   if (groups.length === 0) {
-    console.log('[channel-probe] No merged tree available, skipping (run main aggregation first)');
     const status: ChannelProbeStatus = {
       state: 'error',
+      trigger,
       totalUrls: 0,
       probed: 0,
       success: 0,
@@ -315,10 +334,10 @@ export async function runChannelProbe(storage: Storage): Promise<ChannelProbeSta
 
   const urls = extractAllUrls(groups);
   const totalChannels = groups.reduce((n, g) => n + g.channels.length, 0);
-
   if (urls.length === 0) {
     const status: ChannelProbeStatus = {
       state: 'done',
+      trigger,
       totalUrls: 0,
       probed: 0,
       success: 0,
@@ -332,17 +351,29 @@ export async function runChannelProbe(storage: Storage): Promise<ChannelProbeSta
     return status;
   }
 
+  const allEntries = await listAllLiveProxyEntries(storage);
+  const config = await loadLiveDistribution(storage);
+  const selected = selectLiveDistribution(allEntries, toLiveDistributionPolicy(config));
+  const selectedLabels = new Set<string>();
+  for (const entry of selected) {
+    const label = liveProxyEntryLabel(entry, groups);
+    if (label) selectedLabels.add(normalizeSourceLabelKey(label));
+  }
+  const priorityUrls = extractUrlsForSourceLabels(groups, selectedLabels);
+  const prioritySet = new Set(priorityUrls);
+
   running = true;
   const startedAt = new Date().toISOString();
   const startMs = Date.now();
-  let success = 0;
-  let failed = 0;
-
   const status: ChannelProbeStatus = {
     state: 'running',
+    trigger,
     startedAt,
     totalUrls: urls.length,
     probed: 0,
+    priorityUrls: priorityUrls.length,
+    priorityProbed: 0,
+    backgroundProbed: 0,
     success: 0,
     failed: 0,
     totalChannels,
@@ -350,108 +381,150 @@ export async function runChannelProbe(storage: Storage): Promise<ChannelProbeSta
   };
   await saveStatus(storage, status);
 
-  console.log(`[channel-probe] Started: ${urls.length} URLs, ${totalChannels} channels, concurrency=${CHANNEL_PROBE_CONCURRENCY}`);
+  console.log(
+    '[channel-probe] Started: ' + urls.length + ' total URLs, ' +
+    priorityUrls.length + ' priority URLs, ' + totalChannels + ' channels, concurrency=' +
+    CHANNEL_PROBE_CONCURRENCY + ', trigger=' + trigger,
+  );
 
   try {
-    // 先读旧缓存，复用未过期条目（减少重复测试）
-    const oldMap = pruneExpired(await loadSpeedMap(storage));
-    const fresh: ChannelSpeedMap = { ...oldMap };
-
-    // 只测未知、已过期或失败后达到重试间隔的 URL；新鲜成功项直接复用。
-    const toProbe = selectProbeCandidates(urls, fresh, Date.now(), Number.POSITIVE_INFINITY).map((item) => item.url);
-    console.log(`[channel-probe] ${toProbe.length} new URLs to probe (${urls.length - toProbe.length} cached)`);
-
-    const cachedSuccess = urls.reduce((count, url) => {
-      const entry = fresh[url];
-      return count + (entry && entry.kind !== 'fail' ? 1 : 0);
-    }, 0);
-    const cachedKnown = urls.length - toProbe.length;
-    success = cachedSuccess;
-    status.success = success;
-    status.failed = cachedKnown - cachedSuccess;
-    status.probed = 0;
-    status.coverage = urls.length > 0 ? Math.round((success / urls.length) * 100) : 0;
-
+    const fresh: ChannelSpeedMap = { ...pruneExpired(await loadSpeedMap(storage)) };
+    const probeNow = Date.now();
+    const priorityCandidates = selectProbeCandidates(
+      priorityUrls,
+      fresh,
+      probeNow,
+      Number.POSITIVE_INFINITY,
+    );
+    const backgroundCandidates = selectProbeCandidates(
+      urls.filter((url) => !prioritySet.has(url)),
+      fresh,
+      probeNow,
+      Number.POSITIVE_INFINITY,
+    );
+    let priorityProbed = 0;
+    let backgroundProbed = 0;
     let lastProgressSave = 0;
-    const results = await runWithConcurrency(
-      toProbe,
-      CHANNEL_PROBE_CONCURRENCY,
-      (url) => probeSingle(url),
-      (done, total, result) => {
-        const probeResult = result as ProbeResult;
-        if (probeResult.kind === 'fail') failed++;
-        else success++;
 
-        status.probed = done;
-        status.success = success;
-        status.failed = failed;
-        status.coverage = urls.length > 0 ? Math.round((success / urls.length) * 100) : 0;
+    const recalculate = (): void => {
+      let successCount = 0;
+      let failedCount = 0;
+      for (const url of urls) {
+        const entry = fresh[url];
+        if (!entry) continue;
+        if (entry.kind === 'fail') failedCount++;
+        else successCount++;
+      }
+      status.success = successCount;
+      status.failed = failedCount;
+      status.coverage = urls.length > 0 ? Math.round((successCount / urls.length) * 100) : 0;
+    };
+    recalculate();
 
-        // 状态写入节流：运行中最多每 250ms 写一次，避免 SQLite/KV 写放大。
+    const makeProgressHandler = (phase: 'priority' | 'background') =>
+      (done: number, total: number, result: ProbeResult): void => {
+        fresh[result.url] = {
+          speedMs: result.speedMs,
+          probedAt: new Date().toISOString(),
+          kind: result.kind,
+        };
+        if (phase === 'priority') priorityProbed = done;
+        else backgroundProbed = done;
+        status.probed = priorityProbed + backgroundProbed;
+        status.priorityProbed = priorityProbed;
+        status.backgroundProbed = backgroundProbed;
+        recalculate();
+
         const now = Date.now();
         if (now - lastProgressSave >= 250 || done === total) {
           lastProgressSave = now;
           saveStatus(storage, { ...status }).catch(() => {});
         }
         if (done % 200 === 0 || done === total) {
-          console.log(`[channel-probe] Progress: ${done}/${total}`);
+          console.log('[channel-probe] ' + phase + ' progress: ' + done + '/' + total);
         }
-      },
-    );
-    const now = new Date().toISOString();
-    for (const r of results) {
-      fresh[r.url] = {
-        speedMs: r.speedMs,
-        probedAt: now,
-        kind: r.kind,
       };
+
+    const persist = async (reason: string): Promise<void> => {
+      recalculate();
+      await saveSpeedMap(storage, fresh);
+      await rebuildLiveOutput(storage, { reason });
+      await saveStatus(storage, { ...status });
+    };
+
+    if (priorityCandidates.length > 0) {
+      console.log(
+        '[channel-probe] Priority probe: ' + priorityCandidates.length + ' new URLs (' +
+        (priorityUrls.length - priorityCandidates.length) + ' cached)',
+      );
+      await runWithConcurrency(
+        priorityCandidates.map((item) => item.url),
+        CHANNEL_PROBE_CONCURRENCY,
+        (url) => probeSingle(url),
+        makeProgressHandler('priority'),
+      );
+    } else {
+      console.log('[channel-probe] Priority probe: all ' + priorityUrls.length + ' URLs cached');
+    }
+    await persist('channel-probe-priority');
+
+    if (backgroundCandidates.length > 0) {
+      console.log('[channel-probe] Background probe: ' + backgroundCandidates.length + ' new URLs');
+      await runWithConcurrency(
+        backgroundCandidates.map((item) => item.url),
+        CHANNEL_PROBE_CONCURRENCY,
+        (url) => probeSingle(url),
+        makeProgressHandler('background'),
+      );
+      await persist('channel-probe-background');
     }
 
-    await saveSpeedMap(storage, fresh);
-
-    // 测速只更新中立缓存；统一重建会重新应用质量池与下发策略。
-    await rebuildLiveOutput(storage, { reason: 'channel-probe' });
-
+    recalculate();
     const durationMs = Date.now() - startMs;
-    const coverage = urls.length > 0 ? Math.round((success / urls.length) * 100) : 0;
-
     const finalStatus: ChannelProbeStatus = {
       state: 'done',
+      trigger,
       startedAt,
       finishedAt: new Date().toISOString(),
       durationMs,
       totalUrls: urls.length,
-      probed: urls.length,
-      success,
-      failed,
+      probed: priorityProbed + backgroundProbed,
+      priorityUrls: priorityUrls.length,
+      priorityProbed,
+      backgroundProbed,
+      success: status.success,
+      failed: status.failed,
       totalChannels,
-      coverage,
+      coverage: status.coverage,
     };
     await saveStatus(storage, finalStatus);
-
     console.log(
-      `[channel-probe] Done in ${(durationMs / 1000).toFixed(1)}s: ` +
-      `${success} success, ${failed} failed, coverage=${coverage}%`,
+      '[channel-probe] Done in ' + (durationMs / 1000).toFixed(1) + 's: ' +
+      priorityProbed + ' priority + ' + backgroundProbed + ' background probed, ' +
+      status.success + ' success, ' + status.failed + ' failed',
     );
-
     return finalStatus;
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     const errStatus: ChannelProbeStatus = {
       state: 'error',
+      trigger,
       startedAt,
       finishedAt: new Date().toISOString(),
       durationMs: Date.now() - startMs,
       totalUrls: urls.length,
       probed: status.probed,
-      success,
-      failed,
+      priorityUrls: priorityUrls.length,
+      priorityProbed: status.priorityProbed,
+      backgroundProbed: status.backgroundProbed,
+      success: status.success,
+      failed: status.failed,
       totalChannels,
-      coverage: urls.length > 0 ? Math.round((success / urls.length) * 100) : 0,
+      coverage: status.coverage,
       error: msg,
     };
     await saveStatus(storage, errStatus);
-    console.error(`[channel-probe] Error: ${msg}`);
+    console.error('[channel-probe] Error: ' + msg);
     return errStatus;
   } finally {
     running = false;

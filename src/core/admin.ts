@@ -948,8 +948,12 @@ const translations = {
     channelProbeTrigger:'Probe now', channelProbeRefresh:'Refresh probe status',
     channelProbeIdle:'Idle', channelProbeRunning:'Running', channelProbeDone:'Completed', channelProbeError:'Error',
     channelProbeState:'State', channelProbeProgress:'Progress', channelProbeCoverage:'Coverage',
+    channelProbeTriggerSource:'Trigger', channelProbePriority:'Priority URLs',
+    channelProbePriorityProbed:'Priority probed', channelProbeBackgroundProbed:'Background probed',
+    channelProbeTriggerStartup:'Startup', channelProbeTriggerPostAggregation:'Post-aggregation',
+    channelProbeTriggerManual:'Manual', channelProbeTriggerCron:'Scheduled', channelProbeTriggerBounded:'Worker',
     channelProbeChannels:'Channels', channelProbeDuration:'Duration', channelProbeFinished:'Finished at',
-    channelProbeStarted:'Probe started', channelProbeDisabledFirst:'Enable probe first', channelProbeAlreadyRunning:'Already running',
+    channelProbeStarted:'Probe started', channelProbeQueued:'Queued (another probe is running)', channelProbeDisabledFirst:'Enable probe first', channelProbeAlreadyRunning:'Already running',
     channelProbeCfOnly:'Only Node/Docker supports channel probing',
     liveStrategyTitle:'Live Output Strategy', liveToggleTitle:'Live Feature Toggle', liveToggleLabel:'Disable live aggregation (skip live merge, output empty lives)',
     liveStrategyDisabledHint:'Live aggregation is disabled. The options below are inactive until it is enabled again.',
@@ -1120,8 +1124,12 @@ const translations = {
     channelProbeTrigger:'立即测速', channelProbeRefresh:'刷新测速状态',
     channelProbeIdle:'空闲', channelProbeRunning:'运行中', channelProbeDone:'已完成', channelProbeError:'失败',
     channelProbeState:'状态', channelProbeProgress:'进度', channelProbeCoverage:'覆盖率',
+    channelProbeTriggerSource:'触发来源', channelProbePriority:'优先线路',
+    channelProbePriorityProbed:'优先已测', channelProbeBackgroundProbed:'后台补测',
+    channelProbeTriggerStartup:'启动', channelProbeTriggerPostAggregation:'聚合完成后',
+    channelProbeTriggerManual:'手动', channelProbeTriggerCron:'定时', channelProbeTriggerBounded:'Worker',
     channelProbeChannels:'频道数', channelProbeDuration:'耗时', channelProbeFinished:'完成时间',
-    channelProbeStarted:'测速已启动', channelProbeDisabledFirst:'请先启用测速', channelProbeAlreadyRunning:'已在运行',
+    channelProbeStarted:'测速已启动', channelProbeQueued:'已排队（当前有其他测速任务）', channelProbeDisabledFirst:'请先启用测速', channelProbeAlreadyRunning:'已在运行',
     channelProbeCfOnly:'仅 Node/Docker 支持频道级测速',
     liveStrategyTitle:'直播输出策略', liveToggleTitle:'直播功能', liveToggleLabel:'禁用直播聚合（跳过直播合并，输出空 lives）',
     liveStrategyDisabledHint:'直播聚合已禁用；重新启用前，下面的忽略直播源和合并模式选项不会生效。',
@@ -2239,10 +2247,15 @@ async function loadChannelProbe() {
     $('channelProbeCheck').checked = !!d.enabled;
     const s = d.status || {};
     const stateLabel = { idle: t('channelProbeIdle'), running: t('channelProbeRunning'), done: t('channelProbeDone'), error: t('channelProbeError') }[s.state] || s.state || '-';
+    const triggerLabel = { startup: t('channelProbeTriggerStartup'), 'post-aggregation': t('channelProbeTriggerPostAggregation'), manual: t('channelProbeTriggerManual'), cron: t('channelProbeTriggerCron'), bounded: t('channelProbeTriggerBounded') }[s.trigger] || s.trigger || '-';
     const lines = [];
     lines.push(t('channelProbeState') + ': ' + stateLabel + (d.running ? ' ⏳' : ''));
+    lines.push(t('channelProbeTriggerSource') + ': ' + triggerLabel);
     if (s.totalUrls) {
       lines.push(t('channelProbeProgress') + ': ' + (s.probed || 0) + ' / ' + s.totalUrls + ' | ' + t('channelProbeCoverage') + ': ' + (s.coverage || 0) + '% | ' + t('channelProbeChannels') + ': ' + (s.totalChannels || 0));
+    }
+    if (s.priorityUrls || s.priorityProbed || s.backgroundProbed) {
+      lines.push(t('channelProbePriority') + ': ' + (s.priorityUrls || 0) + ' | ' + t('channelProbePriorityProbed') + ': ' + (s.priorityProbed || 0) + ' | ' + t('channelProbeBackgroundProbed') + ': ' + (s.backgroundProbed || 0));
     }
     if (s.durationMs) {
       lines.push(t('channelProbeDuration') + ': ' + (s.durationMs / 1000).toFixed(1) + 's');
@@ -2281,7 +2294,7 @@ async function triggerChannelProbe() {
     const res = await auth.authFetch('/admin/channel-probe/trigger', { method: 'POST' });
     const d = await res.json();
     if (res.ok) {
-      toast(t('channelProbeStarted'));
+      toast(d.message === 'Probe queued' ? t('channelProbeQueued') : t('channelProbeStarted'));
       setTimeout(loadChannelProbe, 500);
     } else {
       toast(d.error || 'Failed', 'error');

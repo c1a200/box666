@@ -1323,14 +1323,46 @@ export async function separatedMergeLives(
   );
 }
 
+/** URL 是否以 `源名#8位以上短哈希` 形态承载源标签。 */
+function isLiveSourceLabelToken(value: string): boolean {
+  const token = (value || '').trim();
+  if (!token) return false;
+  // 覆盖合并器的 `源名#短哈希` 与同名冲突时的 `源名#短哈希-2`。
+  return /^[^#\s].*#[0-9a-f]{8,64}(?:-\d+)?$/i.test(token);
+}
+
 /**
- * 从合并后的 groups 提取所有 (url, sourceSpeedMs) 对供 channel-probe 测速
- * URL 是 `$源名` 剥离后的裸 URL
+ * 从合并输出中拆分「裸 URL」与「源标签」。
+ *
+ * 合并树的正式格式是 `URL$源标签`；运行时 TXT 会写成 `URL#源标签`，
+ * 因此两种形态都要兼容。`#` 分支只接受 `源名#短哈希` 的严格标签形态，
+ * 避免把普通 URL fragment 截成裸 URL。
  */
-function bareLiveUrl(url: string): string {
+function splitLiveUrlLabel(url: string): { bare: string; label: string } {
   const trimmed = url.trim();
-  const idx = trimmed.lastIndexOf('$');
-  return idx > 0 ? trimmed.slice(0, idx) : trimmed;
+  const dollar = trimmed.lastIndexOf('$');
+  if (dollar > 0 && dollar < trimmed.length - 1) {
+    return { bare: trimmed.slice(0, dollar), label: trimmed.slice(dollar + 1) };
+  }
+
+  const hash = trimmed.lastIndexOf('#');
+  if (hash > 0) {
+    const candidate = trimmed.slice(hash + 1);
+    if (/^[0-9a-f]{8,64}(?:-\d+)?$/i.test(candidate)) {
+      const separator = trimmed.lastIndexOf('#', hash - 1);
+      if (separator > 0) {
+        const label = trimmed.slice(separator + 1);
+        if (isLiveSourceLabelToken(label)) {
+          return { bare: trimmed.slice(0, separator), label };
+        }
+      }
+    }
+  }
+  return { bare: trimmed, label: '' };
+}
+
+function bareLiveUrl(url: string): string {
+  return splitLiveUrlLabel(url).bare;
 }
 
 export function extractAllUrls(groups: TVBoxLiveGroup[]): string[] {
@@ -1417,10 +1449,7 @@ export function liveSourceLabelFromUrl(url: string, groups: readonly TVBoxLiveGr
 }
 
 function channelSourceLabel(url: string): string {
-  const trimmed = (url || "").trim();
-  const idx = trimmed.lastIndexOf("$");
-  if (idx <= 0 || idx >= trimmed.length - 1) return "";
-  return trimmed.slice(idx + 1);
+  return splitLiveUrlLabel(url).label;
 }
 
 /**
@@ -2106,4 +2135,23 @@ export async function filterLivesBySource(
 ): Promise<TVBoxLiveGroup[]> {
   const result = await filterLivesBySourceDetailed(urls, timeoutMs, channelSpeedMap, options);
   return result.groups;
+}
+/** 从完整频道树中提取属于指定源标签的全部裸 URL。 */
+export function extractUrlsForSourceLabels(
+  groups: readonly TVBoxLiveGroup[],
+  selectedLabels: ReadonlySet<string>,
+): string[] {
+  if (selectedLabels.size === 0) return [];
+  const set = new Set<string>();
+  for (const group of groups) {
+    for (const channel of group.channels || []) {
+      for (const raw of channel.urls || []) {
+        const parsed = splitLiveUrlLabel(raw);
+        const label = normalizeSourceLabelKey(parsed.label);
+        if (!label || !selectedLabels.has(label)) continue;
+        if (parsed.bare) set.add(parsed.bare);
+      }
+    }
+  }
+  return Array.from(set);
 }

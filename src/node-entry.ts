@@ -20,7 +20,7 @@ import * as dns from 'dns';
 import { createApp } from './routes';
 import { runAggregation } from './aggregator';
 import { collectJarEntriesForSites, prefetchJarBinaries } from './core/jar-proxy';
-import { runChannelProbe, isProbeEnabled, loadStatus } from './core/channel-probe';
+import { runChannelProbe, isProbeEnabled } from './core/channel-probe';
 import { currentAggregationPhase } from './core/logger';
 import {
   beginQualityRun,
@@ -50,7 +50,7 @@ import {
   CHANNEL_PROBE_CRON,
 } from './core/config';
 import type { Storage } from './storage/interface';
-import type { AppConfig, SearchQualityRunMode } from './core/types';
+import type { AppConfig, SearchQualityRunMode, ChannelProbeTrigger } from './core/types';
 
 // 加载 .env（嵌入式/无文件系统环境下容错：nodejs-mobile 无 .env，依赖注入的环境变量）
 try {
@@ -311,6 +311,7 @@ async function main() {
         message: 'Refresh completed',
       };
       console.log(`[aggregation] Completed in ${Date.now() - startedAt}ms`);
+      void scheduleChannelProbe("post-aggregation", 0);
     }).catch((error: unknown) => {
       if (refreshRunId !== runId) return;
       refreshRunning = false;
@@ -360,42 +361,91 @@ async function main() {
     };
   };
 
-  let startupChannelProbeStarted = false;
   const startupChannelProbeDelayMs = Math.max(
     0,
-    parseInt(process.env.STARTUP_CHANNEL_PROBE_DELAY_MS || '') || 120_000,
+    parseInt(process.env.STARTUP_CHANNEL_PROBE_DELAY_MS || "") || 120_000,
   );
-  const startupChannelProbeEnabled = process.env.STARTUP_CHANNEL_PROBE_ENABLED !== 'false';
+  const startupChannelProbeEnabled = process.env.STARTUP_CHANNEL_PROBE_ENABLED !== "false";
 
-  async function scheduleStartupChannelProbe(): Promise<void> {
-    if (!startupChannelProbeEnabled || startupChannelProbeStarted) return;
-    startupChannelProbeStarted = true;
-    try {
-      if (!(await isProbeEnabled(storage))) {
-        console.log('[channel-probe] Startup probe skipped: disabled by user');
+  // 统一串行调度：所有触发共用一道门禁，避免与主聚合争抢上游带宽。
+  // 启动测速可等待；聚合完成/手动触发会覆盖等待中的低优先级启动任务，立即测当前下发线路。
+  let channelProbeScheduled = false;
+  let channelProbePendingTrigger: ChannelProbeTrigger | null = null;
+  let channelProbeWake: (() => void) | null = null;
+
+  function wakeChannelProbeScheduler(): void {
+    if (channelProbeWake) {
+      const wake = channelProbeWake;
+      channelProbeWake = null;
+      wake();
+    }
+  }
+
+  async function waitBeforeChannelProbe(delayMs: number, trigger: ChannelProbeTrigger): Promise<void> {
+    const deadline = Date.now() + Math.max(0, delayMs);
+    while (Date.now() < deadline) {
+      const remaining = deadline - Date.now();
+      await new Promise<void>((resolve) => {
+        let settled = false;
+        const timer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          channelProbeWake = null;
+          resolve();
+        }, Math.min(remaining, 1000));
+        channelProbeWake = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve();
+        };
+      });
+      if (channelProbePendingTrigger === "post-aggregation" || channelProbePendingTrigger === "manual") {
         return;
       }
-      const status = await loadStatus(storage);
-      if (status.state === 'running') {
-        console.log('[channel-probe] Startup probe skipped: already running');
-        return;
+    }
+  }
+
+  async function scheduleChannelProbe(
+    trigger: ChannelProbeTrigger,
+    delayMs = 0,
+  ): Promise<void> {
+    if (trigger === "startup" && !startupChannelProbeEnabled) return;
+    if (channelProbeScheduled) {
+      // 手动和聚合完成触发优先级高于等待中的启动触发。
+      if (trigger === "post-aggregation" || trigger === "manual") {
+        channelProbePendingTrigger = trigger;
+        wakeChannelProbeScheduler();
       }
-      console.log('[channel-probe] Startup probe scheduled in ' + startupChannelProbeDelayMs + 'ms');
-      const startProbeWhenIdle = (): void => {
-        if (refreshRunning) {
-          // Main aggregation may still be running after its timeout. Recheck
-          // shortly instead of competing with it for upstream bandwidth.
-          setTimeout(startProbeWhenIdle, 30_000);
+      return;
+    }
+    channelProbeScheduled = true;
+    const runScheduled = async (): Promise<void> => {
+      try {
+        if (!(await isProbeEnabled(storage))) {
+          console.log("[channel-probe] " + trigger + " probe skipped: disabled by user");
           return;
         }
-        void runChannelProbe(storage).catch((err: unknown) => {
-          console.error('[channel-probe] Startup probe failed:', err);
-        });
-      };
-      setTimeout(startProbeWhenIdle, startupChannelProbeDelayMs);
-    } catch (err) {
-      console.error('[channel-probe] Startup probe scheduling failed:', err);
-    }
+        await waitBeforeChannelProbe(delayMs, trigger);
+        while (refreshRunning) {
+          console.log("[channel-probe] " + trigger + " probe waiting for aggregation to finish");
+          await new Promise((resolve) => setTimeout(resolve, 30_000));
+        }
+        let effectiveTrigger = channelProbePendingTrigger || trigger;
+        if (channelProbePendingTrigger === "manual") effectiveTrigger = "manual";
+        channelProbePendingTrigger = null;
+        console.log("[channel-probe] Running probe via " + effectiveTrigger);
+        await runChannelProbe(storage, { trigger: effectiveTrigger });
+      } catch (err) {
+        console.error("[channel-probe] " + trigger + " probe failed:", err);
+      } finally {
+        channelProbeScheduled = false;
+        const next = channelProbePendingTrigger;
+        channelProbePendingTrigger = null;
+        if (next) void scheduleChannelProbe(next, 0);
+      }
+    };
+    void runScheduled();
   }
 
   let qualityRunning = false;
@@ -523,11 +573,10 @@ async function main() {
   scheduleCron(initialSchedule);
 
   // 频道测速独立 cron（每 12 小时，默认关闭）
-  cron.schedule(CHANNEL_PROBE_CRON, async () => {
+  cron.schedule(CHANNEL_PROBE_CRON, () => {
     try {
-      if (!(await isProbeEnabled(storage))) return;
       console.log(`[channel-probe-cron] Triggered at ${new Date().toISOString()}`);
-      await runChannelProbe(storage);
+      void scheduleChannelProbe('cron', 0);
     } catch (err) {
       console.error('[channel-probe-cron] Error:', err);
     }
@@ -566,7 +615,7 @@ async function main() {
   async function scheduleStartupAggregation(): Promise<void> {
     if (!startupAggregationEnabled) {
       console.log('[aggregation] Automatic startup aggregation disabled');
-      void scheduleStartupChannelProbe();
+      void scheduleChannelProbe("startup", startupChannelProbeDelayMs);
       return;
     }
 
@@ -587,7 +636,7 @@ async function main() {
 
     if (hasFreshCache && startupAggregationWarmDelayMs === 0) {
       console.log('[aggregation] Fresh cached config found; skipping automatic startup aggregation');
-      void scheduleStartupChannelProbe();
+      void scheduleChannelProbe("startup", startupChannelProbeDelayMs);
       return;
     }
 
@@ -603,7 +652,7 @@ async function main() {
       console.log('[aggregation] Triggering automatic startup aggregation...');
       void runWithGuard()
         .catch((err: unknown) => { console.error('[aggregation] Startup run failed:', err); })
-        .finally(() => { void scheduleStartupChannelProbe(); });
+        .finally(() => { void scheduleChannelProbe("startup", startupChannelProbeDelayMs); });
     }, delayMs);
   }
 
@@ -613,6 +662,7 @@ async function main() {
     triggerRefresh: runWithGuard,
     triggerQuality: runQualityWithGuard,
     enableChannelProbe: true,
+    triggerChannelProbe: (trigger = "manual") => scheduleChannelProbe(trigger, 0),
     enableBuilder: true,
     isSyncing: () => refreshRunning,
     aggregationStatus,
