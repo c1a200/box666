@@ -11,7 +11,7 @@ import { loadGroupOrder, saveGroupOrder } from './core/group-order';
 import { validateMacCMS } from './core/maccms';
 import { lookupJarUrl, isMd5Key, base64ToUint8Array, rewriteJarUrls, normalizeJarRequestKey, loadJarReadyKeys, markJarReady, getJarKeyForSite } from './core/jar-proxy';
 import { BASE_URL_PLACEHOLDER } from './core/config';
-import { lookupLiveSource, listLiveProxyEntries, listAllLiveProxyEntries, isLiveProxyEntryDistributable, liveProxyEntryLabel, recordLiveProxyValidation, removeLiveProxyEntry } from './core/live-source';
+import { lookupLiveSource, listLiveProxyEntries, listAllLiveProxyEntries, isLiveProxyEntryDistributable, liveProxyEntryLabel, recordLiveProxyValidation, removeLiveProxyEntry, updateLiveProxyManifest, parseLiveProxyManifest, KV_LIVE_PROXY_MANIFEST } from './core/live-source';
 import { loadLiveDistribution, saveLiveDistribution, toLiveDistributionPolicy } from './core/live-distribution-store';
 import { selectLiveDistribution } from './core/live-quality';
 import { rebuildLiveOutput } from './core/live-output';
@@ -36,7 +36,7 @@ import {
   getQualityPoolHealth,
 } from './core/quality';
 import { loadClientDistribution, saveClientDistribution, findClientAuthCode, normalizeClientDistributionConfig, createClientAuthCode } from './core/client-auth-store';
-import { formatAggregatedLiveGroupsAsTxt, formatLiveGroupsAsTxt, filterLivesBySource, filterLivesBySourceDetailed, sortLiveGroupsForOutput, filterGroupsBySourceLabels, reorderGroupsBySourcePriority, normalizeSourceLabelKey, parseLiveCandidatePool } from './core/live-merger';
+import { formatAggregatedLiveGroupsAsTxt, formatLiveGroupsAsTxt, filterLivesBySourceDetailed, filterGroupsBySourceLabels, reorderGroupsBySourcePriority, normalizeSourceLabelKey, parseLiveCandidatePool } from './core/live-merger';
 import { containsBlockedLiveUrl, isBlockedLiveSource, isBlockedLiveUrl } from './core/live-policy';
 import { autoNameFromUrl, backupTypeMismatch, createSourceBackup, extractBackupItems, parseSourceList } from './core/source-list-parser';
 import type { TVBoxConfig, TVBoxSite, SearchQuotaConfig, SiteQualityGrade, TVBoxLive, TVBoxLiveGroup, ClientAuthCode, ClientDistributionConfig, LiveDistributionConfig, SourceDistributionMode, SourceSelectionMode, ChannelProbeTrigger } from './core/types';
@@ -316,7 +316,7 @@ export function createApp(deps: AppDeps): Hono {
   const { config } = deps;
 
   // 同一 Worker 实例内合并直播刷新，避免并发请求重复下载同一批直播源。
-  const liveRuntimeRefreshes = new Map<string, Promise<Response | null>>();
+
 
   async function markOutputDirty(): Promise<void> {
     await setDirtyMarker(storage);
@@ -807,7 +807,7 @@ export function createApp(deps: AppDeps): Hono {
   async function getSeparatedLives(baseUrlOverride?: string): Promise<TVBoxLive[]> {
     const distribution = await loadLiveDistribution(storage);
     const entries = selectLiveDistribution(
-      await listAllLiveProxyEntries(storage),
+      (await listAllLiveProxyEntries(storage)).filter(isLiveProxyEntryDistributable),
       toLiveDistributionPolicy(distribution),
     );
     const baseUrl = (
@@ -861,7 +861,7 @@ export function createApp(deps: AppDeps): Hono {
     // 即使是“全选(-1)”，也必须经过质量池门禁与统一排序，
     // 不能再直接返回候选 groups，否则 invalid/blocked 会绕过筛选。
     const selected = selectLiveDistribution(
-      await listAllLiveProxyEntries(storage),
+      (await listAllLiveProxyEntries(storage)).filter(isLiveProxyEntryDistributable),
       toLiveDistributionPolicy(distribution),
     );
     const selectedLabels = new Set<string>();
@@ -1314,244 +1314,70 @@ export function createApp(deps: AppDeps): Hono {
       applyBaseUrlPlaceholder(text, authContext.rootBaseUrl),
       authContext,
     );
-    const isCfRuntime = !!config.workerBaseUrl && typeof caches !== 'undefined';
-    const liveDistribution = await loadLiveDistribution(storage);
-
-
-    // 优先返回聚合阶段预生成的 txt，避免每次请求都实时下载/合并直播源。
-    // 非默认下发策略必须先按源筛选，不能直接泄漏全量预生成文本。
-    const prebuiltTxt = await storage.get(KV_LIVE_MERGED_TXT);
-    const outputFingerprint = await storage.get(KV_LIVE_OUTPUT_FINGERPRINT);
     const liveDisabled = (await storage.get(KV_LIVE_DISABLED)) === 'true';
-    // 空字符串通常表示直播被禁用或确实没有频道；但历史上也存在聚合输出写入
-    // 空 TXT、原生分组数据仍有效的部署。若直播未禁用，空预生成值不能遮蔽
-    // KV_LIVE_MERGED_DATA，否则会永久返回空内容或旧运行时缓存。
-    const hasUsablePrebuiltTxt = Boolean(prebuiltTxt && prebuiltTxt.trim())
-      && prebuiltTxt !== KV_LIVE_MERGED_TXT_FALLBACK
-      && !containsBlockedLiveUrl(prebuiltTxt!);
-    const prebuiltEmptyIsAuthoritative = prebuiltTxt !== null
-      && prebuiltTxt.trim() === ''
-      && liveDisabled;
-    if (outputFingerprint && (hasUsablePrebuiltTxt || prebuiltEmptyIsAuthoritative)) {
-      return c.body(renderLiveText(prebuiltTxt!), 200, {
-        'Content-Type': 'text/plain; charset=utf-8',
-        'Cache-Control': 'public, max-age=1800, stale-while-revalidate=86400',
-        'Access-Control-Allow-Origin': '*',
-      });
-    }
-
-    // CF 非聚合模式：实时解析成功后写入持久化缓存，避免每次冷启动都重新下载直播源。
-    // 版本一致时直接返回；版本已更新但旧缓存仍可用时采用 stale-while-revalidate：
-    // 先快速返回旧直播，再在后台刷新，避免聚合后的首个 /live 请求阻塞数秒。
-    const mergedVersion = await storage.get(KV_LIVE_MERGED_TXT_VERSION);
-    const runtimeVersion = await storage.get(KV_LIVE_RUNTIME_TXT_VERSION);
-    const runtimeTxt = await storage.get(KV_LIVE_RUNTIME_TXT);
-    const runtimeVersionMatches = runtimeVersion !== null && runtimeVersion === (mergedVersion || 'legacy');
-    const hasRuntimeTxt = Boolean(runtimeTxt && runtimeTxt.trim() && !containsBlockedLiveUrl(runtimeTxt));
-    if (outputFingerprint && hasRuntimeTxt && runtimeVersionMatches && runtimeTxt !== prebuiltTxt && !liveDisabled) {
-      return c.body(renderLiveText(runtimeTxt!), 200, {
-        'Content-Type': 'text/plain; charset=utf-8',
-        'Cache-Control': 'public, max-age=1800, stale-while-revalidate=86400',
-        'Access-Control-Allow-Origin': '*',
-      });
-    }
-    const runtimeCacheInvalidated = liveDisabled || !runtimeVersionMatches || !hasRuntimeTxt;
-
-    // CF 非聚合模式：解析为空通常是上游超时或内容格式不兼容。若不记录负缓存，
-    // 客户端会反复触发同一批慢请求。这里保留 10 分钟冷却，配置变更时会主动清空。
-    const runtimeEmptyAtRaw = await storage.get(KV_LIVE_RUNTIME_EMPTY_AT);
-    const runtimeEmptyAt = runtimeEmptyAtRaw ? Number(runtimeEmptyAtRaw) : 0;
-    const runtimeEmptyTtlMs = 10 * 60 * 1000;
-    if (!liveDisabled && isCfRuntime && runtimeEmptyAt > 0 && Date.now() - runtimeEmptyAt < runtimeEmptyTtlMs) {
-      return c.body('', 200, {
-        'Content-Type': 'text/plain; charset=utf-8',
-        'Cache-Control': 'public, max-age=300',
-        'Access-Control-Allow-Origin': '*',
-      });
-    }
-
-    let livesRaw = await storage.get(KV_LIVE_MERGED_DATA);
-    let lives: any[] = [];
-    if (livesRaw) {
-      try {
-        lives = JSON.parse(livesRaw);
-      } catch { /* ignore */ }
-    }
-
-    if (!lives || lives.length === 0) {
-      const cached = await storage.get(KV_MERGED_CONFIG_FULL) || await storage.get(KV_MERGED_CONFIG);
-      if (cached) {
-        try {
-          const full = JSON.parse(cached);
-          lives = full.lives || [];
-        } catch { /* ignore */ }
-      }
-    }
-
-    // 过滤掉指向自身或 live.json 的单条目，防止死循环；同时应用共享屏蔽策略，
-    // 避免旧缓存或未重跑聚合时把已屏蔽源重新暴露。
-    if (Array.isArray(lives)) {
-      lives = filterBlockedLiveEntries(lives as TVBoxLive[]);
-      lives = lives.filter((live) => {
-        const url = live.url || live.api || '';
-        return !(url && (url.endsWith('/live') || url.endsWith('/live-config') || url.endsWith('/live.json')));
-      });
-    }
-
-    try {
-      // FongMi 格式（type/url/api 指针）：实时下载并解析为 txt 格式。
-      // CF Worker 使用边缘缓存；Node/Render 使用持久化下载缓存和限并发，
-      // 避免缺失预生成 TXT 时一次性下载全部直播源。
-      if (!isNativeLiveGroups(lives)) {
-        const liveUrls: Array<{ name: string; url: string; header?: Record<string, string> }> = [];
-        for (const entry of lives) {
-          const url = entry.url || entry.api;
-          // 过滤非直播配置指针：type=3 是插件/聚合处理器，不能当 m3u/txt 下载。
-          // yqk 等相对值以及非 HTTP(S) 地址也一律跳过，避免每次请求白等超时。
-          if (entry.type === 3 || url === 'yqk' || typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
-            continue;
-          }
-          const liveSource = { name: entry.name || url, url };
-          if (isBlockedLiveSource(liveSource)) continue;
-          liveUrls.push({ ...liveSource, header: entry.header });
-        }
-        if (liveUrls.length > 0) {
-          const resolvedUrls = liveUrls.map(u => ({
-            ...u,
-            url: applyBaseUrlPlaceholder(u.url, baseUrl)
-          }));
-
-          const cache = isCfRuntime ? (caches as any).default as Cache : null;
-          const cacheKey = isCfRuntime
-            ? new Request('https://live-cache.internal/' + encodeURIComponent(baseUrl) + '/' + encodeURIComponent(c.req.url))
-            : null;
-          const refreshKey = cacheKey?.url || baseUrl + '|' + resolvedUrls.map(u => u.url).join('|');
-
-          // 同一 Worker 实例内合并并发刷新，避免多个客户端同时请求时重复下载。
-          const refreshRuntimeLiveTxt = (): Promise<Response | null> => {
-            const existing = liveRuntimeRefreshes.get(refreshKey);
-            if (existing) return existing;
-
-            const task = (async (): Promise<Response | null> => {
-              try {
-                const channelSpeedMap = await loadChannelSpeedMap(storage);
-                const liveFetchTimeoutMs = isCfRuntime ? 4500 : 8000;
-                const groups = await filterLivesBySource(resolvedUrls, liveFetchTimeoutMs, channelSpeedMap, isCfRuntime
-                  ? {
-                      maxUrlsPerChannel: 6,
-                      maxChannels: 12000,
-                      minChannelsPerSource: 5,
-                      maxAdRatio: 0.5,
-                      minPlayableRatio: 0.2,
-                    }
-                  : {
-                      maxUrlsPerChannel: 6,
-                      maxChannels: 12000,
-                      minChannelsPerSource: 5,
-                      maxAdRatio: 0.5,
-                      minPlayableRatio: 0.2,
-                      storage,
-                      concurrency: 3,
-                      useCache: true,
-                    });
-                if (groups.length === 0) {
-                  // 后台刷新失败时保留旧直播缓存，只有从未成功解析过才记录空缓存。
-                  if (isCfRuntime && !hasRuntimeTxt) {
-                    await storage.put(KV_LIVE_RUNTIME_EMPTY_AT, String(Date.now()));
-                  }
-                  return null;
-                }
-
-                const txt = formatAggregatedLiveGroupsAsTxt(groups);
-                await storage.put(KV_LIVE_RUNTIME_TXT, txt);
-                await storage.put(KV_LIVE_RUNTIME_TXT_VERSION, mergedVersion || 'legacy');
-                await storage.put(KV_LIVE_RUNTIME_EMPTY_AT, '');
-                // 运行时过滤结果；完整聚合源快照只由主聚合维护，不能被实时解析覆盖。
-                await storage.put(KV_CHANNEL_RUNTIME_TREE, JSON.stringify(groups));
-                const responseHeaders = {
-                  'Content-Type': 'text/plain; charset=utf-8',
-                  'Cache-Control': 'public, max-age=1800, stale-while-revalidate=86400',
-                  'Access-Control-Allow-Origin': '*',
-                };
-                // Cache the root/placeholder form so auth-code paths never leak
-                // one client's prefix into another client's cached response.
-                const cacheResponse = new Response(applyBaseUrlPlaceholder(txt, authContext.rootBaseUrl), {
-                  headers: responseHeaders,
-                });
-                if (cache && cacheKey) {
-                  await cache.put(cacheKey, cacheResponse.clone());
-                }
-                return c.body(renderLiveText(txt), 200, responseHeaders);
-              } catch (err) {
-                console.warn('[live] Runtime refresh failed:', err instanceof Error ? err.message : String(err));
-                return null;
-              }
-            })();
-
-            liveRuntimeRefreshes.set(refreshKey, task);
-            void task.finally(() => {
-              if (liveRuntimeRefreshes.get(refreshKey) === task) {
-                liveRuntimeRefreshes.delete(refreshKey);
-              }
-            });
-            return task;
-          };
-
-          // 版本更新但旧直播可用：立即返回 stale 内容，后台刷新新版本。
-          if (hasRuntimeTxt && !runtimeVersionMatches) {
-            const staleResponse = c.body(renderLiveText(runtimeTxt!), 200, {
-              'Content-Type': 'text/plain; charset=utf-8',
-              'Cache-Control': 'public, max-age=300',
-              'Access-Control-Allow-Origin': '*',
-              'X-Live-Cache': 'stale',
-            });
-            const refreshTask = refreshRuntimeLiveTxt();
-            try {
-              c.executionCtx.waitUntil(refreshTask);
-            } catch {
-              void refreshTask;
-            }
-            return staleResponse;
-          }
-
-          if (cache && cacheKey && !runtimeCacheInvalidated) {
-            const cached = await cache.match(cacheKey);
-            if (cached) return c.body(renderLiveText(await cached.clone().text()), cached.status as any, Object.fromEntries(cached.headers.entries()));
-          }
-
-          const refreshed = await refreshRuntimeLiveTxt();
-          if (refreshed) return refreshed;
-        }
-        // 无法解析时记录负缓存并返回空 txt，避免连续请求重复等待超时。
-        if (isCfRuntime) {
-          await storage.put(KV_LIVE_RUNTIME_EMPTY_AT, String(Date.now()));
-        }
-        return c.body('', 200, {
-          'Content-Type': 'text/plain; charset=utf-8',
-          'Cache-Control': 'public, max-age=300',
-          'Access-Control-Allow-Origin': '*',
-        });
-      }
-
-      // 所有请求都统一经过质量池与下发策略；预生成结果缺失或策略变化时，
-      // 直接在请求内从完整候选树重建，绝不回退成全量候选。
-      const unifiedTxt = await buildFilteredLiveTxt(liveDistribution);
-      if (unifiedTxt != null) {
-        return c.body(renderLiveText(unifiedTxt), 200, {
-          'Content-Type': 'text/plain; charset=utf-8',
-          'Cache-Control': 'public, max-age=300, stale-while-revalidate=3600',
-          'Access-Control-Allow-Origin': '*',
-          'X-Live-Source-Filtered': '1',
-        });
-      }
+    if (liveDisabled) {
       return c.body('', 200, {
         'Content-Type': 'text/plain; charset=utf-8',
         'Cache-Control': 'no-store',
         'Access-Control-Allow-Origin': '*',
+        'X-Live-Source-State': 'disabled',
       });
-    } catch {
-      return c.json({ error: 'Config parse error' }, 500);
     }
+
+    const liveDistribution = await loadLiveDistribution(storage);
+
+    // 客户端请求只读取聚合阶段/运行时重建好的缓存，绝不在请求路径回源。
+    // 这样上游 404/5xx 不会变成 App 的网络错误，也不会造成首屏等待。
+    const prebuiltTxt = await storage.get(KV_LIVE_MERGED_TXT);
+    const hasUsablePrebuiltTxt = Boolean(prebuiltTxt && prebuiltTxt.trim()
+      && prebuiltTxt !== KV_LIVE_MERGED_TXT_FALLBACK
+      && prebuiltTxt.includes('#genre#'))
+      && !containsBlockedLiveUrl(prebuiltTxt!);
+    if (hasUsablePrebuiltTxt && prebuiltTxt) {
+      return c.body(renderLiveText(prebuiltTxt), 200, {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Cache-Control': 'no-store',
+        'Access-Control-Allow-Origin': '*',
+        'X-Live-Source-State': 'ready',
+      });
+    }
+
+    const runtimeTxt = await storage.get(KV_LIVE_RUNTIME_TXT);
+    const hasUsableRuntimeTxt = Boolean(runtimeTxt && runtimeTxt.trim()
+      && runtimeTxt.includes('#genre#'))
+      && !containsBlockedLiveUrl(runtimeTxt!);
+    if (hasUsableRuntimeTxt && runtimeTxt) {
+      return c.body(renderLiveText(runtimeTxt), 200, {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Cache-Control': 'no-store',
+        'Access-Control-Allow-Origin': '*',
+        'X-Live-Source-State': 'runtime-cache',
+      });
+    }
+
+    // 缓存缺失时只允许从已持久化的候选树按当前下发策略重建。
+    // 这是纯内存/KV组合操作，不回源下载；失败则返回 200 空文本。
+    try {
+      const unifiedTxt = await buildFilteredLiveTxt(liveDistribution);
+      if (unifiedTxt && unifiedTxt.trim() && unifiedTxt.includes('#genre#')) {
+        return c.body(renderLiveText(unifiedTxt), 200, {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'Cache-Control': 'no-store',
+          'Access-Control-Allow-Origin': '*',
+          'X-Live-Source-Filtered': '1',
+          'X-Live-Source-State': 'rebuilt',
+        });
+      }
+    } catch (error: unknown) {
+      console.warn('[live] Cache rebuild failed:', error instanceof Error ? error.message : String(error));
+    }
+
+    return c.body('', 200, {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'Access-Control-Allow-Origin': '*',
+      'X-Live-Source-State': 'unavailable',
+    });
   };
   app.get('/live', handleLive);
   app.get('/lives', handleLive);
@@ -2682,6 +2508,22 @@ export function createApp(deps: AppDeps): Hono {
 
   // ─── 直播源代理（CF / Node-Render 通用）────────────────
   {
+    const emptyLiveSourceResponse = (state: string, headers: Record<string, string> = {}) => new Response('', {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Cache-Control': 'no-store',
+        'Access-Control-Allow-Origin': '*',
+        'X-Live-Source-State': state,
+        ...headers,
+      },
+    });
+
+    /**
+     * 分离模式下发的 /live/<key> 只读聚合阶段预构建文本。
+     * 运行时绝不回源探测：上游抖动不能在客户端表现为 404/502 或数秒等待；
+     * 缺失、失效或未就绪的入口统一返回 200 空文本，由应用端快速跳过。
+     */
     const handleLiveSource = async (c: any) => {
       const baseUrl = await resolveBaseUrl(c);
       if (baseUrl instanceof Response) return baseUrl;
@@ -2691,12 +2533,20 @@ export function createApp(deps: AppDeps): Hono {
       const key = c.req.param('key');
       const isCfRuntime = !!config.workerBaseUrl && typeof caches !== 'undefined';
       const cache = isCfRuntime ? (caches as any).default as Cache : null;
-      // Version the live cache key so updated grouping/filter policy is not hidden
-      // by an old cached live text response after deployment.
+      // Keep cache version independent of client auth prefixes; cache the root form only.
+      // Cache keys include the manifest revision so a source that becomes blocked or
+      // loses its prebuilt text cannot be served from an older cache entry.
+      const manifest = parseLiveProxyManifest(await storage.get(KV_LIVE_PROXY_MANIFEST));
+      const manifestEntry = manifest?.entries.find((item) => item.key === key);
+      const canDistributeManifestEntry = Boolean(manifestEntry && isLiveProxyEntryDistributable(manifestEntry));
+      const manifestRevision = manifest
+        ? `${manifest.version}:${manifestEntry?.checkedAt || manifest.signature || 'none'}`
+        : 'none';
       const cacheKey = cache
-        ? new Request(`https://live-cache.internal/live/${encodeURIComponent(key)}?v=20260929-1`)
+        ? new Request(`https://live-cache.internal/live/${encodeURIComponent(key)}?v=${encodeURIComponent(manifestRevision)}`)
         : null;
-      const cached = cacheKey ? await cache!.match(cacheKey) : undefined;
+      if (!canDistributeManifestEntry && cacheKey) await cache!.delete(cacheKey);
+      const cached = canDistributeManifestEntry && cacheKey ? await cache!.match(cacheKey) : undefined;
       if (cached) {
         const cachedText = await cached.clone().text();
         if (cachedText.trim() && cachedText.includes('#genre#')) {
@@ -2704,14 +2554,12 @@ export function createApp(deps: AppDeps): Hono {
           const headers = new Headers(cached.headers);
           headers.delete('content-length');
           headers.delete('content-encoding');
-          return new Response(rewritten, { status: cached.status, headers });
+          headers.set('X-Live-Source-State', 'ready');
+          headers.set('X-Live-Source-Cache', 'hit');
+          headers.set('X-Live-Source-Prebuild', '1');
+          return new Response(rewritten, { status: 200, headers });
         }
-        // 缓存内容异常不代表上游永久失效；仅清除坏缓存并让客户端稍后重试。
         if (cacheKey) await cache!.delete(cacheKey);
-        return c.json({ error: 'Cached live source is invalid or empty' }, 502, {
-          'Cache-Control': 'no-store',
-          'Access-Control-Allow-Origin': '*',
-        });
       }
 
       const source = await lookupLiveSource(key, storage);
@@ -2720,90 +2568,35 @@ export function createApp(deps: AppDeps): Hono {
           if (cacheKey) await cache!.delete(cacheKey);
           await removeLiveProxyEntry(key, storage);
         }
-        return c.json({ error: 'Unknown live source key' }, 404, {
-          'Cache-Control': 'no-store',
-          'Access-Control-Allow-Origin': '*',
-        });
+        return emptyLiveSourceResponse(source ? 'blocked' : 'missing');
       }
 
       const prebuilt = await storage.get(`${KV_LIVE_TEXT_PREFIX}${key}`);
-      if (prebuilt && prebuilt.trim() && prebuilt.includes('#genre#')) {
-        const response = new Response(prebuilt, {
-          headers: {
-            'Content-Type': 'text/plain; charset=utf-8',
-            'Cache-Control': `public, max-age=${LIVE_PROXY_TTL}`,
-            'Access-Control-Allow-Origin': '*',
-            'X-Live-Source-Filtered': '1',
-            'X-Live-Source-Prebuild': '1',
-          },
-        });
-        if (cache && cacheKey) {
-          c.executionCtx.waitUntil(cache.put(cacheKey, response.clone()));
-        }
-        return response;
+      if (!prebuilt || !prebuilt.trim() || !prebuilt.includes('#genre#')) {
+        // 聚合阶段尚未准备好文本的入口不可下发；不回源、不报错，避免污染客户端体验。
+        if (cacheKey) await cache!.delete(cacheKey);
+        return emptyLiveSourceResponse('unavailable');
       }
 
-      try {
-        const channelSpeedMap = await loadChannelSpeedMap(storage);
-        const result = await filterLivesBySourceDetailed(
-          [{ name: source.name || '直播源', url: source.url, ua: source.ua, header: source.header }],
-          isCfRuntime ? 4500 : 8000,
-          channelSpeedMap,
-          {
-            maxUrlsPerChannel: 6,
-            maxChannels: 12000,
-            minChannelsPerSource: 5,
-            maxAdRatio: 0.5,
-            minPlayableRatio: 0.2,
-            storage,
-            concurrency: 1,
-            useCache: true,
-          },
-        );
-
-        const text = formatLiveGroupsAsTxt(result.groups);
-        if (!text.trim() || !text.includes('#genre#')) {
-          if (result.failure === 'invalid') {
-            // 单轮失败可能只是上游返回了短暂错误页。连续确认无效达到阈值后，
-            // recordLiveProxyValidation 才会真正删除入口。
-            if (cacheKey) await cache!.delete(cacheKey);
-            await recordLiveProxyValidation(key, 'invalid', storage);
-            return c.json({ error: 'Invalid or empty live source' }, 502, {
-              'Cache-Control': 'no-store',
-              'Access-Control-Allow-Origin': '*',
-            });
-          }
-
-          // 超时、限流、5xx、网络异常等临时失败：只记录状态，保留 manifest 入口。
-          if (cacheKey) await cache!.delete(cacheKey);
-          await recordLiveProxyValidation(key, 'transient', storage);
-          return c.json({ error: result.reason || 'Live source temporarily unavailable' }, 502, {
-            'Cache-Control': 'no-store',
-            'Access-Control-Allow-Origin': '*',
-          });
-        }
-
-        await recordLiveProxyValidation(key, 'valid', storage);
-        const response = new Response(text, {
-          headers: {
-            'Content-Type': 'text/plain; charset=utf-8',
-            'Cache-Control': `public, max-age=${LIVE_PROXY_TTL}`,
-            'Access-Control-Allow-Origin': '*',
-            'X-Live-Source-Filtered': '1',
-          },
-        });
-
-        if (cache && cacheKey) {
-          c.executionCtx.waitUntil(cache.put(cacheKey, response.clone()));
-        }
-        return response;
-      } catch (error: unknown) {
-        const msg = error instanceof Error ? error.message : String(error);
-        return c.json({ error: msg }, 502, {
+      const response = new Response(prebuilt, {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/plain; charset=utf-8',
+          // Prebuilt text can change when aggregation updates the source; avoid stale client cache.
           'Cache-Control': 'no-store',
           'Access-Control-Allow-Origin': '*',
-        });
+          'X-Live-Source-Filtered': '1',
+          'X-Live-Source-Prebuild': '1',
+          'X-Live-Source-State': 'ready',
+        },
+      });
+      if (cache && cacheKey) {
+        c.executionCtx.waitUntil(cache.put(cacheKey, response.clone()));
       }
+      return new Response(applyAuthPrefixToProxyUrls(prebuilt, authContext), {
+        status: 200,
+        headers: response.headers,
+      });
     };
     app.get('/live/:key', handleLiveSource);
     app.get('/lives/:key', handleLiveSource);
@@ -4117,6 +3910,7 @@ export function createApp(deps: AppDeps): Hono {
         category: entry.category || 'other',
         health: entry.health,
         everSucceeded: entry.everSucceeded ?? !!entry.successfulAt,
+        textReady: entry.textReady === true,
         lastFailure: entry.lastFailure,
         qualityScore: entry.qualityScore ?? 0,
         rank: entry.rank ?? 0,
@@ -4221,10 +4015,27 @@ export function createApp(deps: AppDeps): Hono {
       channelSpeedMap,
       { maxUrlsPerChannel: 6, maxChannels: 12000, minChannelsPerSource: 5, maxAdRatio: 0.5, minPlayableRatio: 0.2, storage, concurrency: 1, useCache: true },
     );
-    const ok = result.groups.length > 0 && formatLiveGroupsAsTxt(result.groups).includes('#genre#');
-    const state = ok ? 'valid' : (result.failure === 'invalid' ? 'invalid' : 'transient');
-    const entry = await recordLiveProxyValidation(key, state, storage);
-    // 单源复检属于质量池变更，必须立即重建 runtime 输出。
+    const ok = result.groups.length > 0;
+    const sourceText = ok ? formatLiveGroupsAsTxt(result.groups) : '';
+    const validText = sourceText.trim() && sourceText.includes('#genre#') ? sourceText : '';
+    const state = validText ? 'valid' : (result.failure === 'invalid' ? 'invalid' : 'transient');
+    let entry: Awaited<ReturnType<typeof recordLiveProxyValidation>> = null;
+    if (state === 'valid') {
+      const manifest = await updateLiveProxyManifest(
+        [{ name: source.name || '直播源', url: source.url, ua: source.ua, header: source.header }],
+        storage,
+        {
+          validUrls: [source.url],
+          transientUrls: [],
+          invalidUrls: [],
+          texts: { [source.url]: validText },
+          checkedAt: new Date().toISOString(),
+        },
+      );
+      entry = manifest.entries.find((item) => item.key === key) || null;
+    } else {
+      entry = await recordLiveProxyValidation(key, state, storage);
+    }
     await rebuildLiveOutputSafe('manual-live-verify');
     return c.json({ success: true, state, entry });
   });

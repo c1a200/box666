@@ -34,7 +34,7 @@ import {
   parseLiveGroupsFromTxt,
 } from './live-merger';
 import { rebuildLiveOutput } from './live-output';
-import { listAllLiveProxyEntries, liveProxyEntryLabel } from './live-source';
+import { isLiveProxyEntryDistributable, listAllLiveProxyEntries, liveProxyEntryLabel } from './live-source';
 import { loadLiveDistribution, toLiveDistributionPolicy } from './live-distribution-store';
 import { selectLiveDistribution } from './live-quality';
 import {
@@ -473,7 +473,10 @@ export async function runChannelProbe(
 
   const allEntries = await listAllLiveProxyEntries(storage);
   const config = await loadLiveDistribution(storage);
-  const selected = selectLiveDistribution(allEntries, toLiveDistributionPolicy(config));
+  const selected = selectLiveDistribution(
+    allEntries.filter(isLiveProxyEntryDistributable),
+    toLiveDistributionPolicy(config),
+  );
   const selectedLabels = new Set<string>();
   for (const entry of selected) {
     const label = liveProxyEntryLabel(entry, groups);

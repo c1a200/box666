@@ -14,7 +14,7 @@ import {
   KV_IGNORE_AGGREGATED_LIVES,
 } from './config';
 import { loadLiveDistribution, toLiveDistributionPolicy } from './live-distribution-store';
-import { listAllLiveProxyEntries, liveProxyEntryLabel } from './live-source';
+import { isLiveProxyEntryDistributable, listAllLiveProxyEntries, liveProxyEntryLabel } from './live-source';
 import { selectLiveDistribution, type LiveDistributionPolicy } from './live-quality';
 import {
   AGGREGATED_MAX_URLS_PER_CHANNEL,
@@ -134,7 +134,7 @@ async function buildSnapshot(
   storage: Storage,
   policy: LiveDistributionPolicy,
 ): Promise<LiveOutputSnapshot> {
-  const candidates = await listAllLiveProxyEntries(storage);
+  const candidates = (await listAllLiveProxyEntries(storage)).filter(isLiveProxyEntryDistributable);
   const selected = selectLiveDistribution(candidates, policy);
   const candidateGroups = await loadCandidateGroups(storage);
   const selectedLabels = new Set<string>();

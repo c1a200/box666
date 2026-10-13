@@ -853,10 +853,21 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
               minPlayableRatio: 0.2,
             },
           );
+          const liveHints: Record<string, { kind?: 'aggregated' | 'manual'; category?: LiveCategory }> = {};
+          for (const input of proxyEntries) {
+            const category = validated.categories[input.url];
+            liveHints[input.url] = {
+              kind: 'aggregated',
+              ...(category ? { category } : {}),
+            };
+          }
           const validationUpdate = {
             validUrls: validated.valid.map((input) => input.url),
             transientUrls: validated.transient.map((input) => input.url),
             invalidUrls: validated.invalid.map((input) => input.url),
+            metrics: validated.metrics,
+            hints: liveHints,
+            texts: validated.texts,
             checkedAt: new Date().toISOString(),
           };
 

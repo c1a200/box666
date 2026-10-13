@@ -19,7 +19,7 @@ import {
 
 const KV_LIVE_PREFIX = 'live:';
 export const KV_LIVE_PROXY_MANIFEST = 'live_proxy_manifest';
-const LIVE_PROXY_MANIFEST_VERSION = 3;
+const LIVE_PROXY_MANIFEST_VERSION = 4;
 const LIVE_PROXY_MANIFEST_MAX_ENTRIES = 4096;
 const LIVE_PROXY_INVALID_RETENTION_MS = 2 * 24 * 60 * 60 * 1000;
 const LIVE_PROXY_UNHEALTHY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -76,6 +76,8 @@ export interface LiveProxyManifestEntry extends LiveProxySource {
   adRatio?: number | null;
   downloadMs?: number | null;
   everSucceeded?: boolean;
+  /** 是否已生成可用的代理文本；缺失时禁止下发，避免客户端实时回源。 */
+  textReady?: boolean;
   /** 最近一次在完整聚合快照中被看到的时刻；用于淘汰上游已删除的幽灵源。 */
   lastSeenAt?: string;
 }
@@ -173,15 +175,21 @@ function normalizeManifestEntry(
     ...(numberValue(record, 'adRatio') != null ? { adRatio: numberValue(record, 'adRatio') } : {}),
     ...(numberValue(record, 'downloadMs') != null ? { downloadMs: numberValue(record, 'downloadMs') } : {}),
     ...(typeof record.everSucceeded === 'boolean' ? { everSucceeded: record.everSucceeded } : {}),
+    ...(typeof record.textReady === 'boolean' ? { textReady: record.textReady } : {}),
     ...(stringValue(record, 'lastSeenAt') ? { lastSeenAt: record.lastSeenAt as string } : {}),
   };
 }
 
-function parseLiveProxyManifest(raw: string | null): LiveProxyManifest | null {
+export function parseLiveProxyManifest(raw: string | null): LiveProxyManifest | null {
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as Partial<LiveProxyManifest>;
-    const supported = parsed.version === 1 || parsed.version === 2 || parsed.version === LIVE_PROXY_MANIFEST_VERSION;
+    const supported = parsed.version === 1
+      || parsed.version === 2
+      // 兼容线上尚未重建的旧版清单；v3 没有 textReady，按未就绪处理，
+      // 避免升级后整份清单被丢弃，同时在重新聚合前 fail-closed。
+      || parsed.version === 3
+      || parsed.version === LIVE_PROXY_MANIFEST_VERSION;
     if (!supported || !Array.isArray(parsed.entries)) return null;
     const checkedAt = new Date().toISOString();
     const entries: LiveProxyManifestEntry[] = [];
@@ -291,6 +299,14 @@ export function mergeLiveProxyManifest(
       ...(previousEntry?.successfulAt ? { successfulAt: previousEntry.successfulAt } : {}),
       ...(previousEntry?.lastFailure ? { lastFailure: previousEntry.lastFailure } : {}),
       everSucceeded: previousEntry?.everSucceeded ?? !!previousEntry?.successfulAt,
+      // 只有本轮或历史确实存在可用文本时才允许继承 textReady；否则新清单
+      // 不能凭旧标记继续下发一个已经无法生成文本的入口。
+      // 完整快照或带文本的更新代表本轮文本状态是权威结果；
+      // 不能从 previous 的 spread 中继承旧的 textReady。
+      ...((update.fullSnapshot || update.texts) ? { textReady: false } : {}),
+      ...(current.textReady === undefined && previousEntry?.textReady === true && !update.fullSnapshot && !update.texts ? { textReady: true } : {}),
+      ...(current.textReady === true ? { textReady: true } : {}),
+      ...(current.textReady === false ? { textReady: false } : {}),
       lastSeenAt: checkedAt,
     };
     for (const key of [
@@ -349,10 +365,12 @@ export function mergeLiveProxyManifest(
 }
 
 export function isLiveProxyEntryDistributable(entry: LiveProxyManifestEntry): boolean {
-  return !isBlockedLiveSource(entry) && isLiveSourceDistributable({
-    ...entry,
-    everSucceeded: entry.everSucceeded ?? !!entry.successfulAt,
-  });
+  return !isBlockedLiveSource(entry)
+    && entry.textReady === true
+    && isLiveSourceDistributable({
+      ...entry,
+      everSucceeded: entry.everSucceeded ?? !!entry.successfulAt,
+    });
 }
 
 export async function recordLiveProxyValidation(
@@ -441,6 +459,19 @@ export async function updateLiveProxyManifest(
 ): Promise<LiveProxyManifest> {
   const proxyEntries = prepareManifestEntries(entries, validationUpdate.hints, validationUpdate.labels);
   for (const entry of proxyEntries) entry.key = await urlToKey(entry.url);
+  // 完整快照或带 texts 的更新是权威文本状态：本轮没有有效文本的入口
+  // 必须显式落为未就绪，不能继续沿用上一轮旧的 textReady。
+  const textStateAuthoritative = !!(validationUpdate.fullSnapshot || validationUpdate.texts);
+  if (textStateAuthoritative) {
+    for (const entry of proxyEntries) entry.textReady = false;
+  }
+  // 代理文本只接受“非空且包含频道分组”的完整构建结果；文本就绪与清单不得分离更新。
+  for (const entry of proxyEntries) {
+    const text = validationUpdate.texts?.[entry.url];
+    if (!text || !text.trim() || !text.includes('#genre#')) continue;
+    await storage.put(`${KV_LIVE_TEXT_PREFIX}${entry.key}`, text);
+    entry.textReady = true;
+  }
   for (const entry of proxyEntries) {
     const metrics = validationUpdate.metrics?.[entry.url];
     if (!metrics) continue;
@@ -463,6 +494,11 @@ export async function updateLiveProxyManifest(
     if (!prior) continue;
     if (!entry.successfulAt && prior.successfulAt) entry.successfulAt = prior.successfulAt;
     if (entry.everSucceeded == null && prior.everSucceeded != null) entry.everSucceeded = prior.everSucceeded;
+    // 局部验证（未携带 texts）可以沿用旧文本；完整聚合若本轮没有产出
+    // 该源文本，则不得继续标记为 ready，防止 App 收到空入口。
+    if (entry.textReady !== true && prior.textReady === true && !validationUpdate.fullSnapshot && !validationUpdate.texts) {
+      entry.textReady = true;
+    }
   }
   const manifest = mergeLiveProxyManifest(previous, proxyEntries, validationUpdate);
   if (!previous || previous.signature !== manifest.signature) {
@@ -485,12 +521,9 @@ export async function liveSourcesToTVBoxLives(
     const manifest = await updateLiveProxyManifest(entries, storage, validationUpdate || {
       validUrls: proxyEntries.map((entry) => entry.url),
     });
+    // 运行时只允许已经写入完整预构建文本的入口，绝不能下发需要客户端回源的“幽灵源”。
     const distributableEntries = manifest.entries.filter(isLiveProxyEntryDistributable);
     for (const entry of distributableEntries) {
-      const prebuilt = prebuiltTexts?.[entry.url];
-      if (prebuilt && prebuilt.trim() && prebuilt.includes('#genre#')) {
-        await storage.put(`${KV_LIVE_TEXT_PREFIX}${entry.key}`, prebuilt);
-      }
       lives.push({ name: entry.name || '直播源', type: 0, url: `${workerBaseUrl.replace(/\/$/, '')}/live/${entry.key}` });
     }
     return lives;

@@ -565,7 +565,7 @@ async function readSites(response) {
 
   {
     const manifest = {
-      version: 3,
+      version: 4,
       signature: 'routes-mode-manifest',
       entries: [
         {
@@ -577,6 +577,7 @@ async function readSites(response) {
           checkedAt: new Date().toISOString(),
           successfulAt: new Date().toISOString(),
           everSucceeded: true,
+          textReady: true,
           format: 'm3u',
           category: 'cctv',
         },
@@ -589,6 +590,7 @@ async function readSites(response) {
           checkedAt: new Date().toISOString(),
           successfulAt: new Date().toISOString(),
           everSucceeded: true,
+          textReady: true,
           format: 'm3u',
           category: 'satellite',
         },
@@ -679,7 +681,7 @@ async function readSites(response) {
       ],
     };
     const coldStartManifest = {
-      version: 3,
+      version: 4,
       signature: 'cold-start-recovery',
       entries: [
         {
@@ -689,8 +691,9 @@ async function readSites(response) {
           health: 'unhealthy',
           consecutiveFailures: 1,
           checkedAt: new Date().toISOString(),
-          everSucceeded: false,
+          everSucceeded: true,
           lastFailure: 'transient',
+          textReady: true,
           format: 'm3u',
           category: 'cctv',
         },
@@ -701,8 +704,9 @@ async function readSites(response) {
           health: 'unhealthy',
           consecutiveFailures: 1,
           checkedAt: new Date().toISOString(),
-          everSucceeded: false,
+          everSucceeded: true,
           lastFailure: 'transient',
+          textReady: true,
           format: 'm3u',
           category: 'satellite',
         },
@@ -723,6 +727,39 @@ async function readSites(response) {
     assert(coldText.includes('#genre#'), 'cold-start render /live must contain channel groups');
     assert(!coldText.trim().startsWith('{'), 'cold-start render /live must not return an error JSON body');
     assert(coldText.includes('测试直播A') && coldText.includes('测试直播B'), 'cold-start render /live must recover both structured candidate entries');
+
+    const noTextManifest = {
+      version: 4,
+      signature: 'no-text-ready',
+      entries: [{
+        key: 'noprebuilt01',
+        name: '无预构建文本',
+        url: 'https://live.example/no-text.m3u',
+        health: 'healthy',
+        consecutiveFailures: 0,
+        checkedAt: new Date().toISOString(),
+        successfulAt: new Date().toISOString(),
+        everSucceeded: true,
+        format: 'm3u',
+        category: 'cctv',
+      }],
+    };
+    const noText = makeApp({
+      mergedConfig: { sites: mergedConfig.sites, lives: [] },
+      liveMergeMode: 'separated',
+      liveProxyManifest: noTextManifest,
+      config: { workerBaseUrl: '', localBaseUrl: 'https://render.example' },
+    });
+    const noTextRoot = await (await noText.app.request('https://render.example/')).json();
+    assert(noTextRoot.lives.length === 0, 'manifest entry without prebuilt text must not be delivered');
+    const noTextLive = await noText.app.request('https://render.example/live/noprebuilt01');
+    assert(noTextLive.status === 200, 'manifest entry without text must return 200 empty text, got ' + noTextLive.status);
+    assert((await noTextLive.text()) === '', 'manifest entry without text must return empty body');
+    assert(noTextLive.headers.get('x-live-source-state') === 'unavailable', 'manifest entry without text must report unavailable');
+    const missingLive = await noText.app.request('https://render.example/live/unknown-key');
+    assert(missingLive.status === 200, 'unknown live key must return 200 empty text, got ' + missingLive.status);
+    assert((await missingLive.text()) === '', 'unknown live key must not return an error body');
+    assert(missingLive.headers.get('x-live-source-state') === 'missing', 'unknown live key must report missing state');
 
     const coldRestricted = makeApp({
       mergedConfig: { sites: mergedConfig.sites, lives: [] },

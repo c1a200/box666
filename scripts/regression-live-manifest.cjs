@@ -48,6 +48,7 @@ function entry(index, overrides = {}) {
     consecutiveFailures: 0,
     checkedAt: '2026-10-13T00:00:00.000Z',
     successfulAt: '2026-10-13T00:00:00.000Z',
+    textReady: true,
     ...overrides,
   };
 }
@@ -90,16 +91,20 @@ const migrated = mergeLiveProxyManifest(
   [entry(9, { key: 'new', url: 'https://new.example/live.txt' })],
   { checkedAt: '2026-10-13T00:10:00.000Z', validUrls: ['https://new.example/live.txt'] },
 );
-assert(migrated.version === 3, 'v1 manifest must migrate to v3');
+assert(migrated.version === 4, 'v1 manifest must migrate to v4');
 assert(migrated.entries.some((item) => item.key === 'new' && item.health === 'healthy'), 'new valid entry must be healthy');
 
 // ── 4. 未验证/transient 也可进入质量池（只是排序靠后）──
-const freshTransient = mergeLiveProxyManifest(null, [entry(10, { health: 'unhealthy', successfulAt: undefined })], {
+const freshTransient = mergeLiveProxyManifest(null, [entry(10, {
+  health: 'unhealthy',
+  successfulAt: undefined,
+  textReady: false,
+})], {
   checkedAt: '2026-10-13T00:11:00.000Z',
   validUrls: [],
   transientUrls: ['https://live.example/10.txt'],
 });
-assert(freshTransient.entries.filter(isLiveProxyEntryDistributable).length === 1, 'transient without history must still stay in quality pool (可下发但排后)');
+assert(freshTransient.entries.filter(isLiveProxyEntryDistributable).length === 0, 'transient without history or prebuilt text must stay out of the delivery pool');
 assert(freshTransient.entries[0].lastFailure === 'transient', 'transient failure reason must be recorded');
 
 // ── 5. 之后 valid 会清除失败历史 ──
@@ -138,6 +143,7 @@ function ranked(index, overrides = {}) {
     health: 'healthy',
     everSucceeded: true,
     successfulAt: '2026-10-13T00:00:00.000Z',
+    textReady: true,
     ...overrides,
   };
 }
@@ -274,6 +280,33 @@ assert(
   'healthy source must survive snapshot rounds',
 );
 
+// ── 16.5 文本权威更新：完整快照丢失文本必须 fail-closed ──
+const readyPrevious = mergeLiveProxyManifest(null, [entry(25)], {
+  checkedAt: '2026-10-13T01:10:00.000Z',
+  validUrls: ['https://live.example/25.txt'],
+});
+assert(readyPrevious.entries[0].textReady === true, 'seed manifest must be text-ready');
+const missingTextSnapshot = mergeLiveProxyManifest(
+  readyPrevious,
+  readyPrevious.entries.map((item) => ({ ...item, textReady: undefined })),
+  {
+    checkedAt: '2026-10-13T01:11:00.000Z',
+    validUrls: ['https://live.example/25.txt'],
+    fullSnapshot: true,
+  },
+);
+assert(missingTextSnapshot.entries[0].textReady === false, 'full snapshot without text must revoke textReady');
+assert(isLiveProxyEntryDistributable(missingTextSnapshot.entries[0]) === false, 'revoked text must not be distributable');
+const explicitUnavailable = mergeLiveProxyManifest(
+  readyPrevious,
+  readyPrevious.entries.map((item) => ({ ...item, textReady: false })),
+  {
+    checkedAt: '2026-10-13T01:12:00.000Z',
+    validUrls: ['https://live.example/25.txt'],
+    texts: {},
+  },
+);
+assert(explicitUnavailable.entries[0].textReady === false, 'explicit missing text must override prior ready flag');
 // ── 17. 陈旧缓存兜底：仍可下发，但排到当前健康源之后 ──
 // 陈旧缓存兜底的真实形态：health=unhealthy + lastFailure=transient + 有成功历史。
 // 故意给更高的 qualityScore，验证可用性分层优先于历史高分。

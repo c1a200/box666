@@ -235,6 +235,8 @@ export interface LiveRankView {
   downloadMs?: number | null;
   successfulAt?: string | null;
   category?: LiveCategory;
+  /** 是否已有聚合阶段生成的可用文本；直播下发必须为 true。 */
+  textReady?: boolean;
   key?: string;
   url?: string;
 }
@@ -263,7 +265,7 @@ export function compareLiveRank(a: LiveRankView, b: LiveRankView): number {
   const bDist = isLiveSourceDistributable(b) ? 1 : 0;
   if (aDist !== bDist) return bDist - aDist;
 
-  // 先保证当前健康源优先，再比质量分；历史后备与未验证源仍保留在质量池。
+  // 先保证当前健康源优先，再比质量分；历史成功源作为后备，未验证源不进入下发池。
   const aTier = liveAvailabilityTier(a);
   const bTier = liveAvailabilityTier(b);
   if (aTier !== bTier) return bTier - aTier;
@@ -384,6 +386,8 @@ export function selectLiveDistribution<T extends LiveRankView>(
   const blocked = new Set(normalized.blockedKeys || []);
   const allowed = rankedPool.filter((entry) => {
     if (!isLiveSourceDistributable(entry)) return false;
+    // 直播条目在持久清单中必须带 textReady；禁止把需要客户端实时回源的幽灵源选出。
+    if (entry.textReady !== undefined && entry.textReady !== true) return false;
     const key = entry.key || entry.url || '';
     return key === '' || !blocked.has(key);
   });
