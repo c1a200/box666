@@ -10,6 +10,7 @@ import type {
 import type { Storage } from '../storage/interface';
 import { TVBOX_UA, BROWSER_UA, KV_LIVE_SOURCE_CACHE } from './config';
 import { isBlockedLiveSource, isBlockedLiveUrl } from './live-policy';
+import { classifyLiveCategory, compareLiveRank, computeLiveSourceQualityScore, type LiveCategory, type LiveSourceMetrics } from './live-quality';
 
 // ─── 输入条目 ──────────────────────────────────────────
 
@@ -35,6 +36,7 @@ interface CachedLiveSource {
   lastAccess: number;
   etag?: string;
   lastModified?: string;
+  downloadMs?: number;
 }
 
 export type LiveDownloadFailure = 'transient' | 'invalid';
@@ -63,6 +65,8 @@ interface DownloadOutcome {
   cacheHit: boolean;
   revalidated: boolean;
   staleFallback: boolean;
+  /** 整源下载耗时（毫秒）。缓存命中沿用首次下载耗时；失败为 undefined。 */
+  downloadMs?: number;
 }
 
 export interface LiveDownloadStats {
@@ -165,6 +169,12 @@ interface ChannelEntry {
   url: string;
   source: string;       // 源 name，用作 $ 后缀
   sourceSpeedMs?: number;
+  /** 本线路所属源的质量分，用于同频道线路统一排序。 */
+  sourceQuality?: number;
+  /** 本线路所属源在质量池中的排名，数字越小越优。 */
+  sourceRank?: number;
+  /** 本线路所属源的下载耗时，作为源级测速之外的稳定降级依据。 */
+  sourceDownloadMs?: number;
 }
 
 // ─── 广告过滤关键字 ────────────────────────────────────
@@ -296,6 +306,28 @@ function parseTxt(content: string, source: string, sourceSpeedMs?: number): Chan
     }
   }
   return out;
+}
+
+async function shortSourceHash(url: string): Promise<string> {
+  try {
+    const data = new TextEncoder().encode(url);
+    const digest = await crypto.subtle.digest('SHA-256', data);
+    const bytes = new Uint8Array(digest);
+    return Array.from(bytes.slice(0, 4)).map((b) => b.toString(16).padStart(2, '0')).join('');
+  } catch {
+    return '00000000';
+  }
+}
+
+async function uniqueSourceLabel(rawName: string, url: string, used: Set<string>): Promise<string> {
+  const base = sanitizeTxtLabel(rawName || 'source', 'source');
+  const candidate = base + '#' + (await shortSourceHash(url));
+  if (!used.has(candidate)) { used.add(candidate); return candidate; }
+  let index = 2;
+  while (used.has(candidate + '-' + index)) index += 1;
+  const fallback = candidate + '-' + index;
+  used.add(fallback);
+  return fallback;
 }
 
 function sanitizeTxtLabel(label: string, fallback: string): string {
@@ -702,13 +734,14 @@ async function downloadLive(
 
   const key = liveCacheKey(input, browserFallback);
   const cached = liveSourceMemoryCache.get(key);
+  const networkStartedAt = Date.now();
   const now = Date.now();
   const cacheFresh = !!cached && now - cached.cachedAt < LIVE_SOURCE_CACHE_TTL_MS;
 
   if (cacheFresh && cached) {
     cached.lastAccess = now;
     stats.cacheHits++;
-    return { content: cached.content, cacheHit: true, revalidated: false, staleFallback: false };
+    return { content: cached.content, cacheHit: true, revalidated: false, staleFallback: false, downloadMs: cached.downloadMs };
   }
 
   stats.cacheMisses++;
@@ -733,7 +766,7 @@ async function downloadLive(
         cached.lastAccess = now;
         stats.cacheHits++;
         stats.revalidated++;
-        return { content: cached.content, cacheHit: true, revalidated: true, staleFallback: false };
+        return { content: cached.content, cacheHit: true, revalidated: true, staleFallback: false, downloadMs: cached.downloadMs };
       }
 
       if (!resp.ok) {
@@ -752,9 +785,10 @@ async function downloadLive(
           lastAccess: now,
           etag: resp.headers.get('etag') || undefined,
           lastModified: resp.headers.get('last-modified') || undefined,
+          downloadMs: Date.now() - networkStartedAt,
         };
         liveSourceMemoryCache.set(key, entry);
-        return { content: text, cacheHit: false, revalidated: false, staleFallback: false };
+        return { content: text, cacheHit: false, revalidated: false, staleFallback: false, downloadMs: Date.now() - networkStartedAt };
       }
 
       // 2xx 但不是直播内容（HTML 错误页、JSON、空响应等）确认无效。
@@ -772,7 +806,7 @@ async function downloadLive(
   if (cached) {
     cached.lastAccess = now;
     stats.staleFallbacks++;
-    return { content: cached.content, cacheHit: true, revalidated: false, staleFallback: true };
+    return { content: cached.content, cacheHit: true, revalidated: false, staleFallback: true, downloadMs: cached.downloadMs };
   }
 
   return {
@@ -841,12 +875,132 @@ export interface MergeLivesResult {
   totalUrls: number;
   sourcesDownloaded: number;
   sourcesFailed: number;
+  /** 通过候选池质量门禁、可参与后续质量排序的源数量。 */
+  sourcesAccepted?: number;
+  /** 按原始源 URL 记录的逐源质量度量，供代理清单与质量池回写。 */
+  sourceMetrics?: Record<string, LiveSourceMetrics>;
+  /** 按原始源 URL 记录的主要分类，供代理清单展示与分类下发使用。 */
+  sourceCategories?: Record<string, LiveCategory>;
+  /** 原始源 URL -> 最终写入 TXT 的 `$源名` 标签（已按合并器规则清洗）。 */
+  sourceLabels?: Record<string, string>;
   cacheHits: number;
   cacheMisses: number;
   revalidated: number;
   staleFallbacks: number;
   /** 分离模式下按原始源 URL 预构建的过滤后 TXT（仅 CF 使用） */
   sourceTexts?: Record<string, string>;
+}
+
+interface PreparedLiveSource {
+  input: LiveSourceInput;
+  sourceName: string;
+  prepared: PreparedSourceChannels;
+  metrics: LiveSourceMetrics;
+  qualityScore: number;
+  /** 质量池排名，1 为最优；仅在全部源评分后回填。 */
+  rank: number;
+}
+
+function liveSourceInputView(source: PreparedLiveSource) {
+  return {
+    key: source.input.url,
+    url: source.input.url,
+    health: source.metrics.health,
+    everSucceeded: source.metrics.everSucceeded,
+    lastFailure: source.metrics.lastFailure,
+    qualityScore: source.qualityScore,
+    channelCount: source.metrics.channelCount,
+    playableRatio: source.metrics.playableRatio,
+    adRatio: source.metrics.adRatio,
+    downloadMs: source.metrics.downloadMs,
+    successfulAt: source.metrics.successfulAt,
+  };
+}
+
+function comparePreparedLiveSources(a: PreparedLiveSource, b: PreparedLiveSource): number {
+  return compareLiveRank(liveSourceInputView(a), liveSourceInputView(b));
+}
+
+function sourceFailureMetrics(
+  failure: LiveDownloadFailure | undefined,
+  checkedAt: string,
+): LiveSourceMetrics {
+  return {
+    health: 'unhealthy',
+    lastFailure: failure === 'invalid' ? 'invalid' : 'transient',
+    everSucceeded: false,
+    now: Date.parse(checkedAt),
+  };
+}
+
+function sourceSuccessMetrics(
+  prepared: PreparedSourceChannels,
+  quality: SourceQualityDecision,
+  downloadMs: number | undefined,
+  checkedAt: string,
+  staleFallback = false,
+): LiveSourceMetrics {
+  if (staleFallback && !quality.discard) {
+    // 本轮网络失败、仅命中本地陈旧缓存：内容可用于兜底下发，但不能冒充当前健康源，
+    // 否则排序会把实际不可达的源排在真正可用的源前面，误导简单/分类 TopN。
+    return {
+      health: 'unhealthy',
+      everSucceeded: true,
+      channelCount: prepared.channels.length,
+      totalEntries: prepared.totalEntries,
+      usableEntries: prepared.usableEntries,
+      playableRatio: quality.playableRatio ?? null,
+      adRatio: quality.adRatio ?? null,
+      downloadMs: downloadMs ?? null,
+      successfulAt: checkedAt,
+      lastFailure: 'transient',
+      now: Date.parse(checkedAt),
+    };
+  }
+  return {
+    health: quality.discard ? 'unhealthy' : 'healthy',
+    everSucceeded: !quality.discard,
+    channelCount: prepared.channels.length,
+    totalEntries: prepared.totalEntries,
+    usableEntries: prepared.usableEntries,
+    playableRatio: quality.playableRatio ?? null,
+    adRatio: quality.adRatio ?? null,
+    downloadMs: downloadMs ?? null,
+    successfulAt: quality.discard ? null : checkedAt,
+    ...(quality.discard ? { lastFailure: 'invalid' as const } : {}),
+    now: Date.parse(checkedAt),
+  };
+}
+
+function mergeResultDetails(
+  groups: TVBoxLiveGroup[],
+  totalUrls: number,
+  sourcesDownloaded: number,
+  sourcesFailed: number,
+  downloadStats: LiveDownloadStats,
+  sourceMetrics: Record<string, LiveSourceMetrics>,
+  sourcesAccepted: number,
+  sourceCategories?: Record<string, LiveCategory>,
+  sourceTexts?: Record<string, string>,
+  sourceLabels?: Record<string, string>,
+): MergeLivesResult {
+  const totalChannels = groups.reduce((sum, group) => sum + group.channels.length, 0);
+  return {
+    groups,
+    totalChannels,
+    totalUrls,
+    sourcesDownloaded,
+    sourcesFailed,
+    sourcesAccepted,
+    sourceMetrics,
+    sourceCategories,
+    sourceLabels,
+    cacheHits: downloadStats.cacheHits,
+    cacheMisses: downloadStats.cacheMisses,
+    revalidated: downloadStats.revalidated,
+    staleFallbacks: downloadStats.staleFallbacks,
+    ...(sourceTexts ? { sourceTexts } : {}),
+  };
 }
 
 export async function mergeLivesToNative(
@@ -858,15 +1012,9 @@ export async function mergeLivesToNative(
 ): Promise<MergeLivesResult> {
   if (sources.length === 0) {
     return {
-      groups: [],
-      totalChannels: 0,
-      totalUrls: 0,
-      sourcesDownloaded: 0,
-      sourcesFailed: 0,
-      cacheHits: 0,
-      cacheMisses: 0,
-      revalidated: 0,
-      staleFallbacks: 0,
+      groups: [], totalChannels: 0, totalUrls: 0,
+      sourcesDownloaded: 0, sourcesFailed: 0, sourcesAccepted: 0, sourceMetrics: {}, sourceCategories: {},
+      cacheHits: 0, cacheMisses: 0, revalidated: 0, staleFallbacks: 0,
     };
   }
 
@@ -877,155 +1025,142 @@ export async function mergeLivesToNative(
 
   let sourcesDownloaded = 0;
   let sourcesFailed = 0;
-  const allEntries: ChannelEntry[] = [];
+  const checkedAt = new Date().toISOString();
+  const sourceMetrics: Record<string, LiveSourceMetrics> = {};
+  const sourceCategories: Record<string, LiveCategory> = {};
+  const usedSourceLabels = new Set<string>();
+  const preparedSources: PreparedLiveSource[] = [];
 
-  for (const r of downloadResults) {
-    if (r.status === 'fulfilled' && r.value.outcome.content) {
-      sourcesDownloaded++;
-      try {
-        const sourceName = sanitizeTxtLabel(r.value.input.name || 'source', 'source');
-        const entries = parseLiveContent(r.value.outcome.content, sourceName, r.value.input.speedMs);
-        const prepared = prepareSourceChannels(entries, channelSpeedMap, {
-          maxUrlsPerChannel: options.preserveAllUrls ? Math.max(1, options.candidatePoolMaxUrlsPerChannel ?? 64) : SEPARATED_MAX_URLS_PER_CHANNEL,
-          maxSpeedMs: options.preserveAllUrls ? 0 : LIVE_KNOWN_MAX_SPEED_MS,
-        });
-        const quality = evaluateSourceQuality(prepared, {
-          minChannelsPerSource: SEPARATED_MIN_CHANNELS_PER_SOURCE,
-          maxAdRatio: SEPARATED_MAX_AD_RATIO,
-          minPlayableRatio: SEPARATED_MIN_PLAYABLE_RATIO,
-        });
-        if (quality.discard) {
-          console.log(`[live-merger] Discarded live source ${sourceName}: ${quality.reason}`);
-          continue;
-        }
-
-        // 复用已验证的频道条目，避免同一源在合并阶段再次解析。
-        for (const { group, channel } of prepared.channels) {
-          for (const url of channel.urls) {
-            allEntries.push({
-              group,
-              name: channel.name,
-              url,
-              source: sourceName,
-              sourceSpeedMs: r.value.input.speedMs,
-            });
-          }
-        }
-      } catch (err) {
-        console.warn(`[live-merger] Parse failed for ${r.value.input.name}: ${err}`);
-      }
-    } else {
+  // 关键顺序：先逐源解析与评分，再按统一质量排序，最后才合并频道。
+  // 禁止边下载边按原始顺序把线路写入频道，否则后续排序无法纠正首源偏置。
+  for (let i = 0; i < downloadResults.length; i++) {
+    const r = downloadResults[i];
+    if (r.status !== 'fulfilled') {
+      const input = sources[i];
+      if (input) sourceMetrics[input.url] = sourceFailureMetrics('transient', checkedAt);
       sourcesFailed++;
+      continue;
+    }
+    const { input, outcome } = r.value;
+    if (!outcome.content) {
+      sourceMetrics[input.url] = sourceFailureMetrics(outcome.failure, checkedAt);
+      sourcesFailed++;
+      continue;
+    }
+    sourcesDownloaded++;
+    try {
+      const sourceName = await uniqueSourceLabel(input.name || 'source', input.url, usedSourceLabels);
+      const entries = parseLiveContent(outcome.content, sourceName, input.speedMs);
+      const prepared = prepareSourceChannels(entries, channelSpeedMap, {
+        maxUrlsPerChannel: options.preserveAllUrls ? Math.max(1, options.candidatePoolMaxUrlsPerChannel ?? 64) : SEPARATED_MAX_URLS_PER_CHANNEL,
+        maxSpeedMs: options.preserveAllUrls ? 0 : LIVE_KNOWN_MAX_SPEED_MS,
+      });
+      const quality = evaluateSourceQuality(prepared, {
+        minChannelsPerSource: SEPARATED_MIN_CHANNELS_PER_SOURCE,
+        maxAdRatio: SEPARATED_MAX_AD_RATIO,
+        minPlayableRatio: SEPARATED_MIN_PLAYABLE_RATIO,
+      });
+      const metrics = sourceSuccessMetrics(prepared, quality, outcome.downloadMs, checkedAt, outcome.staleFallback);
+      sourceMetrics[input.url] = metrics;
+      if (quality.discard) {
+        console.log(`[live-merger] Discarded live source ${sourceName}: ${quality.reason}`);
+        continue;
+      }
+      sourceCategories[input.url] = classifyLiveCategory(prepared.channels.map((item) => item.group));
+      preparedSources.push({
+        input,
+        sourceName,
+        prepared,
+        metrics,
+        qualityScore: computeLiveSourceQualityScore(metrics),
+        rank: 0,
+      });
+    } catch (err) {
+      sourceMetrics[input.url] = sourceFailureMetrics('invalid', checkedAt);
+      console.warn(`[live-merger] Parse failed for ${input.name}: ${err}`);
+    }
+  }
+
+  preparedSources.sort(comparePreparedLiveSources);
+  preparedSources.forEach((source, index) => { source.rank = index + 1; });
+
+  const allEntries: ChannelEntry[] = [];
+  for (const source of preparedSources) {
+    for (const { group, channel } of source.prepared.channels) {
+      for (const url of channel.urls) {
+        allEntries.push({
+          group,
+          name: channel.name,
+          url,
+          source: source.sourceName,
+          sourceSpeedMs: source.input.speedMs,
+          sourceQuality: source.qualityScore,
+          sourceRank: source.rank,
+          sourceDownloadMs: source.metrics.downloadMs ?? undefined,
+        });
+      }
     }
   }
 
   console.log(
     `[live-merger] Downloaded ${sourcesDownloaded}/${sources.length} sources, ` +
-    `parsed ${allEntries.length} channel entries`,
+    `accepted ${preparedSources.length}, parsed ${allEntries.length} channel entries`,
   );
 
-  // 按频道名（规范化）+ group 合并 urls
-  // key: normalizedName → { group, rawName, logo, urls: Map<url, ChannelEntry> }
   interface AggChannel {
-    group: string;        // 使用第一次出现的 group 名
-    rawName: string;      // 使用第一次出现的 raw name（最常用的）
+    group: string;
+    rawName: string;
     logo?: string;
-    urls: Map<string, ChannelEntry>; // url → entry（含源名、速度）
+    urls: Map<string, ChannelEntry>;
   }
   const channelMap = new Map<string, AggChannel>();
 
+  // 源已按质量排序，因此首次出现的 group/name/logo 来自当前质量最高的源。
   for (const e of allEntries) {
     const normName = normalizeChannelName(e.name);
     if (!normName) continue;
-
     let agg = channelMap.get(normName);
     if (!agg) {
-      agg = {
-        group: e.group || '其他',
-        rawName: e.name,
-        logo: e.logo,
-        urls: new Map(),
-      };
+      agg = { group: e.group || '其他', rawName: e.name, logo: e.logo, urls: new Map() };
       channelMap.set(normName, agg);
     }
-    if (!agg.urls.has(e.url)) {
-      agg.urls.set(e.url, e);
-    }
+    if (!agg.urls.has(e.url)) agg.urls.set(e.url, e);
     if (!agg.logo && e.logo) agg.logo = e.logo;
   }
 
-  // 按 group 组织
   const groupMap = new Map<string, TVBoxLiveChannel[]>();
   let totalUrls = 0;
 
   for (const [, agg] of channelMap) {
-    // 对 urls 排序且过滤失效链接
     const urlList = Array.from(agg.urls.values()).filter((e) => {
       if (options.preserveAllUrls) return true;
-      const s = channelSpeedMap?.[e.url];
-      return s?.kind !== 'fail';
+      return channelSpeedMap?.[e.url]?.kind !== 'fail';
     });
     if (urlList.length === 0) continue;
+    urlList.sort((a, b) => compareLiveEntries(a, b, channelSpeedMap));
 
-    urlList.sort((a, b) => {
-      // 优先用 URL 级测速缓存
-      const sa = channelSpeedMap?.[a.url];
-      const sb = channelSpeedMap?.[b.url];
-      const fa = sa && sa.kind !== 'fail' ? sa.speedMs : undefined;
-      const fb = sb && sb.kind !== 'fail' ? sb.speedMs : undefined;
-
-      if (fa != null && fb != null) return fa - fb;
-      if (fa != null) return -1;
-      if (fb != null) return 1;
-
-      // 失败的 URL 排到末尾
-      const failA = sa?.kind === 'fail';
-      const failB = sb?.kind === 'fail';
-      if (failA && !failB) return 1;
-      if (!failA && failB) return -1;
-
-      // 降级：源级 speedMs
-      const ssA = a.sourceSpeedMs ?? Infinity;
-      const ssB = b.sourceSpeedMs ?? Infinity;
-      return ssA - ssB;
-    });
-
-    // Render 聚合模式每个频道最多保留 9 条线路，避免客户端加载过慢。
     const limitedUrlList = options.preserveAllUrls
       ? urlList.slice(0, Math.max(1, options.candidatePoolMaxUrlsPerChannel ?? 64))
       : urlList.slice(0, AGGREGATED_MAX_URLS_PER_CHANNEL);
 
-    // 拼 $ 源名（URL 预防性 encode 避免 type 泄漏）
     const urlStrs = limitedUrlList.map((e) => `${scrubUrlType(e.url)}$${scrubTypeLiteral(e.source)}`);
     totalUrls += urlStrs.length;
 
-    const channel: TVBoxLiveChannel = {
-      name: scrubTypeLiteral(agg.rawName),
-      urls: urlStrs,
-    };
-    // TVBoxLiveChannel 定义只有 name/urls，logo 不加（避免意外引入 type 风险字段）
-
+    const channel: TVBoxLiveChannel = { name: scrubTypeLiteral(agg.rawName), urls: urlStrs };
     const groupKey = scrubTypeLiteral(agg.group || '其他');
     let list = groupMap.get(groupKey);
-    if (!list) {
-      list = [];
-      groupMap.set(groupKey, list);
-    }
+    if (!list) { list = []; groupMap.set(groupKey, list); }
     list.push(channel);
   }
 
-  // 组装 groups
   const groups: TVBoxLiveGroup[] = [];
   for (const [group, channels] of groupMap) {
     groups.push({ group, channels: [...channels].sort((a, b) => compareLiveChannelNames(a.name, b.name)) });
   }
 
-  // 最终安全校验（双保险第二道）：
-  //   1) 先移除 "type" 字段名（若意外进入）
-  //   2) 再扫描 value 内 type 子串，统一 URL-encode 替换为 %74ype
+  // 最终安全校验（双保险第二道）：先清理字段名，再扫描值内 type 子串。
   let finalJson = JSON.stringify(groups);
   let cleanedGroups: TVBoxLiveGroup[] = groups;
-
   if (/"type"\s*:/i.test(finalJson)) {
     console.warn('[live-merger] WARNING: "type" field leaked into output, stripping...');
     finalJson = finalJson
@@ -1033,8 +1168,6 @@ export async function mergeLivesToNative(
       .replace(/"type"\s*:\s*("[^"]*"|[\d.]+|null|true|false)\s*,?/gi, '');
     cleanedGroups = JSON.parse(finalJson);
   }
-
-  // value 内 type 子串兜底：排除字段名（"xxx":）位置，其他全部 encode
   if (/type/i.test(finalJson)) {
     console.warn('[live-merger] WARNING: "type" substring in value, encoding to %74ype...');
     finalJson = finalJson.replace(/type/gi, (m) => {
@@ -1042,52 +1175,31 @@ export async function mergeLivesToNative(
       return '%' + hex + m.slice(1);
     });
     cleanedGroups = JSON.parse(finalJson);
-    return {
-      groups: cleanedGroups,
-      totalChannels: channelMap.size,
-      totalUrls,
-      sourcesDownloaded,
-      sourcesFailed,
-      cacheHits: downloadStats.cacheHits,
-      cacheMisses: downloadStats.cacheMisses,
-      revalidated: downloadStats.revalidated,
-      staleFallbacks: downloadStats.staleFallbacks,
-    };
-  }
-
-  if (cleanedGroups !== groups) {
-    return {
-      groups: cleanedGroups,
-      totalChannels: channelMap.size,
-      totalUrls,
-      sourcesDownloaded,
-      sourcesFailed,
-      cacheHits: downloadStats.cacheHits,
-      cacheMisses: downloadStats.cacheMisses,
-      revalidated: downloadStats.revalidated,
-      staleFallbacks: downloadStats.staleFallbacks,
-    };
   }
 
   console.log(
-    `[live-merger] Merged ${channelMap.size} channels / ${totalUrls} URLs across ${groups.length} groups`,
+    `[live-merger] Merged ${cleanedGroups.reduce((sum, group) => sum + group.channels.length, 0)} channels / ${totalUrls} URLs across ${cleanedGroups.length} groups`,
   );
-
-  return {
-    groups,
-    totalChannels: channelMap.size,
+  const sourceLabels: Record<string, string> = {};
+  for (const source of preparedSources) sourceLabels[source.input.url] = source.sourceName;
+  return mergeResultDetails(
+    cleanedGroups,
     totalUrls,
     sourcesDownloaded,
     sourcesFailed,
-    cacheHits: downloadStats.cacheHits,
-    cacheMisses: downloadStats.cacheMisses,
-    revalidated: downloadStats.revalidated,
-    staleFallbacks: downloadStats.staleFallbacks,
-  };
+    downloadStats,
+    sourceMetrics,
+    preparedSources.length,
+    sourceCategories,
+    undefined,
+    sourceLabels,
+  );
 }
 
 /**
- * 按源分类模式：每个源独立解析，保留上游 group 名，不做跨源去重
+ * 按源分离模式：每个源独立解析，保留上游 group 名，不做跨源去重。
+ * 仍然先完成全部源的下载、解析、质量评分与统一排序，再生成输出；
+ * 因此全局频道上限只截断质量靠后的源，不会让先下载的劣质源抢占配额。
  */
 export async function separatedMergeLives(
   sources: LiveSourceInput[],
@@ -1098,103 +1210,117 @@ export async function separatedMergeLives(
 ): Promise<MergeLivesResult> {
   if (sources.length === 0) {
     return {
-      groups: [],
-      totalChannels: 0,
-      totalUrls: 0,
-      sourcesDownloaded: 0,
-      sourcesFailed: 0,
-      cacheHits: 0,
-      cacheMisses: 0,
-      revalidated: 0,
-      staleFallbacks: 0,
+      groups: [], totalChannels: 0, totalUrls: 0,
+      sourcesDownloaded: 0, sourcesFailed: 0, sourcesAccepted: 0, sourceMetrics: {}, sourceCategories: {}, sourceTexts: {},
+      cacheHits: 0, cacheMisses: 0, revalidated: 0, staleFallbacks: 0,
     };
   }
 
   console.log(`[live-merger] Separated mode: downloading ${sources.length} live source files...`);
-
-  // 分批并发下载，限制内存占用（防止免费容器 OOM 崩溃）
   const { results: downloadResults, stats: downloadStats } = await downloadLiveBatched(sources, fetchTimeoutMs, 3, storage);
 
   let sourcesDownloaded = 0;
   let sourcesFailed = 0;
-  const allGroups: TVBoxLiveGroup[] = [];
-  let totalChannels = 0;
-  let totalUrls = 0;
-  const sourceTexts: Record<string, string> = {};
+  const checkedAt = new Date().toISOString();
+  const sourceMetrics: Record<string, LiveSourceMetrics> = {};
+  const sourceCategories: Record<string, LiveCategory> = {};
+  // 同名不同 URL 的源必须使用不同的源标签，否则按源屏蔽/置顶会
+  // 同时误伤另一个源，且清单名称与 TXT 标签无法一一对应。
+  const usedSourceLabels = new Set<string>();
+  const preparedSources: PreparedLiveSource[] = [];
 
   for (const r of downloadResults) {
-    if (r.status !== 'fulfilled' || !r.value.outcome.content) {
+    if (r.status !== 'fulfilled') {
+      sourcesFailed++;
+      continue;
+    }
+    const { input, outcome } = r.value;
+    if (!outcome.content) {
+      sourceMetrics[input.url] = sourceFailureMetrics(outcome.failure, checkedAt);
       sourcesFailed++;
       continue;
     }
     sourcesDownloaded++;
-    const { input } = r.value;
-    const content = r.value.outcome.content;
-    const sourceName = sanitizeTxtLabel(input.name || 'source', 'source');
-
     try {
-      const entries = parseLiveContent(content, sourceName, input.speedMs);
-
-      // 若为聚合而来的源，频道数量极少（少于 5 个）则直接丢弃该源
-      if (input.isAggregated && entries.length < 5) {
-        console.log(`[live-merger] Discarded aggregated live source ${sourceName} due to too few channels: ${entries.length}`);
-        continue;
-      }
-
+      const sourceName = await uniqueSourceLabel(input.name || 'source', input.url, usedSourceLabels);
+      const entries = parseLiveContent(outcome.content, sourceName, input.speedMs);
       const prepared = prepareSourceChannels(entries, channelSpeedMap, {
         maxUrlsPerChannel: options.preserveAllUrls ? Math.max(1, options.candidatePoolMaxUrlsPerChannel ?? 64) : SEPARATED_MAX_URLS_PER_CHANNEL,
         maxSpeedMs: options.preserveAllUrls ? 0 : LIVE_KNOWN_MAX_SPEED_MS,
       });
       const quality = evaluateSourceQuality(prepared, {});
+      const metrics = sourceSuccessMetrics(prepared, quality, outcome.downloadMs, checkedAt);
+      sourceMetrics[input.url] = metrics;
       if (quality.discard) {
-        console.log('[live-merger] Discarded live source ' + sourceName + ': ' + quality.reason);
+        console.log(`[live-merger] Discarded live source ${sourceName}: ${quality.reason}`);
         continue;
       }
-
-      const byGroup = new Map<string, TVBoxLiveChannel[]>();
-      for (const { group, channel } of prepared.channels) {
-        if (!byGroup.has(group)) byGroup.set(group, []);
-        byGroup.get(group)!.push(channel);
-      }
-
-      // 保留上游 group 名，频道线路仍带 $源名 后缀。
-      // 同时为 CF 分离模式预生成该源的过滤后 TXT，/live/<key> 首次请求直接命中。
-      const sourceGroups: TVBoxLiveGroup[] = [];
-      for (const [group, channels] of byGroup) {
-        if (totalChannels >= SEPARATED_MAX_CHANNELS) break;
-        const remaining = SEPARATED_MAX_CHANNELS - totalChannels;
-        const limited = channels.slice(0, remaining);
-        if (limited.length === 0) continue;
-
-        const groupValue = { group: scrubTypeLiteral(group), channels: limited };
-        allGroups.push(groupValue);
-        sourceGroups.push(groupValue);
-        totalChannels += limited.length;
-        for (const channel of limited) totalUrls += channel.urls.length;
-      }
-      const sourceText = formatLiveGroupsAsTxt(sourceGroups);
-      if (sourceText.trim() && sourceText.includes('#genre#')) {
-        sourceTexts[input.url] = sourceText;
-      }
+      sourceCategories[input.url] = classifyLiveCategory(prepared.channels.map((item) => item.group));
+      preparedSources.push({
+        input,
+        sourceName,
+        prepared,
+        metrics,
+        qualityScore: computeLiveSourceQualityScore(metrics),
+        rank: 0,
+      });
     } catch (err) {
-      console.warn(`[live-merger] Separated parse failed for ${sourceName}: ${err}`);
+      sourceMetrics[input.url] = sourceFailureMetrics('invalid', checkedAt);
+      console.warn(`[live-merger] Separated parse failed for ${input.name}: ${err}`);
     }
   }
 
-  console.log(`[live-merger] Separated done: ${sourcesDownloaded}/${sources.length} sources, ${allGroups.length} groups, ${totalChannels} channels`);
+  preparedSources.sort(comparePreparedLiveSources);
+  preparedSources.forEach((source, index) => { source.rank = index + 1; });
 
-  return {
-    groups: allGroups,
-    totalChannels,
+  const allGroups: TVBoxLiveGroup[] = [];
+  const sourceTexts: Record<string, string> = {};
+  let totalChannels = 0;
+  let totalUrls = 0;
+
+  for (const source of preparedSources) {
+    const byGroup = new Map<string, TVBoxLiveChannel[]>();
+    for (const { group, channel } of source.prepared.channels) {
+      if (!byGroup.has(group)) byGroup.set(group, []);
+      byGroup.get(group)!.push(channel);
+    }
+
+    const sourceGroups: TVBoxLiveGroup[] = [];
+    for (const [group, channels] of byGroup) {
+      const groupValue = { group: scrubTypeLiteral(group), channels };
+      sourceGroups.push(groupValue);
+    }
+    const sourceText = formatLiveGroupsAsTxt(sourceGroups);
+    if (sourceText.trim() && sourceText.includes('#genre#')) {
+      sourceTexts[source.input.url] = sourceText;
+    }
+
+    for (const groupValue of sourceGroups) {
+      if (totalChannels >= SEPARATED_MAX_CHANNELS) break;
+      const remaining = SEPARATED_MAX_CHANNELS - totalChannels;
+      const limited = groupValue.channels.slice(0, remaining);
+      if (limited.length === 0) continue;
+      allGroups.push({ group: groupValue.group, channels: limited });
+      totalChannels += limited.length;
+      for (const channel of limited) totalUrls += channel.urls.length;
+    }
+  }
+
+  console.log(`[live-merger] Separated done: ${sourcesDownloaded}/${sources.length} sources, accepted=${preparedSources.length}, ${allGroups.length} groups, ${totalChannels} channels`);
+  const sourceLabels: Record<string, string> = {};
+  for (const source of preparedSources) sourceLabels[source.input.url] = source.sourceName;
+  return mergeResultDetails(
+    allGroups,
     totalUrls,
     sourcesDownloaded,
     sourcesFailed,
-    cacheHits: downloadStats.cacheHits,
-    cacheMisses: downloadStats.cacheMisses,
-    revalidated: downloadStats.revalidated,
-    staleFallbacks: downloadStats.staleFallbacks,
+    downloadStats,
+    sourceMetrics,
+    preparedSources.length,
+    sourceCategories,
     sourceTexts,
-  };
+    sourceLabels,
+  );
 }
 
 /**
@@ -1267,6 +1393,93 @@ export function applyChannelSpeedToGroups(
   }
 
   return output;
+}
+
+export function normalizeSourceLabelKey(value: string): string {
+  return scrubTypeLiteral(sanitizeTxtLabel(value, "")).trim().toLowerCase();
+}
+
+/** 从合并输出中定位指定上游 URL 实际使用的 $源名 标签。 */
+export function liveSourceLabelFromUrl(url: string, groups: readonly TVBoxLiveGroup[]): string {
+  const target = (url || "").trim();
+  if (!target) return "";
+  for (const group of groups) {
+    for (const channel of group.channels || []) {
+      for (const raw of channel.urls || []) {
+        const value = (raw || "").trim();
+        const idx = value.lastIndexOf("$");
+        if (idx <= 0) continue;
+        if (bareLiveUrl(value) === target) return value.slice(idx + 1);
+      }
+    }
+  }
+  return "";
+}
+
+function channelSourceLabel(url: string): string {
+  const trimmed = (url || "").trim();
+  const idx = trimmed.lastIndexOf("$");
+  if (idx <= 0 || idx >= trimmed.length - 1) return "";
+  return trimmed.slice(idx + 1);
+}
+
+/**
+ * 把「源级质量池」映射到「频道/线路输出」。
+ *
+ * 合并模式输出中每条线路形如 `http://xxx$源名`，`$` 后是写入时经过
+ * scrubTypeLiteral 的源名。这里按同样的规范化口径匹配，只保留属于下发池
+ * 的源，从而让屏蔽/超时/未入选的源不再出现在 /live、/live.json 与主配置中。
+ *
+ * 默认 fallbackToAll=false：用户明确选择下发池后，绝不能因一次映射失配回退成全量。
+ * 避免因为一次映射失配把应用端直播整体清空；真正的屏蔽仍由上游门禁负责。
+ */
+export function filterGroupsBySourceLabels(
+  groups: TVBoxLiveGroup[],
+  selectedLabels: ReadonlySet<string>,
+  fallbackToAll = false,
+): TVBoxLiveGroup[] {
+  if (selectedLabels.size === 0) return fallbackToAll ? groups : [];
+  const matchedOutput: TVBoxLiveGroup[] = [];
+  for (const group of groups) {
+    const channels: TVBoxLiveChannel[] = [];
+    for (const channel of group.channels || []) {
+      const urls = (channel.urls || []).filter((url) => {
+        const label = normalizeSourceLabelKey(channelSourceLabel(url));
+        return label !== "" && selectedLabels.has(label);
+      });
+      if (urls.length > 0) channels.push({ ...channel, urls });
+    }
+    if (channels.length > 0) matchedOutput.push({ ...group, channels });
+  }
+  return matchedOutput.length > 0 ? matchedOutput : fallbackToAll ? groups : [];
+}
+
+/**
+ * 重新按源质量优先级排列频道内线路顺序。
+ * 合并阶段已按质量排序，这里主要服务于过滤后再排序、以及旧缓存重建顺序。
+ */
+export function reorderGroupsBySourcePriority(
+  groups: TVBoxLiveGroup[],
+  priorityLabels: readonly string[],
+): TVBoxLiveGroup[] {
+  if (priorityLabels.length === 0) return groups;
+  const priority = new Map<string, number>();
+  priorityLabels.forEach((label, index) => {
+    const key = normalizeSourceLabelKey(label);
+    if (!priority.has(key)) priority.set(key, index);
+  });
+  return groups.map((group) => ({
+    ...group,
+    channels: (group.channels || []).map((channel) => {
+      const urls = [...(channel.urls || [])];
+      urls.sort((a, b) => {
+        const rankA = priority.get(normalizeSourceLabelKey(channelSourceLabel(a))) ?? Number.MAX_SAFE_INTEGER;
+        const rankB = priority.get(normalizeSourceLabelKey(channelSourceLabel(b))) ?? Number.MAX_SAFE_INTEGER;
+        return rankA - rankB;
+      });
+      return { ...channel, urls };
+    }),
+  }));
 }
 
 /**
@@ -1370,6 +1583,10 @@ export interface FilteredLiveSourceResult {
   transient: LiveSourceInput[];
   /** 按原始源 URL 预构建的过滤后 TXT，供 CF /live/<key> 直接复用。 */
   texts: Record<string, string>;
+  /** 按原始源 URL 记录的逐源质量度量，供 CF 代理清单回写。 */
+  metrics: Record<string, LiveSourceMetrics>;
+  /** 按原始源 URL 记录的主要分类，供 CF 代理清单展示与分类下发。 */
+  categories: Record<string, LiveCategory>;
 }
 
 const BAD_LIVE_URL = /^(?:about:blank|data:|javascript:|file:)/i;
@@ -1495,15 +1712,30 @@ function knownLiveSpeed(entry: ChannelEntry, channelSpeedMap?: ChannelSpeedMap):
 }
 
 function compareLiveEntries(a: ChannelEntry, b: ChannelEntry, channelSpeedMap?: ChannelSpeedMap): number {
+  // 先使用频道测速库中的真实可播速度；未测速的线路再进入源质量排序。
   const sa = knownLiveSpeed(a, channelSpeedMap);
   const sb = knownLiveSpeed(b, channelSpeedMap);
   if (sa != null && sb != null && sa !== sb) return sa - sb;
   if (sa != null && sb == null) return -1;
   if (sa == null && sb != null) return 1;
 
+  // 速度相同或都未测得时，优先质量分更高的源。
+  const qualityA = a.sourceQuality ?? 0;
+  const qualityB = b.sourceQuality ?? 0;
+  if (qualityA !== qualityB) return qualityB - qualityA;
+
+  const rankA = a.sourceRank ?? Number.POSITIVE_INFINITY;
+  const rankB = b.sourceRank ?? Number.POSITIVE_INFINITY;
+  if (rankA !== rankB) return rankA - rankB;
+
+  const downloadA = a.sourceDownloadMs ?? Number.POSITIVE_INFINITY;
+  const downloadB = b.sourceDownloadMs ?? Number.POSITIVE_INFINITY;
+  if (downloadA !== downloadB) return downloadA - downloadB;
+
   const sourceA = a.sourceSpeedMs ?? Number.POSITIVE_INFINITY;
   const sourceB = b.sourceSpeedMs ?? Number.POSITIVE_INFINITY;
-  return sourceA - sourceB;
+  if (sourceA !== sourceB) return sourceA - sourceB;
+  return a.url.localeCompare(b.url);
 }
 
 /**
@@ -1615,14 +1847,14 @@ export async function filterLiveSourcesDetailed(
   channelSpeedMap?: ChannelSpeedMap,
   options: FilteredLiveOptions = {},
 ): Promise<FilteredLiveSourceResult> {
-  if (sources.length === 0) return { valid: [], invalid: [], transient: [], texts: {} };
+  if (sources.length === 0) return { valid: [], invalid: [], transient: [], texts: {}, metrics: {}, categories: {} };
 
   const blocked = sources.filter(isBlockedLiveSource);
   const candidates = blocked.length > 0 ? sources.filter((source) => !isBlockedLiveSource(source)) : sources;
   if (blocked.length > 0) {
     console.log('[live-merger] Blocked live sources: ' + blocked.map((source) => sanitizeTxtLabel(source.name || 'source', 'source')).join(', '));
   }
-  if (candidates.length === 0) return { valid: [], invalid: blocked, transient: [], texts: {} };
+  if (candidates.length === 0) return { valid: [], invalid: blocked, transient: [], texts: {}, metrics: {}, categories: {} };
 
   const concurrency = Math.max(1, options.concurrency ?? 3);
   const batched = await downloadLiveBatched(
@@ -1637,16 +1869,22 @@ export async function filterLiveSourcesDetailed(
   const invalid: LiveSourceInput[] = [];
   const transient: LiveSourceInput[] = [];
   const texts: Record<string, string> = {};
+  const metrics: Record<string, LiveSourceMetrics> = {};
+  const categories: Record<string, LiveCategory> = {};
+  const checkedAt = new Date().toISOString();
 
   for (let i = 0; i < batched.results.length; i++) {
     const result = batched.results[i];
     if (result.status !== 'fulfilled') {
-      transient.push(candidates[i]);
+      const input = candidates[i];
+      if (input) metrics[input.url] = sourceFailureMetrics('transient', checkedAt);
+      transient.push(input);
       continue;
     }
     const { input, outcome } = result.value;
     const content = outcome.content;
     if (!content) {
+      metrics[input.url] = sourceFailureMetrics(outcome.failure, checkedAt);
       if (outcome.failure === 'invalid') {
         invalid.push(input);
         console.log('[live-merger] Invalid live source ' + sanitizeTxtLabel(input.name || 'source', 'source') + ': ' + (outcome.reason || 'download failed'));
@@ -1664,11 +1902,13 @@ export async function filterLiveSourcesDetailed(
       maxSpeedMs: options.maxSpeedMs ?? LIVE_KNOWN_MAX_SPEED_MS,
     });
     const quality = evaluateSourceQuality(prepared, options);
+    metrics[input.url] = sourceSuccessMetrics(prepared, quality, outcome.downloadMs, checkedAt);
     if (quality.discard) {
       invalid.push(input);
       console.log('[live-merger] Discarded live source ' + sourceName + ': ' + quality.reason);
       continue;
     }
+    categories[input.url] = classifyLiveCategory(prepared.channels.map((item) => item.group));
     const sourceGroups: TVBoxLiveGroup[] = [];
     const byGroup = new Map<string, TVBoxLiveChannel[]>();
     for (const { group, channel } of prepared.channels) {
@@ -1686,7 +1926,7 @@ export async function filterLiveSourcesDetailed(
   }
 
   console.log(`[live-merger] Validated ${valid.length}/${sources.length} live sources (invalid=${invalid.length + blocked.length}, transient=${transient.length})`);
-  return { valid, invalid: [...invalid, ...blocked], transient, texts };
+  return { valid, invalid: [...invalid, ...blocked], transient, texts, metrics, categories };
 }
 
 /**

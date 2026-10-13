@@ -115,6 +115,9 @@ export const KV_LIVE_DISABLED = 'live_disabled';
 export const KV_LIVE_MERGE_MODE = 'live_merge_mode';
 // 是否忽略第三方配置源自带的直播源
 export const KV_IGNORE_AGGREGATED_LIVES = 'ignore_aggregated_lives';
+export const KV_LIVE_DISTRIBUTION = 'live_distribution'; // 直播源候选/质量/下发池选择策略
+export const KV_LIVE_ATTACH_AUTH = 'live_attach_auth'; // 鉴权码级直播附带覆盖 { [code]: boolean }
+export const KV_LIVE_OUTPUT_FINGERPRINT = 'live_output_fingerprint'; // 当前运行时直播输出对应的策略/源清单指纹
 
 // 智能 Base URL
 export const BASE_URL_PLACEHOLDER = '{{BASE_URL}}';

@@ -222,6 +222,7 @@ function normalizeAuthCode(raw: unknown, usedCodes: Set<string>, usedIds: Set<st
     siteTypes: [],
     selectedKeys: normalizeStringArray(entry.selectedKeys, 2000),
     pinnedKeys: normalizeStringArray(entry.pinnedKeys, 2000),
+    ...(typeof entry.attachLives === 'boolean' ? { attachLives: entry.attachLives } : {}),
     createdAt,
     updatedAt,
   };
@@ -268,6 +269,7 @@ export function createClientAuthCode(raw: Partial<ClientAuthCode> = {}): ClientA
     siteTypes: [],
     selectedKeys: normalizeStringArray(raw.selectedKeys, 2000),
     pinnedKeys: normalizeStringArray(raw.pinnedKeys, 2000),
+    ...(typeof raw.attachLives === 'boolean' ? { attachLives: raw.attachLives } : {}),
     createdAt: typeof raw.createdAt === 'string' && raw.createdAt ? raw.createdAt : now,
     updatedAt: typeof raw.updatedAt === 'string' && raw.updatedAt ? raw.updatedAt : now,
   };

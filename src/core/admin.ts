@@ -441,6 +441,101 @@ ${sharedStyles}
       </div>
       <div id="liveStrategyHint" style="margin-top:8px;font-size:0.8rem;color:var(--text-secondary)"></div>
     </div>
+
+    <!-- Live Distribution (source-level quality pool -> delivery) -->
+    <div class="section" id="liveDistributionSection">
+      <div class="section-title" data-i18n="liveDistTitle">直播源下发（合并/分离模式）</div>
+      <div class="credential-help" data-i18n="liveDistHint">把聚合后的所有直播入口汇总为候选池，只有非明确失效的源进入质量池；这里按统一质量排名选择下发源。应用端开机与换台只读取下发结果，因此数量越精炼、启动越快。</div>
+      <div class="source-policy-summary">
+        <span class="credential-pill" id="liveDistCounts">候选：- / 质量池：- / 下发：-</span>
+        <input id="liveDistFilter" class="nt-input" style="width:200px" placeholder="搜索源名称或地址..." data-i18n-placeholder="liveDistFilterPh" oninput="renderLiveDistribution()">
+        <select id="liveDistCategoryFilter" class="nt-input" style="width:150px" onchange="renderLiveDistribution()">
+          <option value="all" data-i18n="liveDistCatAll">全部分类</option>
+          <option value="cctv" data-i18n-text="liveCatCctv">央视</option>
+          <option value="satellite" data-i18n-text="liveCatSatellite">卫视</option>
+          <option value="local" data-i18n-text="liveCatLocal">地方</option>
+          <option value="variety" data-i18n-text="liveCatVariety">轮播/娱乐</option>
+          <option value="special" data-i18n-text="liveCatSpecial">4K/特色</option>
+          <option value="ipv6" data-i18n-text="liveCatIpv6">IPv6</option>
+          <option value="other" data-i18n-text="liveCatOther">其他</option>
+        </select>
+        <select id="liveDistSelectedFilter" class="nt-input" style="width:150px" onchange="renderLiveDistribution()">
+          <option value="all" data-i18n="liveDistSelectedAll">全部状态</option>
+          <option value="selected" data-i18n="liveDistSelectedOnly">仅已下发</option>
+          <option value="excluded" data-i18n="liveDistSelectedExcluded">仅未下发</option>
+          <option value="invalid" data-i18n="liveDistSelectedInvalid">仅明确失效</option>
+        </select>
+        <span id="liveDistFilterCount" style="font-size:0.75rem;color:var(--text-secondary)"></span>
+      </div>
+
+      <div class="source-policy-summary">
+        <label class="form-label" style="margin:0" data-i18n="liveDistMode">下发方式</label>
+        <select id="liveDistMode" class="nt-input" style="width:230px" onchange="toggleLiveDistMode()">
+          <option value="simple" data-i18n-text="liveDistModeSimple">简单方式：按质量池总排名</option>
+          <option value="category" data-i18n-text="liveDistModeCategory">精细方式：按分类分别选择</option>
+        </select>
+        <span id="liveDistSimpleWrap" style="display:contents">
+          <label class="form-label" style="margin:0" data-i18n="liveDistCountLabel">下发数量</label>
+          <select id="liveDistCountMode" class="nt-input" style="width:130px" onchange="toggleLiveDistCount()">
+            <option value="all" data-i18n-text="liveDistCountAll">全部（-1）</option>
+            <option value="none" data-i18n-text="liveDistCountNone">不下发（0）</option>
+            <option value="custom" data-i18n-text="liveDistCountCustom">自定义数量</option>
+          </select>
+          <input type="number" id="liveDistCountInput" class="nt-input" style="width:100px;display:none" min="1" placeholder="数量" data-i18n-placeholder="liveDistCountPh" oninput="syncLiveDistCountInput()">
+        </span>
+        <button class="btn btn-sm" onclick="saveLiveDistributionPolicy()" data-i18n="save">保存</button>
+        <span class="status-text" id="liveDistStatus" style="font-size:0.8rem"></span>
+      </div>
+      <div id="liveDistSimpleHint" style="font-size:0.78rem;color:var(--text-secondary);margin-top:4px" data-i18n="liveDistSimpleHint">选择“全部”即质量池全部下发，不做任何隐式截断；应用端会一次性获得所有可用直播源。</div>
+
+      <div id="liveDistCategoryWrap" style="display:none;margin-top:10px">
+        <div style="font-size:0.78rem;color:var(--text-secondary);margin-bottom:6px" data-i18n="liveDistCategoryHint">为每个分类分别设置下发数量；每个分类只在该分类自己的质量排名内取靠前的源。留空或选“全部”表示该分类不限制；“不下发”表示该分类不选择。</div>
+        <div id="liveDistBuckets" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:8px"></div>
+        <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-sm" onclick="applyLiveDistRecommended()" data-i18n="liveDistRecommended">填入推荐值</button>
+          <button class="btn btn-sm" onclick="setAllLiveDistBuckets('all')" data-i18n="liveDistBucketAllSel">分类全选</button>
+          <button class="btn btn-sm" onclick="setAllLiveDistBuckets('none')" data-i18n="liveDistBucketNoneSel">分类全不选</button>
+        </div>
+      </div>
+
+      <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:10px">
+        <div style="font-size:0.82rem;color:var(--text-secondary);margin-bottom:6px" data-i18n="liveDistAttachHint">主配置附带：关闭后主配置不再携带直播，独立 /live、/lives 链接仍可用（受鉴权限制）。</div>
+        <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center">
+          <label style="display:flex;gap:6px;align-items:center;cursor:pointer">
+            <input type="checkbox" id="liveAttachRootCheck" onchange="saveLiveAttachRoot()">
+            <span data-i18n="liveAttachRoot">根链接附带直播</span>
+          </label>
+          <label style="display:flex;gap:6px;align-items:center;cursor:pointer">
+            <input type="checkbox" id="liveAttachAuthCheck" onchange="saveLiveAttachAuthDefault()">
+            <span data-i18n="liveAttachAuth">鉴权链接默认附带直播</span>
+          </label>
+          <span class="status-text" id="liveAttachStatus" style="font-size:0.8rem"></span>
+        </div>
+        <div style="font-size:0.78rem;color:var(--text-secondary);margin-top:6px" data-i18n="liveAttachLinkHint">独立直播链接：/live（聚合 TXT）、/lives（聚合 TXT 别名）、/live.json（JSON 数组）。</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">
+          <button class="btn btn-sm" onclick="copyClientLink(window.location.origin + '/live')" data-i18n="liveCopyLive">复制 /live 链接</button>
+          <button class="btn btn-sm" onclick="copyClientLink(window.location.origin + '/lives')" data-i18n="liveCopyLives">复制 /lives 链接</button>
+          <button class="btn btn-sm" onclick="copyClientLink(window.location.origin + '/live.json')" data-i18n="liveCopyLiveJson">复制 /live.json 链接</button>
+        </div>
+        <div id="liveAttachAuthList" style="margin-top:8px;display:flex;flex-direction:column;gap:6px"></div>
+      </div>
+
+      <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:10px">
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
+          <span style="font-weight:600" data-i18n="livePoolTitle">直播源质量池</span>
+          <span style="font-size:0.78rem;color:var(--text-secondary)" data-i18n="livePoolHint">按质量分从高到低排列；健康与历史成功优先。屏蔽或置顶仅影响本表与下发选择。</span>
+          <button class="btn btn-sm" onclick="loadLiveDistribution()" data-i18n="refresh">刷新</button>
+        </div>
+        <div id="liveDistTable" style="overflow-x:auto">
+          <div style="color:var(--text-secondary);font-size:0.85rem" data-i18n="liveDistNoData">暂无直播源数据，请先执行一次聚合。</div>
+        </div>
+      </div>
+
+      <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:10px">
+        <div style="font-weight:600;margin-bottom:6px" data-i18n="liveMergeReportTitle">合并报告</div>
+        <div id="liveMergeReport" style="font-size:0.82rem;color:var(--text-secondary);line-height:1.7" data-i18n="liveMergeReportEmpty">暂无合并报告。</div>
+      </div>
+    </div>
   </div>
 
   <!-- Search Quota Tab -->
@@ -860,6 +955,25 @@ const translations = {
     liveStrategyDisabledHint:'Live aggregation is disabled. The options below are inactive until it is enabled again.',
     ignoreAggregatedLivesTitle:'Ignore Aggregated Lives', ignoreAggregatedLivesLabel:'Ignore live sources inside subscription configs (only use manually added live sources)',
     liveMergeModeTitle:'Live merge mode', liveMergeSeparated:'Separated (group by source)', liveMergeMerged:'Merged (deduplicate channels)', liveMergeModeDesc:'Separated keeps every source as its own group; merged combines channels by name and removes duplicates.',
+    liveDistTitle:'Live Source Delivery (merged/separated)', liveDistHint:'All aggregated live entries form the candidate pool; only explicitly invalid sources are excluded from the quality pool. Choose what to deliver by unified quality rank. A tighter, higher-quality set means faster startup and channel switching on clients.',
+    liveDistFilterPh:'Search source name or URL...', liveDistCatAll:'All categories', liveDistSelectedAll:'All states',
+    liveDistSelectedOnly:'Delivered only', liveDistSelectedExcluded:'Not delivered only', liveDistSelectedInvalid:'Explicitly invalid only',
+    liveDistMode:'Delivery mode', liveDistModeSimple:'Simple: by quality-pool rank', liveDistModeCategory:'Detailed: per category',
+    liveDistCountLabel:'Delivery count', liveDistCountAll:'All (-1)', liveDistCountNone:'Deliver none (0)', liveDistCountCustom:'Custom count',
+    liveDistCountPh:'Count', liveDistSimpleHint:'Choosing “All” delivers the entire quality pool with no implicit truncation; the client receives every usable live source at once.',
+    liveDistCategoryHint:'Set a delivery count per category; each category picks only its own top-ranked sources. Blank or “All” means unlimited; “None” excludes the category.',
+    liveDistRecommended:'Use recommended', liveDistBucketAllSel:'Select all categories', liveDistBucketNoneSel:'Deselect all categories',
+    liveDistAttachHint:'Attach to main config: when off, the main config carries no live sources, but /live and /lives stay available (auth still applies).',
+    liveAttachRoot:'Root link attaches live sources', liveAttachAuth:'Auth links attach live sources by default',
+    liveAttachLinkHint:'Standalone live links: /live (aggregated TXT), /lives (alias), /live.json (JSON array).',
+    liveCopyLive:'Copy /live link', liveCopyLives:'Copy /lives link', liveCopyLiveJson:'Copy /live.json link',
+    livePoolTitle:'Live source quality pool', livePoolHint:'Sorted by quality score desc; healthy and previously successful sources rank first. Block/pin only affects this table and delivery selection.',
+    liveDistNoData:'No live source data yet. Run an aggregation first.', liveMergeReportTitle:'Merge report', liveMergeReportEmpty:'No merge report yet.',
+    liveCatCctv:'CCTV', liveCatSatellite:'Satellite', liveCatLocal:'Local', liveCatVariety:'Variety/Entertainment', liveCatSpecial:'4K/Special', liveCatIpv6:'IPv6', liveCatOther:'Other',
+    liveDistBucketPh:'Count', liveTableRank:'Rank', liveTableSource:'Source', liveTableKind:'Origin', liveTableFormat:'Format', liveTableCategory:'Category', liveTableQuality:'Quality', liveTableHealth:'Health', liveTableChannels:'Channels', liveTablePlayable:'Playable', liveTableAd:'Ads', liveTableSpeed:'Download', liveTableChecked:'Last checked', liveTableAction:'Actions',
+    liveKindAggregated:'Upstream', liveKindManual:'Manual', liveHealthHealthy:'Healthy', liveHealthUnhealthy:'Fallback', liveStateInvalid:'Invalid', liveStateSelected:'Delivered', liveStateExcluded:'Excluded', liveStateBlocked:'Blocked', liveStatePinned:'Pinned',
+    liveActionPin:'Pin', liveActionUnpin:'Unpin', liveActionBlock:'Block', liveActionUnblock:'Unblock', liveActionVerify:'Verify now', liveVerifyRunning:'Verifying...', liveVerifyFailed:'Verification failed', liveDistSaved:'Saved', liveDistCandidates:'Candidates', liveDistDelivered:'Delivered', liveMergeSources:'sources', liveMergeAccepted:'accepted', liveMergeQualityPool:'quality pool', liveMergeGroups:'groups', liveMergeChannels:'channels', liveMergeUrls:'lines', liveMergeCacheHits:'cache hits', liveMergeCacheMisses:'cache misses', liveMergeFailed:'failed', liveMergeUpdated:'updated',
+    liveAttachSaved:'Saved', liveDistRecommendedApplied:'Recommended values filled',
     smartBaseUrlTitle:'Smart Base URL', smartBaseUrlLabel:'Auto-detect client host for JAR/image URLs (LAN only, set DMZ=0 to allow public)',
     siteProbeTitle:'Site Content Probe & Auto Clean', probeDepthLabel:'Probe depth:',
     probeDeep:'Deep (validate content)', probeShallow:'Shallow (HTTP only)',
@@ -1013,6 +1127,25 @@ const translations = {
     liveStrategyDisabledHint:'直播聚合已禁用；重新启用前，下面的忽略直播源和合并模式选项不会生效。',
     ignoreAggregatedLivesTitle:'忽略配置中的直播源', ignoreAggregatedLivesLabel:'忽略第三方订阅配置自带的直播源（仅保留手动添加的直播源）',
     liveMergeModeTitle:'直播合并模式', liveMergeSeparated:'分离模式（按源分类）', liveMergeMerged:'合并模式（去重混合）', liveMergeModeDesc:'分离模式：每个直播源独立展示，用源名前缀区分。合并模式：所有源的频道按名称去重合并为统一列表。',
+    liveDistTitle:'直播源下发（合并/分离模式）', liveDistHint:'把聚合后的所有直播入口汇总为候选池，只有明确失效的源被排除在质量池之外；这里按统一质量排名选择下发源。下发的源越精炼优质，应用端启动与换台越快。',
+    liveDistFilterPh:'搜索源名称或地址...', liveDistCatAll:'全部分类', liveDistSelectedAll:'全部状态',
+    liveDistSelectedOnly:'仅已下发', liveDistSelectedExcluded:'仅未下发', liveDistSelectedInvalid:'仅明确失效',
+    liveDistMode:'下发方式', liveDistModeSimple:'简单方式：按质量池总排名', liveDistModeCategory:'精细方式：按分类分别选择',
+    liveDistCountLabel:'下发数量', liveDistCountAll:'全部（-1）', liveDistCountNone:'不下发（0）', liveDistCountCustom:'自定义数量',
+    liveDistCountPh:'数量', liveDistSimpleHint:'选择“全部”即质量池全部下发，不做任何隐式截断；应用端会一次性获得所有可用直播源。',
+    liveDistCategoryHint:'为每个分类分别设置下发数量；每个分类只在该分类自己的质量排名内取靠前的源。留空或选“全部”表示该分类不限制；“不下发”表示该分类不选择。',
+    liveDistRecommended:'填入推荐值', liveDistBucketAllSel:'分类全选', liveDistBucketNoneSel:'分类全不选',
+    liveDistAttachHint:'主配置附带：关闭后主配置不再携带直播，独立 /live、/lives 链接仍可用（受鉴权限制）。',
+    liveAttachRoot:'根链接附带直播', liveAttachAuth:'鉴权链接默认附带直播',
+    liveAttachLinkHint:'独立直播链接：/live（聚合 TXT）、/lives（聚合 TXT 别名）、/live.json（JSON 数组）。',
+    liveCopyLive:'复制 /live 链接', liveCopyLives:'复制 /lives 链接', liveCopyLiveJson:'复制 /live.json 链接',
+    livePoolTitle:'直播源质量池', livePoolHint:'按质量分从高到低排列；健康与历史成功优先。屏蔽或置顶仅影响本表与下发选择。',
+    liveDistNoData:'暂无直播源数据，请先执行一次聚合。', liveMergeReportTitle:'合并报告', liveMergeReportEmpty:'暂无合并报告。',
+    liveCatCctv:'央视', liveCatSatellite:'卫视', liveCatLocal:'地方', liveCatVariety:'轮播/娱乐', liveCatSpecial:'4K/特色', liveCatIpv6:'IPv6', liveCatOther:'其他',
+    liveDistBucketPh:'数量', liveTableRank:'排名', liveTableSource:'源名', liveTableKind:'来源', liveTableFormat:'格式', liveTableCategory:'分类', liveTableQuality:'质量分', liveTableHealth:'健康', liveTableChannels:'频道数', liveTablePlayable:'可播率', liveTableAd:'广告率', liveTableSpeed:'下载耗时', liveTableChecked:'最近验证', liveTableAction:'操作',
+    liveKindAggregated:'上游配置', liveKindManual:'手动添加', liveHealthHealthy:'健康', liveHealthUnhealthy:'后备', liveStateInvalid:'明确失效', liveStateSelected:'已下发', liveStateExcluded:'未下发', liveStateBlocked:'已屏蔽', liveStatePinned:'已置顶',
+    liveActionPin:'置顶', liveActionUnpin:'取消置顶', liveActionBlock:'屏蔽', liveActionUnblock:'取消屏蔽', liveActionVerify:'立即验证', liveVerifyRunning:'验证中...', liveVerifyFailed:'验证失败', liveDistSaved:'已保存', liveDistCandidates:'候选池', liveDistDelivered:'下发池', liveMergeSources:'源', liveMergeAccepted:'接受', liveMergeQualityPool:'质量池', liveMergeGroups:'分组', liveMergeChannels:'频道', liveMergeUrls:'线路', liveMergeCacheHits:'缓存命中', liveMergeCacheMisses:'缓存未命中', liveMergeFailed:'失败', liveMergeUpdated:'更新时间',
+    liveAttachSaved:'已保存', liveDistRecommendedApplied:'已填入推荐值',
     smartBaseUrlTitle:'智能地址响应', smartBaseUrlLabel:'根据客户端访问地址自动生成资源链接（仅局域网，设置 DMZ=0 允许公网）',
     siteProbeTitle:'站点内容验活与自动清理', probeDepthLabel:'验活深度：',
     probeDeep:'深度（验证内容有效性）', probeShallow:'浅层（仅 HTTP 可达）',
@@ -1090,7 +1223,7 @@ const auth = initAuth('loginInput', 'loginError', 'loginOverlay', 'mainContent',
 const tabLoaders = {
   sources: async () => { await loadSourceHealth(); await Promise.all([loadSources(), loadStatus()]); },
   maccms: () => loadMacCMS(),
-  live: () => Promise.all([loadLives(), loadLiveDisabled(), loadLiveMergeMode(), loadIgnoreAggregatedLives(), loadChannelProbe()]),
+  live: () => Promise.all([loadLives(), loadLiveDisabled(), loadLiveMergeMode(), loadIgnoreAggregatedLives(), loadChannelProbe(), loadRootAttach(), loadLiveDistribution(), loadLiveAttachAuth(), loadLiveMergeReport()]),
   searchQuota: () => Promise.all([loadSearchQuota(), loadQualityReport()]),
   sourceDistribution: () => Promise.all([loadSearchQuota(), loadCredentialDistribution()]),
   settings: () => Promise.all([loadNameTransform(), loadBgSettings(), loadCronInterval(), loadSpeedTest(), loadEdgeProxies(), loadDedupConfig(), loadGroupOrder(), loadStorageDiagnostics(), loadSmartBaseUrl(), loadProbeDepth(), loadAutoClean()]),
@@ -4123,6 +4256,362 @@ async function setLiveMergeMode(mode) {
   } catch(e) {
     $('liveMergeModeStatus').textContent = '✗ 失败';
   }
+}
+
+// ─── 直播源下发（候选池/质量池/下发池）──────────
+let liveDistData = null;
+let liveDistPolicy = { selectionMode: 'simple', maxSources: -1, bucketLimits: {}, pinnedKeys: [], blockedKeys: [] };
+let liveDistAttach = null;
+
+function liveDistCountsText(counts) {
+  return t('liveDistCandidates') + ': ' + (counts.candidates ?? '-')
+    + ' / ' + t('liveMergeQualityPool') + ': ' + (counts.qualityPool ?? '-')
+    + ' / ' + t('liveDistDelivered') + ': ' + (counts.selected ?? '-');
+}
+
+async function loadLiveDistribution() {
+  try {
+    const res = await auth.authFetch('/admin/live-distribution');
+    if (!res.ok) return;
+    liveDistData = await res.json();
+    const dist = liveDistData.distribution || {};
+    liveDistPolicy = {
+      selectionMode: dist.selectionMode === 'category' ? 'category' : 'simple',
+      maxSources: typeof dist.maxSources === 'number' ? dist.maxSources : -1,
+      bucketLimits: dist.bucketLimits || {},
+      pinnedKeys: Array.isArray(dist.pinnedKeys) ? dist.pinnedKeys.slice() : [],
+      blockedKeys: Array.isArray(dist.blockedKeys) ? dist.blockedKeys.slice() : [],
+    };
+    const counts = liveDistData.counts || {};
+    $('liveDistCounts').textContent = liveDistCountsText(counts);
+    $('liveDistMode').value = liveDistPolicy.selectionMode;
+    const cm = $('liveDistCountMode'); const ci = $('liveDistCountInput');
+    if (cm) cm.value = liveDistPolicy.maxSources === 0 ? 'none' : (liveDistPolicy.maxSources > 0 ? 'custom' : 'all');
+    if (ci && liveDistPolicy.maxSources > 0) ci.value = String(liveDistPolicy.maxSources);
+    toggleLiveDistMode();
+    toggleLiveDistCount();
+    renderLiveDistribution();
+  } catch {}
+}
+
+function toggleLiveDistMode() {
+  const mode = $('liveDistMode'); const isCategory = mode && mode.value === 'category';
+  const simpleWrap = $('liveDistSimpleWrap'); const catWrap = $('liveDistCategoryWrap');
+  if (simpleWrap) simpleWrap.style.display = isCategory ? 'none' : 'contents';
+  if ($('liveDistSimpleHint')) $('liveDistSimpleHint').style.display = isCategory ? 'none' : '';
+  if (catWrap) catWrap.style.display = isCategory ? '' : 'none';
+  if (isCategory) renderLiveDistBuckets();
+}
+
+function toggleLiveDistCount() {
+  const select = $('liveDistCountMode'); const input = $('liveDistCountInput'); if (!select) return;
+  if (input) { input.disabled = select.value !== 'custom'; input.style.display = select.value === 'custom' ? '' : 'none'; }
+}
+
+function syncLiveDistCountInput() {
+  const select = $('liveDistCountMode'); const input = $('liveDistCountInput');
+  if (!select || select.value !== 'custom' || !input) return;
+}
+
+function liveDistCategories() {
+  const categories = liveDistData && liveDistData.categories ? liveDistData.categories : {};
+  return Object.keys(categories);
+}
+
+function renderLiveDistBuckets() {
+  const box = $('liveDistBuckets'); if (!box) return;
+  const categories = liveDistData && liveDistData.categories ? liveDistData.categories : {};
+  const labels = { cctv: t('liveCatCctv'), satellite: t('liveCatSatellite'), local: t('liveCatLocal'), variety: t('liveCatVariety'), special: t('liveCatSpecial'), ipv6: t('liveCatIpv6'), other: t('liveCatOther') };
+  const order = ['cctv','satellite','local','variety','special','ipv6','other'];
+  box.innerHTML = order.map(function(cat) {
+    const info = categories[cat] || { total: 0 };
+    const limit = Object.prototype.hasOwnProperty.call(liveDistPolicy.bucketLimits || {}, cat) ? liveDistPolicy.bucketLimits[cat] : -1;
+    const mode = limit === 0 ? 'none' : (limit > 0 ? 'custom' : 'all');
+    return '<div style="display:flex;gap:6px;align-items:center;background:var(--bg-hover);border-radius:6px;padding:6px 8px">'
+      + '<span style="flex:1;font-size:0.82rem">' + escHtml(labels[cat] || cat) + ' <span style="color:var(--text-secondary);font-size:0.72rem">(' + (info.total ?? 0) + ')</span></span>'
+      + '<select class="nt-input" style="width:110px" onchange="onLiveDistBucketMode(&quot;' + cat + '&quot;, this.value)">'
+      + '<option value="all"' + (mode === 'all' ? ' selected' : '') + '>' + t('liveDistCountAll') + '</option>'
+      + '<option value="none"' + (mode === 'none' ? ' selected' : '') + '>' + t('liveDistCountNone') + '</option>'
+      + '<option value="custom"' + (mode === 'custom' ? ' selected' : '') + '>' + t('liveDistCountCustom') + '</option>'
+      + '</select>'
+      + '<input type="number" min="1" class="nt-input" style="width:80px;display:' + (mode === 'custom' ? '' : 'none') + '" value="' + (limit > 0 ? limit : '') + '" placeholder="' + t('liveDistBucketPh') + '" oninput="onLiveDistBucketCount(&quot;' + cat + '&quot;, this.value)">'
+      + '</div>';
+  }).join('');
+}
+
+function onLiveDistBucketMode(cat, mode) {
+  liveDistPolicy.bucketLimits = liveDistPolicy.bucketLimits || {};
+  if (mode === 'all') delete liveDistPolicy.bucketLimits[cat];
+  else if (mode === 'none') liveDistPolicy.bucketLimits[cat] = 0;
+  else liveDistPolicy.bucketLimits[cat] = liveDistPolicy.bucketLimits[cat] > 0 ? liveDistPolicy.bucketLimits[cat] : 10;
+  renderLiveDistBuckets();
+}
+
+function onLiveDistBucketCount(cat, value) {
+  const parsed = parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 1) return;
+  liveDistPolicy.bucketLimits = liveDistPolicy.bucketLimits || {};
+  liveDistPolicy.bucketLimits[cat] = parsed;
+}
+
+function setAllLiveDistBuckets(mode) {
+  liveDistPolicy.bucketLimits = {};
+  if (mode === 'none') {
+    ['cctv','satellite','local','variety','special','ipv6','other'].forEach(function(cat) { liveDistPolicy.bucketLimits[cat] = 0; });
+  }
+  renderLiveDistBuckets();
+}
+
+function applyLiveDistRecommended() {
+  const categories = (liveDistData && liveDistData.categories) || {};
+  const limits = {};
+  const recommended = { cctv: 6, satellite: 6, local: 3, variety: 3, special: 2, ipv6: 2, other: 3 };
+  Object.keys(recommended).forEach(function(cat) {
+    const total = categories[cat] ? categories[cat].total : 0;
+    if (total <= 0) return;
+    limits[cat] = Math.min(recommended[cat], total);
+  });
+  liveDistPolicy.bucketLimits = limits;
+  renderLiveDistBuckets();
+}
+
+async function saveLiveDistributionPolicy() {
+  const status = $('liveDistStatus');
+  if (status) status.textContent = '';
+  const mode = $('liveDistMode') ? $('liveDistMode').value : 'simple';
+  let maxSources = -1;
+  let bucketLimits = {};
+  if (mode === 'simple') {
+    const cm = $('liveDistCountMode'); const ci = $('liveDistCountInput');
+    if (cm && cm.value === 'none') maxSources = 0;
+    else if (cm && cm.value === 'custom') {
+      const parsed = ci ? parseInt(ci.value, 10) : NaN;
+      maxSources = Number.isFinite(parsed) && parsed >= 1 ? parsed : 1;
+    } else maxSources = -1;
+  } else {
+    bucketLimits = liveDistPolicy.bucketLimits || {};
+  }
+  const body = {
+    selectionMode: mode === 'category' ? 'category' : 'simple',
+    maxSources,
+    bucketLimits,
+    pinnedKeys: liveDistPolicy.pinnedKeys || [],
+    blockedKeys: liveDistPolicy.blockedKeys || [],
+    attachToRoot: $('liveAttachRootCheck') ? !!$('liveAttachRootCheck').checked : true,
+    attachToAuth: $('liveAttachAuthCheck') ? !!$('liveAttachAuthCheck').checked : true,
+  };
+  try {
+    const res = await auth.authFetch('/admin/live-distribution', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (!res.ok) throw new Error('save failed');
+    liveDistData = await res.json();
+    const dist = liveDistData.distribution || {};
+    liveDistPolicy = {
+      selectionMode: dist.selectionMode === 'category' ? 'category' : 'simple',
+      maxSources: typeof dist.maxSources === 'number' ? dist.maxSources : -1,
+      bucketLimits: dist.bucketLimits || {},
+      pinnedKeys: Array.isArray(dist.pinnedKeys) ? dist.pinnedKeys.slice() : [],
+      blockedKeys: Array.isArray(dist.blockedKeys) ? dist.blockedKeys.slice() : [],
+    };
+    const counts = liveDistData.counts || {};
+    $('liveDistCounts').textContent = liveDistCountsText(counts);
+    if (status) { status.textContent = '✓ ' + t('liveDistSaved'); setTimeout(function(){ status.textContent=''; }, 2500); }
+    renderLiveDistribution();
+  } catch(e) {
+    if (status) { status.textContent = '✗ ' + t('saveFailed'); }
+  }
+}
+
+function liveDistCatLabel(cat) {
+  const labels = { cctv: t('liveCatCctv'), satellite: t('liveCatSatellite'), local: t('liveCatLocal'), variety: t('liveCatVariety'), special: t('liveCatSpecial'), ipv6: t('liveCatIpv6'), other: t('liveCatOther') };
+  return labels[cat] || cat;
+}
+
+function renderLiveDistribution() {
+  const box = $('liveDistTable'); if (!box) return;
+  const entries = (liveDistData && liveDistData.entries) || [];
+  if (entries.length === 0) {
+    box.innerHTML = '<div style="color:var(--text-secondary);font-size:0.85rem">' + t('liveDistNoData') + '</div>';
+    return;
+  }
+  const input = $('liveDistFilter'); const query = input ? String(input.value || '').trim().toLowerCase() : '';
+  const catSel = $('liveDistCategoryFilter'); const catFilter = catSel ? catSel.value : 'all';
+  const selSel = $('liveDistSelectedFilter'); const selFilter = selSel ? selSel.value : 'all';
+  const pinnedOrder = new Map((liveDistPolicy.pinnedKeys || []).map(function(k, i){ return [k, i]; }));
+  const blocked = new Set(liveDistPolicy.blockedKeys || []);
+  const matched = entries.filter(function(e) {
+    if (catFilter !== 'all' && (e.category || 'other') !== catFilter) return false;
+    if (selFilter === 'selected' && !e.selected) return false;
+    if (selFilter === 'excluded' && (e.selected || e.distributable === false)) return false;
+    if (selFilter === 'invalid' && e.distributable !== false) return false;
+    if (!query) return true;
+    return String(e.name || '').toLowerCase().includes(query) || String(e.url || '').toLowerCase().includes(query);
+  });
+  const fc = $('liveDistFilterCount');
+  if (fc) fc.textContent = (query || catFilter !== 'all' || selFilter !== 'all') ? (t('sqFilterMatched') + ': ' + matched.length) : '';
+  const pct = function(v) { return v == null ? '-' : Math.round(v * 100) + '%'; };
+  const ms = function(v) { return v == null ? '-' : (v >= 1000 ? (v/1000).toFixed(1) + 's' : Math.round(v) + 'ms'); };
+  let html = '<table style="width:100%;border-collapse:collapse;font-size:0.8rem"><thead><tr>'
+    + '<th style="text-align:left;padding:4px">' + t('liveTableRank') + '</th>'
+    + '<th style="text-align:left;padding:4px">' + t('liveTableSource') + '</th>'
+    + '<th style="text-align:left;padding:4px">' + t('liveTableKind') + '</th>'
+    + '<th style="text-align:left;padding:4px">' + t('liveTableFormat') + '</th>'
+    + '<th style="text-align:left;padding:4px">' + t('liveTableCategory') + '</th>'
+    + '<th style="text-align:right;padding:4px">' + t('liveTableQuality') + '</th>'
+    + '<th style="text-align:left;padding:4px">' + t('liveTableHealth') + '</th>'
+    + '<th style="text-align:right;padding:4px">' + t('liveTableChannels') + '</th>'
+    + '<th style="text-align:right;padding:4px">' + t('liveTablePlayable') + '</th>'
+    + '<th style="text-align:right;padding:4px">' + t('liveTableAd') + '</th>'
+    + '<th style="text-align:right;padding:4px">' + t('liveTableSpeed') + '</th>'
+    + '<th style="text-align:left;padding:4px">' + t('liveTableChecked') + '</th>'
+    + '<th style="text-align:right;padding:4px">' + t('liveTableAction') + '</th>'
+    + '</tr></thead><tbody>';
+  matched.forEach(function(e) {
+    const isBlocked = blocked.has(e.key);
+    const isPinned = pinnedOrder.has(e.key);
+    const invalid = e.distributable === false;
+    const badges = [];
+    if (isPinned) badges.push('<span style="color:var(--primary)">' + t('liveStatePinned') + '</span>');
+    if (isBlocked) badges.push('<span style="color:var(--red)">' + t('liveStateBlocked') + '</span>');
+    if (invalid) badges.push('<span style="color:var(--red)">' + t('liveStateInvalid') + '</span>');
+    else if (e.selected) badges.push('<span style="color:var(--green)">' + t('liveStateSelected') + '</span>');
+    else badges.push('<span style="color:var(--yellow)">' + t('liveStateExcluded') + '</span>');
+    const health = e.health === 'healthy' ? t('liveHealthHealthy') : t('liveHealthUnhealthy');
+    const checked = e.checkedAt ? String(e.checkedAt).replace('T',' ').slice(0,16) : '-';
+    html += '<tr style="border-bottom:1px solid var(--border)' + (invalid||isBlocked ? ';opacity:0.55' : '') + '">'
+      + '<td style="padding:4px">' + (e.rank || '') + '</td>'
+      + '<td style="padding:4px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escHtml(e.url) + '">' + escHtml(e.name || e.url) + ' ' + badges.join(' ') + '</td>'
+      + '<td style="padding:4px">' + t(e.kind === 'manual' ? 'liveKindManual' : 'liveKindAggregated') + '</td>'
+      + '<td style="padding:4px">' + escHtml((e.format || 'unknown').toUpperCase()) + '</td>'
+      + '<td style="padding:4px">' + escHtml(liveDistCatLabel(e.category || 'other')) + '</td>'
+      + '<td style="padding:4px;text-align:right">' + (e.qualityScore ?? 0) + '</td>'
+      + '<td style="padding:4px">' + health + '</td>'
+      + '<td style="padding:4px;text-align:right">' + (e.channelCount ?? '-') + '</td>'
+      + '<td style="padding:4px;text-align:right">' + pct(e.playableRatio) + '</td>'
+      + '<td style="padding:4px;text-align:right">' + pct(e.adRatio) + '</td>'
+      + '<td style="padding:4px;text-align:right">' + ms(e.downloadMs) + '</td>'
+      + '<td style="padding:4px">' + checked + '</td>'
+      + '<td style="padding:4px;text-align:right;white-space:nowrap">'
+      + '<button class="btn btn-sm" onclick="liveDistTogglePin(&quot;' + escHtml(e.key) + '&quot;)">' + (isPinned ? t('liveActionUnpin') : t('liveActionPin')) + '</button> '
+      + '<button class="btn btn-sm" onclick="liveDistToggleBlock(&quot;' + escHtml(e.key) + '&quot;)">' + (isBlocked ? t('liveActionUnblock') : t('liveActionBlock')) + '</button> '
+      + '<button class="btn btn-sm" onclick="liveDistVerify(&quot;' + escHtml(e.key) + '&quot;, this)">' + t('liveActionVerify') + '</button>'
+      + '</td>'
+      + '</tr>';
+  });
+  html += '</tbody></table>';
+  box.innerHTML = html;
+}
+
+async function liveDistTogglePin(key) {
+  const pinned = (liveDistPolicy.pinnedKeys || []).slice();
+  const idx = pinned.indexOf(key);
+  if (idx >= 0) pinned.splice(idx, 1); else pinned.push(key);
+  liveDistPolicy.pinnedKeys = pinned;
+  await saveLiveDistributionPolicy();
+}
+
+async function liveDistVerify(key, btn) {
+  const original = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = t('liveVerifyRunning'); }
+  try {
+    const res = await auth.authFetch('/admin/live-verify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: key }) });
+    const d = await res.json().catch(function(){ return {}; });
+    if (!res.ok) throw new Error('verify failed');
+    if (btn) btn.textContent = (d.state === 'valid' ? '✓' : '✗') + ' ' + (d.state || '');
+    await loadLiveDistribution();
+  } catch(e) {
+    if (btn) btn.textContent = t('liveVerifyFailed');
+  } finally {
+    if (btn) { setTimeout(function(){ btn.disabled = false; btn.textContent = original; }, 1500); }
+  }
+}
+
+async function liveDistToggleBlock(key) {
+  const blocked = (liveDistPolicy.blockedKeys || []).slice();
+  const idx = blocked.indexOf(key);
+  if (idx >= 0) blocked.splice(idx, 1); else blocked.push(key);
+  liveDistPolicy.blockedKeys = blocked;
+  await saveLiveDistributionPolicy();
+}
+
+// ─── 主配置附带直播 + 鉴权码覆盖 ───────────
+async function loadLiveAttachAuth() {
+  try {
+    const res = await auth.authFetch('/admin/live-attach-auth');
+    if (!res.ok) return;
+    const d = await res.json();
+    liveDistAttach = d;
+    if ($('liveAttachAuthCheck')) $('liveAttachAuthCheck').checked = !!d.attachToAuth;
+    const list = $('liveAttachAuthList'); if (!list) return;
+    const configs = Array.isArray(d.configs) ? d.configs : [];
+    if (configs.length === 0) { list.innerHTML = ''; return; }
+    list.innerHTML = configs.map(function(c) {
+      return '<label style="display:flex;gap:8px;align-items:center;font-size:0.82rem;cursor:pointer' + (c.enabled === false ? ';opacity:0.5' : '') + '">'
+        + '<input type="checkbox" ' + (c.attachLives ? 'checked' : '') + (c.enabled === false ? ' disabled' : '') + ' onchange="saveLiveAttachAuthCode(&quot;' + escHtml(c.code) + '&quot;, this.checked)">'
+        + '<span>' + escHtml(c.label || c.code) + ' <span style="color:var(--text-secondary);font-family:var(--mono);font-size:0.72rem">/auth/' + escHtml(c.code) + '/</span></span>'
+        + (c.enabled === false ? '<span style="color:var(--red)">' + t('credentialRootRequired') + '</span>' : '')
+        + '</label>';
+    }).join('');
+  } catch {}
+}
+
+async function loadRootAttach() {
+  try {
+    const res = await auth.authFetch('/admin/live-distribution');
+    if (!res.ok) return;
+    const d = await res.json();
+    if ($('liveAttachRootCheck')) $('liveAttachRootCheck').checked = d.distribution ? d.distribution.attachToRoot !== false : true;
+  } catch {}
+}
+
+async function saveLiveAttachRoot() {
+  const checked = $('liveAttachRootCheck') ? !!$('liveAttachRootCheck').checked : true;
+  const status = $('liveAttachStatus');
+  try {
+    await auth.authFetch('/admin/live-distribution', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ attachToRoot: checked }) });
+    if (status) { status.textContent = '✓ ' + t('liveAttachSaved'); setTimeout(function(){ status.textContent=''; }, 2000); }
+  } catch { if (status) status.textContent = '✗ ' + t('saveFailed'); }
+}
+
+async function saveLiveAttachAuthDefault() {
+  const checked = $('liveAttachAuthCheck') ? !!$('liveAttachAuthCheck').checked : true;
+  const status = $('liveAttachStatus');
+  try {
+    await auth.authFetch('/admin/live-distribution', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ attachToAuth: checked }) });
+    if (status) { status.textContent = '✓ ' + t('liveAttachSaved'); setTimeout(function(){ status.textContent=''; }, 2000); }
+    loadLiveAttachAuth();
+  } catch { if (status) status.textContent = '✗ ' + t('saveFailed'); }
+}
+
+async function saveLiveAttachAuthCode(code, enabled) {
+  const status = $('liveAttachStatus');
+  try {
+    await auth.authFetch('/admin/live-attach-auth', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: code, enabled: enabled }) });
+    if (status) { status.textContent = '✓ ' + t('liveAttachSaved'); setTimeout(function(){ status.textContent=''; }, 2000); }
+  } catch { if (status) status.textContent = '✗ ' + t('saveFailed'); }
+}
+
+// ─── 合并报告 ───────────
+async function loadLiveMergeReport() {
+  const box = $('liveMergeReport'); if (!box) return;
+  try {
+    const res = await auth.authFetch('/admin/live-merge-report');
+    if (!res.ok) { box.textContent = t('liveMergeReportEmpty'); return; }
+    const d = await res.json();
+    if (!d || !d.updatedAt) { box.textContent = t('liveMergeReportEmpty'); return; }
+    const parts = [
+      t('lastUpdate') + String(d.updatedAt).replace('T',' ').slice(0,19),
+      t('liveMergeSources') + ' ' + (d.sources ?? d.candidates ?? 0),
+      t('liveMergeAccepted') + ' ' + (d.sourcesAccepted ?? 0),
+      t('liveMergeQualityPool') + ' ' + (d.qualityPool ?? 0),
+      t('liveMergeGroups') + ' ' + (d.groups ?? 0),
+      t('liveMergeChannels') + ' ' + (d.channels ?? 0),
+      t('liveMergeUrls') + ' ' + (d.urls ?? 0),
+      t('liveMergeCacheHits') + ' ' + (d.cacheHits ?? 0),
+      t('liveMergeCacheMisses') + ' ' + (d.cacheMisses ?? 0),
+      t('liveMergeFailed') + ' ' + (d.sourcesFailed ?? 0),
+    ];
+    box.textContent = parts.join(' · ');
+  } catch { box.textContent = t('liveMergeReportEmpty'); }
 }
 
 // ─── 智能 Base URL ──────────

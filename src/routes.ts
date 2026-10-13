@@ -4,14 +4,17 @@ import { Hono } from 'hono';
 import { MemoryCachedStorage } from './storage/cached';
 import type { Storage } from './storage/interface';
 import type { AppConfig, MacCMSSourceEntry, LiveSourceEntry, NameTransformConfig, EdgeProxyConfig, SearchQualityRunMode } from './core/types';
-import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_STARTUP_SITE_POOL, KV_MANUAL_SOURCES, KV_LAST_UPDATE, KV_LAST_UPDATE_ERROR, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_RUNTIME_TXT, KV_LIVE_RUNTIME_TXT_VERSION, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, LIVE_PROXY_TTL, IMG_PROXY_TTL, KV_NAME_TRANSFORM, KV_CRON_INTERVAL, DEFAULT_CRON_INTERVAL, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_PARSE_HEALTH_REPORT, KV_AGG_LOGS, KV_BG_SETTINGS, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, KV_SMART_BASE_URL_ENABLED, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SITE_HEALTH_MAP, KV_CHANNEL_RUNTIME_TREE, KV_LIVE_TEXT_PREFIX, KV_CREDENTIAL_DISTRIBUTION, KV_SEARCH_QUALITY_CANDIDATES } from './core/config';
+import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_STARTUP_SITE_POOL, KV_MANUAL_SOURCES, KV_LAST_UPDATE, KV_LAST_UPDATE_ERROR, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_RUNTIME_TXT, KV_LIVE_RUNTIME_TXT_VERSION, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, LIVE_PROXY_TTL, IMG_PROXY_TTL, KV_NAME_TRANSFORM, KV_CRON_INTERVAL, DEFAULT_CRON_INTERVAL, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_PARSE_HEALTH_REPORT, KV_AGG_LOGS, KV_BG_SETTINGS, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, KV_SMART_BASE_URL_ENABLED, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SITE_HEALTH_MAP, KV_CHANNEL_MERGED_TREE, KV_CHANNEL_RUNTIME_TREE, KV_LIVE_TEXT_PREFIX, KV_CREDENTIAL_DISTRIBUTION, KV_SEARCH_QUALITY_CANDIDATES, KV_LIVE_MERGE_REPORT, KV_LIVE_ATTACH_AUTH, KV_LIVE_OUTPUT_FINGERPRINT } from './core/config';
 import { getRequestBaseUrl, applyBaseUrlPlaceholder, assertHostAllowed } from './core/base-url';
 import { logger } from './core/logger';
 import { loadGroupOrder, saveGroupOrder } from './core/group-order';
 import { validateMacCMS } from './core/maccms';
 import { lookupJarUrl, isMd5Key, base64ToUint8Array, rewriteJarUrls, normalizeJarRequestKey, loadJarReadyKeys, markJarReady, getJarKeyForSite } from './core/jar-proxy';
 import { BASE_URL_PLACEHOLDER } from './core/config';
-import { lookupLiveSource, listLiveProxyEntries, recordLiveProxyValidation, removeLiveProxyEntry } from './core/live-source';
+import { lookupLiveSource, listLiveProxyEntries, listAllLiveProxyEntries, isLiveProxyEntryDistributable, recordLiveProxyValidation, removeLiveProxyEntry } from './core/live-source';
+import { loadLiveDistribution, saveLiveDistribution, toLiveDistributionPolicy } from './core/live-distribution-store';
+import { selectLiveDistribution } from './core/live-quality';
+import { rebuildLiveOutput } from './core/live-output';
 import { adminHtml } from './core/admin';
 import { dashboardHtml } from './core/dashboard';
 import { configEditorHtml } from './core/config-editor';
@@ -33,10 +36,10 @@ import {
   getQualityPoolHealth,
 } from './core/quality';
 import { loadClientDistribution, saveClientDistribution, findClientAuthCode, normalizeClientDistributionConfig, createClientAuthCode } from './core/client-auth-store';
-import { formatAggregatedLiveGroupsAsTxt, formatLiveGroupsAsTxt, filterLivesBySource, filterLivesBySourceDetailed, sortLiveGroupsForOutput } from './core/live-merger';
+import { formatAggregatedLiveGroupsAsTxt, formatLiveGroupsAsTxt, filterLivesBySource, filterLivesBySourceDetailed, sortLiveGroupsForOutput, filterGroupsBySourceLabels, reorderGroupsBySourcePriority, normalizeSourceLabelKey, liveSourceLabelFromUrl } from './core/live-merger';
 import { containsBlockedLiveUrl, isBlockedLiveSource, isBlockedLiveUrl } from './core/live-policy';
 import { autoNameFromUrl, backupTypeMismatch, createSourceBackup, extractBackupItems, parseSourceList } from './core/source-list-parser';
-import type { TVBoxConfig, TVBoxSite, SearchQuotaConfig, SiteQualityGrade, TVBoxLive, TVBoxLiveGroup, ClientAuthCode, ClientDistributionConfig, SourceDistributionMode, SourceSelectionMode } from './core/types';
+import type { TVBoxConfig, TVBoxSite, SearchQuotaConfig, SiteQualityGrade, TVBoxLive, TVBoxLiveGroup, ClientAuthCode, ClientDistributionConfig, LiveDistributionConfig, SourceDistributionMode, SourceSelectionMode } from './core/types';
 import { mountChannelProbeRoutes } from './routes/channel-probe-admin';
 import { loadSpeedMap as loadChannelSpeedMap } from './core/channel-probe';
 import { createLogViewerRouter } from './routes/log-viewer';
@@ -316,8 +319,27 @@ export function createApp(deps: AppDeps): Hono {
 
   async function markOutputDirty(): Promise<void> {
     await setDirtyMarker(storage);
+    // 旧运行输出与负缓存必须先失效，避免新策略/新清单被旧快速路径遮蔽。
     await storage.put(KV_LIVE_RUNTIME_EMPTY_AT, '');
+    await storage.put(KV_LIVE_OUTPUT_FINGERPRINT, '');
     storage.clear();
+  }
+
+  /**
+   * 统一重建下发输出。所有会改变直播质量池或下发池的管理操作
+   * 都必须走这里，避免只标脏却继续返回旧指纹/TXT。
+   */
+  async function rebuildLiveOutputSafe(reason: string): Promise<{ ok: boolean; error?: string }> {
+    try {
+      await rebuildLiveOutput(storage, { reason });
+      return { ok: true };
+    } catch (error) {
+      logger.errorFields('routes', 'live-output-rebuild-failed', {
+        reason,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
   }
 
   // ─── 客户端鉴权与源分发上下文 ─────────────────────────
@@ -361,14 +383,14 @@ export function createApp(deps: AppDeps): Hono {
       if (parsed.origin !== new URL(root).origin) return value;
       if (parsed.pathname === '/api/bg-settings') return value;
       if (/^\/auth\/[^/]+\//.test(parsed.pathname)) return value;
-      if (!/^\/(?:jar\/|live(?:\/|$)|live\.json$|api\/|reader-proxy$)/.test(parsed.pathname)) return value;
+      if (!/^\/(?:jar\/|live(?:s)?(?:\/|$)|live\.json$|api\/|reader-proxy$)/.test(parsed.pathname)) return value;
       parsed.pathname = `${prefix}${parsed.pathname}`;
       return parsed.toString();
     } catch {
       const relativePath = value.split(/[?#]/, 1)[0];
       if (relativePath === '/api/bg-settings') return value;
       if (/^\/auth\/[^/]+\//.test(value)) return value;
-      if (!/^\/(?:jar\/|live(?:\/|$)|live\.json$|api\/|reader-proxy$)/.test(relativePath)) return value;
+      if (!/^\/(?:jar\/|live(?:s)?(?:\/|$)|live\.json$|api\/|reader-proxy$)/.test(relativePath)) return value;
       return `${prefix}${value}`;
     }
   }
@@ -405,9 +427,9 @@ export function createApp(deps: AppDeps): Hono {
       const prefix = context.authPrefix.replace(/\/+$/, '');
       const root = context.rootBaseUrl.replace(/\/+$/, '');
       const escapedRoot = root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      return raw.replace(new RegExp(String.raw`(^|[?"'\s([=,:])${escapedRoot}(/jar/|/live(?:/[^?"'\s]*)?|/live\.json|/api/[^?"'\s]*)`, 'g'),
+      return raw.replace(new RegExp(String.raw`(^|[?"'\s([=,:])${escapedRoot}(/jar/|/lives?(?:/[^?"'\s]*)?|/live\.json|/api/[^?"'\s]*)`, 'g'),
         (_m, lead: string, path: string) => `${lead}${root}${prefix}${path}`)
-        .replace(/(["'])(\/(?:jar\/|live(?:\/|\b)|live\.json|api\/)[^"']*)\1/g,
+        .replace(/(["'])(\/(?:jar\/|lives?(?:\/|\b)|live\.json|api\/)[^"']*)\1/g,
           (_m, quote: string, path: string) => `${quote}${prefix}${path}${quote}`);
     }
   }
@@ -769,13 +791,99 @@ export function createApp(deps: AppDeps): Hono {
    */
   async function getCfSeparatedLives(): Promise<TVBoxLive[]> {
     if (!config.workerBaseUrl) return [];
-    const entries = await listLiveProxyEntries(storage);
+    const distribution = await loadLiveDistribution(storage);
+    const entries = selectLiveDistribution(
+      await listAllLiveProxyEntries(storage),
+      toLiveDistributionPolicy(distribution),
+    );
     const baseUrl = config.workerBaseUrl.replace(/\/$/, '');
     return entries.map((entry) => ({
       name: entry.name || '直播源',
       type: 0,
       url: `${baseUrl}/live/${entry.key}`,
     }));
+  }
+
+  /**
+   * 判断某一次主配置请求是否应附带直播源。
+   * 独立 /live、/lives 链接不受该开关影响，始终按同一质量池与策略输出。
+   */
+  async function loadLiveAttachOverrides(): Promise<Record<string, boolean>> {
+    try {
+      const raw = await storage.get(KV_LIVE_ATTACH_AUTH);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+      const overrides: Record<string, boolean> = {};
+      for (const [key, value] of Object.entries(parsed)) {
+        if (typeof value === 'boolean') overrides[key] = value;
+      }
+      return overrides;
+    } catch {
+      return {};
+    }
+  }
+
+  async function shouldAttachLives(
+    distribution: LiveDistributionConfig,
+    authCode?: ClientAuthCode,
+  ): Promise<boolean> {
+    if (!authCode) return distribution.attachToRoot;
+    const overrides = await loadLiveAttachOverrides();
+    if (Object.prototype.hasOwnProperty.call(overrides, authCode.code)) {
+      return overrides[authCode.code];
+    }
+    return authCode.attachLives ?? distribution.attachToAuth;
+  }
+
+  async function selectMergedLiveGroups(
+    groups: TVBoxLiveGroup[],
+    distribution: LiveDistributionConfig,
+  ): Promise<TVBoxLiveGroup[]> {
+    // 即使是“全选(-1)”，也必须经过质量池门禁与统一排序，
+    // 不能再直接返回候选 groups，否则 invalid/blocked 会绕过筛选。
+    const selected = selectLiveDistribution(
+      await listAllLiveProxyEntries(storage),
+      toLiveDistributionPolicy(distribution),
+    );
+    const selectedLabels = new Set<string>();
+    for (const entry of selected) {
+      const label = liveSourceLabelFromUrl(entry.url, groups);
+      if (label) selectedLabels.add(normalizeSourceLabelKey(label));
+      selectedLabels.add(normalizeSourceLabelKey(entry.name || entry.url || ''));
+    }
+    if (selectedLabels.size === 0) return [];
+    const priorityLabels = selected.map((entry) => liveSourceLabelFromUrl(entry.url, groups) || entry.name || entry.url || '').filter(Boolean);
+    return reorderGroupsBySourcePriority(
+      filterGroupsBySourceLabels(groups, selectedLabels, false),
+      priorityLabels,
+    );
+  }
+
+  async function buildFilteredLiveTxt(distribution: LiveDistributionConfig): Promise<string | null> {
+    const groups = await loadMergedLiveGroups();
+    if (groups.length === 0) return null;
+    const selected = await selectMergedLiveGroups(groups, distribution);
+    return formatAggregatedLiveGroupsAsTxt(selected);
+  }
+
+  async function loadMergedLiveGroups(): Promise<TVBoxLiveGroup[]> {
+    for (const key of [KV_CHANNEL_RUNTIME_TREE, KV_CHANNEL_MERGED_TREE]) {
+      const raw = await storage.get(key);
+      if (!raw) continue;
+      try {
+        const parsed = JSON.parse(raw);
+        if (isNativeLiveGroups(parsed)) return parsed;
+      } catch { /* try next snapshot */ }
+    }
+    const liveRaw = await storage.get(KV_LIVE_MERGED_DATA);
+    if (liveRaw) {
+      try {
+        const parsed = JSON.parse(liveRaw);
+        if (isNativeLiveGroups(parsed)) return parsed;
+      } catch { /* ignore */ }
+    }
+    return [];
   }
 
   /**
@@ -1016,10 +1124,13 @@ export function createApp(deps: AppDeps): Hono {
       + ' jar-ready=' + jarReadyKeys.size
       + ' type3-kept=' + parsed.sites.filter((site) => site.type === 3).length);
 
-    // CF 分离模式在根配置中保留少量最快的直播入口；完整直播清单仍在
-    // /live.json 和 /config-full.json 中，Render 的单个聚合入口不受影响。
-    if (config.workerBaseUrl && Array.isArray(parsed.lives) && parsed.lives.length > 8) {
-      parsed.lives = parsed.lives.slice(0, 8);
+    // 主配置是否附带直播由直播管理页统一控制；不再隐式截断为固定条数。
+    // 关闭附带后，/live、/lives 与 /live.json 仍作为独立受鉴权链接可用。
+    const liveDistribution = await loadLiveDistribution(storage);
+    if (!(await shouldAttachLives(liveDistribution, authCode))) {
+      parsed.lives = [];
+    } else if (config.workerBaseUrl) {
+      parsed.lives = await getCfSeparatedLives();
     }
 
     const parses = Array.isArray(parsed.parses) ? parsed.parses : [];
@@ -1137,9 +1248,13 @@ export function createApp(deps: AppDeps): Hono {
       authContext,
     );
     const isCfRuntime = !!config.workerBaseUrl && typeof caches !== 'undefined';
+    const liveDistribution = await loadLiveDistribution(storage);
+
 
     // 优先返回聚合阶段预生成的 txt，避免每次请求都实时下载/合并直播源。
+    // 非默认下发策略必须先按源筛选，不能直接泄漏全量预生成文本。
     const prebuiltTxt = await storage.get(KV_LIVE_MERGED_TXT);
+    const outputFingerprint = await storage.get(KV_LIVE_OUTPUT_FINGERPRINT);
     const liveDisabled = (await storage.get(KV_LIVE_DISABLED)) === 'true';
     // 空字符串通常表示直播被禁用或确实没有频道；但历史上也存在聚合输出写入
     // 空 TXT、原生分组数据仍有效的部署。若直播未禁用，空预生成值不能遮蔽
@@ -1150,7 +1265,7 @@ export function createApp(deps: AppDeps): Hono {
     const prebuiltEmptyIsAuthoritative = prebuiltTxt !== null
       && prebuiltTxt.trim() === ''
       && liveDisabled;
-    if (hasUsablePrebuiltTxt || prebuiltEmptyIsAuthoritative) {
+    if (outputFingerprint && (hasUsablePrebuiltTxt || prebuiltEmptyIsAuthoritative)) {
       return c.body(renderLiveText(prebuiltTxt!), 200, {
         'Content-Type': 'text/plain; charset=utf-8',
         'Cache-Control': 'public, max-age=1800, stale-while-revalidate=86400',
@@ -1166,7 +1281,7 @@ export function createApp(deps: AppDeps): Hono {
     const runtimeTxt = await storage.get(KV_LIVE_RUNTIME_TXT);
     const runtimeVersionMatches = runtimeVersion !== null && runtimeVersion === (mergedVersion || 'legacy');
     const hasRuntimeTxt = Boolean(runtimeTxt && runtimeTxt.trim() && !containsBlockedLiveUrl(runtimeTxt));
-    if (hasRuntimeTxt && runtimeVersionMatches && !liveDisabled) {
+    if (outputFingerprint && hasRuntimeTxt && runtimeVersionMatches && runtimeTxt !== prebuiltTxt && !liveDisabled) {
       return c.body(renderLiveText(runtimeTxt!), 200, {
         'Content-Type': 'text/plain; charset=utf-8',
         'Cache-Control': 'public, max-age=1800, stale-while-revalidate=86400',
@@ -1351,12 +1466,20 @@ export function createApp(deps: AppDeps): Hono {
         });
       }
 
-      // 如果已经是 Native 格式（Docker/Node 环境预先合并好的 groups），应用 baseUrl 占位符并返回
-      const nativeTxt = formatAggregatedLiveGroupsAsTxt(lives);
-      const resolvedTxt = renderLiveText(nativeTxt);
-      return c.body(resolvedTxt, 200, {
+      // 所有请求都统一经过质量池与下发策略；预生成结果缺失或策略变化时，
+      // 直接在请求内从完整候选树重建，绝不回退成全量候选。
+      const unifiedTxt = await buildFilteredLiveTxt(liveDistribution);
+      if (unifiedTxt != null) {
+        return c.body(renderLiveText(unifiedTxt), 200, {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'Cache-Control': 'public, max-age=300, stale-while-revalidate=3600',
+          'Access-Control-Allow-Origin': '*',
+          'X-Live-Source-Filtered': '1',
+        });
+      }
+      return c.body('', 200, {
         'Content-Type': 'text/plain; charset=utf-8',
-        'Cache-Control': 'public, max-age=1800, stale-while-revalidate=86400',
+        'Cache-Control': 'no-store',
         'Access-Control-Allow-Origin': '*',
       });
     } catch {
@@ -1364,8 +1487,10 @@ export function createApp(deps: AppDeps): Hono {
     }
   };
   app.get('/live', handleLive);
+  app.get('/lives', handleLive);
   app.get('/live-config', handleLive);
   app.get('/auth/:code/live', handleLive);
+  app.get('/auth/:code/lives', handleLive);
   app.get('/auth/:code/live-config', handleLive);
 
   // ─── .json 下载别名 ────────────────────────────────────
@@ -1449,6 +1574,7 @@ export function createApp(deps: AppDeps): Hono {
     const authResolved = await resolveOrRejectClientContext(c, baseUrl);
     if (authResolved.response) return authResolved.response;
     const authContext = authResolved.context!;
+    const liveDistribution = await loadLiveDistribution(storage);
 
     let lives: TVBoxLive[];
     if (config.workerBaseUrl) {
@@ -1496,6 +1622,7 @@ export function createApp(deps: AppDeps): Hono {
     }
 
     lives = filterBlockedLiveEntries(lives);
+    lives = await selectMergedLiveGroups(lives as unknown as TVBoxLiveGroup[], liveDistribution) as unknown as TVBoxLive[];
     if (lives.length > 0 && lives.every((live) => Array.isArray(live.channels))) {
       lives = sortLiveGroupsForOutput(lives as unknown as TVBoxLiveGroup[]) as unknown as TVBoxLive[];
     }
@@ -1508,7 +1635,9 @@ export function createApp(deps: AppDeps): Hono {
     });
   };
   app.get('/live.json', handleLiveJson);
+  app.get('/lives.json', handleLiveJson);
   app.get('/auth/:code/live.json', handleLiveJson);
+  app.get('/auth/:code/lives.json', handleLiveJson);
   // ─── 监控面板 ──────────────────────────────────────────
   app.get('/status', (c) => {
     return c.html(dashboardHtml);
@@ -2641,7 +2770,9 @@ export function createApp(deps: AppDeps): Hono {
       }
     };
     app.get('/live/:key', handleLiveSource);
+    app.get('/lives/:key', handleLiveSource);
     app.get('/auth/:code/live/:key', handleLiveSource);
+    app.get('/auth/:code/lives/:key', handleLiveSource);
   }
   // ─── 图片代理（仅 CF 版）──────────────────────────────
   if (config.workerBaseUrl) {
@@ -3918,6 +4049,150 @@ export function createApp(deps: AppDeps): Hono {
     }
   });
 
+  // ─── 直播下发策略 API ─────────────────────────────────────
+  const liveDistributionPayload = async () => {
+    const distribution = await loadLiveDistribution(storage);
+    const policy = toLiveDistributionPolicy(distribution);
+    const candidates = await listAllLiveProxyEntries(storage);
+    const selectedKeys = new Set(
+      selectLiveDistribution(candidates, policy).map((entry) => entry.key),
+    );
+    const categories: Record<string, { total: number; selected: number }> = {};
+    for (const entry of candidates) {
+      const category = entry.category || 'other';
+      const bucket = categories[category] || (categories[category] = { total: 0, selected: 0 });
+      bucket.total += 1;
+      if (selectedKeys.has(entry.key)) bucket.selected += 1;
+    }
+    return {
+      distribution,
+      counts: {
+        candidates: candidates.length,
+        qualityPool: candidates.filter(isLiveProxyEntryDistributable).length,
+        selected: selectedKeys.size,
+      },
+      categories,
+      entries: candidates.map((entry) => ({
+        key: entry.key,
+        name: entry.name || '',
+        url: entry.url,
+        kind: entry.kind || 'aggregated',
+        format: entry.format || 'unknown',
+        category: entry.category || 'other',
+        health: entry.health,
+        everSucceeded: entry.everSucceeded ?? !!entry.successfulAt,
+        lastFailure: entry.lastFailure,
+        qualityScore: entry.qualityScore ?? 0,
+        rank: entry.rank ?? 0,
+        channelCount: entry.channelCount ?? null,
+        totalEntries: entry.totalEntries ?? null,
+        usableEntries: entry.usableEntries ?? null,
+        playableRatio: entry.playableRatio ?? null,
+        adRatio: entry.adRatio ?? null,
+        downloadMs: entry.downloadMs ?? null,
+        successfulAt: entry.successfulAt || null,
+        checkedAt: entry.checkedAt,
+        selected: selectedKeys.has(entry.key),
+        distributable: isLiveProxyEntryDistributable(entry),
+      })),
+    };
+  };
+
+  app.get('/admin/live-distribution', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
+    return c.json(await liveDistributionPayload());
+  });
+
+  app.put('/admin/live-distribution', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'Invalid JSON' }, 400);
+    }
+    const saved = await saveLiveDistribution(storage, body);
+    const rebuild = await rebuildLiveOutputSafe('policy-save');
+    return c.json({ success: true, rebuild, ...(await liveDistributionPayload()) });
+  });
+
+  app.get('/admin/live-merge-report', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
+    const raw = await storage.get(KV_LIVE_MERGE_REPORT);
+    if (!raw) return c.json({ updatedAt: null });
+    try {
+      return c.json(JSON.parse(raw));
+    } catch {
+      return c.json({ updatedAt: null });
+    }
+  });
+
+  app.get('/admin/live-attach-auth', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
+    const distribution = await loadLiveDistribution(storage);
+    const distributionCodes = await loadClientDistribution(storage);
+    const overrides = await loadLiveAttachOverrides();
+    return c.json({
+      attachToAuth: distribution.attachToAuth,
+      configs: distributionCodes.authCodes.map((item) => ({
+        code: item.code,
+        label: item.label,
+        enabled: item.enabled,
+        attachLives: Object.prototype.hasOwnProperty.call(overrides, item.code)
+          ? overrides[item.code]
+          : item.attachLives ?? distribution.attachToAuth,
+      })),
+    });
+  });
+
+  app.put('/admin/live-attach-auth', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
+    let body: { code?: string; enabled?: boolean };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'Invalid JSON' }, 400);
+    }
+    const code = body.code?.trim();
+    if (!code || typeof body.enabled !== 'boolean') {
+      return c.json({ error: 'code and enabled are required' }, 400);
+    }
+    const overrides = await loadLiveAttachOverrides();
+    overrides[code] = body.enabled;
+    await storage.put(KV_LIVE_ATTACH_AUTH, JSON.stringify(overrides));
+    storage.clear();
+    return c.json({ success: true, code, enabled: body.enabled });
+  });
+
+  // 立即验证单个直播入口：复用整源质量门禁，回写健康池，不阻塞其他请求。
+  app.post('/admin/live-verify', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
+    let body: { key?: string };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'Invalid JSON' }, 400);
+    }
+    const key = body.key?.trim();
+    if (!key) return c.json({ error: 'key is required' }, 400);
+    const source = await lookupLiveSource(key, storage);
+    if (!source) return c.json({ error: 'Unknown live source key' }, 404);
+    const channelSpeedMap = await loadChannelSpeedMap(storage);
+    const isCfRuntime = !!config.workerBaseUrl && typeof caches !== 'undefined';
+    const result = await filterLivesBySourceDetailed(
+      [{ name: source.name || '直播源', url: source.url, ua: source.ua, header: source.header }],
+      isCfRuntime ? 4500 : 8000,
+      channelSpeedMap,
+      { maxUrlsPerChannel: 6, maxChannels: 12000, minChannelsPerSource: 5, maxAdRatio: 0.5, minPlayableRatio: 0.2, storage, concurrency: 1, useCache: true },
+    );
+    const ok = result.groups.length > 0 && formatLiveGroupsAsTxt(result.groups).includes('#genre#');
+    const state = ok ? 'valid' : (result.failure === 'invalid' ? 'invalid' : 'transient');
+    const entry = await recordLiveProxyValidation(key, state, storage);
+    // 单源复检属于质量池变更，必须立即重建 runtime 输出。
+    await rebuildLiveOutputSafe('manual-live-verify');
+    return c.json({ success: true, state, entry });
+  });
+
   // ─── 直播禁用开关 ─────────────────────────────────────────
   app.get('/admin/live-disabled', async (c) => {
     const raw = await storage.get(KV_LIVE_DISABLED);
@@ -3972,8 +4247,10 @@ export function createApp(deps: AppDeps): Hono {
     const body = await c.req.json<{ ignore: boolean }>();
     await storage.put(KV_IGNORE_AGGREGATED_LIVES, body.ignore ? 'true' : 'false');
     await markOutputDirty();
+    // 开关影响源集合，先按当前候选树立即重建；随后再触发完整聚合刷新。
+    const rebuild = await rebuildLiveOutputSafe('ignore-aggregated-lives');
     try { await deps.triggerRefresh(); } catch { /* best effort */ }
-    return c.json({ success: true, ignore: body.ignore });
+    return c.json({ success: true, ignore: body.ignore, rebuild });
   });
 
   // ─── 直播合并模式 ─────────────────────────────────────────
@@ -3994,8 +4271,10 @@ export function createApp(deps: AppDeps): Hono {
     const mode = body.mode === 'merged' ? 'merged' : 'separated';
     await storage.put(KV_LIVE_MERGE_MODE, mode);
     await markOutputDirty();
+    // 模式影响每个频道的线路聚合方式，先立即重建，避免旧模式输出继续命中断路。
+    const rebuild = await rebuildLiveOutputSafe('merge-mode');
     try { await deps.triggerRefresh(); } catch { /* best effort */ }
-    return c.json({ success: true, mode });
+    return c.json({ success: true, mode, rebuild });
   });
 
   // ─── 智能 Base URL 开关 ──────────────────────────────────

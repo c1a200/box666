@@ -7,11 +7,13 @@ import { mergeConfigs, cleanLocalRefs, cleanEmptyEntries } from './core/merger';
 import { batchSiteSpeedTest, appendSpeedToName, filterUnreachableSites, type SiteProbeResult } from './core/speedtest';
 import { macCMSToTVBoxSites, processMacCMSForLocal } from './core/maccms';
 import { rewriteJarUrls, prefetchJarBinaries, type JarEntry } from './core/jar-proxy';
-import { mergeLivesToNative, separatedMergeLives, applyChannelSpeedToGroups, formatAggregatedLiveGroupsAsTxt, formatLiveGroupsAsTxt, filterLiveSourcesDetailed, type LiveSourceInput } from './core/live-merger';
+import { mergeLivesToNative, separatedMergeLives, formatLiveGroupsAsTxt, filterLiveSourcesDetailed, type LiveSourceInput, type MergeLivesResult } from './core/live-merger';
+import { partitionMergeSourceMetrics, type LiveCategory } from './core/live-quality';
 import { loadSpeedMap as loadChannelSpeedMap } from './core/channel-probe';
-import { liveSourcesToTVBoxLives } from './core/live-source';
+import { liveSourcesToTVBoxLives, updateLiveProxyManifest } from './core/live-source';
+import { rebuildLiveOutput } from './core/live-output';
 import { isBlockedLiveSource, partitionBlockedLiveSources } from './core/live-policy';
-import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_STARTUP_SITE_POOL, KV_SOURCE_URLS, KV_LAST_UPDATE, KV_LAST_UPDATE_ERROR, KV_MANUAL_SOURCES, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_MERGE_REPORT, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_PARSE_HEALTH_REPORT, KV_CHANNEL_MERGED_TREE, KV_CHANNEL_RUNTIME_TREE, KV_AGG_LOGS, AGG_LOGS_MAX, KV_SITE_SNAPSHOT, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, BASE_URL_PLACEHOLDER, KV_SITE_HEALTH_MAP, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SOURCE_MAP, KV_SITE_UPSTREAM_MAP, KV_SOURCE_URL_BLACKLIST } from './core/config';
+import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_STARTUP_SITE_POOL, KV_SOURCE_URLS, KV_LAST_UPDATE, KV_LAST_UPDATE_ERROR, KV_MANUAL_SOURCES, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGE_REPORT, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_PARSE_HEALTH_REPORT, KV_CHANNEL_MERGED_TREE, KV_CHANNEL_RUNTIME_TREE, KV_AGG_LOGS, AGG_LOGS_MAX, KV_SITE_SNAPSHOT, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, BASE_URL_PLACEHOLDER, KV_SITE_HEALTH_MAP, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SOURCE_MAP, KV_SITE_UPSTREAM_MAP, KV_SOURCE_URL_BLACKLIST } from './core/config';
 import { loadBlacklist, applyBlacklist, pruneBlacklist, saveBlacklist, siteFingerprint } from './core/blacklist';
 import { transformSiteNames } from './core/cleaner';
 import { parseConfigJson, type FetchProxyConfig } from './core/fetcher';
@@ -569,19 +571,44 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
       } else {
         merged.lives = mergeResult.groups;
 
-        // 完整候选池只由主聚合维护；运行时输出是下一步根据测速表派生的独立结果。
+        // 完整候选池只由主聚合维护；代理清单承载逐源质量与分类，
+        // 运行时输出统一从“质量池 + 下发策略”派生，避免其他入口各自截断。
         if (mergeResult.groups.length > 0) {
           await storage.put(KV_CHANNEL_MERGED_TREE, JSON.stringify(mergeResult.groups));
-          const channelSpeedMap = await loadChannelSpeedMap(storage);
-          const maxUrlsPerChannel = liveMergeMode === 'merged' ? 9 : 6;
-          const runtimeGroups = applyChannelSpeedToGroups(mergeResult.groups, channelSpeedMap, undefined, maxUrlsPerChannel);
-          if (runtimeGroups.length > 0) {
-            merged.lives = runtimeGroups;
-            await storage.put(KV_CHANNEL_RUNTIME_TREE, JSON.stringify(runtimeGroups));
-          } else {
-            // 测速表异常或全部线路暂时失败时，不能把运行时树和 /live 清空。
-            merged.lives = previousLiveLives.length > 0 ? previousLiveLives : mergeResult.groups;
-            logger.warn('aggregation', 'Step 6.5: Runtime tree empty after speed filter, keeping previous output');
+          const hints: Record<string, { kind?: 'aggregated' | 'manual'; category?: LiveCategory }> = {};
+          for (const input of uniqueInputs) {
+            const category = mergeResult.sourceCategories?.[input.url];
+            hints[input.url] = {
+              kind: input.isAggregated ? 'aggregated' : 'manual',
+              ...(category ? { category } : {}),
+            };
+          }
+          // 明确 invalid（解析失败/内容非直播）与 transient（超时等）必须分开传递：
+          // 若把两者都塞进 transientUrls，manifest 会把 invalid 覆盖成 transient，
+          // 导致明确失效的源无法按 invalid 阈值淘汰，污染质量池可信度。
+          const { validUrls: successfulUrls, transientUrls, invalidUrls } =
+            partitionMergeSourceMetrics(mergeResult.sourceMetrics || {});
+          await updateLiveProxyManifest(
+            uniqueInputs.map((input) => ({ name: input.name, url: input.url, ua: input.ua, header: input.header })),
+            storage,
+            {
+              validUrls: successfulUrls,
+              transientUrls,
+              invalidUrls,
+              metrics: mergeResult.sourceMetrics,
+              hints,
+              texts: mergeResult.sourceTexts,
+              fullSnapshot: true,
+            },
+          );
+          const rebuilt = await rebuildLiveOutput(storage);
+          merged.lives = rebuilt.groups.length > 0
+            ? rebuilt.groups
+            : previousLiveLives.length > 0
+              ? previousLiveLives
+              : mergeResult.groups;
+          if (rebuilt.groups.length === 0) {
+            logger.warn('aggregation', 'Step 6.5: Runtime tree empty after unified rebuild, keeping previous output');
           }
         }
       }
@@ -762,26 +789,10 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     logger.warn('aggregation', 'Skipping live output overwrite because this refresh produced no valid channels');
   } else {
     await storage.put(KV_LIVE_MERGED_DATA, JSON.stringify(merged.lives || []));
-
-    // 预生成 TVBox 直播 txt，供 /live 直接返回，避免请求时实时下载/合并直播源。
-    const nativeLiveGroups = (merged.lives || []).filter(
-      (live): live is TVBoxLive & { group: string; channels: NonNullable<TVBoxLive['channels']> } =>
-        typeof live.group === 'string' && Array.isArray(live.channels),
-    );
-    const liveOutputVersion = String(Date.now());
-    if (nativeLiveGroups.length > 0) {
-      await storage.put(KV_LIVE_MERGED_TXT, formatAggregatedLiveGroupsAsTxt(nativeLiveGroups));
-      await storage.put(KV_LIVE_MERGED_TXT_VERSION, liveOutputVersion);
-    } else if (config.workerBaseUrl && !liveDisabled && ((merged.lives?.length) || 0) > 0) {
-      // CF 非聚合模式：全局 /live 继续由请求时解析；根配置在 Step 7.8
-      // 会改写成多个 /live/<key> 代理入口，避免影视仓直连几十个上游源。
-      // 不清空旧 runtime TXT，也不提前更新它的版本，让 /live 采用 stale-while-revalidate。
+    // 运行时 TXT/版本由 rebuildLiveOutput 统一生成，禁止在此用 Date.now()
+    // 覆盖指纹版本，否则策略变化后旧缓存会被错误判定为最新。
+    if (config.workerBaseUrl && !liveDisabled && ((merged.lives?.length) || 0) > 0) {
       await storage.put(KV_LIVE_RUNTIME_EMPTY_AT, '');
-      await storage.put(KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK);
-      await storage.put(KV_LIVE_MERGED_TXT_VERSION, liveOutputVersion);
-    } else {
-      await storage.put(KV_LIVE_MERGED_TXT, '');
-      await storage.put(KV_LIVE_MERGED_TXT_VERSION, liveOutputVersion);
     }
   }
 

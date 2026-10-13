@@ -257,6 +257,8 @@ export interface ClientAuthCode {
   siteTypes: SourceCategory[];
   selectedKeys: string[];
   pinnedKeys: string[];
+  /** 该鉴权码主配置是否附带直播源；未设置时继承全局配置。 */
+  attachLives?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -267,6 +269,23 @@ export interface ClientDistributionConfig {
   authCodes: ClientAuthCode[];
 }
 
+// 直播下发池配置（与点播源分发分离；候选池/质量池/下发池三层语义）
+export interface LiveDistributionConfig {
+  selectionMode: SourceSelectionMode;
+  /** 简单模式下发数量上限：-1=质量池全部；0=不下发；正数=按统一质量排名取前 N */
+  maxSources: number;
+  /** 分类模式各分类上限；未配置=该分类不限制；0=不选；-1=全部；正数=该分类质量排名前 N */
+  bucketLimits?: Partial<Record<'cctv' | 'satellite' | 'local' | 'variety' | 'special' | 'ipv6' | 'other', number>>;
+  /** 置顶源 key：只调整顺序，不绕过质量、分类与数量门禁 */
+  pinnedKeys: string[];
+  /** 管理端主动屏蔽的直播源 key：直接排除在下发池之外 */
+  blockedKeys: string[];
+  /** 根链接主配置是否附带直播源；关闭后 /live 与 /lives 专用链接仍可用 */
+  attachToRoot: boolean;
+  /** 鉴权链接主配置是否附带直播源；鉴权码可覆盖此值 */
+  attachToAuth: boolean;
+  updatedAt?: string;
+}
 // 搜索配额配置（持久化到 KV）
 export interface SearchQuotaConfig {
   maxQuickSearch?: number;      // 快速搜索源上限，0 = 不限制
