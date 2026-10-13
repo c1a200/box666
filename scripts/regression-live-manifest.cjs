@@ -407,15 +407,22 @@ const speedGroups = [{
 }];
 const speedMap = {
   'http://slow.example/live': { speedMs: 1800, probedAt: '2026-10-13T00:00:00.000Z', kind: 'm3u8' },
-  'http://failed.example/live': { speedMs: 0, probedAt: '2026-10-13T00:00:00.000Z', kind: 'fail' },
+  'http://failed.example/live': { speedMs: 0, probedAt: '2026-10-13T00:00:00.000Z', kind: 'fail', consecutiveFailures: 2 },
   'http://fast.example/live': { speedMs: 120, probedAt: '2026-10-13T00:00:00.000Z', kind: 'tcp' },
 };
 const speedApplied = applyChannelSpeedToGroups(speedGroups, speedMap, 5000, AGGREGATED_MAX_URLS_PER_CHANNEL);
 assert(speedApplied[0].channels[0].urls[0].includes('fast.example'), 'known fastest line must be first after channel speed probe');
 assert(speedApplied[0].channels[0].urls[1].includes('slow.example'), 'known slower line must follow faster line');
 assert(speedApplied[0].channels[0].urls[2].includes('unknown.example'), 'unknown line must remain after known successful lines');
-assert(!speedApplied[0].channels[0].urls.some((url) => url.includes('failed.example')), 'known failed line must be removed from output');
-
+assert(speedApplied[0].channels[0].urls[3].includes('failed.example'), 'one or two transient failures must retain the line as the final fallback');
+const hardFailed = applyChannelSpeedToGroups(speedGroups, {
+  'http://failed.example/live': { speedMs: 0, probedAt: '2026-10-13T00:00:00.000Z', kind: 'fail', consecutiveFailures: 3 },
+}, 5000, AGGREGATED_MAX_URLS_PER_CHANNEL);
+assert(!hardFailed[0].channels[0].urls.some((url) => url.includes('failed.example')), 'three consecutive failures must remove the line');
+const recovered = applyChannelSpeedToGroups(speedGroups, {
+  'http://failed.example/live': { speedMs: 80, probedAt: '2026-10-13T00:00:00.000Z', kind: 'tcp' },
+}, 5000, AGGREGATED_MAX_URLS_PER_CHANNEL);
+assert(recovered[0].channels[0].urls[0].includes('failed.example'), 'a successful probe must immediately restore the line to the ranked output');
 const manyLines = [{ group: '测试', channels: [{ name: '限量', urls: Array.from({ length: AGGREGATED_MAX_URLS_PER_CHANNEL + 4 }, (_, i) => 'http://line' + i + '.example/live#abc' + i) }] }];
 const limitedLines = applyChannelSpeedToGroups(manyLines, {}, 5000, AGGREGATED_MAX_URLS_PER_CHANNEL);
 assert(limitedLines[0].channels[0].urls.length === AGGREGATED_MAX_URLS_PER_CHANNEL, 'merged output must cap each channel at AGGREGATED_MAX_URLS_PER_CHANNEL');

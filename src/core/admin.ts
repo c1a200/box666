@@ -429,14 +429,27 @@ ${sharedStyles}
           <span data-i18n="ignoreAggregatedLivesLabel">Ignore live sources inside subscription configs (only use manually added live sources)</span>
           <span class="status-text" id="ignoreAggregatedLivesStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
         </label>
-        <div>
-          <div class="form-label" style="margin-bottom:6px" data-i18n="liveMergeModeTitle">Live merge mode</div>
-          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-            <button id="liveMergeSeparated" class="btn btn-sm active" onclick="setLiveMergeMode('separated')" data-i18n="liveMergeSeparated">Separated (group by source)</button>
-            <button id="liveMergeMerged" class="btn btn-sm" onclick="setLiveMergeMode('merged')" data-i18n="liveMergeMerged">Merged (deduplicate channels)</button>
+              <fieldset style="border:0;padding:0;margin:0">
+          <legend class="form-label" style="margin-bottom:6px;padding:0" data-i18n="liveMergeModeTitle">直播输出模式（二选一）</legend>
+          <div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap">
+            <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;max-width:320px">
+              <input type="radio" id="liveMergeSeparated" name="liveMergeMode" value="separated" onchange="setLiveMergeMode('separated')">
+              <span>
+                <strong data-i18n="liveMergeSeparated">分离模式：按源分组</strong>
+                <span style="display:block;font-size:0.75rem;color:var(--text-secondary)" data-i18n="liveMergeSeparatedDesc">每个直播源独立下发与展示，适合按源排查和切换。</span>
+              </span>
+            </label>
+            <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;max-width:320px">
+              <input type="radio" id="liveMergeMerged" name="liveMergeMode" value="merged" onchange="setLiveMergeMode('merged')">
+              <span>
+                <strong data-i18n="liveMergeMerged">合并模式：同名频道去重合并</strong>
+                <span style="display:block;font-size:0.75rem;color:var(--text-secondary)" data-i18n="liveMergeMergedDesc">所有源按频道名合并，客户端只加载一个聚合直播入口。</span>
+              </span>
+            </label>
             <span class="status-text" id="liveMergeModeStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
           </div>
-          <div style="font-size:0.75rem;color:var(--text-secondary);margin-top:4px" data-i18n="liveMergeModeDesc">Separated keeps every source as its own group; merged combines channels by name and removes duplicates.</div>
+          <div style="font-size:0.75rem;color:var(--text-secondary);margin-top:6px" data-i18n="liveMergeModeDesc">两种模式严格互斥：只会下发当前选中的一种入口，不会同时生成分离入口和合并入口。</div>
+        </fieldset>
         </div>
       </div>
       <div id="liveStrategyHint" style="margin-top:8px;font-size:0.8rem;color:var(--text-secondary)"></div>
@@ -958,7 +971,7 @@ const translations = {
     liveStrategyTitle:'Live Output Strategy', liveToggleTitle:'Live Feature Toggle', liveToggleLabel:'Disable live aggregation (skip live merge, output empty lives)',
     liveStrategyDisabledHint:'Live aggregation is disabled. The options below are inactive until it is enabled again.',
     ignoreAggregatedLivesTitle:'Ignore Aggregated Lives', ignoreAggregatedLivesLabel:'Ignore live sources inside subscription configs (only use manually added live sources)',
-    liveMergeModeTitle:'Live merge mode', liveMergeSeparated:'Separated (group by source)', liveMergeMerged:'Merged (deduplicate channels)', liveMergeModeDesc:'Separated keeps every source as its own group; merged combines channels by name and removes duplicates.',
+    liveMergeModeTitle:'Live output mode (choose one)', liveMergeSeparated:'Separated: group by source', liveMergeMerged:'Merged: deduplicate channels by name', liveMergeSeparatedDesc:'Each live source is delivered and displayed independently.', liveMergeMergedDesc:'All sources are merged by channel name, with one aggregate live entry on the client.', liveMergeModeDesc:'The two modes are strictly exclusive: only the selected mode is delivered; separated and merged entries are never sent together.',
     liveDistTitle:'Live Source Delivery (merged/separated)', liveDistHint:'All aggregated live entries form the candidate pool; only explicitly invalid sources are excluded from the quality pool. Choose what to deliver by unified quality rank. A tighter, higher-quality set means faster startup and channel switching on clients.',
     liveDistFilterPh:'Search source name or URL...', liveDistCatAll:'All categories', liveDistSelectedAll:'All states',
     liveDistSelectedOnly:'Delivered only', liveDistSelectedExcluded:'Not delivered only', liveDistSelectedInvalid:'Explicitly invalid only',
@@ -1134,7 +1147,7 @@ const translations = {
     liveStrategyTitle:'直播输出策略', liveToggleTitle:'直播功能', liveToggleLabel:'禁用直播聚合（跳过直播合并，输出空 lives）',
     liveStrategyDisabledHint:'直播聚合已禁用；重新启用前，下面的忽略直播源和合并模式选项不会生效。',
     ignoreAggregatedLivesTitle:'忽略配置中的直播源', ignoreAggregatedLivesLabel:'忽略第三方订阅配置自带的直播源（仅保留手动添加的直播源）',
-    liveMergeModeTitle:'直播合并模式', liveMergeSeparated:'分离模式（按源分类）', liveMergeMerged:'合并模式（去重混合）', liveMergeModeDesc:'分离模式：每个直播源独立展示，用源名前缀区分。合并模式：所有源的频道按名称去重合并为统一列表。',
+    liveMergeModeTitle:'直播输出模式（二选一）', liveMergeSeparated:'分离模式：按源分组', liveMergeMerged:'合并模式：同名频道去重合并', liveMergeSeparatedDesc:'每个直播源独立下发与展示，适合按源排查和切换。', liveMergeMergedDesc:'所有源按频道名合并，客户端只加载一个聚合直播入口。', liveMergeModeDesc:'两种模式严格互斥：只会下发当前选中的一种入口，不会同时生成分离入口和合并入口。',
     liveDistTitle:'直播源下发（合并/分离模式）', liveDistHint:'把聚合后的所有直播入口汇总为候选池，只有明确失效的源被排除在质量池之外；这里按统一质量排名选择下发源。下发的源越精炼优质，应用端启动与换台越快。',
     liveDistFilterPh:'搜索源名称或地址...', liveDistCatAll:'全部分类', liveDistSelectedAll:'全部状态',
     liveDistSelectedOnly:'仅已下发', liveDistSelectedExcluded:'仅未下发', liveDistSelectedInvalid:'仅明确失效',
@@ -4252,22 +4265,36 @@ async function loadLiveMergeMode() {
   try {
     const r = await auth.authFetch('/admin/live-merge-mode');
     const d = await r.json();
-    const mode = d.mode || 'separated';
-    $('liveMergeSeparated').classList.toggle('active', mode === 'separated');
-    $('liveMergeMerged').classList.toggle('active', mode === 'merged');
+    const mode = d.mode === 'merged' ? 'merged' : 'separated';
+    $('liveMergeSeparated').checked = mode === 'separated';
+    $('liveMergeMerged').checked = mode === 'merged';
     updateLiveStrategyState();
-  } catch {}
+  } catch {
+    $('liveMergeModeStatus').textContent = t('saveFailed');
+  }
 }
 async function setLiveMergeMode(mode) {
-  $('liveMergeSeparated').classList.toggle('active', mode === 'separated');
-  $('liveMergeMerged').classList.toggle('active', mode === 'merged');
-  $('liveMergeModeStatus').textContent = '⏳';
+  const normalized = mode === 'merged' ? 'merged' : 'separated';
+  const selected = $('liveMergeMerged');
+  const previous = selected?.checked ? 'merged' : 'separated';
+  const controls = [$('liveMergeSeparated'), $('liveMergeMerged')].filter(Boolean);
+  controls.forEach((el) => { el.disabled = true; });
+  $('liveMergeModeStatus').textContent = '⏳ 保存中';
   try {
-    await auth.authFetch('/admin/live-merge-mode', { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({mode}) });
-    $('liveMergeModeStatus').textContent = '✓ 已切换并刷新';
+    const res = await auth.authFetch('/admin/live-merge-mode', {
+      method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({mode: normalized}),
+    });
+    if (!res.ok) throw new Error('save failed');
+    $('liveMergeSeparated').checked = normalized === 'separated';
+    $('liveMergeMerged').checked = normalized === 'merged';
+    $('liveMergeModeStatus').textContent = '✓ 已切换，仅下发当前模式';
     setTimeout(() => $('liveMergeModeStatus').textContent = '', 3000);
-  } catch(e) {
-    $('liveMergeModeStatus').textContent = '✗ 失败';
+  } catch {
+    $('liveMergeSeparated').checked = previous === 'separated';
+    $('liveMergeMerged').checked = previous === 'merged';
+    $('liveMergeModeStatus').textContent = '✗ 保存失败，已还原';
+  } finally {
+    updateLiveStrategyState();
   }
 }
 

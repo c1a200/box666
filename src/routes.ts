@@ -786,6 +786,19 @@ export function createApp(deps: AppDeps): Hono {
     return fallback;
   }
 
+  type LiveOutputMode = 'separated' | 'merged';
+
+  /**
+   * 直播输出模式是严格二选一的唯一事实来源：
+   * - separated：按源分组，CF 下发给多个 /live/<key> 入口；
+   * - merged：同名频道去重合并，主配置只允许一个 /live 入口。
+   *
+   * 任何配置请求都不得同时返回两种形态，避免客户端重复加载直播。
+   */
+  async function loadLiveOutputMode(): Promise<LiveOutputMode> {
+    return (await storage.get(KV_LIVE_MERGE_MODE)) === 'merged' ? 'merged' : 'separated';
+  }
+
   /**
    * 从已验证的 CF 直播代理清单构建 FongMi 入口。
    * 清单是 CF 分离模式的唯一事实来源，不能再从旧 KV_LIVE_MERGED_DATA 恢复。
@@ -888,44 +901,71 @@ export function createApp(deps: AppDeps): Hono {
     return [];
   }
 
+  function isSeparatedLivePointer(url: string): boolean {
+    return /^\/lives?\/[^/?#]+/.test(url);
+  }
+
+  function replaceMainConfigLives(parsed: TVBoxConfig, lives: TVBoxLive[]): void {
+    // 清除所有旧模式守卫，确保同一份配置不会同时携带合并 /live 与
+    // 分离 /live/<key>。这里只替换主配置的 lives 字段，独立直播链接不受影响。
+    parsed.lives = lives;
+  }
+
   /**
-   * CF 分离模式兼容修复：
-   * 旧版本可能把根配置里的 lives 写成单个 /live（聚合）指针。
-   * 这里只使用当前已验证的代理清单生成多个 /live/<key>，不会复活旧入口。
-   * Render 不进入此分支，保持原有行为。
+   * 依当前模式生成主配置应携带的直播入口。
+   * CF separated 输出多个 /live/<key>；merged 与 Node/Render 都只输出一个 /live。
    */
-  async function repairCfSeparatedLives(cached: string): Promise<string> {
-    if (!config.workerBaseUrl) return cached;
+  async function resolveModeAwareLives(parsed: TVBoxConfig): Promise<TVBoxLive[]> {
+    const mode = await loadLiveOutputMode();
+    const baseUrl = config.workerBaseUrl
+      ? config.workerBaseUrl.replace(/\/$/, '')
+      : BASE_URL_PLACEHOLDER;
 
-    const liveMergeMode = (await storage.get(KV_LIVE_MERGE_MODE)) || 'separated';
-    if (liveMergeMode !== 'separated') return cached;
+    if (mode === 'separated' && config.workerBaseUrl) {
+      return getCfSeparatedLives();
+    }
 
-    let parsedConfig: TVBoxConfig;
+    // 合并模式只允许一个聚合入口。保留旧入口的请求参数，但只保留一个。
+    const existing = Array.isArray(parsed.lives) ? parsed.lives : [];
+    const aggregate = existing.find((live) => {
+      const url = (live.url || live.api || '').trim();
+      if (!url) return false;
+      try {
+        return !isSeparatedLivePointer(new URL(url, 'https://local.invalid').pathname);
+      } catch {
+        return false;
+      }
+    });
+    const url = aggregate
+      ? (aggregate.url || aggregate.api || `${baseUrl}/live`)
+      : `${baseUrl}/live`;
+    return [{
+      ...(aggregate || { name: '直播(聚合)', type: 0 }),
+      url,
+    } as TVBoxLive];
+  }
+
+  /**
+   * 所有主配置出口的统一直播模式应用函数：
+   * 1) 未勾选附带直播时严格清空 lives；
+   * 2) separated/merged 互斥，绝不返回另一种模式的入口。
+   */
+  async function applyLiveOutputMode(
+    cached: string,
+    options: { attachLives: boolean },
+  ): Promise<string> {
+    let parsed: TVBoxConfig;
     try {
-      parsedConfig = JSON.parse(cached) as TVBoxConfig;
+      parsed = JSON.parse(cached) as TVBoxConfig;
     } catch {
       return cached;
     }
-
-    const currentLives = Array.isArray(parsedConfig.lives) ? parsedConfig.lives : [];
-    const proxyLives = await getCfSeparatedLives();
-    const currentUrls = currentLives.map((live) => (live.url || live.api || '').trim());
-    const expectedUrls = proxyLives.map((live) => (live.url || live.api || '').trim());
-    const alreadyUpToDate = currentUrls.length === expectedUrls.length
-      && expectedUrls.every((url, index) => currentUrls[index] === url);
-    if (alreadyUpToDate) return cached;
-
-    parsedConfig.lives = proxyLives;
-    const repaired = JSON.stringify(parsedConfig);
-    // 读接口不应因持久化写失败而失败；KV 写额度耗尽时仍返回修正后的内存配置，
-    // 后台聚合/下次成功写入会再落盘。
-    try {
-      await storage.put(KV_MERGED_CONFIG, repaired);
-    } catch (error: unknown) {
-      logger.warn('routes', 'CF separated lives repair persist failed: ' + (error instanceof Error ? error.message : String(error)));
+    if (!options.attachLives) {
+      replaceMainConfigLives(parsed, []);
+      return JSON.stringify(parsed);
     }
-    console.log(`[routes] CF separated lives repaired: ${proxyLives.length} verified /live/<key> entries`);
-    return repaired;
+    replaceMainConfigLives(parsed, await resolveModeAwareLives(parsed));
+    return JSON.stringify(parsed);
   }
   /**
    * 客户端启动配置裁剪。完整聚合结果始终保存在 KV_MERGED_CONFIG，
@@ -1130,9 +1170,9 @@ export function createApp(deps: AppDeps): Hono {
     // 关闭附带后，/live、/lives 与 /live.json 仍作为独立受鉴权链接可用。
     const liveDistribution = await loadLiveDistribution(storage);
     if (!(await shouldAttachLives(liveDistribution, authCode))) {
-      parsed.lives = [];
-    } else if (config.workerBaseUrl) {
-      parsed.lives = await getCfSeparatedLives();
+      replaceMainConfigLives(parsed, []);
+    } else {
+      replaceMainConfigLives(parsed, await resolveModeAwareLives(parsed));
     }
 
     const parses = Array.isArray(parsed.parses) ? parsed.parses : [];
@@ -1224,7 +1264,6 @@ export function createApp(deps: AppDeps): Hono {
       );
     }
 
-    cached = await repairCfSeparatedLives(cached);
     cached = await buildStartupConfig(cached, ctx.authCode);
     cached = await applyClientContextToConfigBody(cached, ctx);
 
@@ -1511,7 +1550,6 @@ export function createApp(deps: AppDeps): Hono {
     if (!cached) {
       return c.json({ error: 'No config available yet.' }, 503);
     }
-    cached = await repairCfSeparatedLives(cached);
     cached = await buildStartupConfig(cached, ctx.authCode);
     cached = await applyClientContextToConfigBody(cached, ctx);
     return configBody(cached, {
@@ -1548,10 +1586,12 @@ export function createApp(deps: AppDeps): Hono {
       if (!cached) {
         return c.json({ error: 'No config available yet.' }, 503);
       }
-      stage = 'repair-lives';
-      cached = await repairCfSeparatedLives(cached);
       stage = 'quality-filter';
       cached = await filterExcludedQualitySites(cached);
+      stage = 'live-output-mode';
+      cached = await applyLiveOutputMode(cached, {
+        attachLives: await shouldAttachLives(await loadLiveDistribution(storage), ctx.authCode),
+      });
       stage = 'source-distribution';
       cached = await applyClientContextToConfigBody(cached, ctx);
       stage = 'serialize-response';

@@ -101,17 +101,120 @@ interface ProbeResult {
   url: string;
   speedMs: number;
   kind: 'm3u8' | 'ts' | 'tcp' | 'fail';
+  verification?: 'manifest' | 'media';
+  failureReason?: 'timeout' | 'http' | 'invalid' | 'network';
+}
+
+function resolvePlaylistUrl(raw: string, base: string): string {
+  try {
+    return new URL(raw, base).toString();
+  } catch {
+    return "";
+  }
+}
+
+function hlsMediaCandidates(playlist: string, base: string): string[] {
+  const candidates: string[] = [];
+  for (const raw of playlist.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const resolved = resolvePlaylistUrl(line, base);
+    if (resolved) candidates.push(resolved);
+    if (candidates.length >= 4) break;
+  }
+  return candidates;
+}
+
+function isHlsPlaylist(text: string): boolean {
+  return /#EXTM3U/i.test(text) && /#EXT-X-(?:STREAM-INF|MEDIA-SEQUENCE|TARGETDURATION)/i.test(text);
+}
+
+async function fetchTextHead(url: string, maxBytes: number, signal: AbortSignal): Promise<string> {
+  const resp = await fetch(url, { signal, headers: { 'User-Agent': TVBOX_UA } });
+  if (!resp.ok) throw Object.assign(new Error('http'), { failureReason: 'http' });
+  const reader = resp.body?.getReader();
+  if (!reader) return "";
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (total < maxBytes) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      chunks.push(value);
+      total += value.length;
+    }
+  } finally {
+    reader.cancel().catch(() => {});
+  }
+  const merged = new Uint8Array(Math.min(total, maxBytes));
+  let offset = 0;
+  for (const chunk of chunks) {
+    const take = Math.min(chunk.length, merged.length - offset);
+    merged.set(chunk.subarray(0, take), offset);
+    offset += take;
+    if (offset >= merged.length) break;
+  }
+  return new TextDecoder().decode(merged);
+}
+
+async function verifyHlsPlayback(url: string, startedAt: number, controller: AbortController): Promise<ProbeResult> {
+  const playlist = await fetchTextHead(url, 512 * 1024, controller.signal);
+  if (!isHlsPlaylist(playlist)) {
+    return { url, speedMs: 0, kind: 'fail', failureReason: 'invalid' };
+  }
+  const ttfb = Date.now() - startedAt;
+  const candidates = hlsMediaCandidates(playlist, url);
+  if (candidates.length === 0) {
+    return { url, speedMs: ttfb, kind: 'm3u8', verification: 'manifest' };
+  }
+  for (const candidate of candidates) {
+    try {
+      const isChildPlaylist = /\.m3u8(?:\?|$)/i.test(candidate);
+      if (isChildPlaylist) {
+        const child = await fetchTextHead(candidate, 512 * 1024, controller.signal);
+        if (!isHlsPlaylist(child)) continue;
+        const media = hlsMediaCandidates(child, candidate)[0];
+        if (!media) return { url, speedMs: Date.now() - startedAt, kind: 'm3u8', verification: 'manifest' };
+        const resp = await fetch(media, { signal: controller.signal, headers: { 'User-Agent': TVBOX_UA } });
+        if (resp.ok) {
+          const reader = resp.body?.getReader();
+          const first = reader ? await reader.read() : { value: undefined };
+          reader?.cancel().catch(() => {});
+          if (first.value && first.value.length > 0) {
+            return { url, speedMs: Date.now() - startedAt, kind: 'm3u8', verification: 'media' };
+          }
+        }
+      } else {
+        const resp = await fetch(candidate, { signal: controller.signal, headers: { 'User-Agent': TVBOX_UA } });
+        if (!resp.ok) continue;
+        const reader = resp.body?.getReader();
+        const first = reader ? await reader.read() : { value: undefined };
+        reader?.cancel().catch(() => {});
+        if (first.value && first.value.length > 0) {
+          return { url, speedMs: Date.now() - startedAt, kind: 'm3u8', verification: 'media' };
+        }
+      }
+    } catch (err) {
+      if (controller.signal.aborted) {
+        return { url, speedMs: 0, kind: 'fail', failureReason: 'timeout' };
+      }
+    }
+  }
+  return { url, speedMs: 0, kind: 'fail', failureReason: 'invalid' };
 }
 
 async function probeSingle(url: string, timeoutMs = CHANNEL_PROBE_TIMEOUT_MS): Promise<ProbeResult> {
-  const isM3U8 = /\.m3u8(\?|$)/i.test(url);
-  const isTs = /\.(ts|flv|mp4)(\?|$)/i.test(url);
+  const isM3U8 = /\.m3u8(?:\?|$)/i.test(url);
+  const isTs = /\.(?:ts|flv|mp4)(?:\?|$)/i.test(url);
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), Math.max(500, timeoutMs));
   const start = Date.now();
 
   try {
+    if (isM3U8) return await verifyHlsPlayback(url, start, controller);
+
     const resp = await fetch(url, {
       signal: controller.signal,
       headers: { 'User-Agent': TVBOX_UA },
@@ -119,40 +222,21 @@ async function probeSingle(url: string, timeoutMs = CHANNEL_PROBE_TIMEOUT_MS): P
     const ttfb = Date.now() - start;
 
     if (!resp.ok) {
-      clearTimeout(timer);
-      return { url, speedMs: 0, kind: 'fail' };
+      return { url, speedMs: 0, kind: 'fail', failureReason: 'http' };
     }
 
     const reader = resp.body?.getReader();
-    if (!reader) {
-      clearTimeout(timer);
-      return { url, speedMs: ttfb, kind: 'tcp' };
-    }
+    if (!reader) return { url, speedMs: ttfb, kind: 'tcp' };
 
     try {
       const { value } = await reader.read();
-      clearTimeout(timer);
-      if (!value) {
-        return { url, speedMs: ttfb, kind: 'tcp' };
-      }
-
-      if (isM3U8) {
-        const head = new TextDecoder().decode(value.slice(0, Math.min(1024, value.length)));
-        if (head.includes('#EXTM3U')) {
-          return { url, speedMs: ttfb, kind: 'm3u8' };
-        }
-        return { url, speedMs: 0, kind: 'fail' };
-      }
+      if (!value) return { url, speedMs: ttfb, kind: 'tcp' };
 
       if (isTs) {
-        // 检查 sync byte 0x47（4KB 内任何位置）
         const end = Math.min(4096, value.length);
         for (let i = 0; i < end; i += 188) {
-          if (value[i] === 0x47) {
-            return { url, speedMs: ttfb, kind: 'ts' };
-          }
+          if (value[i] === 0x47) return { url, speedMs: ttfb, kind: 'ts' };
         }
-        // 没找到 sync byte 也不一定失败（可能是 HTTP-FLV 等），用 tcp 标记
         return { url, speedMs: ttfb, kind: 'tcp' };
       }
 
@@ -160,12 +244,13 @@ async function probeSingle(url: string, timeoutMs = CHANNEL_PROBE_TIMEOUT_MS): P
     } finally {
       reader.cancel().catch(() => {});
     }
-  } catch {
+  } catch (err) {
+    const aborted = controller.signal.aborted || (err instanceof Error && err.name === 'AbortError');
+    return { url, speedMs: 0, kind: 'fail', failureReason: aborted ? 'timeout' : 'network' };
+  } finally {
     clearTimeout(timer);
-    return { url, speedMs: 0, kind: 'fail' };
   }
 }
-
 // ─── 并发池 ────────────────────────────────────────────
 
 async function runWithConcurrency<T, R>(
@@ -303,10 +388,15 @@ export async function probeLiveUrlsBounded(
   let success = 0;
   let failed = 0;
   for (const result of results) {
+    const previous = speedMap[result.url];
+    const isFailed = result.kind === 'fail';
     speedMap[result.url] = {
       speedMs: result.speedMs,
       probedAt,
       kind: result.kind,
+      ...(result.verification ? { verification: result.verification } : {}),
+      ...(result.failureReason ? { failureReason: result.failureReason } : {}),
+      ...(isFailed ? { consecutiveFailures: (previous?.consecutiveFailures || 0) + 1 } : {}),
     };
     if (result.kind === 'fail') failed++;
     else success++;
@@ -487,10 +577,15 @@ export async function runChannelProbe(
 
     const makeProgressHandler = (phase: 'priority' | 'background') =>
       (done: number, total: number, result: ProbeResult): void => {
+        const previous = fresh[result.url];
+        const failed = result.kind === 'fail';
         fresh[result.url] = {
           speedMs: result.speedMs,
           probedAt: new Date().toISOString(),
           kind: result.kind,
+          ...(result.verification ? { verification: result.verification } : {}),
+          ...(result.failureReason ? { failureReason: result.failureReason } : {}),
+          ...(failed ? { consecutiveFailures: (previous?.consecutiveFailures || 0) + 1 } : {}),
         };
         if (phase === 'priority') priorityProbed = done;
         else backgroundProbed = done;

@@ -167,6 +167,9 @@ function makeApp(overrides = {}) {
     ...(overrides.quota ? { search_quota: JSON.stringify(overrides.quota) } : {}),
     ...(overrides.blacklist ? { blacklist: JSON.stringify(overrides.blacklist) } : {}),
     ...(overrides.qualityCandidates ? { search_quality_candidates: JSON.stringify({ updatedAt: new Date().toISOString(), sites: overrides.qualityCandidates }) } : {}),
+    ...(overrides.liveMergeMode ? { live_merge_mode: overrides.liveMergeMode } : {}),
+    ...(overrides.liveDistribution ? { live_distribution: JSON.stringify(overrides.liveDistribution) } : {}),
+    ...(overrides.liveProxyManifest ? { live_proxy_manifest: JSON.stringify(overrides.liveProxyManifest) } : {}),
   });
   const config = {
     adminToken: 'test-token',
@@ -554,6 +557,74 @@ async function readSites(response) {
     assert(searchable.some((site) => site.type === 3), 'expired quality pool fallback must retain client-executed JAR sources');
   }
 
+  {
+    const manifest = {
+      version: 3,
+      signature: 'routes-mode-manifest',
+      entries: [
+        {
+          key: 'abc12345',
+          name: '测试直播A',
+          url: 'https://live.example/a.m3u',
+          health: 'healthy',
+          consecutiveFailures: 0,
+          checkedAt: new Date().toISOString(),
+          successfulAt: new Date().toISOString(),
+          everSucceeded: true,
+          format: 'm3u',
+          category: 'cctv',
+        },
+        {
+          key: 'def67890',
+          name: '测试直播B',
+          url: 'https://live.example/b.m3u',
+          health: 'healthy',
+          consecutiveFailures: 0,
+          checkedAt: new Date().toISOString(),
+          successfulAt: new Date().toISOString(),
+          everSucceeded: true,
+          format: 'm3u',
+          category: 'satellite',
+        },
+      ],
+    };
+    const modeConfig = {
+      sites: mergedConfig.sites,
+      lives: [
+        { name: '旧合并入口', type: 0, url: 'https://box.example/live' },
+        { name: '旧分离入口', type: 0, url: 'https://box.example/live/abc12345' },
+      ],
+    };
+    const separated = makeApp({ mergedConfig: modeConfig, liveMergeMode: 'separated', liveProxyManifest: manifest });
+    const separatedRoot = await (await separated.app.request('https://box.example/')).json();
+    const separatedAuth = await (await separated.app.request('https://box.example/auth/code-a/')).json();
+    assert(separatedRoot.lives.length === 2, 'separated root mode must deliver every selected /live/<key> entry, got ' + separatedRoot.lives.length);
+    assert(separatedRoot.lives.every((live) => /\/live\/[^/]+$/.test(live.url)), 'separated root mode must not deliver the aggregate /live entry');
+    assert(!separatedRoot.lives.some((live) => /\/live\/?$/.test(live.url)), 'separated root mode must not mix in merged /live');
+    assert(separatedAuth.lives.length === separatedRoot.lives.length, 'separated auth mode must follow the same exclusive output rule');
+
+    const merged = makeApp({ mergedConfig: modeConfig, liveMergeMode: 'merged', liveProxyManifest: manifest });
+    const mergedRoot = await (await merged.app.request('https://box.example/')).json();
+    const mergedAuth = await (await merged.app.request('https://box.example/auth/code-a/')).json();
+    assert(mergedRoot.lives.length === 1, 'merged root mode must deliver exactly one aggregate entry, got ' + mergedRoot.lives.length);
+    assert(/\/live\/?$/.test(mergedRoot.lives[0].url), 'merged root mode must deliver the aggregate /live entry');
+    assert(!mergedRoot.lives.some((live) => /\/live\/[^/]+$/.test(live.url)), 'merged root mode must not leak /live/<key> entries');
+    assert(mergedAuth.lives.length === 1 && !/\/live\/[^/]+$/.test(mergedAuth.lives[0].url), 'merged auth mode must not leak separated entries');
+
+    const detached = makeApp({
+      mergedConfig: modeConfig,
+      liveMergeMode: 'separated',
+      liveProxyManifest: manifest,
+      liveDistribution: { attachToRoot: false, attachToAuth: false },
+    });
+    const detachedRoot = await (await detached.app.request('https://box.example/')).json();
+    const detachedAuth = await (await detached.app.request('https://box.example/auth/code-a/')).json();
+    assert(detachedRoot.lives.length === 0, 'detached root config must not carry live entries');
+    assert(detachedAuth.lives.length === 0, 'detached auth config must not carry live entries');
+
+    const full = await (await merged.app.request('https://box.example/config-full.json')).json();
+    assert(full.lives.length === 1 && /\/live\/?$/.test(full.lives[0].url), 'full config must obey the selected exclusive mode');
+  }
   {
     const { app } = makeApp();
     const response = await app.request('https://box.example/missing.jpg');

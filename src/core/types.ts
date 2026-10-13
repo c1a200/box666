@@ -467,6 +467,12 @@ export interface ChannelSpeedEntry {
   speedMs: number;          // TTFB 或连通耗时
   probedAt: string;         // ISO 时间
   kind: 'm3u8' | 'ts' | 'tcp' | 'fail';
+  /** 连续失败次数；成功时归零。旧缓存缺省按 1 次失败处理。 */
+  consecutiveFailures?: number;
+  /** 播放链验证等级：manifest=仅播放列表可用，media=已验证首个媒体分片。 */
+  verification?: 'manifest' | 'media';
+  /** 失败原因，用于区分超时、HTTP 错误与内容无效。 */
+  failureReason?: 'timeout' | 'http' | 'invalid' | 'network';
 }
 export type ChannelSpeedMap = Record<string, ChannelSpeedEntry>;
 

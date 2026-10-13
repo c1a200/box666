@@ -1518,7 +1518,7 @@ export function applyChannelSpeedToGroups(
     const channels: TVBoxLiveChannel[] = [];
     for (const channel of group.channels || []) {
       const seen = new Set<string>();
-      const ranked: Array<{ url: string; speed?: number; index: number }> = [];
+      const ranked: Array<{ url: string; speed?: number; index: number; tier: number }> = [];
 
       for (const [index, rawUrl] of (channel.urls || []).entries()) {
         const url = rawUrl.trim();
@@ -1528,16 +1528,22 @@ export function applyChannelSpeedToGroups(
         seen.add(bare);
 
         const speed = speedMap[url] ?? speedMap[bare];
-        if (speed?.kind === 'fail') continue;
+        // 单次网络抖动不能立即移除线路；连续失败达到阈值后才判定失效。
+        // 旧缓存没有该字段时按 1 次失败处理。
+        if (speed?.kind === 'fail') {
+          const failures = speed.consecutiveFailures ?? 1;
+          if (failures >= 3) continue;
+          ranked.push({ url, index, tier: 2 });
+          continue;
+        }
         const knownSpeed = speed && Number.isFinite(speed.speedMs) ? speed.speedMs : undefined;
         if (speedLimit > 0 && knownSpeed != null && knownSpeed > speedLimit) continue;
-        ranked.push({ url, speed: knownSpeed, index });
+        ranked.push({ url, speed: knownSpeed, index, tier: knownSpeed == null ? 1 : 0 });
       }
 
       ranked.sort((a, b) => {
+        if (a.tier !== b.tier) return a.tier - b.tier;
         if (a.speed != null && b.speed != null && a.speed !== b.speed) return a.speed - b.speed;
-        if (a.speed != null && b.speed == null) return -1;
-        if (a.speed == null && b.speed != null) return 1;
         return a.index - b.index;
       });
 
