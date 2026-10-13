@@ -800,17 +800,21 @@ export function createApp(deps: AppDeps): Hono {
   }
 
   /**
-   * 从已验证的 CF 直播代理清单构建 FongMi 入口。
-   * 清单是 CF 分离模式的唯一事实来源，不能再从旧 KV_LIVE_MERGED_DATA 恢复。
+   * 从已验证的直播代理清单构建 FongMi 分离入口。
+   * CF 与 Node/Render 共用同一质量池与分类策略；调用方可传入
+   * 当前请求的真实根地址，未传时使用部署基址或占位符。
    */
-  async function getCfSeparatedLives(): Promise<TVBoxLive[]> {
-    if (!config.workerBaseUrl) return [];
+  async function getSeparatedLives(baseUrlOverride?: string): Promise<TVBoxLive[]> {
     const distribution = await loadLiveDistribution(storage);
     const entries = selectLiveDistribution(
       await listAllLiveProxyEntries(storage),
       toLiveDistributionPolicy(distribution),
     );
-    const baseUrl = config.workerBaseUrl.replace(/\/$/, '');
+    const baseUrl = (
+      baseUrlOverride
+      || config.workerBaseUrl
+      || BASE_URL_PLACEHOLDER
+    ).replace(/\/$/, '');
     return entries.map((entry) => ({
       name: entry.name || '直播源',
       type: 0,
@@ -921,8 +925,8 @@ export function createApp(deps: AppDeps): Hono {
       ? config.workerBaseUrl.replace(/\/$/, '')
       : BASE_URL_PLACEHOLDER;
 
-    if (mode === 'separated' && config.workerBaseUrl) {
-      return getCfSeparatedLives();
+    if (mode === 'separated') {
+      return getSeparatedLives(baseUrl);
     }
 
     // 合并模式只允许一个聚合入口。保留旧入口的请求参数，但只保留一个。
@@ -1616,58 +1620,21 @@ export function createApp(deps: AppDeps): Hono {
     const authResolved = await resolveOrRejectClientContext(c, baseUrl);
     if (authResolved.response) return authResolved.response;
     const authContext = authResolved.context!;
-    const liveDistribution = await loadLiveDistribution(storage);
+    const liveOutputMode = await loadLiveOutputMode();
 
     let lives: TVBoxLive[];
-    if (config.workerBaseUrl) {
-      const liveMergeMode = (await storage.get(KV_LIVE_MERGE_MODE)) || 'separated';
-      if (liveMergeMode === 'separated') {
-        // CF 分离模式只导出当前有效代理清单，避免旧的上游直链或空入口被导出。
-        lives = await getCfSeparatedLives();
-      } else {
-        let livesRaw = await storage.get(KV_LIVE_MERGED_DATA);
-        if (!livesRaw) {
-          const cached = await storage.get(KV_MERGED_CONFIG_FULL) || await storage.get(KV_MERGED_CONFIG);
-          if (cached) {
-            try {
-              const full = JSON.parse(cached);
-              livesRaw = JSON.stringify(full.lives || []);
-            } catch { /* ignore */ }
-          }
-        }
-        if (!livesRaw) return c.json({ lives: [] });
-        livesRaw = applyBaseUrlPlaceholder(livesRaw, authContext.rootBaseUrl);
-        try {
-          lives = JSON.parse(livesRaw);
-        } catch {
-          return c.json({ error: 'Config parse error' }, 500);
-        }
-      }
+    if (liveOutputMode === 'separated') {
+      // 分离模式只导出当前质量池中入选的独立代理入口。
+      lives = await getSeparatedLives(authContext.rootBaseUrl);
     } else {
-      let livesRaw = await storage.get(KV_LIVE_MERGED_DATA);
-      if (!livesRaw) {
-        const cached = await storage.get(KV_MERGED_CONFIG_FULL) || await storage.get(KV_MERGED_CONFIG);
-        if (cached) {
-          try {
-            const full = JSON.parse(cached);
-            livesRaw = JSON.stringify(full.lives || []);
-          } catch { /* ignore */ }
-        }
-      }
-      if (!livesRaw) return c.json({ lives: [] });
-      livesRaw = applyBaseUrlPlaceholder(livesRaw, authContext.rootBaseUrl);
-      try {
-        lives = JSON.parse(livesRaw);
-      } catch {
-        return c.json({ error: 'Config parse error' }, 500);
-      }
+      // 合并模式只导出一个聚合入口，不能回放旧数据里的分离指针。
+      lives = await resolveModeAwareLives({} as TVBoxConfig);
+      lives = JSON.parse(
+        applyBaseUrlPlaceholder(JSON.stringify(lives), authContext.rootBaseUrl),
+      ) as TVBoxLive[];
     }
 
     lives = filterBlockedLiveEntries(lives);
-    lives = await selectMergedLiveGroups(lives as unknown as TVBoxLiveGroup[], liveDistribution) as unknown as TVBoxLive[];
-    if (lives.length > 0 && lives.every((live) => Array.isArray(live.channels))) {
-      lives = sortLiveGroupsForOutput(lives as unknown as TVBoxLiveGroup[]) as unknown as TVBoxLive[];
-    }
 
     return c.body(applyAuthPrefixToProxyUrls(JSON.stringify({ lives }), authContext), 200, {
       'Content-Type': 'application/json; charset=utf-8',
@@ -2691,8 +2658,8 @@ export function createApp(deps: AppDeps): Hono {
     app.get('/auth/:code/jar/:key', handleNodeJar);
   }
 
-  // ─── 直播源代理（仅 CF 版）──────────────────────────────
-  if (config.workerBaseUrl) {
+  // ─── 直播源代理（CF / Node-Render 通用）────────────────
+  {
     const handleLiveSource = async (c: any) => {
       const baseUrl = await resolveBaseUrl(c);
       if (baseUrl instanceof Response) return baseUrl;
@@ -2701,12 +2668,13 @@ export function createApp(deps: AppDeps): Hono {
       const authContext = authResolved.context!;
       const key = c.req.param('key');
       const isCfRuntime = !!config.workerBaseUrl && typeof caches !== 'undefined';
-
-      const cache = (caches as any).default as Cache;
+      const cache = isCfRuntime ? (caches as any).default as Cache : null;
       // Version the live cache key so updated grouping/filter policy is not hidden
       // by an old cached live text response after deployment.
-      const cacheKey = new Request(`https://live-cache.internal/live/${encodeURIComponent(key)}?v=20260929-1`);
-      const cached = await cache.match(cacheKey);
+      const cacheKey = cache
+        ? new Request(`https://live-cache.internal/live/${encodeURIComponent(key)}?v=20260929-1`)
+        : null;
+      const cached = cacheKey ? await cache!.match(cacheKey) : undefined;
       if (cached) {
         const cachedText = await cached.clone().text();
         if (cachedText.trim() && cachedText.includes('#genre#')) {
@@ -2717,7 +2685,7 @@ export function createApp(deps: AppDeps): Hono {
           return new Response(rewritten, { status: cached.status, headers });
         }
         // 缓存内容异常不代表上游永久失效；仅清除坏缓存并让客户端稍后重试。
-        await cache.delete(cacheKey);
+        if (cacheKey) await cache!.delete(cacheKey);
         return c.json({ error: 'Cached live source is invalid or empty' }, 502, {
           'Cache-Control': 'no-store',
           'Access-Control-Allow-Origin': '*',
@@ -2727,7 +2695,7 @@ export function createApp(deps: AppDeps): Hono {
       const source = await lookupLiveSource(key, storage);
       if (!source || isBlockedLiveSource(source)) {
         if (source && isBlockedLiveSource(source)) {
-          await cache.delete(cacheKey);
+          if (cacheKey) await cache!.delete(cacheKey);
           await removeLiveProxyEntry(key, storage);
         }
         return c.json({ error: 'Unknown live source key' }, 404, {
@@ -2747,7 +2715,9 @@ export function createApp(deps: AppDeps): Hono {
             'X-Live-Source-Prebuild': '1',
           },
         });
-        c.executionCtx.waitUntil(cache.put(cacheKey, response.clone()));
+        if (cache && cacheKey) {
+          c.executionCtx.waitUntil(cache.put(cacheKey, response.clone()));
+        }
         return response;
       }
 
@@ -2774,7 +2744,7 @@ export function createApp(deps: AppDeps): Hono {
           if (result.failure === 'invalid') {
             // 单轮失败可能只是上游返回了短暂错误页。连续确认无效达到阈值后，
             // recordLiveProxyValidation 才会真正删除入口。
-            await cache.delete(cacheKey);
+            if (cacheKey) await cache!.delete(cacheKey);
             await recordLiveProxyValidation(key, 'invalid', storage);
             return c.json({ error: 'Invalid or empty live source' }, 502, {
               'Cache-Control': 'no-store',
@@ -2783,7 +2753,7 @@ export function createApp(deps: AppDeps): Hono {
           }
 
           // 超时、限流、5xx、网络异常等临时失败：只记录状态，保留 manifest 入口。
-          await cache.delete(cacheKey);
+          if (cacheKey) await cache!.delete(cacheKey);
           await recordLiveProxyValidation(key, 'transient', storage);
           return c.json({ error: result.reason || 'Live source temporarily unavailable' }, 502, {
             'Cache-Control': 'no-store',
@@ -2801,7 +2771,9 @@ export function createApp(deps: AppDeps): Hono {
           },
         });
 
-        c.executionCtx.waitUntil(cache.put(cacheKey, response.clone()));
+        if (cache && cacheKey) {
+          c.executionCtx.waitUntil(cache.put(cacheKey, response.clone()));
+        }
         return response;
       } catch (error: unknown) {
         const msg = error instanceof Error ? error.message : String(error);

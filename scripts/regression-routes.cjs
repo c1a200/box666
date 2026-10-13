@@ -170,6 +170,11 @@ function makeApp(overrides = {}) {
     ...(overrides.liveMergeMode ? { live_merge_mode: overrides.liveMergeMode } : {}),
     ...(overrides.liveDistribution ? { live_distribution: JSON.stringify(overrides.liveDistribution) } : {}),
     ...(overrides.liveProxyManifest ? { live_proxy_manifest: JSON.stringify(overrides.liveProxyManifest) } : {}),
+    ...(overrides.liveTextByKey
+      ? Object.fromEntries(
+          Object.entries(overrides.liveTextByKey).map(([key, text]) => [`live_txt:${key}`, text])
+        )
+      : {}),
   });
   const config = {
     adminToken: 'test-token',
@@ -602,6 +607,9 @@ async function readSites(response) {
     assert(separatedRoot.lives.every((live) => /\/live\/[^/]+$/.test(live.url)), 'separated root mode must not deliver the aggregate /live entry');
     assert(!separatedRoot.lives.some((live) => /\/live\/?$/.test(live.url)), 'separated root mode must not mix in merged /live');
     assert(separatedAuth.lives.length === separatedRoot.lives.length, 'separated auth mode must follow the same exclusive output rule');
+    const separatedJson = await (await separated.app.request('https://box.example/live.json')).json();
+    assert(separatedJson.lives.length === 2, 'separated /live.json must expose selected /live/<key> entries');
+    assert(separatedJson.lives.every((live) => /\/live\/[^/]+$/.test(live.url)), 'separated /live.json must not expose aggregate /live');
 
     const merged = makeApp({ mergedConfig: modeConfig, liveMergeMode: 'merged', liveProxyManifest: manifest });
     const mergedRoot = await (await merged.app.request('https://box.example/')).json();
@@ -610,7 +618,43 @@ async function readSites(response) {
     assert(/\/live\/?$/.test(mergedRoot.lives[0].url), 'merged root mode must deliver the aggregate /live entry');
     assert(!mergedRoot.lives.some((live) => /\/live\/[^/]+$/.test(live.url)), 'merged root mode must not leak /live/<key> entries');
     assert(mergedAuth.lives.length === 1 && !/\/live\/[^/]+$/.test(mergedAuth.lives[0].url), 'merged auth mode must not leak separated entries');
+    const mergedJson = await (await merged.app.request('https://box.example/live.json')).json();
+    assert(mergedJson.lives.length === 1 && /\/live\/?$/.test(mergedJson.lives[0].url), 'merged /live.json must expose exactly one aggregate /live');
 
+    const renderSeparated = makeApp({
+      mergedConfig: modeConfig,
+      liveMergeMode: 'separated',
+      liveProxyManifest: manifest,
+      liveTextByKey: {
+        abc12345: '央视频道,#genre#\nCCTV1,https://live.example/cctv.m3u',
+        def67890: '卫视频道,#genre#\n湖南卫视,https://live.example/hunan.m3u',
+      },
+      config: { workerBaseUrl: '', localBaseUrl: 'https://render.example' },
+    });
+    const renderSeparatedRoot = await (await renderSeparated.app.request('https://render.example/')).json();
+    assert(renderSeparatedRoot.lives.length === 2, 'render separated root must deliver every /live/<key> entry');
+    assert(renderSeparatedRoot.lives.every((live) => live.url.startsWith('https://render.example/live/')), 'render separated root must use the deployed root URL');
+    assert(!renderSeparatedRoot.lives.some((live) => /\/live\/?$/.test(live.url)), 'render separated root must not deliver aggregate /live');
+    const renderSeparatedJson = await (await renderSeparated.app.request('https://render.example/live.json')).json();
+    assert(renderSeparatedJson.lives.length === 2, 'render separated /live.json must deliver every /live/<key> entry');
+    assert(!JSON.stringify(renderSeparatedRoot).includes('{{BASE_URL}}'), 'render separated root must resolve BASE_URL placeholder');
+    const renderLive = await renderSeparated.app.request('https://render.example/live/abc12345');
+    assert(renderLive.status === 200, 'render separated /live/<key> must be available, got ' + renderLive.status);
+    assert((renderLive.headers.get('content-type') || '').includes('text/plain'), 'render separated /live/<key> must return text');
+    assert((await renderLive.text()).includes('#genre#'), 'render separated /live/<key> must return live text');
+
+    const renderMerged = makeApp({
+      mergedConfig: modeConfig,
+      liveMergeMode: 'merged',
+      liveProxyManifest: manifest,
+      config: { workerBaseUrl: '', localBaseUrl: 'https://render.example' },
+    });
+    const renderMergedRoot = await (await renderMerged.app.request('https://render.example/')).json();
+    assert(renderMergedRoot.lives.length === 1 && /\/live\/?$/.test(renderMergedRoot.lives[0].url), 'render merged root must deliver exactly one aggregate /live');
+    assert(!renderMergedRoot.lives.some((live) => /\/live\/[^/]+$/.test(live.url)), 'render merged root must not leak /live/<key> entries');
+    const renderMergedJson = await (await renderMerged.app.request('https://render.example/live.json')).json();
+    assert(renderMergedJson.lives.length === 1 && /\/live\/?$/.test(renderMergedJson.lives[0].url), 'render merged /live.json must deliver exactly one aggregate /live');
+    assert(!JSON.stringify(renderMergedJson).includes('/live/'), 'render merged /live.json must not leak separated entries');
     const detached = makeApp({
       mergedConfig: modeConfig,
       liveMergeMode: 'separated',
