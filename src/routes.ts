@@ -11,7 +11,7 @@ import { loadGroupOrder, saveGroupOrder } from './core/group-order';
 import { validateMacCMS } from './core/maccms';
 import { lookupJarUrl, isMd5Key, base64ToUint8Array, rewriteJarUrls, normalizeJarRequestKey, loadJarReadyKeys, markJarReady, getJarKeyForSite } from './core/jar-proxy';
 import { BASE_URL_PLACEHOLDER } from './core/config';
-import { lookupLiveSource, listLiveProxyEntries, removeLiveProxyEntry } from './core/live-source';
+import { lookupLiveSource, listLiveProxyEntries, recordLiveProxyValidation, removeLiveProxyEntry } from './core/live-source';
 import { adminHtml } from './core/admin';
 import { dashboardHtml } from './core/dashboard';
 import { configEditorHtml } from './core/config-editor';
@@ -2601,23 +2601,26 @@ export function createApp(deps: AppDeps): Hono {
         const text = formatLiveGroupsAsTxt(result.groups);
         if (!text.trim() || !text.includes('#genre#')) {
           if (result.failure === 'invalid') {
-            // 下载成功但确认质量不合格：永久删除该入口。
+            // 单轮失败可能只是上游返回了短暂错误页。连续确认无效达到阈值后，
+            // recordLiveProxyValidation 才会真正删除入口。
             await cache.delete(cacheKey);
-            await removeLiveProxyEntry(key, storage);
-            return c.json({ error: 'Invalid or empty live source' }, 404, {
+            await recordLiveProxyValidation(key, 'invalid', storage);
+            return c.json({ error: 'Invalid or empty live source' }, 502, {
               'Cache-Control': 'no-store',
               'Access-Control-Allow-Origin': '*',
             });
           }
 
-          // 超时、限流、5xx、网络异常等临时失败：返回 502，保留 manifest 入口。
+          // 超时、限流、5xx、网络异常等临时失败：只记录状态，保留 manifest 入口。
           await cache.delete(cacheKey);
+          await recordLiveProxyValidation(key, 'transient', storage);
           return c.json({ error: result.reason || 'Live source temporarily unavailable' }, 502, {
             'Cache-Control': 'no-store',
             'Access-Control-Allow-Origin': '*',
           });
         }
 
+        await recordLiveProxyValidation(key, 'valid', storage);
         const response = new Response(text, {
           headers: {
             'Content-Type': 'text/plain; charset=utf-8',

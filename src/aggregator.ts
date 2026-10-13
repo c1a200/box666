@@ -837,29 +837,27 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
               minPlayableRatio: 0.2,
             },
           );
-          const validUrls = new Set(validated.valid.map((input) => input.url));
-          const filteredProxyEntries = proxyEntries.filter((entry) => validUrls.has(entry.url));
+          const validationUpdate = {
+            validUrls: validated.valid.map((input) => input.url),
+            transientUrls: validated.transient.map((input) => input.url),
+            invalidUrls: validated.invalid.map((input) => input.url),
+            checkedAt: new Date().toISOString(),
+          };
 
-          if (filteredProxyEntries.length === 0) {
-            if (validated.transient.length > 0) {
-              merged.lives = previousLiveLives;
-              console.log('[aggregation] Step 7.8: All live checks were transient, keeping previous manifest');
-            } else {
-              merged.lives = [];
-              console.log('[aggregation] Step 7.8: No upstream live source passed quality gates');
-            }
-          } else {
-            merged.lives = await liveSourcesToTVBoxLives(
-              filteredProxyEntries,
-              config.workerBaseUrl,
-              storage,
-              undefined,
-              validated.texts,
-            );
-            console.log(
-              `[aggregation] Step 7.8: Exposed ${merged.lives.length} quality-validated /live/<key> sources (CF Workers)`,
-            );
-          }
+          // 本轮结果不是覆盖式快照，而是对持久健康池的状态更新：
+          // valid 立即晋级；transient 保留为后备；invalid 累计后再淘汰。
+          merged.lives = await liveSourcesToTVBoxLives(
+            proxyEntries,
+            config.workerBaseUrl,
+            storage,
+            undefined,
+            validated.texts,
+            validationUpdate,
+          );
+          console.log(
+            `[aggregation] Step 7.8: Exposed ${merged.lives.length} distributable /live/<key> sources `
+            + `(valid=${validated.valid.length}, transient=${validated.transient.length}, invalid=${validated.invalid.length})`,
+          );
         }
       }
     } else if (isNative) {
