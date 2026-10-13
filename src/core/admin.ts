@@ -415,7 +415,8 @@ ${sharedStyles}
 
     <!-- Live Output Strategy -->
     <div class="section">
-      <div class="section-title" data-i18n="liveStrategyTitle">Live Output Strategy</div>
+      <div class="section-title" data-i18n="liveUnifiedTitle">直播源质量池与下发</div>
+      <div class="credential-help" data-i18n="liveUnifiedHint">候选池汇总聚合后的全部直播入口；质量池仅排除明确失效、超时或屏蔽的源，待客户端验证的 JAR/需登录源不会被轻易淘汰。下发池按统一质量排名，或按分类各自排名选择，确保只下发对应范围中更优质的源。</div>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
           <input type="checkbox" id="liveDisabledCheck" onchange="saveLiveDisabled()">
@@ -429,7 +430,7 @@ ${sharedStyles}
           <span data-i18n="ignoreAggregatedLivesLabel">Ignore live sources inside subscription configs (only use manually added live sources)</span>
           <span class="status-text" id="ignoreAggregatedLivesStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
         </label>
-              <fieldset style="border:0;padding:0;margin:0">
+        <fieldset style="border:0;padding:0;margin:0">
           <legend class="form-label" style="margin-bottom:6px;padding:0" data-i18n="liveMergeModeTitle">直播输出模式（二选一）</legend>
           <div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap">
             <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;max-width:320px">
@@ -450,15 +451,11 @@ ${sharedStyles}
           </div>
           <div style="font-size:0.75rem;color:var(--text-secondary);margin-top:6px" data-i18n="liveMergeModeDesc">两种模式严格互斥：只会下发当前选中的一种入口，不会同时生成分离入口和合并入口。</div>
         </fieldset>
-        </div>
       </div>
       <div id="liveStrategyHint" style="margin-top:8px;font-size:0.8rem;color:var(--text-secondary)"></div>
     </div>
-
     <!-- Live Distribution (source-level quality pool -> delivery) -->
     <div class="section" id="liveDistributionSection">
-      <div class="section-title" data-i18n="liveDistTitle">直播源下发（合并/分离模式）</div>
-      <div class="credential-help" data-i18n="liveDistHint">把聚合后的所有直播入口汇总为候选池，只有非明确失效的源进入质量池；这里按统一质量排名选择下发源。应用端开机与换台只读取下发结果，因此数量越精炼、启动越快。</div>
       <div class="source-policy-summary">
         <span class="credential-pill" id="liveDistCounts">候选：- / 质量池：- / 下发：-</span>
         <input id="liveDistFilter" class="nt-input" style="width:200px" placeholder="搜索源名称或地址..." data-i18n-placeholder="liveDistFilterPh" oninput="renderLiveDistribution()">
@@ -972,7 +969,7 @@ const translations = {
     liveStrategyDisabledHint:'Live aggregation is disabled. The options below are inactive until it is enabled again.',
     ignoreAggregatedLivesTitle:'Ignore Aggregated Lives', ignoreAggregatedLivesLabel:'Ignore live sources inside subscription configs (only use manually added live sources)',
     liveMergeModeTitle:'Live output mode (choose one)', liveMergeSeparated:'Separated: group by source', liveMergeMerged:'Merged: deduplicate channels by name', liveMergeSeparatedDesc:'Each live source is delivered and displayed independently.', liveMergeMergedDesc:'All sources are merged by channel name, with one aggregate live entry on the client.', liveMergeModeDesc:'The two modes are strictly exclusive: only the selected mode is delivered; separated and merged entries are never sent together.',
-    liveDistTitle:'Live Source Delivery (merged/separated)', liveDistHint:'All aggregated live entries form the candidate pool; only explicitly invalid sources are excluded from the quality pool. Choose what to deliver by unified quality rank. A tighter, higher-quality set means faster startup and channel switching on clients.',
+    liveUnifiedTitle:'Live Source Quality Pool & Delivery', liveUnifiedHint:'The candidate pool contains all aggregated live entries. The quality pool keeps every source that is not explicitly invalid, timed out, or blocked, including JAR/client-verified sources. Delivery uses unified quality ranking, or per-category ranking for detailed selection.', liveDistTitle:'Live Source Delivery', liveDistHint:'All aggregated live entries form the candidate pool; only explicitly invalid sources are excluded from the quality pool. Choose what to deliver by unified quality rank. A tighter, higher-quality set means faster startup and channel switching on clients.',
     liveDistFilterPh:'Search source name or URL...', liveDistCatAll:'All categories', liveDistSelectedAll:'All states',
     liveDistSelectedOnly:'Delivered only', liveDistSelectedExcluded:'Not delivered only', liveDistSelectedInvalid:'Explicitly invalid only',
     liveDistMode:'Delivery mode', liveDistModeSimple:'Simple: by quality-pool rank', liveDistModeCategory:'Detailed: per category',
@@ -984,7 +981,7 @@ const translations = {
     liveAttachRoot:'Root link attaches live sources', liveAttachAuth:'Auth links attach live sources by default',
     liveAttachLinkHint:'Standalone live links: /live (aggregated TXT), /lives (alias), /live.json (JSON array).',
     liveCopyLive:'Copy /live link', liveCopyLives:'Copy /lives link', liveCopyLiveJson:'Copy /live.json link',
-    livePoolTitle:'Live source quality pool', livePoolHint:'Sorted by quality score desc; healthy and previously successful sources rank first. Block/pin only affects this table and delivery selection.',
+    livePoolTitle:'Live source quality pool', livePoolHint:'Ranked by the unified quality order: currently healthy sources first, then proven fallbacks, then never-verified sources. Block/pin only affects this table and delivery selection.',
     liveDistNoData:'No live source data yet. Run an aggregation first.', liveMergeReportTitle:'Merge report', liveMergeReportEmpty:'No merge report yet.',
     liveCatCctv:'CCTV', liveCatSatellite:'Satellite', liveCatLocal:'Local', liveCatVariety:'Variety/Entertainment', liveCatSpecial:'4K/Special', liveCatIpv6:'IPv6', liveCatOther:'Other',
     liveDistBucketPh:'Count', liveTableRank:'Rank', liveTableSource:'Source', liveTableKind:'Origin', liveTableFormat:'Format', liveTableCategory:'Category', liveTableQuality:'Quality', liveTableHealth:'Health', liveTableChannels:'Channels', liveTablePlayable:'Playable', liveTableAd:'Ads', liveTableSpeed:'Download', liveTableChecked:'Last checked', liveTableAction:'Actions',
@@ -1148,7 +1145,7 @@ const translations = {
     liveStrategyDisabledHint:'直播聚合已禁用；重新启用前，下面的忽略直播源和合并模式选项不会生效。',
     ignoreAggregatedLivesTitle:'忽略配置中的直播源', ignoreAggregatedLivesLabel:'忽略第三方订阅配置自带的直播源（仅保留手动添加的直播源）',
     liveMergeModeTitle:'直播输出模式（二选一）', liveMergeSeparated:'分离模式：按源分组', liveMergeMerged:'合并模式：同名频道去重合并', liveMergeSeparatedDesc:'每个直播源独立下发与展示，适合按源排查和切换。', liveMergeMergedDesc:'所有源按频道名合并，客户端只加载一个聚合直播入口。', liveMergeModeDesc:'两种模式严格互斥：只会下发当前选中的一种入口，不会同时生成分离入口和合并入口。',
-    liveDistTitle:'直播源下发（合并/分离模式）', liveDistHint:'把聚合后的所有直播入口汇总为候选池，只有明确失效的源被排除在质量池之外；这里按统一质量排名选择下发源。下发的源越精炼优质，应用端启动与换台越快。',
+    liveUnifiedTitle:'直播源质量池与下发', liveUnifiedHint:'候选池汇总聚合后的全部直播入口；质量池仅排除明确失效、超时或屏蔽的源，待客户端验证的 JAR/需登录源不会被轻易淘汰。下发池按统一质量排名，或按分类各自排名选择，确保只下发对应范围中更优质的源。', liveDistTitle:'直播源下发', liveDistHint:'把聚合后的所有直播入口汇总为候选池，只有明确失效的源被排除在质量池之外；这里按统一质量排名选择下发源。下发的源越精炼优质，应用端启动与换台越快。',
     liveDistFilterPh:'搜索源名称或地址...', liveDistCatAll:'全部分类', liveDistSelectedAll:'全部状态',
     liveDistSelectedOnly:'仅已下发', liveDistSelectedExcluded:'仅未下发', liveDistSelectedInvalid:'仅明确失效',
     liveDistMode:'下发方式', liveDistModeSimple:'简单方式：按质量池总排名', liveDistModeCategory:'精细方式：按分类分别选择',
@@ -1160,7 +1157,7 @@ const translations = {
     liveAttachRoot:'根链接附带直播', liveAttachAuth:'鉴权链接默认附带直播',
     liveAttachLinkHint:'独立直播链接：/live（聚合 TXT）、/lives（聚合 TXT 别名）、/live.json（JSON 数组）。',
     liveCopyLive:'复制 /live 链接', liveCopyLives:'复制 /lives 链接', liveCopyLiveJson:'复制 /live.json 链接',
-    livePoolTitle:'直播源质量池', livePoolHint:'按质量分从高到低排列；健康与历史成功优先。屏蔽或置顶仅影响本表与下发选择。',
+    livePoolTitle:'直播源质量池', livePoolHint:'按统一质量排名排列：当前健康优先，其次是有成功历史的可用后备，最后才是从未验证的源；明确失效不进入下发。屏蔽或置顶仅影响本表与下发选择。',
     liveDistNoData:'暂无直播源数据，请先执行一次聚合。', liveMergeReportTitle:'合并报告', liveMergeReportEmpty:'暂无合并报告。',
     liveCatCctv:'央视', liveCatSatellite:'卫视', liveCatLocal:'地方', liveCatVariety:'轮播/娱乐', liveCatSpecial:'4K/特色', liveCatIpv6:'IPv6', liveCatOther:'其他',
     liveDistBucketPh:'数量', liveTableRank:'排名', liveTableSource:'源名', liveTableKind:'来源', liveTableFormat:'格式', liveTableCategory:'分类', liveTableQuality:'质量分', liveTableHealth:'健康', liveTableChannels:'频道数', liveTablePlayable:'可播率', liveTableAd:'广告率', liveTableSpeed:'下载耗时', liveTableChecked:'最近验证', liveTableAction:'操作',

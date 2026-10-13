@@ -4,7 +4,7 @@ import { Hono } from 'hono';
 import { MemoryCachedStorage } from './storage/cached';
 import type { Storage } from './storage/interface';
 import type { AppConfig, MacCMSSourceEntry, LiveSourceEntry, NameTransformConfig, EdgeProxyConfig, SearchQualityRunMode } from './core/types';
-import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_STARTUP_SITE_POOL, KV_MANUAL_SOURCES, KV_LAST_UPDATE, KV_LAST_UPDATE_ERROR, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_RUNTIME_TXT, KV_LIVE_RUNTIME_TXT_VERSION, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, LIVE_PROXY_TTL, IMG_PROXY_TTL, KV_NAME_TRANSFORM, KV_CRON_INTERVAL, DEFAULT_CRON_INTERVAL, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_PARSE_HEALTH_REPORT, KV_AGG_LOGS, KV_BG_SETTINGS, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, KV_SMART_BASE_URL_ENABLED, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SITE_HEALTH_MAP, KV_CHANNEL_MERGED_TREE, KV_CHANNEL_RUNTIME_TREE, KV_LIVE_TEXT_PREFIX, KV_CREDENTIAL_DISTRIBUTION, KV_SEARCH_QUALITY_CANDIDATES, KV_LIVE_MERGE_REPORT, KV_LIVE_ATTACH_AUTH, KV_LIVE_OUTPUT_FINGERPRINT } from './core/config';
+import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_STARTUP_SITE_POOL, KV_MANUAL_SOURCES, KV_LAST_UPDATE, KV_LAST_UPDATE_ERROR, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_RUNTIME_TXT, KV_LIVE_RUNTIME_TXT_VERSION, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, LIVE_PROXY_TTL, IMG_PROXY_TTL, KV_NAME_TRANSFORM, KV_CRON_INTERVAL, DEFAULT_CRON_INTERVAL, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_PARSE_HEALTH_REPORT, KV_AGG_LOGS, KV_BG_SETTINGS, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, KV_SMART_BASE_URL_ENABLED, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SITE_HEALTH_MAP, KV_CHANNEL_MERGED_TREE, KV_CHANNEL_RUNTIME_TREE, KV_CHANNEL_CANDIDATE_URLS, KV_LIVE_TEXT_PREFIX, KV_CREDENTIAL_DISTRIBUTION, KV_SEARCH_QUALITY_CANDIDATES, KV_LIVE_MERGE_REPORT, KV_LIVE_ATTACH_AUTH, KV_LIVE_OUTPUT_FINGERPRINT } from './core/config';
 import { getRequestBaseUrl, applyBaseUrlPlaceholder, assertHostAllowed } from './core/base-url';
 import { logger } from './core/logger';
 import { loadGroupOrder, saveGroupOrder } from './core/group-order';
@@ -36,7 +36,7 @@ import {
   getQualityPoolHealth,
 } from './core/quality';
 import { loadClientDistribution, saveClientDistribution, findClientAuthCode, normalizeClientDistributionConfig, createClientAuthCode } from './core/client-auth-store';
-import { formatAggregatedLiveGroupsAsTxt, formatLiveGroupsAsTxt, filterLivesBySource, filterLivesBySourceDetailed, sortLiveGroupsForOutput, filterGroupsBySourceLabels, reorderGroupsBySourcePriority, normalizeSourceLabelKey } from './core/live-merger';
+import { formatAggregatedLiveGroupsAsTxt, formatLiveGroupsAsTxt, filterLivesBySource, filterLivesBySourceDetailed, sortLiveGroupsForOutput, filterGroupsBySourceLabels, reorderGroupsBySourcePriority, normalizeSourceLabelKey, parseLiveCandidatePool } from './core/live-merger';
 import { containsBlockedLiveUrl, isBlockedLiveSource, isBlockedLiveUrl } from './core/live-policy';
 import { autoNameFromUrl, backupTypeMismatch, createSourceBackup, extractBackupItems, parseSourceList } from './core/source-list-parser';
 import type { TVBoxConfig, TVBoxSite, SearchQuotaConfig, SiteQualityGrade, TVBoxLive, TVBoxLiveGroup, ClientAuthCode, ClientDistributionConfig, LiveDistributionConfig, SourceDistributionMode, SourceSelectionMode, ChannelProbeTrigger } from './core/types';
@@ -880,31 +880,53 @@ export function createApp(deps: AppDeps): Hono {
   }
 
   async function buildFilteredLiveTxt(distribution: LiveDistributionConfig): Promise<string | null> {
-    const groups = await loadMergedLiveGroups();
-    if (groups.length === 0) return null;
+    let groups = await loadMergedLiveGroups();
+    if (groups.length === 0) {
+      // 冷启动或 KV 恢复链短暂缺失时，先让统一重建器从持久化候选快照
+      // 恢复完整频道树。重建结果仅用于补齐候选池，最终仍按当前请求的
+      // 鉴权码策略重新筛选，不能直接复用全局 runtime TXT，否则会把根
+      // 链接的“全选”结果泄漏给数量或分类受限的鉴权码。
+      const rebuilt = await rebuildLiveOutputSafe('live-request-recovery');
+      if (!rebuilt.ok) return null;
+      groups = await loadMergedLiveGroups();
+      if (groups.length === 0) return null;
+    }
     const selected = await selectMergedLiveGroups(groups, distribution);
     return formatAggregatedLiveGroupsAsTxt(selected);
   }
-
   async function loadMergedLiveGroups(): Promise<TVBoxLiveGroup[]> {
-    for (const key of [KV_CHANNEL_RUNTIME_TREE, KV_CHANNEL_MERGED_TREE]) {
-      const raw = await storage.get(key);
-      if (!raw) continue;
+    // 完整合并树优先。Render 进程重启后本地 runtime tree 可能只是上次
+    // 下发策略派生的子集，不能早于 durable 候选快照被采用，否则恢复全量
+    // 或切换精细策略时会永久漏源。
+    const mergedRaw = await storage.get(KV_CHANNEL_MERGED_TREE);
+    if (mergedRaw) {
       try {
-        const parsed = JSON.parse(raw);
-        if (isNativeLiveGroups(parsed)) return parsed;
+        const parsed = JSON.parse(mergedRaw);
+        if (isNativeLiveGroups(parsed) && parsed.length > 0) return parsed;
+      } catch { /* try next snapshot */ }
+    }
+    // 持久化结构化候选池是跨进程重启最可靠的完整频道树。
+    try {
+      const persisted = parseLiveCandidatePool(await storage.get(KV_CHANNEL_CANDIDATE_URLS));
+      if (persisted.source == 'structured' && persisted.groups.length > 0) return persisted.groups;
+    } catch { /* try next snapshot */ }
+
+    const runtimeRaw = await storage.get(KV_CHANNEL_RUNTIME_TREE);
+    if (runtimeRaw) {
+      try {
+        const parsed = JSON.parse(runtimeRaw);
+        if (isNativeLiveGroups(parsed) && parsed.length > 0) return parsed;
       } catch { /* try next snapshot */ }
     }
     const liveRaw = await storage.get(KV_LIVE_MERGED_DATA);
     if (liveRaw) {
       try {
         const parsed = JSON.parse(liveRaw);
-        if (isNativeLiveGroups(parsed)) return parsed;
+        if (isNativeLiveGroups(parsed) && parsed.length > 0) return parsed;
       } catch { /* ignore */ }
     }
     return [];
   }
-
   function isSeparatedLivePointer(url: string): boolean {
     return /^\/lives?\/[^/?#]+/.test(url);
   }

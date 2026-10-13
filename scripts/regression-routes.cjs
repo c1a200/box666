@@ -170,6 +170,7 @@ function makeApp(overrides = {}) {
     ...(overrides.liveMergeMode ? { live_merge_mode: overrides.liveMergeMode } : {}),
     ...(overrides.liveDistribution ? { live_distribution: JSON.stringify(overrides.liveDistribution) } : {}),
     ...(overrides.liveProxyManifest ? { live_proxy_manifest: JSON.stringify(overrides.liveProxyManifest) } : {}),
+    ...(overrides.channelCandidateUrls ? { channel_candidate_urls: typeof overrides.channelCandidateUrls === 'string' ? overrides.channelCandidateUrls : JSON.stringify(overrides.channelCandidateUrls) } : {}),
     ...(overrides.liveTextByKey
       ? Object.fromEntries(
           Object.entries(overrides.liveTextByKey).map(([key, text]) => [`live_txt:${key}`, text])
@@ -669,6 +670,79 @@ async function readSites(response) {
     const full = await (await merged.app.request('https://box.example/config-full.json')).json();
     assert(full.lives.length === 1 && /\/live\/?$/.test(full.lives[0].url), 'full config must obey the selected exclusive mode');
   }
+  {
+    const coldStartCandidatePool = {
+      version: 1,
+      groups: [
+        { group: '央视', channels: [{ name: 'CCTV1', urls: ['https://live.example/cctv.m3u$测试直播A#abc12345'] }] },
+        { group: '卫视', channels: [{ name: '湖南卫视', urls: ['https://live.example/hunan.m3u$测试直播B#def67890'] }] },
+      ],
+    };
+    const coldStartManifest = {
+      version: 3,
+      signature: 'cold-start-recovery',
+      entries: [
+        {
+          key: 'abc12345',
+          name: '测试直播A',
+          url: 'https://live.example/cctv.m3u',
+          health: 'unhealthy',
+          consecutiveFailures: 1,
+          checkedAt: new Date().toISOString(),
+          everSucceeded: false,
+          lastFailure: 'transient',
+          format: 'm3u',
+          category: 'cctv',
+        },
+        {
+          key: 'def67890',
+          name: '测试直播B',
+          url: 'https://live.example/hunan.m3u',
+          health: 'unhealthy',
+          consecutiveFailures: 1,
+          checkedAt: new Date().toISOString(),
+          everSucceeded: false,
+          lastFailure: 'transient',
+          format: 'm3u',
+          category: 'satellite',
+        },
+      ],
+    };
+    const coldStart = makeApp({
+      mergedConfig: { sites: mergedConfig.sites, lives: [] },
+      liveMergeMode: 'merged',
+      liveProxyManifest: coldStartManifest,
+      channelCandidateUrls: coldStartCandidatePool,
+      config: { workerBaseUrl: '', localBaseUrl: 'https://render.example' },
+    });
+    const coldResponse = await coldStart.app.request('https://render.example/live');
+    const coldText = await coldResponse.text();
+    assert(coldResponse.status === 200, 'cold-start render /live must return 200, got ' + coldResponse.status);
+    assert((coldResponse.headers.get('content-type') || '').includes('text/plain'), 'cold-start render /live must return text/plain');
+    assert(coldText.trim().length > 0, 'cold-start render /live must not be empty');
+    assert(coldText.includes('#genre#'), 'cold-start render /live must contain channel groups');
+    assert(!coldText.trim().startsWith('{'), 'cold-start render /live must not return an error JSON body');
+    assert(coldText.includes('测试直播A') && coldText.includes('测试直播B'), 'cold-start render /live must recover both structured candidate entries');
+
+    const coldRestricted = makeApp({
+      mergedConfig: { sites: mergedConfig.sites, lives: [] },
+      liveMergeMode: 'merged',
+      liveProxyManifest: coldStartManifest,
+      channelCandidateUrls: coldStartCandidatePool,
+      liveDistribution: {
+        selectionMode: 'category',
+        maxSources: -1,
+        bucketLimits: { cctv: 1, satellite: 0, local: 0, variety: 0, special: 0, ipv6: 0, other: 0 },
+      },
+      config: { workerBaseUrl: '', localBaseUrl: 'https://render.example' },
+    });
+    const restrictedResponse = await coldRestricted.app.request('https://render.example/auth/code-a/live');
+    const restrictedText = await restrictedResponse.text();
+    assert(restrictedResponse.status === 200, 'cold-start restricted auth /live must return 200');
+    assert(restrictedText.includes('测试直播A'), 'cold-start restricted auth /live must keep the allowed category');
+    assert(!restrictedText.includes('测试直播B'), 'cold-start restricted auth /live must not leak categories whose limit is zero');
+  }
+
   {
     const { app } = makeApp();
     const response = await app.request('https://box.example/missing.jpg');
