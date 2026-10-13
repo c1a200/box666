@@ -113,12 +113,29 @@ async function readAggregationStatus(storage: KVStorage): Promise<AggregationSta
   }
 }
 
-async function runAggregationTracked(storage: KVStorage, config: AppConfig, ctx: ExecutionContext): Promise<void> {
+async function runAggregationTracked(
+  storage: KVStorage,
+  config: AppConfig,
+  ctx: ExecutionContext,
+  onStart?: (result: AggregationTriggerResult) => void,
+): Promise<void> {
   const previous = await readAggregationStatus(storage);
   const previousStartedAt = previous.startedAt ? Date.parse(previous.startedAt) : Number.NaN;
   const previousAgeMs = Number.isFinite(previousStartedAt) ? Date.now() - previousStartedAt : Number.POSITIVE_INFINITY;
   if (previous.running && previousAgeMs >= 0 && previousAgeMs < AGGREGATION_STALE_MS) {
+    const skipped: AggregationTriggerResult = {
+      started: false,
+      running: true,
+      completed: false,
+      skipped: true,
+      runId: previous.runId,
+      startedAt: previous.startedAt,
+      phase: previous.phase,
+      elapsedMs: previousAgeMs,
+      message: 'Aggregation is already running',
+    };
     console.log('[aggregation] Already running, skipping duplicate start');
+    onStart?.(skipped);
     return;
   }
 
@@ -150,6 +167,7 @@ async function runAggregationTracked(storage: KVStorage, config: AppConfig, ctx:
     console.warn('[aggregation] Recovered stale running status; starting a new run');
   }
   await writeAggregationStatus(storage, runningStatus);
+  onStart?.(runningStatus);
 
   try {
     await runAggregation(storage, config, {
@@ -234,9 +252,29 @@ export default {
     const config = buildConfig(env);
 
     const app = createApp({
+      // 启动握手：返回值只代表运行状态已落盘；真实聚合任务单独交给 waitUntil 保活。
+      triggerRefresh: () => {
+        let resolveStart!: (result: AggregationTriggerResult) => void;
+        let startSettled = false;
+        const startSignal = new Promise<AggregationTriggerResult>((resolve) => {
+          resolveStart = resolve;
+        });
+        const settleStart = (result: AggregationTriggerResult) => {
+          if (startSettled) return;
+          startSettled = true;
+          resolveStart(result);
+        };
+        const task = runAggregationTracked(storage, config, ctx, settleStart)
+          .catch((error: unknown) => {
+            const message = error instanceof Error ? error.message : String(error);
+            settleStart({ started: false, running: false, completed: false, message });
+            console.error('[aggregation] Startup task failed:' , message);
+          });
+        ctx.waitUntil(task);
+        return startSignal;
+      },
       storage,
       config,
-      triggerRefresh: () => runAggregationTracked(storage, config, ctx),
       triggerQuality: (mode) => runQualityChunkWithStatus(storage, mode, config.qualityTimezone),
       isSyncing: () => liveAggregationStatus.get(aggregationStatusKey(storage))?.running === true,
       aggregationStatus: () => readAggregationStatus(storage),

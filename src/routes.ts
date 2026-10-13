@@ -3832,20 +3832,8 @@ export function createApp(deps: AppDeps): Hono {
     }
 
     try {
-      let hasCtx = false;
-      try {
-        if (c.executionCtx) {
-          hasCtx = true;
-        }
-      } catch (e) {
-        // Ignored: Hono throws if executionCtx getter is accessed in non-worker environments
-      }
-
-      if (hasCtx) {
-        c.executionCtx.waitUntil(deps.triggerRefresh());
-        return c.json({ success: true, started: true, running: true, message: 'Refresh started in background' }, 202);
-      }
-
+      // 等待入口确认聚合已进入 running（或已有任务正在运行），再返回 202；
+      // 不能让“调度 Promise 已创建”冒充“任务已真正启动”。
       const result = await deps.triggerRefresh();
       const normalized: AggregationTriggerResult = result ?? {
         started: true,
