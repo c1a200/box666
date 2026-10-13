@@ -386,8 +386,9 @@ export function selectLiveDistribution<T extends LiveRankView>(
   const blocked = new Set(normalized.blockedKeys || []);
   const allowed = rankedPool.filter((entry) => {
     if (!isLiveSourceDistributable(entry)) return false;
-    // 直播条目在持久清单中必须带 textReady；禁止把需要客户端实时回源的幽灵源选出。
-    if (entry.textReady !== undefined && entry.textReady !== true) return false;
+    // 直播条目必须已有聚合阶段生成的文本；禁止把需要客户端实时回源
+    // 或尚未完成预构建的幽灵源选出。
+    if (entry.textReady !== true) return false;
     const key = entry.key || entry.url || '';
     return key === '' || !blocked.has(key);
   });

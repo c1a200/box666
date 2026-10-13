@@ -4,6 +4,8 @@ const { buildSync } = require('esbuild');
 const root = path.resolve(__dirname, '..');
 const outfile = path.join(root, '.tmp-regression-build', 'live-source.cjs');
 const qualityOutfile = path.join(root, '.tmp-regression-build', 'live-quality.cjs');
+const prepareOutfile = path.join(root, '.tmp-regression-build', 'live-prepare.cjs');
+const mergerOutfile = path.join(root, '.tmp-regression-build', 'live-merger.cjs');
 
 buildSync({
   entryPoints: [path.join(root, 'src/core/live-source.ts')],
@@ -27,6 +29,21 @@ const {
   mergeLiveProxyManifest,
   isLiveProxyEntryDistributable,
 } = require(outfile);
+
+buildSync({
+  entryPoints: [path.join(root, 'src/core/live-prepare.ts')],
+  bundle: true,
+  platform: 'node',
+  target: 'node20',
+  format: 'cjs',
+  outfile: prepareOutfile,
+});
+
+const {
+  buildPreparedLiveGroups,
+  prepareLiveSourcesChunk,
+  serializePreparedLiveGroups,
+} = require(prepareOutfile);
 
 const {
   selectLiveDistribution,
@@ -520,4 +537,89 @@ assert(legacyCandidateSnapshot.groups.length === 1, 'legacy URL array must expos
 assert(legacyCandidateSnapshot.urls.length === 2, 'legacy URL array must restore both probe URLs');
 assert(parseLiveCandidatePool('not-json').source === 'none', 'invalid candidate snapshot must fail closed');
 
-console.log('regression: live manifest + distribution passed');
+// ── 18. 分片更新：仅撤销本批次未就绪文本，不清空其他已完成批次 ──
+const incrementalBase = mergeLiveProxyManifest(null, [entry(50), entry(51)], {
+  checkedAt: '2026-10-13T02:00:00.000Z',
+  validUrls: ['https://live.example/50.txt', 'https://live.example/51.txt'],
+  texts: {
+    'https://live.example/50.txt': '央视,#genre#\nCCTV-1,http://50.example/live',
+    'https://live.example/51.txt': '卫视,#genre#\n湖南卫视,http://51.example/live',
+  },
+});
+assert(incrementalBase.entries.every((item) => item.textReady === true), 'incremental seed must mark both batches ready');
+const incrementalSecond = mergeLiveProxyManifest(
+  incrementalBase,
+  incrementalBase.entries.map((item) => ({ ...item, textReady: undefined })),
+  {
+    checkedAt: '2026-10-13T02:01:00.000Z',
+    validUrls: ['https://live.example/50.txt'],
+    transientUrls: ['https://live.example/51.txt'],
+    texts: { 'https://live.example/50.txt': '央视,#genre#\nCCTV-1,http://50-new.example/live' },
+    incremental: true,
+  },
+);
+assert(
+  incrementalSecond.entries.find((item) => item.key === 'key-51')?.textReady === true,
+  'incremental batch must preserve another ready batch text state',
+);
+assert(
+  incrementalSecond.entries.find((item) => item.key === 'key-50')?.textReady === true,
+  'incremental batch must mark its own successful text ready',
+);
+
+// ── 19. 非增量 texts 更新仍是权威快照：缺失文本必须撤销 ──
+const authoritativeTexts = mergeLiveProxyManifest(
+  incrementalBase,
+  incrementalBase.entries.map((item) => ({ ...item, textReady: undefined })),
+  {
+    checkedAt: '2026-10-13T02:02:00.000Z',
+    validUrls: ['https://live.example/50.txt'],
+    texts: { 'https://live.example/50.txt': '央视,#genre#\nCCTV-1,http://50-new.example/live' },
+    fullSnapshot: true,
+  },
+);
+assert(
+  authoritativeTexts.entries.find((item) => item.key === 'key-51')?.textReady === false,
+  'authoritative text update must revoke missing text',
+);
+assert(
+  isLiveProxyEntryDistributable(authoritativeTexts.entries.find((item) => item.key === 'key-51')) === false,
+  'revoked authoritative text must not remain distributable',
+);
+
+// ── 20. 源码裁剪：manifest 只保留允许 URL，不写入空 live:<key> ──
+(async () => {
+  const memory = new Map();
+  memory.set('live_proxy_manifest', JSON.stringify({
+    version: 4,
+    signature: 'prune-source',
+    entries: [
+      entry(60, { key: 'prune-keep', url: 'https://live.example/keep.txt' }),
+      entry(61, { key: 'prune-drop', url: 'https://live.example/drop.txt' }),
+    ],
+  }));
+  memory.set('live:prune-drop', JSON.stringify({ url: 'https://live.example/drop.txt' }));
+  memory.set('live_txt:prune-drop', '旧,#genre#\n频道,http://old.example/live');
+  const storage = {
+    async get(key) { return memory.has(key) ? memory.get(key) : null; },
+    async put(key, value) { memory.set(key, String(value)); },
+  };
+  const { pruneLiveProxyManifestToUrls } = require(outfile);
+  const pruned = await pruneLiveProxyManifestToUrls(['https://live.example/keep.txt'], storage);
+  assert(pruned.entries.length === 1 && pruned.entries[0].key === 'prune-keep', 'prune must retain only allowed urls');
+  assert(memory.get('live:prune-drop') !== '', 'prune must not write empty live:<key> values');
+  assert(memory.get('live_txt:prune-drop').includes('#genre#'), 'prune must not erase live text kv values');
+
+  // ── 21. 预构建文本恢复：分片成功后能重建完整候选树 ──
+  memory.set('live_txt:prune-keep', '央视,#genre#\nCCTV-1,http://keep.example/live$源K#12345678');
+  const preparedGroups = await buildPreparedLiveGroups([{ key: 'prune-keep' }], storage);
+  assert(preparedGroups.length === 1 && preparedGroups[0].group === '央视', 'prepared groups must restore from live_txt kv');
+  assert(preparedGroups[0].channels[0].urls.length === 1, 'prepared groups must restore channel urls');
+  const preparedSnapshot = serializePreparedLiveGroups(preparedGroups);
+  assert(preparedSnapshot.includes('源K#12345678'), 'prepared snapshot must retain source label');
+
+  console.log('regression: live manifest + distribution passed');
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

@@ -2545,8 +2545,13 @@ export function createApp(deps: AppDeps): Hono {
       const cacheKey = cache
         ? new Request(`https://live-cache.internal/live/${encodeURIComponent(key)}?v=${encodeURIComponent(manifestRevision)}`)
         : null;
-      if (!canDistributeManifestEntry && cacheKey) await cache!.delete(cacheKey);
-      const cached = canDistributeManifestEntry && cacheKey ? await cache!.match(cacheKey) : undefined;
+      if (!canDistributeManifestEntry) {
+        // Manifest 是唯一资格来源：即使 KV 中残留旧 live:<key>/live_txt:<key>，
+        // 已裁剪、未就绪或已被否决的 key 也绝不能继续下发。
+        if (cacheKey) await cache!.delete(cacheKey);
+        return emptyLiveSourceResponse(manifestEntry ? 'unavailable' : 'missing');
+      }
+      const cached = cacheKey ? await cache!.match(cacheKey) : undefined;
       if (cached) {
         const cachedText = await cached.clone().text();
         if (cachedText.trim() && cachedText.includes('#genre#')) {

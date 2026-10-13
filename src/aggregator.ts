@@ -10,7 +10,8 @@ import { rewriteJarUrls, prefetchJarBinaries, type JarEntry } from './core/jar-p
 import { mergeLivesToNative, separatedMergeLives, formatLiveGroupsAsTxt, filterLiveSourcesDetailed, serializeLiveCandidatePool, type LiveSourceInput, type MergeLivesResult } from './core/live-merger';
 import { partitionMergeSourceMetrics, type LiveCategory } from './core/live-quality';
 import { loadSpeedMap as loadChannelSpeedMap } from './core/channel-probe';
-import { liveSourcesToTVBoxLives, updateLiveProxyManifest } from './core/live-source';
+import { listLiveProxyEntries, updateLiveProxyManifest } from './core/live-source';
+import { buildPreparedLiveGroups, prepareLiveSourcesChunk, serializePreparedLiveGroups } from './core/live-prepare';
 import { rebuildLiveOutput } from './core/live-output';
 import { isBlockedLiveSource, partitionBlockedLiveSources } from './core/live-policy';
 import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_STARTUP_SITE_POOL, KV_SOURCE_URLS, KV_LAST_UPDATE, KV_LAST_UPDATE_ERROR, KV_MANUAL_SOURCES, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGE_REPORT, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_PARSE_HEALTH_REPORT, KV_CHANNEL_MERGED_TREE, KV_CHANNEL_RUNTIME_TREE, KV_CHANNEL_CANDIDATE_URLS, KV_AGG_LOGS, AGG_LOGS_MAX, KV_SITE_SNAPSHOT, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, BASE_URL_PLACEHOLDER, KV_SITE_HEALTH_MAP, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SOURCE_MAP, KV_SITE_UPSTREAM_MAP, KV_SOURCE_URL_BLACKLIST } from './core/config';
@@ -415,8 +416,8 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
   // Step 6.5: 直播源频道级合并（方案 D+）
   // 收集所有 m3u/txt URL（配置源合来的 FongMi 格式 lives + admin 手动源）
   // → 下载 → 解析 → 按频道名合并 urls → 输出 TVBoxLiveGroup[]
-  // CF Worker 免费版 50 子请求上限，Step 6.5 要再下载 N 个 m3u 会爆，整段跳过
-  // CF 部署保留 FongMi 格式，lives[0] 崩溃风险保留；建议 CF 用户切 Docker
+  // CF 采用分片预热：每轮只下载少量源，成功文本落 KV，未就绪源绝不下发。
+  // 这样既避开 Worker 子请求上限，又能让质量池随轮次持续恢复。
   // 直播禁用开关
   const liveDisabledRaw = await storage.get(KV_LIVE_DISABLED);
   const liveDisabled = liveDisabledRaw === 'true';
@@ -439,19 +440,35 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     logger.info('aggregation', 'Step 6.5: Live disabled, skipping');
     merged.lives = [];
   } else if (config.workerBaseUrl) {
-    logger.info('aggregation', 'Step 6.5: Skipped channel merging on CF (subrequest limit), appending raw live sources instead');
+    logger.info('aggregation', 'Step 6.5: Preparing CF live sources in bounded chunks');
+    const ignoreAggregatedLivesRaw = await storage.get(KV_IGNORE_AGGREGATED_LIVES);
+    const ignoreAggregatedLives = ignoreAggregatedLivesRaw === 'true';
+    const liveInputs: LiveSourceInput[] = [];
+
+    if (!ignoreAggregatedLives) {
+      for (const live of (merged.lives || []) as Array<{ name?: string; url?: string; api?: string; ua?: string; header?: Record<string, string>; group?: string }>) {
+        if (live.group && !live.url && !live.api) continue;
+        const url = live.url || live.api;
+        if (!url || !/^https?:\/\//i.test(url)) continue;
+        if (url.includes('127.0.0.1') || url.includes('localhost')) continue;
+        liveInputs.push({ name: live.name || 'source', url, ua: live.ua, header: live.header, isAggregated: true });
+      }
+    }
+
     const liveRaw = await storage.get(KV_LIVE_SOURCES);
-    const manualLives: TVBoxLive[] = [];
     if (liveRaw) {
       try {
-        const manual: Array<{ name: string; url: string; disabled?: boolean }> = JSON.parse(liveRaw);
+        const manual: Array<{ name: string; url: string; disabled?: boolean; ua?: string; header?: Record<string, string> }> = JSON.parse(liveRaw);
         for (const m of manual) {
           if (m.disabled) continue;
           if (!m.url || !/^https?:\/\//i.test(m.url)) continue;
-          manualLives.push({
+          if (m.url.includes('127.0.0.1') || m.url.includes('localhost')) continue;
+          liveInputs.push({
             name: m.name || 'manual',
-            type: 0,
             url: m.url,
+            ua: m.ua,
+            header: m.header,
+            isAggregated: false,
           });
         }
       } catch {
@@ -459,31 +476,72 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
       }
     }
 
-    // Deduplicate live sources by URL
-    const seenUrls = new Set<string>();
-    const uniqueLives: TVBoxLive[] = [];
-    const ignoreAggregatedLivesRaw = await storage.get(KV_IGNORE_AGGREGATED_LIVES);
-    const ignoreAggregatedLives = ignoreAggregatedLivesRaw === 'true';
-    const livesToProcess = ignoreAggregatedLives ? manualLives : [...(merged.lives || []), ...manualLives];
-    const policy = partitionBlockedLiveSources(livesToProcess.map((item) => ({
-      ...item,
-      url: item.url || item.api || '',
-    })));
+    const policy = partitionBlockedLiveSources(liveInputs);
     if (policy.blocked.length > 0) {
       logger.infoFields('aggregation', 'Step 6.5: blocked-live-sources', { count: policy.blocked.length });
     }
-    for (const item of policy.allowed) {
-      const url = item.url || item.api;
-      if (url && typeof url === 'string') {
-        const cleanUrl = url.trim();
-        const core = getCoreLiveUrl(cleanUrl);
-        if (!seenUrls.has(core)) {
-          seenUrls.add(core);
-          uniqueLives.push(item);
-        }
-      }
+    const seen = new Set<string>();
+    const uniqueInputs = policy.allowed.filter((input) => {
+      const core = getCoreLiveUrl(input.url);
+      if (seen.has(core)) return false;
+      seen.add(core);
+      return true;
+    });
+
+    const channelSpeedMap = await loadChannelSpeedMap(storage);
+    const prepareState = await prepareLiveSourcesChunk(uniqueInputs, storage, {
+      batchSize: 8,
+      timeoutMs: 6000,
+      concurrency: 3,
+      channelSpeedMap,
+    });
+
+    // 分片预构建完成后，必须把本批成功文本统一恢复为候选树并重建运行时
+    // 输出。否则 CF 的 /live 合并入口仍会读旧树，分离入口也可能下发无文本
+    // 的幽灵 key。整个过程只读 KV 文本，不在请求路径回源。
+    const readyEntries = await listLiveProxyEntries(storage);
+    const preparedGroups = await buildPreparedLiveGroups(readyEntries, storage);
+    await storage.put(KV_CHANNEL_MERGED_TREE, JSON.stringify(preparedGroups));
+    await storage.put(KV_CHANNEL_CANDIDATE_URLS, serializePreparedLiveGroups(preparedGroups));
+    const rebuilt = await rebuildLiveOutput(storage);
+
+    const workerBaseUrl = config.workerBaseUrl.replace(/\/$/, '');
+    const liveMergeMode = (await storage.get(KV_LIVE_MERGE_MODE)) || 'separated';
+    if (liveMergeMode === 'merged') {
+      // 没有就绪文本时不要制造空直播入口；空文本入口只会拖慢客户端启动。
+      merged.lives = readyEntries.length > 0
+        ? [{ name: '直播(聚合)', type: 0, url: `${workerBaseUrl}/live` }]
+        : [];
+    } else {
+      merged.lives = readyEntries.map((entry) => ({
+        name: entry.name || '直播源',
+        type: 0,
+        url: `${workerBaseUrl}/live/${entry.key}`,
+      }));
     }
-    merged.lives = uniqueLives;
+
+    await storage.put(KV_LIVE_MERGE_REPORT, JSON.stringify({
+      updatedAt: new Date().toISOString(),
+      mode: liveMergeMode === 'merged' ? 'merged' : 'separated',
+      platform: 'cloudflare',
+      sources: uniqueInputs.length,
+      prepare: prepareState,
+      textReady: readyEntries.length,
+      distributable: readyEntries.length,
+      preparedGroups: preparedGroups.length,
+      runtimeGroups: rebuilt.groups.length,
+    }));
+    logger.infoFields('aggregation', 'live-prepare-done', {
+      sources: uniqueInputs.length,
+      cursor: prepareState.cursor,
+      total: prepareState.total,
+      ready: prepareState.ready,
+      failed: prepareState.failed,
+      complete: prepareState.complete,
+      distributable: readyEntries.length,
+      preparedGroups: preparedGroups.length,
+      runtimeGroups: rebuilt.groups.length,
+    });
   } else {
     logger.info('aggregation', 'Step 6.5: Channel-level live merging...');
     {
@@ -801,91 +859,38 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     }
   }
 
-  // Step 7.8: 统一直播入口 —— TVBox 的 lives 字段只认 FongMi 格式 {name,type,url}，
-  // 如果存入 Native 格式 {group,channels} 会导致 TVBox 无法加载直播源。
-  // 因此：当合并后产生了频道数据（Native groups），必须替换为一个指向 /live 的指针。
-  if (merged.lives && merged.lives.length > 0) {
-    // 检测是否为 Native 格式（channel-level 合并后的产物）
-    const isNative = merged.lives.some((l: any) => l.group && Array.isArray(l.channels));
+  // Step 7.8: 统一直播入口 —— TVBox 的 lives 字段只认 FongMi 格式 {name,type,url}。
+  // CF 的 /live 与 /live/<key> 都只读预构建文本，这里按当前模式重建最终指针。
+  {
+    const liveEntries = merged.lives || [];
+    const isNative = liveEntries.some((l: any) => l.group && Array.isArray(l.channels));
+    const workerBaseUrl = config.workerBaseUrl;
 
-    if (config.workerBaseUrl) {
-      // CF Workers 模式
+    if (workerBaseUrl) {
+      // CF Workers 模式。不能以 merged.lives.length > 0 为前置条件：
+      // 冷启动或分片首轮可能没有就绪源，此时必须明确清空，不能保留旧模式残留。
+      const normalizedBaseUrl = workerBaseUrl.replace(/\/$/, '');
       const liveMergeMode = (await storage.get(KV_LIVE_MERGE_MODE)) || 'separated';
-      if (liveMergeMode === 'merged' || isNative) {
-        merged.lives = [
-          {
-            name: '直播(聚合)',
-            type: 0,
-            url: `${config.workerBaseUrl.replace(/\/$/, '')}/live`,
-          },
-        ];
-        console.log('[aggregation] Step 7.8: Unified live entry pointing to /live (CF Workers)');
+      if (liveMergeMode === 'merged') {
+        const readyEntries = await listLiveProxyEntries(storage);
+        merged.lives = readyEntries.length > 0
+          ? [{ name: '直播(聚合)', type: 0, url: `${normalizedBaseUrl}/live` }]
+          : [];
+        console.log(
+          `[aggregation] Step 7.8: ${merged.lives.length > 0 ? 'Unified live entry' : 'No ready live sources'} for /live (CF Workers)`,
+        );
       } else {
-        const proxyEntries: Array<{ name: string; url: string; ua?: string; header?: Record<string, string> }> = [];
-        for (const live of merged.lives as TVBoxLive[]) {
-          const url = live.url || live.api;
-          if (live.type === 3 || !url || !/^https?:\/\//i.test(url)) continue;
-          proxyEntries.push({
-            name: live.name || '直播源',
-            url,
-            ...(live.ua ? { ua: live.ua } : {}),
-            ...(live.header ? { header: live.header } : {}),
-          });
-        }
-
-
-        if (proxyEntries.length === 0) {
-          merged.lives = [];
-          console.log('[aggregation] Step 7.8: No valid upstream live sources for separated mode');
-        } else {
-          // CF 分离模式只暴露通过整源质量门禁的入口。这里关闭浏览器 UA 兜底，
-          // 避免“浏览器能打开、播放器不能播”的上游源进入应用端。
-          const channelSpeedMap = await loadChannelSpeedMap(storage);
-          const validated = await filterLiveSourcesDetailed(
-            proxyEntries,
-            config.fetchTimeoutMs,
-            channelSpeedMap,
-            {
-              storage,
-              concurrency: 2,
-              minChannelsPerSource: 5,
-              maxAdRatio: 0.5,
-              minPlayableRatio: 0.2,
-            },
-          );
-          const liveHints: Record<string, { kind?: 'aggregated' | 'manual'; category?: LiveCategory }> = {};
-          for (const input of proxyEntries) {
-            const category = validated.categories[input.url];
-            liveHints[input.url] = {
-              kind: 'aggregated',
-              ...(category ? { category } : {}),
-            };
-          }
-          const validationUpdate = {
-            validUrls: validated.valid.map((input) => input.url),
-            transientUrls: validated.transient.map((input) => input.url),
-            invalidUrls: validated.invalid.map((input) => input.url),
-            metrics: validated.metrics,
-            hints: liveHints,
-            texts: validated.texts,
-            checkedAt: new Date().toISOString(),
-          };
-
-          // 本轮结果不是覆盖式快照，而是对持久健康池的状态更新：
-          // valid 立即晋级；transient 保留为后备；invalid 累计后再淘汰。
-          merged.lives = await liveSourcesToTVBoxLives(
-            proxyEntries,
-            config.workerBaseUrl,
-            storage,
-            undefined,
-            validated.texts,
-            validationUpdate,
-          );
-          console.log(
-            `[aggregation] Step 7.8: Exposed ${merged.lives.length} distributable /live/<key> sources `
-            + `(valid=${validated.valid.length}, transient=${validated.transient.length}, invalid=${validated.invalid.length})`,
-          );
-        }
+        // 分离模式只读取分片预热已经写入且通过质量门禁的文本清单，
+        // 绝不在聚合请求路径再次回源全部上游直播源。
+        const readyEntries = await listLiveProxyEntries(storage);
+        merged.lives = readyEntries.map((entry) => ({
+          name: entry.name || '直播源',
+          type: 0,
+          url: `${normalizedBaseUrl}/live/${entry.key}`,
+        }));
+        console.log(
+          `[aggregation] Step 7.8: Exposed ${merged.lives.length} prebuilt /live/<key> sources`,
+        );
       }
     } else if (isNative) {
       // Node/Docker (Render) 模式：Native groups 不能直接放在 config JSON 的 lives 里，

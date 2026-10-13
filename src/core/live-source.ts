@@ -102,6 +102,11 @@ export interface LiveProxyValidationUpdate {
   texts?: Record<string, string>;
   /** 本轮是完整聚合快照：可对上轮未出现的旧入口执行宽限期淘汰。 */
   fullSnapshot?: boolean;
+  /**
+   * 本轮只是受限分片，而不是覆盖全部源。
+   * 此时 texts 只能更新本批次，严禁把未出现在本批次的旧 textReady 清零。
+   */
+  incremental?: boolean;
 }
 
 export async function liveProxyKey(url: string): Promise<string> {
@@ -303,8 +308,8 @@ export function mergeLiveProxyManifest(
       // 不能凭旧标记继续下发一个已经无法生成文本的入口。
       // 完整快照或带文本的更新代表本轮文本状态是权威结果；
       // 不能从 previous 的 spread 中继承旧的 textReady。
-      ...((update.fullSnapshot || update.texts) ? { textReady: false } : {}),
-      ...(current.textReady === undefined && previousEntry?.textReady === true && !update.fullSnapshot && !update.texts ? { textReady: true } : {}),
+      ...((update.fullSnapshot || (update.texts && !update.incremental)) ? { textReady: false } : {}),
+      ...(current.textReady === undefined && previousEntry?.textReady === true && !update.fullSnapshot && (!update.texts || update.incremental) ? { textReady: true } : {}),
       ...(current.textReady === true ? { textReady: true } : {}),
       ...(current.textReady === false ? { textReady: false } : {}),
       lastSeenAt: checkedAt,
@@ -461,7 +466,7 @@ export async function updateLiveProxyManifest(
   for (const entry of proxyEntries) entry.key = await urlToKey(entry.url);
   // 完整快照或带 texts 的更新是权威文本状态：本轮没有有效文本的入口
   // 必须显式落为未就绪，不能继续沿用上一轮旧的 textReady。
-  const textStateAuthoritative = !!(validationUpdate.fullSnapshot || validationUpdate.texts);
+  const textStateAuthoritative = !!(validationUpdate.fullSnapshot || (validationUpdate.texts && !validationUpdate.incremental));
   if (textStateAuthoritative) {
     for (const entry of proxyEntries) entry.textReady = false;
   }
@@ -494,9 +499,14 @@ export async function updateLiveProxyManifest(
     if (!prior) continue;
     if (!entry.successfulAt && prior.successfulAt) entry.successfulAt = prior.successfulAt;
     if (entry.everSucceeded == null && prior.everSucceeded != null) entry.everSucceeded = prior.everSucceeded;
-    // 局部验证（未携带 texts）可以沿用旧文本；完整聚合若本轮没有产出
-    // 该源文本，则不得继续标记为 ready，防止 App 收到空入口。
-    if (entry.textReady !== true && prior.textReady === true && !validationUpdate.fullSnapshot && !validationUpdate.texts) {
+    // 局部验证可以沿用旧文本；分片预热也只更新本批次，不得清空其他已完成批次。
+    // 完整聚合若本轮没有产出该源文本，才不得继续标记为 ready，防止 App 收到空入口。
+    if (
+      entry.textReady !== true
+      && prior.textReady === true
+      && !validationUpdate.fullSnapshot
+      && (!validationUpdate.texts || validationUpdate.incremental)
+    ) {
       entry.textReady = true;
     }
   }
@@ -573,6 +583,34 @@ export function liveProxyEntryLabel(
     }
   }
   return name;
+}
+
+/**
+ * 仅保留当前聚合快照仍存在的源入口。
+ *
+ * KV 没有物理删除 API；这里不批量写空值清文本，只压缩 manifest 的权威集合。
+ * 路由在读取正文前必须按 manifest 的 textReady 资格复核，因此被裁剪的旧文本
+ * 不会继续进入候选树、质量池或 /live/<key> 下发池，也不会浪费 KV 写配额。
+ */
+export async function pruneLiveProxyManifestToUrls(
+  urls: readonly string[],
+  storage: Storage,
+): Promise<LiveProxyManifest> {
+  const allowed = new Set(urls.map((url) => url.trim()).filter(Boolean));
+  const previous = parseLiveProxyManifest(await storage.get(KV_LIVE_PROXY_MANIFEST));
+  if (!previous) {
+    return { version: LIVE_PROXY_MANIFEST_VERSION, signature: '[]', entries: [] };
+  }
+  const entries = sortManifestEntries(previous.entries.filter((entry) => allowed.has(entry.url)));
+  const manifest = {
+    version: LIVE_PROXY_MANIFEST_VERSION,
+    signature: manifestSignature(entries),
+    entries,
+  };
+  if (previous.signature !== manifest.signature) {
+    await storage.put(KV_LIVE_PROXY_MANIFEST, JSON.stringify(manifest));
+  }
+  return manifest;
 }
 
 export async function listLiveProxyEntries(storage: Storage): Promise<LiveProxyManifestEntry[]> {
