@@ -597,6 +597,7 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
               invalidUrls,
               metrics: mergeResult.sourceMetrics,
               hints,
+              labels: mergeResult.sourceLabels,
               texts: mergeResult.sourceTexts,
               fullSnapshot: true,
             },

@@ -1,4 +1,4 @@
-import type { LiveSourceEntry, TVBoxLive } from './types';
+import type { LiveSourceEntry, TVBoxLive, TVBoxLiveGroup } from './types';
 import type { Storage } from '../storage/interface';
 import { KV_LIVE_TEXT_PREFIX, LIVE_PROXY_TTL } from './config';
 import { isBlockedLiveSource } from './live-policy';
@@ -65,6 +65,8 @@ export interface LiveProxyManifestEntry extends LiveProxySource {
   kind?: 'aggregated' | 'manual';
   format?: LiveSourceFormat;
   category?: LiveCategory;
+  /** 合并或代理输出中此源的真实线路标签；供运行时精确过滤，不能再用 URL 反查。 */
+  label?: string;
   qualityScore?: number;
   rank?: number;
   channelCount?: number;
@@ -93,6 +95,8 @@ export interface LiveProxyValidationUpdate {
   metrics?: Readonly<Record<string, LiveSourceMetrics>>;
   /** 逐源来源与分类提示，聚合阶段解析后回填，避免清单分类一律为“其他”。 */
   hints?: Readonly<Record<string, LiveProxyEntryHint>>;
+  /** 原始源 URL -> 合并输出实际使用的线路标签。 */
+  labels?: Readonly<Record<string, string>>;
   texts?: Record<string, string>;
   /** 本轮是完整聚合快照：可对上轮未出现的旧入口执行宽限期淘汰。 */
   fullSnapshot?: boolean;
@@ -159,6 +163,7 @@ function normalizeManifestEntry(
     ...(record.kind === 'aggregated' || record.kind === 'manual' ? { kind: record.kind } : {}),
     format: normalizeLiveSourceFormat(record.format ?? liveSourceFormatFromUrl(url)),
     category: normalizeLiveCategory(record.category),
+    ...(stringValue(record, 'label') ? { label: record.label as string } : {}),
     ...(numberValue(record, 'qualityScore') != null ? { qualityScore: numberValue(record, 'qualityScore') } : {}),
     ...(numberValue(record, 'rank') != null ? { rank: numberValue(record, 'rank') } : {}),
     ...(numberValue(record, 'channelCount') != null ? { channelCount: numberValue(record, 'channelCount') } : {}),
@@ -228,6 +233,7 @@ function sortManifestEntries(entries: LiveProxyManifestEntry[]): LiveProxyManife
 export function prepareManifestEntries(
   entries: LiveSourceEntry[],
   hints?: Record<string, LiveProxyEntryHint>,
+  labels?: Readonly<Record<string, string>>,
 ): LiveProxyManifestEntry[] {
   const checkedAt = new Date().toISOString();
   const prepared: LiveProxyManifestEntry[] = [];
@@ -245,6 +251,7 @@ export function prepareManifestEntries(
       consecutiveFailures: 0,
       checkedAt,
       kind: hint?.kind ?? 'aggregated',
+      ...(labels?.[url] ? { label: labels[url] } : {}),
       format: liveSourceFormatFromUrl(url),
       // 分类来自本轮聚合解析出的分组；缺省才退回“其他”，不再一律判成其他。
       category: hint?.category ?? classifyLiveCategory([]),
@@ -432,7 +439,7 @@ export async function updateLiveProxyManifest(
   storage: Storage,
   validationUpdate: Omit<LiveProxyValidationUpdate, 'entries'>,
 ): Promise<LiveProxyManifest> {
-  const proxyEntries = prepareManifestEntries(entries, validationUpdate.hints);
+  const proxyEntries = prepareManifestEntries(entries, validationUpdate.hints, validationUpdate.labels);
   for (const entry of proxyEntries) entry.key = await urlToKey(entry.url);
   for (const entry of proxyEntries) {
     const metrics = validationUpdate.metrics?.[entry.url];
@@ -470,10 +477,11 @@ export async function liveSourcesToTVBoxLives(
   speedMap?: Map<string, number>,
   prebuiltTexts?: Record<string, string>,
   validationUpdate?: Omit<LiveProxyValidationUpdate, 'entries'>,
+  labels?: Readonly<Record<string, string>>,
 ): Promise<TVBoxLive[]> {
   const lives: TVBoxLive[] = [];
   if (workerBaseUrl) {
-    const proxyEntries = prepareManifestEntries(entries, validationUpdate?.hints);
+    const proxyEntries = prepareManifestEntries(entries, validationUpdate?.hints, labels);
     const manifest = await updateLiveProxyManifest(entries, storage, validationUpdate || {
       validUrls: proxyEntries.map((entry) => entry.url),
     });
@@ -495,6 +503,43 @@ export async function liveSourcesToTVBoxLives(
     lives.push({ name, type: 0, url: entry.url });
   }
   return lives;
+}
+
+/**
+ * 解析一条清单源在合并输出中的真实标签。
+ * 优先使用清单回写的 label；旧缓存没有 label 时，按合并器的短哈希规则匹配 `源名#hash`。
+ * 这里不做“同名即匹配”，避免同名不同源串源。
+ */
+export function liveProxyEntryLabel(
+  entry: LiveProxyManifestEntry,
+  groups: readonly TVBoxLiveGroup[],
+): string {
+  const explicit = (entry.label || "").trim();
+  if (explicit) return explicit;
+
+  const name = (entry.name || "").trim();
+  const url = (entry.url || "").trim();
+  if (!url) return name;
+
+  // 兼容旧清单：合并器标签形如 `源名#短哈希`。旧清单没有 label，
+  // 但 key 来自同一 URL 的 SHA-256 前 8 字节。这里只做哈希精确匹配。
+  const hash = entry.key && /^[0-9a-f]{8,64}$/i.test(entry.key)
+    ? entry.key.slice(0, 8).toLowerCase()
+    : "";
+  if (hash) {
+    for (const group of groups) {
+      for (const channel of group.channels || []) {
+        for (const raw of channel.urls || []) {
+          const value = (raw || "").trim();
+          const idx = value.lastIndexOf("$");
+          if (idx <= 0) continue;
+          const label = value.slice(idx + 1);
+          if (label.toLowerCase().endsWith("#" + hash)) return label;
+        }
+      }
+    }
+  }
+  return name;
 }
 
 export async function listLiveProxyEntries(storage: Storage): Promise<LiveProxyManifestEntry[]> {

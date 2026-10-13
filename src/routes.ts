@@ -11,7 +11,7 @@ import { loadGroupOrder, saveGroupOrder } from './core/group-order';
 import { validateMacCMS } from './core/maccms';
 import { lookupJarUrl, isMd5Key, base64ToUint8Array, rewriteJarUrls, normalizeJarRequestKey, loadJarReadyKeys, markJarReady, getJarKeyForSite } from './core/jar-proxy';
 import { BASE_URL_PLACEHOLDER } from './core/config';
-import { lookupLiveSource, listLiveProxyEntries, listAllLiveProxyEntries, isLiveProxyEntryDistributable, recordLiveProxyValidation, removeLiveProxyEntry } from './core/live-source';
+import { lookupLiveSource, listLiveProxyEntries, listAllLiveProxyEntries, isLiveProxyEntryDistributable, liveProxyEntryLabel, recordLiveProxyValidation, removeLiveProxyEntry } from './core/live-source';
 import { loadLiveDistribution, saveLiveDistribution, toLiveDistributionPolicy } from './core/live-distribution-store';
 import { selectLiveDistribution } from './core/live-quality';
 import { rebuildLiveOutput } from './core/live-output';
@@ -36,7 +36,7 @@ import {
   getQualityPoolHealth,
 } from './core/quality';
 import { loadClientDistribution, saveClientDistribution, findClientAuthCode, normalizeClientDistributionConfig, createClientAuthCode } from './core/client-auth-store';
-import { formatAggregatedLiveGroupsAsTxt, formatLiveGroupsAsTxt, filterLivesBySource, filterLivesBySourceDetailed, sortLiveGroupsForOutput, filterGroupsBySourceLabels, reorderGroupsBySourcePriority, normalizeSourceLabelKey, liveSourceLabelFromUrl } from './core/live-merger';
+import { formatAggregatedLiveGroupsAsTxt, formatLiveGroupsAsTxt, filterLivesBySource, filterLivesBySourceDetailed, sortLiveGroupsForOutput, filterGroupsBySourceLabels, reorderGroupsBySourcePriority, normalizeSourceLabelKey } from './core/live-merger';
 import { containsBlockedLiveUrl, isBlockedLiveSource, isBlockedLiveUrl } from './core/live-policy';
 import { autoNameFromUrl, backupTypeMismatch, createSourceBackup, extractBackupItems, parseSourceList } from './core/source-list-parser';
 import type { TVBoxConfig, TVBoxSite, SearchQuotaConfig, SiteQualityGrade, TVBoxLive, TVBoxLiveGroup, ClientAuthCode, ClientDistributionConfig, LiveDistributionConfig, SourceDistributionMode, SourceSelectionMode } from './core/types';
@@ -847,13 +847,14 @@ export function createApp(deps: AppDeps): Hono {
       toLiveDistributionPolicy(distribution),
     );
     const selectedLabels = new Set<string>();
+    const priorityLabels: string[] = [];
     for (const entry of selected) {
-      const label = liveSourceLabelFromUrl(entry.url, groups);
-      if (label) selectedLabels.add(normalizeSourceLabelKey(label));
-      selectedLabels.add(normalizeSourceLabelKey(entry.name || entry.url || ''));
+      const label = liveProxyEntryLabel(entry, groups);
+      if (!label) continue;
+      selectedLabels.add(normalizeSourceLabelKey(label));
+      priorityLabels.push(label);
     }
     if (selectedLabels.size === 0) return [];
-    const priorityLabels = selected.map((entry) => liveSourceLabelFromUrl(entry.url, groups) || entry.name || entry.url || '').filter(Boolean);
     return reorderGroupsBySourcePriority(
       filterGroupsBySourceLabels(groups, selectedLabels, false),
       priorityLabels,

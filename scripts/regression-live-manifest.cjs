@@ -285,4 +285,89 @@ const staleSelected = selectLiveDistribution(stalePool, { selectionMode: 'simple
 assert(staleSelected.length === 2, 'stale cache fallback must remain distributable');
 assert(staleSelected[0].key === 'fresh', 'current healthy source must outrank stale cache fallback, got ' + staleSelected.map((e) => e.key).join(','));
 
+
+// merged source labels: exact label, legacy hash fallback, same-name isolation
+const liveMergerOutfile = path.join(root, '.tmp-regression-build', 'live-merger.cjs');
+buildSync({
+  entryPoints: [path.join(root, 'src/core/live-merger.ts')],
+  bundle: true,
+  platform: 'node',
+  target: 'node20',
+  format: 'cjs',
+  outfile: liveMergerOutfile,
+});
+const {
+  liveProxyEntryLabel,
+  prepareManifestEntries,
+} = require(outfile);
+const {
+  filterGroupsBySourceLabels,
+  reorderGroupsBySourcePriority,
+  normalizeSourceLabelKey,
+} = require(liveMergerOutfile);
+
+const mergedGroups = [
+  {
+    group: '央视',
+    channels: [
+      {
+        name: 'CCTV-1',
+        urls: [
+          'http://a.example/cctv1$源A#aaaaaaaa',
+          'http://b.example/cctv1$源B#bbbbbbbb',
+          'http://c.example/cctv1$源A#aaaaaaaa',
+        ],
+      },
+    ],
+  },
+  {
+    group: '卫视',
+    channels: [
+      { name: '湖南卫视', urls: ['http://b.example/hunan$源B#bbbbbbbb'] },
+    ],
+  },
+];
+
+const explicitEntry = Object.assign({}, entry(40), { key: 'aaaaaaaa1234', name: '源A', label: '源A#aaaaaaaa' });
+assert(liveProxyEntryLabel(explicitEntry, mergedGroups) === '源A#aaaaaaaa', 'explicit manifest label must win');
+const explicitSelected = new Set([normalizeSourceLabelKey(liveProxyEntryLabel(explicitEntry, mergedGroups))]);
+const explicitFiltered = filterGroupsBySourceLabels(mergedGroups, explicitSelected, false);
+assert(explicitFiltered.length === 1, 'explicit label must retain matching groups');
+assert(explicitFiltered[0].channels[0].urls.length === 2, 'explicit label must keep all matching lines');
+assert(explicitFiltered[0].channels[0].urls.every((url) => url.endsWith('源A#aaaaaaaa')), 'unselected source B must not leak');
+
+const legacyEntry = Object.assign({}, entry(41), { key: 'bbbbbbbbffff', name: '任意名字', label: undefined });
+assert(liveProxyEntryLabel(legacyEntry, mergedGroups) === '源B#bbbbbbbb', 'legacy key hash must resolve output label');
+const legacySelected = new Set([normalizeSourceLabelKey(liveProxyEntryLabel(legacyEntry, mergedGroups))]);
+const legacyFiltered = filterGroupsBySourceLabels(mergedGroups, legacySelected, false);
+assert(legacyFiltered.length === 2, 'legacy hash fallback must retain selected source across groups');
+assert(legacyFiltered.every((group) => group.channels.every((channel) => channel.urls.every((url) => url.endsWith('源B#bbbbbbbb')))), 'legacy hash fallback must not retain unselected source');
+
+const sameNameGroups = [
+  {
+    group: '测试',
+    channels: [
+      { name: '频道', urls: ['http://one.example/live$同名源#11111111', 'http://two.example/live$同名源#22222222'] },
+    ],
+  },
+];
+const sameNameEntry = Object.assign({}, entry(42), { key: '22222222deadbeef', name: '同名源', label: undefined });
+const sameNameLabel = liveProxyEntryLabel(sameNameEntry, sameNameGroups);
+assert(sameNameLabel === '同名源#22222222', 'same-name different-hash source must resolve by hash');
+const sameNameFiltered = filterGroupsBySourceLabels(sameNameGroups, new Set([normalizeSourceLabelKey(sameNameLabel)]), false);
+assert(sameNameFiltered[0].channels[0].urls.length === 1, 'same-name different-hash must retain only the matching source');
+assert(sameNameFiltered[0].channels[0].urls[0].includes('22222222'), 'same-name different-hash must keep the correct line');
+
+const priorityGroups = [
+  { group: '央视', channels: [{ name: 'CCTV-2', urls: ['http://low.example$低质#33333333', 'http://high.example$优质#44444444'] }] },
+];
+const priorityResult = reorderGroupsBySourcePriority(priorityGroups, ['优质#44444444', '低质#33333333']);
+assert(priorityResult[0].channels[0].urls[0].includes('优质#44444444'), 'higher-ranked source must be first line after filtering');
+
+const labels = { 'https://live.example/labeled.txt': '源C#cccccccc' };
+const preparedWithLabel = prepareManifestEntries([
+  { name: '源C', url: 'https://live.example/labeled.txt' },
+], undefined, labels);
+assert(preparedWithLabel[0].label === '源C#cccccccc', 'prepareManifestEntries must persist merged output label');
+
 console.log('regression: live manifest + distribution passed');

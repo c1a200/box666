@@ -13,7 +13,7 @@ import {
   KV_IGNORE_AGGREGATED_LIVES,
 } from './config';
 import { loadLiveDistribution, toLiveDistributionPolicy } from './live-distribution-store';
-import { listAllLiveProxyEntries } from './live-source';
+import { listAllLiveProxyEntries, liveProxyEntryLabel } from './live-source';
 import { selectLiveDistribution, type LiveDistributionPolicy } from './live-quality';
 import {
   AGGREGATED_MAX_URLS_PER_CHANNEL,
@@ -22,7 +22,6 @@ import {
   normalizeSourceLabelKey,
   filterGroupsBySourceLabels,
   reorderGroupsBySourcePriority,
-  liveSourceLabelFromUrl,
 } from './live-merger';
 import { loadSpeedMap } from './channel-probe';
 
@@ -113,12 +112,12 @@ async function buildSnapshot(
   const candidateGroups = await loadCandidateGroups(storage);
   const selectedLabels = new Set<string>();
   for (const entry of selected) {
-    const label = liveSourceLabelFromUrl(entry.url, candidateGroups);
-    if (label) selectedLabels.add(normalizeSourceLabelKey(label));
-    selectedLabels.add(normalizeSourceLabelKey(entry.name || entry.url || ''));
+    const label = liveProxyEntryLabel(entry, candidateGroups);
+    if (!label) continue;
+    selectedLabels.add(normalizeSourceLabelKey(label));
   }
   const labels = selected
-    .map((entry) => liveSourceLabelFromUrl(entry.url, candidateGroups) || entry.name || entry.url || '')
+    .map((entry) => liveProxyEntryLabel(entry, candidateGroups))
     .filter(Boolean);
   const groups = selectedLabels.size > 0
     ? reorderGroupsBySourcePriority(
