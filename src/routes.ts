@@ -69,6 +69,7 @@ export interface AppDeps {
   storage: Storage;
   config: AppConfig;
   triggerRefresh: () => Promise<AggregationTriggerResult | void>;
+  triggerLivePrepare?: () => Promise<unknown>; // 仅 Cloudflare 入口启用直播正文分片准备
   triggerQuality?: (mode: SearchQualityRunMode) => Promise<void>;   // Node/Docker 入口启用质量分级
   onCronIntervalChange?: (intervalMinutes: number) => void;
   enableChannelProbe?: boolean; // 仅 Node/Docker 入口启用
@@ -3924,6 +3925,26 @@ export function createApp(deps: AppDeps): Hono {
   app.get('/admin/live-distribution', async (c) => {
     if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
     return c.json(await liveDistributionPayload());
+  });
+
+  // 手动推进一个直播正文准备分片。
+  // CF 免费 Worker 不能在单个聚合任务内下载全部直播源，这里给运维提供
+  // 可重复调用的推进入口；每个分片完成后立即刷新候选树与运行时输出。
+  app.post('/admin/live-prepare-chunk', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
+    if (!deps.triggerLivePrepare) {
+      return c.json({ error: 'Live preparation is only available in the Cloudflare runtime' }, 501);
+    }
+    if (deps.isSyncing?.()) {
+      return c.json({ success: false, skipped: true, reason: 'aggregation-running' }, 409);
+    }
+    try {
+      const result = await deps.triggerLivePrepare();
+      return c.json({ success: true, result });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return c.json({ success: false, error: message }, 500);
+    }
   });
 
   app.put('/admin/live-distribution', async (c) => {

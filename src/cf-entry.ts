@@ -4,6 +4,8 @@ import { createApp } from './routes';
 import { KVStorage } from './storage/kv';
 import { runAggregation } from './aggregator';
 import { probeLiveUrlsBounded } from './core/channel-probe';
+import { loadLivePrepareState, runLivePrepareChunk } from './core/live-prepare';
+import { loadLivePrepareInputs } from './core/live-inputs';
 import { DEFAULT_SPEED_TIMEOUT_MS, DEFAULT_SITE_TIMEOUT_MS, DEFAULT_FETCH_TIMEOUT_MS, DEFAULT_SPEED_TEST_CONCURRENCY, DEFAULT_SPEED_TEST_BUDGET_MS, KV_CRON_INTERVAL, KV_LAST_UPDATE, KV_AGGREGATION_STATUS, KV_MERGED_CONFIG, DEFAULT_CRON_INTERVAL } from './core/config';
 import { currentAggregationPhase } from './core/logger';
 import {
@@ -275,6 +277,11 @@ export default {
       },
       storage,
       config,
+      triggerLivePrepare: () => runLivePrepareChunk(storage, {
+        batchSize: 8,
+        timeoutMs: 6000,
+        concurrency: 3,
+      }),
       triggerQuality: (mode) => runQualityChunkWithStatus(storage, mode, config.qualityTimezone),
       isSyncing: () => liveAggregationStatus.get(aggregationStatusKey(storage))?.running === true,
       aggregationStatus: () => readAggregationStatus(storage),
@@ -308,8 +315,17 @@ export default {
       return;
     }
 
-    // 聚合未到期时：到期或未完成的质量分级每次只跑一个分片，
-    // 剩余时间用于少量直播测速，避免超过 Worker 时长限制。
+    // 聚合未到期时，优先级：直播正文准备 > 搜索质量分级 > 少量直播测速。
+    // 未完成正文预构建的直播入口绝不下发，因此必须先补齐直播分片。
+    // 同时核对输入签名：新聚合可能已持久化新输入，但旧 prepare state 仍是
+    // complete=true；若不识别签名变化，新直播源会被永久跳过。
+    const livePrepareState = await loadLivePrepareState(storage);
+    const livePrepareInputs = await loadLivePrepareInputs(storage);
+    const livePrepareSignatureMatches = !!livePrepareState
+      && livePrepareState.sourceSignature === (livePrepareInputs?.signature || '');
+    const livePrepareActive = !!livePrepareInputs
+      && livePrepareInputs.sources.length > 0
+      && (livePrepareState?.complete !== true || !livePrepareSignatureMatches);
     const qualityStatus = await loadQualityStatus(storage);
     const candidateDue = await shouldRunQualityNow(storage, new Date(), config.qualityTimezone);
     const fullDue = await shouldRunFullQualityNow(storage, new Date(), config.qualityTimezone);
@@ -318,6 +334,17 @@ export default {
 
     ctx.waitUntil(
       (async () => {
+        if (livePrepareActive) {
+          console.log('[scheduled] Running live prepare chunk (cursor=' + (livePrepareState?.cursor ?? 0) + '/' + (livePrepareState?.total ?? 0) + ')');
+          const prepareResult = await runLivePrepareChunk(storage, {
+            batchSize: 8,
+            timeoutMs: 6000,
+            concurrency: 3,
+          });
+          console.log('[scheduled] Live prepare chunk done: ' + prepareResult.state.cursor + '/' + prepareResult.state.total);
+          // 本 tick 只推进一个重任务，避免边界场景下与质量分片叠加超时。
+          return;
+        }
         if (qualityActive) {
           console.log('[scheduled] Running search quality chunk (due=' + qualityDue + ', state=' + qualityStatus.state + ')');
           await runQualityChunkWithStatus(storage, undefined, config.qualityTimezone);

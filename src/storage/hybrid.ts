@@ -61,6 +61,7 @@ export const DURABLE_STORAGE_KEYS = new Set<string>([
   'live_merged_txt_version',
   'live_proxy_manifest',
   'live_prepare_state',
+  'live_prepare_inputs',
   'channel_candidate_urls',
   'search_quality_pool',
   'search_quality_snapshot',

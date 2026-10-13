@@ -5,6 +5,7 @@ const root = path.resolve(__dirname, '..');
 const outfile = path.join(root, '.tmp-regression-build', 'live-source.cjs');
 const qualityOutfile = path.join(root, '.tmp-regression-build', 'live-quality.cjs');
 const prepareOutfile = path.join(root, '.tmp-regression-build', 'live-prepare.cjs');
+const inputsOutfile = path.join(root, '.tmp-regression-build', 'live-inputs.cjs');
 const mergerOutfile = path.join(root, '.tmp-regression-build', 'live-merger.cjs');
 
 buildSync({
@@ -44,6 +45,27 @@ const {
   prepareLiveSourcesChunk,
   serializePreparedLiveGroups,
 } = require(prepareOutfile);
+
+buildSync({
+  entryPoints: [path.join(root, 'src/core/live-merger.ts')],
+  bundle: true,
+  platform: 'node',
+  target: 'node20',
+  format: 'cjs',
+  outfile: mergerOutfile,
+});
+buildSync({
+  entryPoints: [path.join(root, 'src/core/live-inputs.ts')],
+  bundle: true,
+  platform: 'node',
+  target: 'node20',
+  format: 'cjs',
+  outfile: inputsOutfile,
+});
+
+const {
+  filterLiveSourcesDetailed: filterLiveSourcesDetailedForRegression,
+} = require(mergerOutfile);
 
 const {
   selectLiveDistribution,
@@ -547,6 +569,18 @@ const incrementalBase = mergeLiveProxyManifest(null, [entry(50), entry(51)], {
   },
 });
 assert(incrementalBase.entries.every((item) => item.textReady === true), 'incremental seed must mark both batches ready');
+// 18d. 规范化签名必须稳定：同一组 URL 的 query、尾斜杠和大小写变化
+// 只能触发一次输入变更，不能在状态 complete 后反复重跑全部直播分片。
+const inputSignatureMod = require(inputsOutfile);
+const signatureA = inputSignatureMod.livePrepareInputSignature([
+  { name: 'a', url: 'https://Live.Example/a.txt?token=1' },
+  { name: 'b', url: 'https://live.example/b.txt/' },
+]);
+const signatureB = inputSignatureMod.livePrepareInputSignature([
+  { name: 'b', url: 'HTTPS://LIVE.EXAMPLE/b.txt' },
+  { name: 'a', url: 'https://live.example/a.txt' },
+]);
+assert(signatureA === signatureB, 'normalized live input signature must be stable across query/order/case changes');
 const incrementalSecond = mergeLiveProxyManifest(
   incrementalBase,
   incrementalBase.entries.map((item) => ({ ...item, textReady: undefined })),
@@ -559,13 +593,106 @@ const incrementalSecond = mergeLiveProxyManifest(
   },
 );
 assert(
-  incrementalSecond.entries.find((item) => item.key === 'key-51')?.textReady === true,
-  'incremental batch must preserve another ready batch text state',
+  incrementalSecond.entries.find((item) => item.key === 'key-51')?.textReady === false,
+  'incremental batch must revoke textReady for a failed source in that batch',
+);
+assert(
+  isLiveProxyEntryDistributable(incrementalSecond.entries.find((item) => item.key === 'key-51')) === false,
+  'failed incremental source must not remain distributable',
 );
 assert(
   incrementalSecond.entries.find((item) => item.key === 'key-50')?.textReady === true,
   'incremental batch must mark its own successful text ready',
 );
+
+const incrementalInvalid = mergeLiveProxyManifest(
+  incrementalBase,
+  incrementalBase.entries.map((item) => ({ ...item, textReady: undefined })),
+  {
+    checkedAt: '2026-10-13T02:01:30.000Z',
+    validUrls: [],
+    transientUrls: [],
+    invalidUrls: ['https://live.example/51.txt'],
+    texts: {},
+    incremental: true,
+  },
+);
+assert(
+  incrementalInvalid.entries.find((item) => item.key === 'key-51')?.textReady === false,
+  'invalid source in an incremental batch must also revoke textReady',
+);
+assert(
+  isLiveProxyEntryDistributable(incrementalInvalid.entries.find((item) => item.key === 'key-51')) === false,
+  'invalid incremental source must not remain distributable',
+);
+
+// 18a. 增量更新标记 valid 但本批没有正文，必须撤销旧 ready。
+const incrementalMissingText = mergeLiveProxyManifest(
+  incrementalBase,
+  incrementalBase.entries.map((item) => ({ ...item, textReady: undefined })),
+  {
+    checkedAt: '2026-10-13T02:01:45.000Z',
+    validUrls: ['https://live.example/50.txt', 'https://live.example/51.txt'],
+    texts: { 'https://live.example/50.txt': '央视,#genre#\nCCTV-1,http://50-new.example/live' },
+    incremental: true,
+  },
+);
+assert(
+  incrementalMissingText.entries.find((item) => item.key === 'key-50')?.textReady === true,
+  'incremental valid source with text must stay ready',
+);
+assert(
+  incrementalMissingText.entries.find((item) => item.key === 'key-51')?.textReady === false,
+  'incremental valid-without-text source must not inherit old textReady',
+);
+assert(
+  isLiveProxyEntryDistributable(incrementalMissingText.entries.find((item) => item.key === 'key-51')) === false,
+  'incremental valid-without-text source must not remain distributable',
+);
+
+// ── 18c. HTTP 2xx 但无可用频道正文时必须判定 invalid，不得进入质量池 ──
+async function testSuccessWithoutUsableText() {
+  const originalFetch = global.fetch;
+  global.fetch = async () => new Response('<html><body>ok</body></html>', {
+    status: 200,
+    headers: { 'Content-Type': 'text/html' },
+  });
+  try {
+    const result = await filterLiveSourcesDetailedForRegression([
+      { name: '空正文', url: 'https://live.example/empty-body.m3u' },
+    ], 1000, undefined, {
+      minChannelsPerSource: 1,
+      minPlayableRatio: 0,
+      maxAdRatio: 1,
+    });
+    assert(result.valid.length === 0, '2xx response without playable channels must not be valid');
+    assert(result.invalid.length === 1, '2xx response without playable channels must be invalid');
+    assert(result.transient.length === 0, '2xx response without playable channels must not be transient');
+  } finally {
+    global.fetch = originalFetch;
+  }
+}
+
+// ── 18b. 单源复检失败必须撤销旧 textReady ──
+async function testManualValidationFailure() {
+  const memory = new Map();
+  const ready = entry(52, { key: 'manual-fail', url: 'https://live.example/manual-fail.txt' });
+  memory.set('live_proxy_manifest', JSON.stringify({
+    version: 4,
+    signature: 'manual-fail-seed',
+    entries: [ready],
+  }));
+  const storage = {
+    async get(key) { return memory.has(key) ? memory.get(key) : null; },
+    async put(key, value) { memory.set(key, String(value)); },
+  };
+  const { recordLiveProxyValidation } = require(outfile);
+  const failed = await recordLiveProxyValidation('manual-fail', 'transient', storage);
+  assert(failed?.textReady === false, 'failed manual validation must revoke textReady');
+  assert(isLiveProxyEntryDistributable(failed) === false, 'failed manual validation must not remain distributable');
+  const persisted = JSON.parse(memory.get('live_proxy_manifest'));
+  assert(persisted.entries[0].textReady === false, 'revoked readiness must be persisted');
+}
 
 // ── 19. 非增量 texts 更新仍是权威快照：缺失文本必须撤销 ──
 const authoritativeTexts = mergeLiveProxyManifest(
@@ -587,8 +714,11 @@ assert(
   'revoked authoritative text must not remain distributable',
 );
 
-// ── 20. 源码裁剪：manifest 只保留允许 URL，不写入空 live:<key> ──
-(async () => {
+
+async function main() {
+  await testSuccessWithoutUsableText();
+  await testManualValidationFailure();
+  // ── 20. 源码裁剪：manifest 只保留允许 URL，不写入空 live:<key> ──
   const memory = new Map();
   memory.set('live_proxy_manifest', JSON.stringify({
     version: 4,
@@ -619,7 +749,9 @@ assert(
   assert(preparedSnapshot.includes('源K#12345678'), 'prepared snapshot must retain source label');
 
   console.log('regression: live manifest + distribution passed');
-})().catch((error) => {
+}
+
+main().catch((error) => {
   console.error(error);
   process.exit(1);
 });

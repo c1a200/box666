@@ -2129,8 +2129,14 @@ export async function filterLiveSourcesDetailed(
     const sourceText = formatLiveGroupsAsTxt(sourceGroups);
     if (sourceText.trim() && sourceText.includes('#genre#')) {
       texts[input.url] = sourceText;
+      valid.push(input);
+    } else {
+      // 下载成功但没有产出可解析正文，不能算 valid；否则清单会继承旧
+      // textReady，最终下发一个没有正文的 /live/<key>。
+      metrics[input.url] = sourceFailureMetrics('invalid', checkedAt);
+      invalid.push(input);
+      console.log('[live-merger] Rejected live source without playable text ' + sourceName);
     }
-    valid.push(input);
   }
 
   console.log(`[live-merger] Validated ${valid.length}/${sources.length} live sources (invalid=${invalid.length + blocked.length}, transient=${transient.length})`);

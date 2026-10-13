@@ -9,11 +9,10 @@ import { macCMSToTVBoxSites, processMacCMSForLocal } from './core/maccms';
 import { rewriteJarUrls, prefetchJarBinaries, type JarEntry } from './core/jar-proxy';
 import { mergeLivesToNative, separatedMergeLives, formatLiveGroupsAsTxt, filterLiveSourcesDetailed, serializeLiveCandidatePool, type LiveSourceInput, type MergeLivesResult } from './core/live-merger';
 import { partitionMergeSourceMetrics, type LiveCategory } from './core/live-quality';
-import { loadSpeedMap as loadChannelSpeedMap } from './core/channel-probe';
-import { listLiveProxyEntries, updateLiveProxyManifest } from './core/live-source';
-import { buildPreparedLiveGroups, prepareLiveSourcesChunk, serializePreparedLiveGroups } from './core/live-prepare';
+import { listLiveProxyEntries, pruneLiveProxyManifestToUrls, updateLiveProxyManifest } from './core/live-source';
 import { rebuildLiveOutput } from './core/live-output';
 import { isBlockedLiveSource, partitionBlockedLiveSources } from './core/live-policy';
+import { persistCollectedLivePrepareInputs } from './core/live-inputs';
 import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_STARTUP_SITE_POOL, KV_SOURCE_URLS, KV_LAST_UPDATE, KV_LAST_UPDATE_ERROR, KV_MANUAL_SOURCES, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGE_REPORT, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, KV_INLINE_PREFIX, KV_NAME_TRANSFORM, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_PARSE_HEALTH_REPORT, KV_CHANNEL_MERGED_TREE, KV_CHANNEL_RUNTIME_TREE, KV_CHANNEL_CANDIDATE_URLS, KV_AGG_LOGS, AGG_LOGS_MAX, KV_SITE_SNAPSHOT, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, BASE_URL_PLACEHOLDER, KV_SITE_HEALTH_MAP, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SOURCE_MAP, KV_SITE_UPSTREAM_MAP, KV_SOURCE_URL_BLACKLIST } from './core/config';
 import { loadBlacklist, applyBlacklist, pruneBlacklist, saveBlacklist, siteFingerprint } from './core/blacklist';
 import { transformSiteNames } from './core/cleaner';
@@ -440,108 +439,34 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
     logger.info('aggregation', 'Step 6.5: Live disabled, skipping');
     merged.lives = [];
   } else if (config.workerBaseUrl) {
-    logger.info('aggregation', 'Step 6.5: Preparing CF live sources in bounded chunks');
+    // CF 只收集并持久化直播输入，下载/解析/文本预构建由独立分片任务推进。
+    // 聚合主任务不会因直播上游超时被截断，也不会下发尚未生成正文的入口。
     const ignoreAggregatedLivesRaw = await storage.get(KV_IGNORE_AGGREGATED_LIVES);
     const ignoreAggregatedLives = ignoreAggregatedLivesRaw === 'true';
-    const liveInputs: LiveSourceInput[] = [];
-
-    if (!ignoreAggregatedLives) {
-      for (const live of (merged.lives || []) as Array<{ name?: string; url?: string; api?: string; ua?: string; header?: Record<string, string>; group?: string }>) {
-        if (live.group && !live.url && !live.api) continue;
-        const url = live.url || live.api;
-        if (!url || !/^https?:\/\//i.test(url)) continue;
-        if (url.includes('127.0.0.1') || url.includes('localhost')) continue;
-        liveInputs.push({ name: live.name || 'source', url, ua: live.ua, header: live.header, isAggregated: true });
-      }
-    }
-
-    const liveRaw = await storage.get(KV_LIVE_SOURCES);
-    if (liveRaw) {
-      try {
-        const manual: Array<{ name: string; url: string; disabled?: boolean; ua?: string; header?: Record<string, string> }> = JSON.parse(liveRaw);
-        for (const m of manual) {
-          if (m.disabled) continue;
-          if (!m.url || !/^https?:\/\//i.test(m.url)) continue;
-          if (m.url.includes('127.0.0.1') || m.url.includes('localhost')) continue;
-          liveInputs.push({
-            name: m.name || 'manual',
-            url: m.url,
-            ua: m.ua,
-            header: m.header,
-            isAggregated: false,
-          });
-        }
-      } catch {
-        /* ignore */
-      }
-    }
-
-    const policy = partitionBlockedLiveSources(liveInputs);
-    if (policy.blocked.length > 0) {
-      logger.infoFields('aggregation', 'Step 6.5: blocked-live-sources', { count: policy.blocked.length });
-    }
-    const seen = new Set<string>();
-    const uniqueInputs = policy.allowed.filter((input) => {
-      const core = getCoreLiveUrl(input.url);
-      if (seen.has(core)) return false;
-      seen.add(core);
-      return true;
+    const manualRaw = await storage.get(KV_LIVE_SOURCES);
+    const inputSet = await persistCollectedLivePrepareInputs(
+      merged.lives || [],
+      manualRaw,
+      storage,
+      { ignoreAggregated: ignoreAggregatedLives },
+    );
+    // 输入一变就裁剪权威清单，防止上一轮不在本批次的幽灵源在分片完成前继续进入管理端或下发策略。
+    // 只压缩清单，不批量写空 KV 正文；路由仍按 textReady 复核，旧文本不会复活。
+    await pruneLiveProxyManifestToUrls(inputSet.sources.map((source) => source.url), storage);
+    logger.infoFields('aggregation', 'live-prepare-inputs-persisted', {
+      sources: inputSet.sourceCount,
+      ignoredAggregated: ignoreAggregatedLives,
     });
-
-    const channelSpeedMap = await loadChannelSpeedMap(storage);
-    const prepareState = await prepareLiveSourcesChunk(uniqueInputs, storage, {
-      batchSize: 8,
-      timeoutMs: 6000,
-      concurrency: 3,
-      channelSpeedMap,
-    });
-
-    // 分片预构建完成后，必须把本批成功文本统一恢复为候选树并重建运行时
-    // 输出。否则 CF 的 /live 合并入口仍会读旧树，分离入口也可能下发无文本
-    // 的幽灵 key。整个过程只读 KV 文本，不在请求路径回源。
-    const readyEntries = await listLiveProxyEntries(storage);
-    const preparedGroups = await buildPreparedLiveGroups(readyEntries, storage);
-    await storage.put(KV_CHANNEL_MERGED_TREE, JSON.stringify(preparedGroups));
-    await storage.put(KV_CHANNEL_CANDIDATE_URLS, serializePreparedLiveGroups(preparedGroups));
-    const rebuilt = await rebuildLiveOutput(storage);
-
-    const workerBaseUrl = config.workerBaseUrl.replace(/\/$/, '');
-    const liveMergeMode = (await storage.get(KV_LIVE_MERGE_MODE)) || 'separated';
-    if (liveMergeMode === 'merged') {
-      // 没有就绪文本时不要制造空直播入口；空文本入口只会拖慢客户端启动。
-      merged.lives = readyEntries.length > 0
-        ? [{ name: '直播(聚合)', type: 0, url: `${workerBaseUrl}/live` }]
-        : [];
-    } else {
-      merged.lives = readyEntries.map((entry) => ({
-        name: entry.name || '直播源',
-        type: 0,
-        url: `${workerBaseUrl}/live/${entry.key}`,
-      }));
-    }
 
     await storage.put(KV_LIVE_MERGE_REPORT, JSON.stringify({
       updatedAt: new Date().toISOString(),
-      mode: liveMergeMode === 'merged' ? 'merged' : 'separated',
+      mode: (await storage.get(KV_LIVE_MERGE_MODE)) === 'merged' ? 'merged' : 'separated',
       platform: 'cloudflare',
-      sources: uniqueInputs.length,
-      prepare: prepareState,
-      textReady: readyEntries.length,
-      distributable: readyEntries.length,
-      preparedGroups: preparedGroups.length,
-      runtimeGroups: rebuilt.groups.length,
+      sources: inputSet.sourceCount,
+      prepareInputs: inputSet.sourceCount,
+      textReady: (await listLiveProxyEntries(storage)).length,
+      distributable: (await listLiveProxyEntries(storage)).length,
     }));
-    logger.infoFields('aggregation', 'live-prepare-done', {
-      sources: uniqueInputs.length,
-      cursor: prepareState.cursor,
-      total: prepareState.total,
-      ready: prepareState.ready,
-      failed: prepareState.failed,
-      complete: prepareState.complete,
-      distributable: readyEntries.length,
-      preparedGroups: preparedGroups.length,
-      runtimeGroups: rebuilt.groups.length,
-    });
   } else {
     logger.info('aggregation', 'Step 6.5: Channel-level live merging...');
     {

@@ -91,6 +91,7 @@ export const KV_CHANNEL_CANDIDATE_URLS = 'channel_candidate_urls'; // 可持久�
 export const KV_LIVE_MERGE_REPORT = 'live_merge_report'; // 最近一次直播聚合统计报告
 export const KV_LIVE_SOURCE_CACHE = 'live_source_cache'; // m3u/txt 下载缓存
 export const KV_LIVE_PREPARE_STATE = 'live_prepare_state'; // CF 分片直播预处理游标与状态
+export const KV_LIVE_PREPARE_INPUTS = 'live_prepare_inputs'; // CF 分片预处理的持久化直播输入清单
 export const KV_LIVE_MERGED_TXT_VERSION = 'live_merged_txt_version'; // 预生成直播 TXT 内容版本
 export const KV_LIVE_RUNTIME_TXT_VERSION = 'live_runtime_txt_version'; // 实时解析直播 TXT 对应版本
 // CF 分离模式：每个 /live/<key> 的预构建过滤后 TXT（仅 CF 写入/读取）

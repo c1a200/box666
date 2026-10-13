@@ -1,8 +1,11 @@
 import type { Storage } from '../storage/interface';
-import { KV_LIVE_PREPARE_STATE, KV_LIVE_TEXT_PREFIX } from './config';
+import { KV_LIVE_PREPARE_STATE, KV_LIVE_TEXT_PREFIX, KV_CHANNEL_MERGED_TREE, KV_CHANNEL_CANDIDATE_URLS, KV_LIVE_MERGE_REPORT, KV_LIVE_MERGE_MODE } from './config';
 import type { LiveSourceInput } from './live-merger';
 import { filterLiveSourcesDetailed } from './live-merger';
-import { pruneLiveProxyManifestToUrls, updateLiveProxyManifest, type LiveProxyEntryHint } from './live-source';
+import { listLiveProxyEntries, pruneLiveProxyManifestToUrls, updateLiveProxyManifest, type LiveProxyEntryHint, type LiveProxyManifestEntry } from './live-source';
+import { loadLivePrepareInputs, livePrepareInputSignature } from './live-inputs';
+import { loadSpeedMap } from './channel-probe';
+import { rebuildLiveOutput } from './live-output';
 import type { TVBoxLiveGroup } from './types';
 import { parseLiveGroupsFromTxt, serializeLiveCandidatePool } from './live-merger';
 import type { LiveCategory } from './live-quality';
@@ -40,7 +43,8 @@ function parseState(raw: string | null): LivePrepareState | null {
 }
 
 function sourceSignature(sources: readonly LiveSourceInput[]): string {
-  return sources.map((source) => source.url).sort().join('\n');
+  // 与 live-inputs 的持久化签名保持完全一致，避免输入未变也开启新一轮。
+  return livePrepareInputSignature(sources);
 }
 
 /**
@@ -170,4 +174,92 @@ export interface LiveProxyEntryHintSource {
 
 export function serializePreparedLiveGroups(groups: readonly TVBoxLiveGroup[]): string {
   return serializeLiveCandidatePool(groups);
+}
+export interface LivePrepareChunkResult {
+  state: LivePrepareState;
+  readyEntries: LiveProxyManifestEntry[];
+  preparedGroups: TVBoxLiveGroup[];
+  runtimeGroups: TVBoxLiveGroup[];
+}
+
+/**
+ * 读取持久化输入清单并推进一个分片，然后把本批成功文本立即接入统一
+ * 候选树与运行时输出。这个函数不参与聚合主流程，避免下载直播源把
+ * 聚合 Worker 长任务拖死。
+ */
+export async function runLivePrepareChunk(
+  storage: Storage,
+  options: {
+    batchSize?: number;
+    timeoutMs?: number;
+    concurrency?: number;
+    forceNewRound?: boolean;
+  } = {},
+): Promise<LivePrepareChunkResult> {
+  const inputSet = await loadLivePrepareInputs(storage);
+  const sources = inputSet?.sources ?? [];
+  const signature = inputSet?.signature || livePrepareInputSignature(sources);
+  const previousState = await loadLivePrepareState(storage);
+  // 已完成且输入未变时复用结果；避免手动重复调用接口触发新一轮全量下载。
+  if (
+    !options.forceNewRound
+    && previousState?.complete === true
+    && previousState.sourceSignature === signature
+  ) {
+    const readyEntries = await listLiveProxyEntries(storage);
+    const preparedGroups = await buildPreparedLiveGroups(readyEntries, storage);
+    return { state: previousState, readyEntries, preparedGroups, runtimeGroups: preparedGroups };
+  }
+  if (sources.length === 0) {
+    // 输入清单尚未由一次成功聚合写入，或直播被禁用/过滤为空时，
+    // 不得把状态或候选树误推进为空；交由聚合收尾显式处理空输出。
+    const state = previousState ?? {
+      cursor: 0,
+      sourceSignature: '',
+      updatedAt: new Date().toISOString(),
+      processed: 0,
+      total: 0,
+      ready: 0,
+      failed: 0,
+      complete: true,
+    };
+    const readyEntries = await listLiveProxyEntries(storage);
+    const preparedGroups = await buildPreparedLiveGroups(readyEntries, storage);
+    return { state, readyEntries, preparedGroups, runtimeGroups: preparedGroups };
+  }
+  if (options.forceNewRound) {
+    const state = await loadLivePrepareState(storage);
+    if (state) {
+      await storage.put(KV_LIVE_PREPARE_STATE, JSON.stringify({ ...state, complete: true }));
+    }
+  }
+  const channelSpeedMap = await loadSpeedMap(storage);
+  const state = await prepareLiveSourcesChunk(sources, storage, {
+    batchSize: options.batchSize,
+    timeoutMs: options.timeoutMs,
+    concurrency: options.concurrency,
+    channelSpeedMap,
+  });
+  const readyEntries = await listLiveProxyEntries(storage);
+  const preparedGroups = await buildPreparedLiveGroups(readyEntries, storage);
+  await storage.put(KV_CHANNEL_MERGED_TREE, JSON.stringify(preparedGroups));
+  await storage.put(KV_CHANNEL_CANDIDATE_URLS, serializePreparedLiveGroups(preparedGroups));
+  const rebuilt = await rebuildLiveOutput(storage);
+  await storage.put(KV_LIVE_MERGE_REPORT, JSON.stringify({
+    updatedAt: new Date().toISOString(),
+    mode: (await storage.get(KV_LIVE_MERGE_MODE)) === 'merged' ? 'merged' : 'separated',
+    platform: 'cloudflare',
+    sources: sources.length,
+    prepare: state,
+    textReady: readyEntries.length,
+    distributable: readyEntries.length,
+    preparedGroups: preparedGroups.length,
+    runtimeGroups: rebuilt.groups.length,
+  }));
+  return {
+    state,
+    readyEntries,
+    preparedGroups,
+    runtimeGroups: rebuilt.groups,
+  };
 }
