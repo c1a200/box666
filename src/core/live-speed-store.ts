@@ -15,7 +15,10 @@ export async function loadSpeedMap(storage: Storage): Promise<ChannelSpeedMap> {
 }
 
 export async function saveSpeedMap(storage: Storage, map: ChannelSpeedMap): Promise<void> {
-  await storage.put(KV_CHANNEL_SPEED_MAP, JSON.stringify(map));
+  const next = JSON.stringify(map);
+  const previous = await storage.get(KV_CHANNEL_SPEED_MAP);
+  if (previous === next) return;
+  await storage.put(KV_CHANNEL_SPEED_MAP, next);
 }
 
 /** 清理超过 TTL 的测速缓存。 */

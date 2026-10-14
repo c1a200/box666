@@ -1502,8 +1502,13 @@ export function extractAllUrls(groups: TVBoxLiveGroup[]): string[] {
 }
 
 /**
- * 将频道级测速结果应用到已合并的频道树。
- * 已知失败或超过延迟上限的线路会移除；未知线路保留，已知线路按速度排序。
+ * 将频道级验真结果应用到已合并的频道树。
+ *
+ * 下发语义：
+ * - 已验证成功且未超速的线路按速度优先；
+ * - 未知线路保留为后备，但始终排在已验证线路之后；
+ * - 单次/两次失败保留为最后备选，连续三次失败才剔除；
+ * - 每频道条数限制在分层之后执行，避免坏线路挤掉好线路。
  */
 export function applyChannelSpeedToGroups(
   groups: TVBoxLiveGroup[],
@@ -1512,13 +1517,16 @@ export function applyChannelSpeedToGroups(
   maxUrlsPerChannel = SEPARATED_MAX_URLS_PER_CHANNEL,
 ): TVBoxLiveGroup[] {
   const speedLimit = Math.max(0, maxSpeedMs);
+  const perChannelLimit = Math.max(1, maxUrlsPerChannel);
   const output: TVBoxLiveGroup[] = [];
 
   for (const group of groups) {
     const channels: TVBoxLiveChannel[] = [];
     for (const channel of group.channels || []) {
       const seen = new Set<string>();
-      const ranked: Array<{ url: string; speed?: number; index: number; tier: number }> = [];
+      const verified: Array<{ url: string; speed: number; index: number }> = [];
+      const unknown: Array<{ url: string; index: number }> = [];
+      const transient: Array<{ url: string; index: number }> = [];
 
       for (const [index, rawUrl] of (channel.urls || []).entries()) {
         const url = rawUrl.trim();
@@ -1528,26 +1536,27 @@ export function applyChannelSpeedToGroups(
         seen.add(bare);
 
         const speed = speedMap[url] ?? speedMap[bare];
-        // 单次网络抖动不能立即移除线路；连续失败达到阈值后才判定失效。
-        // 旧缓存没有该字段时按 1 次失败处理。
         if (speed?.kind === 'fail') {
+          // 单次或两次失败仍保留为后备；连续三次失败才剔除，避免网络抖动
+          // 让频道直接空掉，同时不让失败线路排在已验证线路之前。
           const failures = speed.consecutiveFailures ?? 1;
-          if (failures >= 3) continue;
-          ranked.push({ url, index, tier: 2 });
+          if (failures < 3) transient.push({ url, index });
           continue;
         }
         const knownSpeed = speed && Number.isFinite(speed.speedMs) ? speed.speedMs : undefined;
-        if (speedLimit > 0 && knownSpeed != null && knownSpeed > speedLimit) continue;
-        ranked.push({ url, speed: knownSpeed, index, tier: knownSpeed == null ? 1 : 0 });
+        if (knownSpeed == null) {
+          unknown.push({ url, index });
+          continue;
+        }
+        if (speedLimit > 0 && knownSpeed > speedLimit) continue;
+        verified.push({ url, speed: knownSpeed, index });
       }
 
-      ranked.sort((a, b) => {
-        if (a.tier !== b.tier) return a.tier - b.tier;
-        if (a.speed != null && b.speed != null && a.speed !== b.speed) return a.speed - b.speed;
-        return a.index - b.index;
-      });
-
-      const urls = ranked.slice(0, Math.max(1, maxUrlsPerChannel)).map((item) => item.url);
+      verified.sort((a, b) => a.speed - b.speed || a.index - b.index);
+      unknown.sort((a, b) => a.index - b.index);
+      transient.sort((a, b) => a.index - b.index);
+      const selected = [...verified, ...unknown, ...transient];
+      const urls = selected.slice(0, perChannelLimit).map((item) => item.url);
       if (urls.length > 0) channels.push({ ...channel, urls });
     }
     if (channels.length > 0) output.push({ ...group, channels });

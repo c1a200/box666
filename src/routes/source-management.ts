@@ -12,6 +12,32 @@ export interface SourceManagementDeps {
   config: AppConfig;
   onDirty: () => Promise<void>;
 }
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function storageWriteFailure(c: any, error: unknown) {
+  const message = errorMessage(error);
+  const retryable = /(?:^|\D)(?:429|5\d\d)(?:\D|$)|quota|usage limit|temporar|timeout|network|fetch/i.test(message);
+  return c.json({
+    error: '保存到持久化存储失败，源列表未修改',
+    code: 'storage_write_failed',
+    retryable,
+    detail: message,
+  }, retryable ? 503 : 500);
+}
+
+async function markDirtyBestEffort(onDirty: () => Promise<void>): Promise<{ ok: boolean; error?: string }> {
+  try {
+    await onDirty();
+    return { ok: true };
+  } catch (error) {
+    // 源列表已成功落盘；输出缓存标记属于可重建派生结果，不应反向判定删除失败。
+    return { ok: false, error: errorMessage(error) };
+  }
+}
+
 export function createSourceManagementRouter(deps: SourceManagementDeps): Hono {
   const { storage, config, onDirty } = deps;
   const router = new Hono();
@@ -73,10 +99,26 @@ export function createSourceManagementRouter(deps: SourceManagementDeps): Hono {
 
     const raw = await storage.get(KV_MANUAL_SOURCES);
     const sources: SourceEntry[] = raw ? JSON.parse(raw) : [];
-    await storage.put(KV_MANUAL_SOURCES, JSON.stringify(sources.filter((s) => s.url !== url)));
-    await onDirty();
+    const nextSources = sources.filter((s) => s.url !== url);
+    if (nextSources.length === sources.length) {
+      return c.json({ error: '源不存在或已被删除', code: 'source_not_found' }, 404);
+    }
 
-    return c.json({ success: true });
+    try {
+      await storage.put(KV_MANUAL_SOURCES, JSON.stringify(nextSources));
+    } catch (error) {
+      return storageWriteFailure(c, error);
+    }
+
+    const dirty = await markDirtyBestEffort(onDirty);
+
+    return c.json({
+      success: true,
+      removed: 1,
+      remaining: nextSources.length,
+      refreshPending: !dirty.ok,
+      warning: dirty.ok ? undefined : '源已删除，但输出缓存刷新暂未完成：' + dirty.error,
+    });
   });
 
   router.put('/admin/sources', async (c) => {

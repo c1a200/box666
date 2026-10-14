@@ -14,7 +14,7 @@ import { BASE_URL_PLACEHOLDER } from './core/config';
 import { lookupLiveSource, listLiveProxyEntries, listAllLiveProxyEntries, isLiveProxyEntryDistributable, liveProxyEntryLabel, recordLiveProxyValidation, removeLiveProxyEntry, updateLiveProxyManifest, parseLiveProxyManifest, KV_LIVE_PROXY_MANIFEST } from './core/live-source';
 import { loadLiveDistribution, saveLiveDistribution, toLiveDistributionPolicy } from './core/live-distribution-store';
 import { selectLiveDistribution } from './core/live-quality';
-import { rebuildLiveOutput } from './core/live-output';
+import { computeLiveOutputFingerprint, rebuildLiveOutput } from './core/live-output';
 import { adminHtml } from './core/admin';
 import { dashboardHtml } from './core/dashboard';
 import { configEditorHtml } from './core/config-editor';
@@ -1326,13 +1326,24 @@ export function createApp(deps: AppDeps): Hono {
     }
 
     const liveDistribution = await loadLiveDistribution(storage);
+    const liveMergeMode = (await storage.get(KV_LIVE_MERGE_MODE)) === 'merged' ? 'merged' : 'separated';
 
     // 客户端请求只读取聚合阶段/运行时重建好的缓存，绝不在请求路径回源。
-    // 这样上游 404/5xx 不会变成 App 的网络错误，也不会造成首屏等待。
+    // 缓存必须与当前模式、策略和源清单指纹一致；旧 runtime 文本可能是
+    // merged 时代产物，模式或策略已切换后继续返回会把错误线路下发给 App。
+    const expectedFingerprint = await computeLiveOutputFingerprint(storage, toLiveDistributionPolicy(liveDistribution));
+    const cacheFingerprint = await storage.get(KV_LIVE_OUTPUT_FINGERPRINT);
+    const prebuiltVersion = await storage.get(KV_LIVE_MERGED_TXT_VERSION);
+    const runtimeVersion = await storage.get(KV_LIVE_RUNTIME_TXT_VERSION);
+    const expectedVersion = `${liveMergeMode}:${expectedFingerprint}`;
+    const freshCache = cacheFingerprint === expectedFingerprint
+      && prebuiltVersion === expectedVersion
+      && runtimeVersion === expectedVersion;
     const prebuiltTxt = await storage.get(KV_LIVE_MERGED_TXT);
-    const hasUsablePrebuiltTxt = Boolean(prebuiltTxt && prebuiltTxt.trim()
-      && prebuiltTxt !== KV_LIVE_MERGED_TXT_FALLBACK
-      && prebuiltTxt.includes('#genre#'))
+    const hasUsablePrebuiltTxt = freshCache
+      && Boolean(prebuiltTxt && prebuiltTxt.trim()
+        && prebuiltTxt !== KV_LIVE_MERGED_TXT_FALLBACK
+        && prebuiltTxt.includes('#genre#'))
       && !containsBlockedLiveUrl(prebuiltTxt!);
     if (hasUsablePrebuiltTxt && prebuiltTxt) {
       return c.body(renderLiveText(prebuiltTxt), 200, {
@@ -1344,8 +1355,8 @@ export function createApp(deps: AppDeps): Hono {
     }
 
     const runtimeTxt = await storage.get(KV_LIVE_RUNTIME_TXT);
-    const hasUsableRuntimeTxt = Boolean(runtimeTxt && runtimeTxt.trim()
-      && runtimeTxt.includes('#genre#'))
+    const hasUsableRuntimeTxt = freshCache
+      && Boolean(runtimeTxt && runtimeTxt.trim() && runtimeTxt.includes('#genre#'))
       && !containsBlockedLiveUrl(runtimeTxt!);
     if (hasUsableRuntimeTxt && runtimeTxt) {
       return c.body(renderLiveText(runtimeTxt), 200, {
@@ -1356,11 +1367,14 @@ export function createApp(deps: AppDeps): Hono {
       });
     }
 
-    // 缓存缺失时只允许从已持久化的候选树按当前下发策略重建。
+    // 缓存缺失或指纹不一致时只允许从已持久化的候选树按当前下发策略重建。
     // 这是纯内存/KV组合操作，不回源下载；失败则返回 200 空文本。
     try {
       const unifiedTxt = await buildFilteredLiveTxt(liveDistribution);
       if (unifiedTxt && unifiedTxt.trim() && unifiedTxt.includes('#genre#')) {
+        await storage.put(KV_LIVE_OUTPUT_FINGERPRINT, expectedFingerprint);
+        await storage.put(KV_LIVE_MERGED_TXT_VERSION, expectedVersion);
+        await storage.put(KV_LIVE_RUNTIME_TXT_VERSION, expectedVersion);
         return c.body(renderLiveText(unifiedTxt), 200, {
           'Content-Type': 'text/plain; charset=utf-8',
           'Cache-Control': 'no-store',
@@ -1981,10 +1995,11 @@ export function createApp(deps: AppDeps): Hono {
 
   app.put('/admin/quality-schedule', async (c) => {
     if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
-    let body: { enabled?: boolean; times?: unknown; repeatDays?: number; fullRepeatDays?: number; timezone?: string };
+    let body: { enabled?: boolean; followAggregation?: boolean; times?: unknown; repeatDays?: number; fullRepeatDays?: number; timezone?: string };
     try { body = await c.req.json(); } catch { return c.json({ error: 'Invalid JSON' }, 400); }
     const schedule = await saveQualitySchedule(storage, {
       enabled: body.enabled,
+      followAggregation: typeof body.followAggregation === 'boolean' ? body.followAggregation : undefined,
       times: Array.isArray(body.times) ? (body.times as string[]) : undefined,
       repeatDays: typeof body.repeatDays === 'number' ? body.repeatDays : undefined,
       fullRepeatDays: typeof body.fullRepeatDays === 'number' ? body.fullRepeatDays : undefined,

@@ -14,7 +14,7 @@ import {
   KV_IGNORE_AGGREGATED_LIVES,
 } from './config';
 import { loadLiveDistribution, toLiveDistributionPolicy } from './live-distribution-store';
-import { isLiveProxyEntryDistributable, listAllLiveProxyEntries, liveProxyEntryLabel } from './live-source';
+import { isLiveProxyEntryDistributable, listAllLiveProxyEntries, liveProxyEntryLabel, parseLiveProxyManifest } from './live-source';
 import { selectLiveDistribution, type LiveDistributionPolicy } from './live-quality';
 import {
   AGGREGATED_MAX_URLS_PER_CHANNEL,
@@ -94,6 +94,14 @@ function stablePolicyKey(policy: LiveDistributionPolicy): string {
   });
 }
 
+export async function computeLiveOutputFingerprint(
+  storage: Storage,
+  policy?: LiveDistributionPolicy,
+): Promise<string> {
+  const current = policy || toLiveDistributionPolicy(await loadLiveDistribution(storage));
+  return fingerprint(storage, current);
+}
+
 async function fingerprint(storage: Storage, policy: LiveDistributionPolicy): Promise<string> {
   const [
     manifestRaw,
@@ -120,7 +128,7 @@ async function fingerprint(storage: Storage, policy: LiveDistributionPolicy): Pr
     disabledRaw || 'false',
     ignoreAggregatedRaw || 'false',
     stablePolicyKey(policy),
-    manifestRaw || '',
+    parseLiveProxyManifest(manifestRaw)?.signature || manifestRaw || '',
     [mergedTreeRaw || '', candidatePoolRaw || ''].join('\n'),
     speedRaw || '',
   ].join('\n');
@@ -160,7 +168,7 @@ async function buildSnapshot(
     : [];
   const txt = runtimeGroups.length > 0 ? formatAggregatedLiveGroupsAsTxt(runtimeGroups) : '';
   const fp = await fingerprint(storage, policy);
-  const version = fp;
+  const version = `${liveMergeMode}:${fp}`;
 
   const previousTree = await storage.get(KV_CHANNEL_RUNTIME_TREE);
   const previousTxt = await storage.get(KV_LIVE_MERGED_TXT);

@@ -372,7 +372,36 @@ export async function probeLiveUrlsBounded(
   }
 
   const speedMap = pruneExpired(await loadSpeedMap(storage));
-  const candidates = selectProbeCandidates(allUrls, speedMap, Date.now(), maxUrls);
+  // 优先探测真正进入下发前沿的线路，避免把有限的 CF 子请求预算
+  // 消耗在大量永远排不上的后台候选上。
+  const allEntries = await listAllLiveProxyEntries(storage);
+  const config = await loadLiveDistribution(storage);
+  const selected = selectLiveDistribution(
+    allEntries.filter(isLiveProxyEntryDistributable),
+    toLiveDistributionPolicy(config),
+  );
+  const selectedLabels = new Set<string>();
+  for (const entry of selected) {
+    const label = liveProxyEntryLabel(entry, groups);
+    if (label) selectedLabels.add(normalizeSourceLabelKey(label));
+  }
+  const frontierUrls = selectedLabels.size > 0
+    ? extractUrlsForSourceLabels(groups, selectedLabels)
+    : [];
+  const frontierSet = new Set(frontierUrls.map(bareLiveSourceUrl));
+  const backgroundUrls = allUrls.filter((url) => !frontierSet.has(bareLiveSourceUrl(url)));
+  const now = Date.now();
+  const frontierCandidates = selectProbeCandidates(frontierUrls, speedMap, now, maxUrls);
+  const backgroundCandidates = selectProbeCandidates(backgroundUrls, speedMap, now, maxUrls);
+  const seenCandidate = new Set<string>();
+  const candidates = [...frontierCandidates, ...backgroundCandidates]
+    .filter((item) => {
+      const bare = bareLiveSourceUrl(item.url);
+      if (!bare || seenCandidate.has(bare)) return false;
+      seenCandidate.add(bare);
+      return true;
+    })
+    .slice(0, maxUrls);
 
   const results: ProbeResult[] = [];
   let index = 0;
@@ -387,9 +416,11 @@ export async function probeLiveUrlsBounded(
   const probedAt = new Date().toISOString();
   let success = 0;
   let failed = 0;
+  let stateChanged = false;
   for (const result of results) {
     const previous = speedMap[result.url];
     const isFailed = result.kind === 'fail';
+    if (!previous || previous.kind !== result.kind) stateChanged = true;
     speedMap[result.url] = {
       speedMs: result.speedMs,
       probedAt,
@@ -405,9 +436,12 @@ export async function probeLiveUrlsBounded(
   if (results.length > 0) {
     await saveSpeedMap(storage, speedMap);
 
-    // 测速只更新中立缓存；运行时输出必须由统一下发策略重建，
-    // 避免测速结果绕过分区/屏蔽/数量门禁。
-    await rebuildLiveOutput(storage, { reason: 'bounded-probe' });
+    // 测速只更新中立缓存；只有成功↔失败状态变化才会改变可下发线路。
+    // 纯速度抖动不应重复重建 runtime TXT/版本键，否则每次 cron 都会
+    // 写多份 KV，免费额度会在几个小时内被打满。
+    if (stateChanged) {
+      await rebuildLiveOutput(storage, { reason: 'bounded-probe' });
+    }
   }
 
   console.log(

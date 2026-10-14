@@ -111,6 +111,7 @@ function isNodeRuntime(): boolean {
 export function defaultQualityConfig(now = new Date(), timezone = QUALITY_TIMEZONE): SearchQualitySchedule {
   const config: SearchQualitySchedule = {
     enabled: true,
+    followAggregation: true,
     times: ['04:30'],
     repeatDays: 1,
     fullRepeatDays: DEFAULT_FULL_REPEAT_DAYS,
@@ -254,6 +255,7 @@ export async function loadQualitySchedule(storage: Storage, timezone = QUALITY_T
     const parsed = JSON.parse(raw) as Partial<SearchQualitySchedule>;
     const config: SearchQualitySchedule = {
       enabled: parsed.enabled !== false,
+      followAggregation: parsed.followAggregation !== false,
       times: normalizeScheduleTimes(parsed.times, fallback.times),
       repeatDays: Math.min(30, Math.max(1, Math.floor(parsed.repeatDays || 1))),
       fullRepeatDays: Math.min(365, Math.max(1, Math.floor(parsed.fullRepeatDays || DEFAULT_FULL_REPEAT_DAYS))),
@@ -278,6 +280,7 @@ export async function saveQualitySchedule(storage: Storage, input: Partial<Searc
   const current = await loadQualitySchedule(storage, effectiveTimezone);
   const config: SearchQualitySchedule = {
     enabled: input.enabled !== undefined ? input.enabled === true : current.enabled,
+    followAggregation: input.followAggregation !== undefined ? input.followAggregation === true : current.followAggregation,
     times: normalizeScheduleTimes(input.times, current.times),
     repeatDays: Math.min(30, Math.max(1, Math.floor(input.repeatDays || current.repeatDays || 1))),
     fullRepeatDays: Math.min(365, Math.max(1, Math.floor(input.fullRepeatDays || current.fullRepeatDays || DEFAULT_FULL_REPEAT_DAYS))),

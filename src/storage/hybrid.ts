@@ -71,7 +71,6 @@ export const DURABLE_STORAGE_KEYS = new Set<string>([
 // 这些前缀属于最终结果/派生内容，而不是任务进度。
 export const DURABLE_STORAGE_PREFIXES = [
   'inline_config_',
-  'jar:',
   'live_txt:',
 ] as const;
 
@@ -100,6 +99,9 @@ export const LOCAL_ONLY_STORAGE_KEYS = new Set<string>([
 ]);
 
 export const LOCAL_ONLY_STORAGE_PREFIXES = [
+  // Render 的 JAR URL 映射可由配置重建，不能同步到 CF KV。
+  // 否则每轮 JAR 改写都会消耗远程写额度，挤占删除源、保存配置等关键写入。
+  'jar:',
   'jar_bin:',
   OUTBOX_VALUE_PREFIX,
 ] as const;
@@ -301,6 +303,9 @@ export class HybridStorage implements Storage {
         if (Array.isArray(parsed)) {
           for (const key of parsed) {
             if (typeof key !== 'string' || this.pendingWrites.has(key)) continue;
+            // 迁移保护：旧版本可能把 jar:* 放进了 outbox。升级后这些值
+            // 只保留在本地，不再补传 CF，避免恢复出新的写放大。
+            if (!shouldSyncToRemote(key)) continue;
             const value = await this.local.get(outboxValueKey(key));
             if (value !== null && value !== '') this.pendingWrites.set(key, value);
           }

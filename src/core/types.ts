@@ -405,6 +405,7 @@ export type SearchQualityRunMode = 'candidate' | 'full';
 
 export interface SearchQualitySchedule {
   enabled: boolean;
+  followAggregation: boolean;
   times: string[];
   repeatDays: number;
   fullRepeatDays: number;       // 每隔多少天做一次全量分级，默认 7 天

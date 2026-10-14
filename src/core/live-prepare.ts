@@ -1,7 +1,7 @@
 import type { Storage } from '../storage/interface';
 import { KV_LIVE_PREPARE_STATE, KV_LIVE_TEXT_PREFIX, KV_CHANNEL_MERGED_TREE, KV_CHANNEL_CANDIDATE_URLS, KV_LIVE_MERGE_REPORT, KV_LIVE_MERGE_MODE } from './config';
 import type { LiveSourceInput } from './live-merger';
-import { filterLiveSourcesDetailed } from './live-merger';
+import { applyChannelSpeedToGroups, filterLiveSourcesDetailed, formatLiveGroupsAsTxt } from './live-merger';
 import { listLiveProxyEntries, pruneLiveProxyManifestToUrls, updateLiveProxyManifest, type LiveProxyEntryHint, type LiveProxyManifestEntry } from './live-source';
 import { loadLivePrepareInputs, livePrepareInputSignature } from './live-inputs';
 import { loadSpeedMap } from './channel-probe';
@@ -101,6 +101,36 @@ export async function prepareLiveSourcesChunk(
         ...(category ? { category: category as LiveCategory } : {}),
       };
     }
+
+    // 单源文本也必须经过频道级验真门禁后再落盘。否则“源可下载”会被误当成
+    // “线路可播放”，应用端拿到的 /live/<key> 仍会大面积 404/5xx。
+    const gatedTexts: Record<string, string> = {};
+    const gatedValid: string[] = [];
+    const gatedInvalid: string[] = [];
+    for (const source of validated.valid) {
+      const rawText = validated.texts[source.url];
+      if (!rawText) {
+        gatedInvalid.push(source.url);
+        continue;
+      }
+      const gatedGroups = applyChannelSpeedToGroups(
+        parseLiveGroupsFromTxt(rawText),
+        options.channelSpeedMap || {},
+        undefined,
+        64,
+      );
+      const gatedText = gatedGroups.length > 0 ? formatLiveGroupsAsTxt(gatedGroups) : '';
+      if (gatedText.includes('#genre#')) {
+        gatedTexts[source.url] = gatedText;
+        gatedValid.push(source.url);
+      } else {
+        gatedInvalid.push(source.url);
+      }
+    }
+    const gatedInvalidAll = [
+      ...validated.invalid.map((source) => source.url),
+      ...gatedInvalid,
+    ];
     await updateLiveProxyManifest(
       batch.map((source) => ({
         name: source.name,
@@ -110,17 +140,17 @@ export async function prepareLiveSourcesChunk(
       })),
       storage,
       {
-        validUrls: validated.valid.map((source) => source.url),
+        validUrls: gatedValid,
         transientUrls: validated.transient.map((source) => source.url),
-        invalidUrls: validated.invalid.map((source) => source.url),
+        invalidUrls: gatedInvalidAll,
         metrics: validated.metrics,
         hints,
-        texts: validated.texts,
+        texts: gatedTexts,
         incremental: true,
         checkedAt: new Date().toISOString(),
       },
     );
-    ready = validated.valid.length;
+    ready = gatedValid.length;
     failed = batch.length - ready;
   }
 

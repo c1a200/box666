@@ -213,8 +213,52 @@ export function parseLiveProxyManifest(raw: string | null): LiveProxyManifest | 
   }
 }
 
+/**
+ * 清单签名只覆盖会影响下发决策的实质字段。
+ *
+ * checkedAt / lastSeenAt / rank / qualityScore 都是派生或时间展示字段：
+ * 它们变化不应该触发整份 manifest 写入。否则每次定时探测都会形成
+ * “字段变化 -> 签名变化 -> 写 KV -> 再次触发”的写入放大，最终耗尽
+ * Cloudflare KV 日额度并让直播预构建停摆。
+ */
 function manifestSignature(entries: LiveProxyManifestEntry[]): string {
-  return JSON.stringify(entries);
+  const stable = entries.map((entry) => ({
+    key: entry.key,
+    url: entry.url,
+    name: entry.name,
+    ua: entry.ua,
+    header: entry.header,
+    kind: entry.kind,
+    format: entry.format,
+    category: entry.category,
+    label: entry.label,
+    health: entry.health,
+    consecutiveFailures: entry.consecutiveFailures,
+    successfulAt: entry.successfulAt,
+    lastFailure: entry.lastFailure,
+    everSucceeded: entry.everSucceeded,
+    textReady: entry.textReady === true,
+    channelCount: entry.channelCount,
+    totalEntries: entry.totalEntries,
+    usableEntries: entry.usableEntries,
+    playableRatio: entry.playableRatio,
+    adRatio: entry.adRatio,
+    downloadMs: entry.downloadMs,
+  }));
+  return JSON.stringify(stable);
+}
+
+async function persistManifest(
+  storage: Storage,
+  entries: LiveProxyManifestEntry[],
+): Promise<LiveProxyManifest> {
+  const manifest: LiveProxyManifest = {
+    version: LIVE_PROXY_MANIFEST_VERSION,
+    signature: manifestSignature(entries),
+    entries: sortManifestEntries(entries),
+  };
+  await storage.put(KV_LIVE_PROXY_MANIFEST, JSON.stringify(manifest));
+  return manifest;
 }
 
 function scoreEntry(entry: LiveProxyManifestEntry): number {
@@ -296,17 +340,26 @@ export function mergeLiveProxyManifest(
   const batchTextUrls = new Set(Object.entries(update.texts || {})
     .filter(([, text]) => typeof text === 'string' && text.trim() && text.includes('#genre#'))
     .map(([url]) => url));
+  // invalid 是权威失败，必须立即撤销就绪；transient 只是疑似临时故障，
+  // 不能清空成熟正文，最终由下面的分支在前置成功文本存在时保留后备资格。
   const failedInBatch = new Set([
-    ...transient,
     ...invalid,
     ...currentEntries
       .filter((item) => !valid.has(item.url) || (incrementalTextUpdate && !batchTextUrls.has(item.url)))
       .map((item) => item.url),
   ]);
 
+  const legacyV1 = previous?.version === 1;
   for (const current of currentEntries) {
     const previousEntry = byKey.get(current.key);
     const metrics = update.metrics?.[current.url] || update.metrics?.[current.key] || {};
+    const priorSucceeded = previousEntry?.everSucceeded !== false
+      && (previousEntry?.everSucceeded === true
+        || !!previousEntry?.successfulAt
+        || !!current.successfulAt
+        || legacyV1);
+    const priorReady = previousEntry?.textReady === true
+      || (legacyV1 && current.textReady === true);
     const merged: LiveProxyManifestEntry = {
       ...previousEntry,
       ...current,
@@ -317,7 +370,7 @@ export function mergeLiveProxyManifest(
       checkedAt,
       ...(previousEntry?.successfulAt ? { successfulAt: previousEntry.successfulAt } : {}),
       ...(previousEntry?.lastFailure ? { lastFailure: previousEntry.lastFailure } : {}),
-      everSucceeded: previousEntry?.everSucceeded ?? !!previousEntry?.successfulAt,
+      everSucceeded: priorSucceeded,
       // 只有本轮或历史确实存在可用文本时才允许继承 textReady；否则新清单
       // 不能凭旧标记继续下发一个已经无法生成文本的入口。
       // 完整快照或带文本的更新代表本轮文本状态是权威结果；
@@ -354,10 +407,18 @@ export function mergeLiveProxyManifest(
       merged.health = 'unhealthy';
       merged.consecutiveFailures = (previousEntry?.consecutiveFailures ?? 0) + 1;
       merged.lastFailure = 'transient';
+      // 普通定时复检允许成熟正文在 1-2 次抖动中保留为后备；
+      // 但增量分片已经宣称本批负责文本状态，若该源本轮未产出正文，
+      // 必须立即撤销，避免 failedInBatch 语义失效。
+      merged.textReady = !incrementalTextUpdate
+        && priorReady
+        && priorSucceeded
+        && merged.consecutiveFailures < 3;
     } else if (invalid.has(current.url)) {
       merged.health = 'unhealthy';
       merged.consecutiveFailures = (previousEntry?.consecutiveFailures ?? 0) + 1;
       merged.lastFailure = 'invalid';
+      merged.textReady = false;
     }
     byKey.set(current.key, merged);
   }
@@ -401,39 +462,152 @@ export function isLiveProxyEntryDistributable(entry: LiveProxyManifestEntry): bo
     });
 }
 
+export interface LiveProxyValidationResult {
+  key: string;
+  state: 'valid' | 'invalid' | 'transient';
+  entry: LiveProxyManifestEntry | null;
+}
+
+/**
+ * 批量写入单源验证结果：一次读取 manifest、一次排序、最多一次整体写入。
+ *
+ * 旧实现每验证一个源就写整份 manifest；几十个源会放大成几十次 KV put，
+ * 在免费额度下足以阻断后续聚合。这里保留原逐源语义，但把写放大收敛为 1。
+ */
+export async function recordLiveProxyValidations(
+  results: readonly { key: string; state: 'valid' | 'invalid' | 'transient' }[],
+  storage: Storage,
+): Promise<LiveProxyValidationResult[]> {
+  const manifest = parseLiveProxyManifest(await storage.get(KV_LIVE_PROXY_MANIFEST));
+  if (!manifest || results.length === 0) {
+    return results.map((result) => ({ key: result.key, state: result.state, entry: null }));
+  }
+
+  const checkedAt = new Date().toISOString();
+  const byKey = new Map(manifest.entries.map((entry) => [entry.key, entry]));
+  const output: LiveProxyValidationResult[] = [];
+  let changed = false;
+
+  for (const result of results) {
+    const entry = byKey.get(result.key);
+    if (!entry) {
+      output.push({ key: result.key, state: result.state, entry: null });
+      continue;
+    }
+    const nextEntry: LiveProxyManifestEntry = { ...entry, checkedAt };
+    if (result.state === 'valid') {
+      nextEntry.health = 'healthy';
+      nextEntry.consecutiveFailures = 0;
+      nextEntry.successfulAt = checkedAt;
+      nextEntry.everSucceeded = true;
+      delete nextEntry.lastFailure;
+    } else if (result.state === 'invalid') {
+      nextEntry.health = 'unhealthy';
+      nextEntry.consecutiveFailures = (entry.consecutiveFailures || 0) + 1;
+      nextEntry.lastFailure = 'invalid';
+      nextEntry.textReady = false;
+    } else {
+      nextEntry.health = 'unhealthy';
+      nextEntry.consecutiveFailures = (entry.consecutiveFailures || 0) + 1;
+      nextEntry.lastFailure = 'transient';
+      // 单源手动复检是权威探测，失败即撤销下发资格；批量分片迁移/定时
+      // 复检则在 1-2 次抖动内保留成熟正文，由 mergeLiveProxyManifest
+      // 的 priorReady/priorSucceeded 逻辑处理，避免两种语义混淆。
+      nextEntry.textReady = false;
+    }
+    byKey.set(result.key, nextEntry);
+    output.push({ key: result.key, state: result.state, entry: nextEntry });
+    changed = true;
+  }
+
+  if (!changed) return output;
+  const nextEntries = sortManifestEntries([...byKey.values()]);
+  const nextManifest: LiveProxyManifest = {
+    version: LIVE_PROXY_MANIFEST_VERSION,
+    signature: manifestSignature(nextEntries),
+    entries: nextEntries,
+  };
+  if (manifest.signature !== nextManifest.signature) {
+    await storage.put(KV_LIVE_PROXY_MANIFEST, JSON.stringify(nextManifest));
+  }
+  return output;
+}
+
 export async function recordLiveProxyValidation(
   key: string,
   result: 'valid' | 'invalid' | 'transient',
   storage: Storage,
 ): Promise<LiveProxyManifestEntry | null> {
+  const [updated] = await recordLiveProxyValidations([{ key, state: result }], storage);
+  return updated?.entry ?? null;
+}
+
+export interface LiveTextReadinessRepairResult {
+  checked: number;
+  repaired: number;
+  revoked: number;
+  distributable: number;
+  changed: boolean;
+  manifest: LiveProxyManifest;
+}
+
+/**
+ * 修复升级前已有 live_txt 但 manifest 没有 textReady 的在线状态。
+ *
+ * 这里只读取 KV 正文，不请求上游。恢复条件同时要求：
+ * - 正文非空且含 #genre#；
+ * - 当前健康或历史成功，明确 invalid 的源不恢复；
+ * - 未被屏蔽。
+ *
+ * 该修复幂等，重复调用不会生成额外写入。
+ */
+export async function repairLiveProxyTextReadiness(
+  storage: Storage,
+): Promise<LiveTextReadinessRepairResult> {
   const manifest = parseLiveProxyManifest(await storage.get(KV_LIVE_PROXY_MANIFEST));
-  if (!manifest) return null;
-  const entry = manifest.entries.find((item) => item.key === key);
-  if (!entry) return null;
-  const checkedAt = new Date().toISOString();
-  const nextEntry: LiveProxyManifestEntry = { ...entry, checkedAt };
-  if (result === 'valid') {
-    nextEntry.health = 'healthy';
-    nextEntry.consecutiveFailures = 0;
-    nextEntry.successfulAt = checkedAt;
-    nextEntry.everSucceeded = true;
-    delete nextEntry.lastFailure;
-  } else {
-    nextEntry.health = 'unhealthy';
-    nextEntry.consecutiveFailures = entry.consecutiveFailures + 1;
-    nextEntry.lastFailure = result;
-    // 复检失败即撤销就绪状态；旧正文可能已过期或上游已失效，
-    // 不能继续在质量池和 /live/<key> 中下发。
-    nextEntry.textReady = false;
+  if (!manifest) {
+    const empty: LiveProxyManifest = { version: LIVE_PROXY_MANIFEST_VERSION, signature: manifestSignature([]), entries: [] };
+    return { checked: 0, repaired: 0, revoked: 0, distributable: 0, changed: false, manifest: empty };
   }
-  const entries = manifest.entries.map((item) => (item.key === key ? nextEntry : item));
-  const nextEntries = sortManifestEntries(entries);
-  await storage.put(KV_LIVE_PROXY_MANIFEST, JSON.stringify({
+
+  let repaired = 0;
+  let revoked = 0;
+  let checked = 0;
+  const next: LiveProxyManifestEntry[] = [];
+  for (const entry of manifest.entries) {
+    const text = await storage.get(`${KV_LIVE_TEXT_PREFIX}${entry.key}`);
+    const textValid = !!text && text.trim().length > 0 && text.includes('#genre#');
+    // 正文本身是最强的可下发证据；从未验证成功只影响排序，不能据此
+    // 永久关闭一个已经拥有完整 #genre# 文本的源。只有明确 invalid 或屏蔽
+    // 才撤销，transient 由排序层承担降级。
+    const sourceEligible = !isBlockedLiveSource(entry)
+      && entry.lastFailure !== 'invalid';
+    const shouldReady = textValid && sourceEligible;
+    checked++;
+    const wasReady = entry.textReady === true;
+    if (shouldReady !== wasReady) {
+      if (shouldReady) repaired++;
+      else revoked++;
+    }
+    next.push({ ...entry, ...(shouldReady ? { textReady: true } : { textReady: false }) });
+  }
+
+  const sorted = sortManifestEntries(next);
+  const nextManifest: LiveProxyManifest = {
     version: LIVE_PROXY_MANIFEST_VERSION,
-    signature: manifestSignature(nextEntries),
-    entries: nextEntries,
-  }));
-  return nextEntry;
+    signature: manifestSignature(sorted),
+    entries: sorted,
+  };
+  const changed = manifest.signature !== nextManifest.signature;
+  if (changed) await storage.put(KV_LIVE_PROXY_MANIFEST, JSON.stringify(nextManifest));
+  return {
+    checked,
+    repaired,
+    revoked,
+    distributable: nextManifest.entries.filter(isLiveProxyEntryDistributable).length,
+    changed,
+    manifest: nextManifest,
+  };
 }
 
 async function testLiveSource(entry: LiveSourceEntry, timeoutMs: number): Promise<LiveTestResult> {

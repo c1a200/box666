@@ -625,8 +625,9 @@ ${sharedStyles}
   <!-- Settings Tab -->
   <div class="tab-panel" id="panelSettings">
     <div class="section">
-        <div class="section-title" data-i18n="cronInterval">源聚合计划</div>
+      <div class="section-title" data-i18n="updateScheduleTitle">更新与质量计划</div>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <label class="form-label" style="margin:0" data-i18n="aggregationInterval">聚合更新频率</label>
         <select id="cronSelect" class="nt-input" style="width:auto;min-width:160px">
           <option value="60" data-i18n-text="cronEvery1h">每 1 小时</option>
           <option value="180" data-i18n-text="cronEvery3h">每 3 小时</option>
@@ -634,9 +635,23 @@ ${sharedStyles}
           <option value="720" data-i18n-text="cronEvery12h">每 12 小时</option>
           <option value="1440" data-i18n-text="cronEveryDay">每天一次</option>
         </select>
-      <button class="btn btn-sm" id="cronSaveBtn" onclick="saveCronInterval()" data-i18n="save">保存</button>
+        <label style="display:flex;gap:6px;align-items:center;font-size:0.85rem;cursor:pointer">
+          <input type="checkbox" id="qualityFollowAggregationInput" checked>
+          <span data-i18n="qualityFollowAggregation">聚合完成后重测质量池</span>
+        </label>
+        <label class="form-label" style="margin:0" data-i18n="qualityFullRepeatDays">全量分级周期（天）</label>
+        <input type="number" id="qualityFullRepeatDaysInput" class="nt-input" style="width:80px" min="1" max="365" value="7">
+        <span id="qualityTimezoneLabel" style="font-size:0.8rem;color:var(--text-secondary)">时区：北京时间（UTC+8）</span>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px">
+        <button class="btn btn-sm" id="cronSaveBtn" onclick="saveUpdateSchedule()" data-i18n="save">保存</button>
+        <button class="btn btn-sm" id="qualityRunCandidateBtn" onclick="runQualityNow('candidate')" data-i18n="qualityRunPool">重测质量池</button>
+        <button class="btn btn-sm" id="qualityRunFullBtn" onclick="runQualityNow('full')" data-i18n="qualityRunFull">全量重测</button>
+        <button class="btn btn-sm" onclick="refreshQualityReport()" data-i18n="qualityRefresh">刷新分级状态</button>
         <span class="status-text" id="cronStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
       </div>
+      <div style="margin-top:8px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="updateScheduleDesc">主聚合按选定频率执行；质量池重测跟随主聚合，避免同一时段重复探测和重复写 KV。全量分级是低频维护任务，用于回收长时间未参与聚合的源。</div>
+      <div id="qualityDynamicStats" style="margin-top:10px;font-size:0.82rem;color:var(--text-secondary);line-height:1.7"></div>
     </div>
 
     <div class="section">
@@ -692,31 +707,6 @@ ${sharedStyles}
 
     </div>
 
-    <div class="section">
-      <div class="section-title" data-i18n="qualitySchedule">搜索源质量分级</div>
-      <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
-        <label style="display:flex;gap:6px;align-items:center;font-size:0.85rem;cursor:pointer">
-          <input type="checkbox" id="qualityEnabledInput">
-          <span data-i18n="qualityEnabled">启用定时分级</span>
-        </label>
-        <label class="form-label" style="margin:0" data-i18n="qualityTimes">时间点</label>
-        <input type="text" id="qualityTimesInput" class="nt-input" style="width:210px" placeholder="04:30, 16:30" data-i18n-placeholder="qualityTimesPh">
-        <label class="form-label" style="margin:0" data-i18n="qualityRepeatDays">质量池重排周期（天）</label>
-        <input type="number" id="qualityRepeatDaysInput" class="nt-input" style="width:80px" min="1" max="30" value="1">
-        <label class="form-label" style="margin:0" data-i18n="qualityFullRepeatDays">全量分级周期（天）</label>
-        <input type="number" id="qualityFullRepeatDaysInput" class="nt-input" style="width:80px" min="1" max="365" value="7">
-        <span id="qualityTimezoneLabel" style="font-size:0.8rem;color:var(--text-secondary)">时区：北京时间（UTC+8）</span>
-        <button class="btn btn-sm" onclick="saveQualitySchedule()" data-i18n="save">保存</button>
-      </div>
-      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px">
-        <button class="btn btn-sm" id="qualityRunCandidateBtn" onclick="runQualityNow('candidate')" data-i18n="qualityRunPool">重测质量池</button>
-        <button class="btn btn-sm" id="qualityRunFullBtn" onclick="runQualityNow('full')" data-i18n="qualityRunFull">全量重测</button>
-        <button class="btn btn-sm" onclick="refreshQualityReport()" data-i18n="qualityRefresh">刷新分级状态</button>
-        <span class="status-text" id="qualityScheduleStatus" style="font-family:var(--mono);font-size:0.75rem"></span>
-      </div>
-      <div style="margin-top:8px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="qualityScheduleDesc">分级在后台异步执行，点击后立即返回，不会阻塞网页或其他请求。日常重测质量池中的源；需要网盘登录、JAR 运行或其他客户端能力的源由应用端最终验证。网盘登录完全由应用端处理。到达全量周期或质量池为空时自动全量分级。Cloudflare 和 Node/Render 都按小分片执行并在分片间让出事件循环；Node/Render 异常重启后会从已保存游标继续。</div>
-      <div id="qualityDynamicStats" style="margin-top:10px;font-size:0.82rem;color:var(--text-secondary);line-height:1.7"></div>
-    </div>
     <div class="section">
       <div class="section-title" data-i18n="nameTransform">名称定制</div>
       <div class="nt-grid">
@@ -919,6 +909,10 @@ const translations = {
     ntPromoReplace:'Promo Replacement (empty = delete)', ntExtraPatterns:'Extra Clean Patterns (one regex per line)',
     ntPrefixPh:'e.g. 【RioTV】', ntSuffixPh:'e.g.  · Curated',
     ntPromoReplacePh:'e.g. Premium', ntExtraPatternsPh:'e.g. sponsor[：:]\\\\S+',
+    updateScheduleTitle:'Update & Quality Schedule',
+    aggregationInterval:'Aggregation interval',
+    qualityFollowAggregation:'Refresh quality pool after aggregation',
+    updateScheduleDesc:'The main aggregation runs at the selected interval; quality-pool rechecks follow the main aggregation to avoid duplicate probing and KV writes in the same window. Full grading is a low-frequency maintenance run that retires sources absent from recent aggregations.',
     cronInterval:'Source Aggregation Schedule',
     speedTestToggle:'Media Site Speed Test', speedTestLabel:'Enable speed testing and remove unreachable media sites during aggregation', speedTestDesc:'This tests media-site API endpoints during aggregation. It is separate from search-quality grading and site-content probing.',
     edgeProxies:'Edge Function Proxies', edgeProxiesDesc:'Configure edge function URLs for proxy fallback (fetch retry + image CDN). Local Docker mode only.',
@@ -1093,6 +1087,10 @@ const translations = {
     ntPromoReplace:'推广替换文字（留空则删除）', ntExtraPatterns:'额外清洗正则（每行一条）',
     ntPrefixPh:'如 【RioTV】', ntSuffixPh:'如  · 精选',
     ntPromoReplacePh:'如 精选推荐', ntExtraPatternsPh:'如 sponsor[：:]\\\\S+',
+    updateScheduleTitle:'更新与质量计划',
+    aggregationInterval:'聚合更新频率',
+    qualityFollowAggregation:'聚合完成后重测质量池',
+    updateScheduleDesc:'主聚合按选定频率执行；质量池重测跟随主聚合，避免同一时段重复探测和重复写 KV。全量分级是低频维护任务，用于回收长时间未参与聚合的源。',
     cronInterval:'源聚合计划',
     speedTestToggle:'影视站点测速', speedTestLabel:'聚合时测速并剔除不可达的影视站点', speedTestDesc:'这里测试的是影视站点 API；与下方的搜索源质量分级、站点内容验活不是同一项任务。',
     edgeProxies:'边缘函数代理', edgeProxiesDesc:'配置边缘函数 URL，用于本地 Docker 模式的请求代理回退和图片 CDN 加速',
@@ -1359,6 +1357,21 @@ async function loadSources() {
   }
 }
 
+async function responseError(res, fallback) {
+  let text = '';
+  try { text = await res.text(); } catch {}
+  if (text) {
+    try {
+      const data = JSON.parse(text);
+      if (data && typeof data === 'object') {
+        if (typeof data.error === 'string' && data.error) return data.error;
+        if (typeof data.detail === 'string' && data.detail) return data.detail;
+      }
+    } catch {}
+    return text.slice(0, 300);
+  }
+  return fallback;
+}
 async function toggleSource(url, disabled) {
   try {
     const res = await auth.authFetch('/admin/sources/toggle', {
@@ -1370,8 +1383,7 @@ async function toggleSource(url, disabled) {
       toast(disabled ? t('sourceDisabled') : t('sourceEnabled'));
       loadSources();
     } else {
-      const d = await res.json();
-      toast(d.error || 'Failed', 'error');
+      toast(await responseError(res, t('saveFailed')), 'error');
     }
   } catch {
     toast(t('networkError'), 'error');
@@ -1438,7 +1450,6 @@ async function addSource() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
-    const d = await res.json();
     if (res.ok) {
       toast(isEdit ? t('sourceUpdated') : t('sourceAdded'));
       if (isEdit) {
@@ -1450,7 +1461,7 @@ async function addSource() {
       }
       loadSources();
     } else {
-      toast(d.error || (isEdit ? t('saveFailed') : t('failedLoad')), 'error');
+      toast(await responseError(res, isEdit ? t('saveFailed') : t('failedLoad')), 'error');
     }
   } catch {
     toast(t('networkError'), 'error');
@@ -1475,8 +1486,7 @@ async function removeSource(url) {
       toast(t('sourceRemoved'));
       loadSources();
     } else {
-      const d = await res.json();
-      toast(d.error || t('remove'), 'error');
+      toast(await responseError(res, t('remove')), 'error');
     }
   } catch {
     toast(t('networkError'), 'error');
@@ -2164,32 +2174,57 @@ async function saveNameTransform() {
 // --- Cron Interval ---
 async function loadCronInterval() {
   try {
-    const res = await auth.authFetch('/admin/cron-interval');
-    if (!res.ok) return;
-    const d = await res.json();
-    $('cronSelect').value = String(d.interval || 1440);
+    const [intervalRes, qualityRes] = await Promise.all([
+      auth.authFetch('/admin/cron-interval'),
+      auth.authFetch('/admin/quality-schedule'),
+    ]);
+    if (intervalRes.ok) {
+      const d = await intervalRes.json();
+      $('cronSelect').value = String(d.interval || 1440);
+    }
+    if (qualityRes.ok) {
+      const d = await qualityRes.json();
+      const schedule = d.schedule || d;
+      qualityScheduleCache = schedule || null;
+      $('qualityFollowAggregationInput').checked = !schedule || schedule.followAggregation !== false;
+      $('qualityFullRepeatDaysInput').value = schedule?.fullRepeatDays || 7;
+      const tzLabel = $('qualityTimezoneLabel');
+      if (tzLabel) tzLabel.textContent = qualityTimezoneLabel(schedule?.timezone);
+    }
   } catch {}
 }
 
-async function saveCronInterval() {
+async function saveUpdateSchedule() {
   const btn = $('cronSaveBtn');
   const status = $('cronStatus');
   btn.textContent = t('saving');
   btn.className = 'btn btn-sm loading';
   status.textContent = '';
+  const followAggregation = $('qualityFollowAggregationInput').checked;
 
   try {
-    const res = await auth.authFetch('/admin/cron-interval', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ interval: parseInt($('cronSelect').value) })
-    });
-    const d = await res.json();
-    if (res.ok) {
+    const results = await Promise.all([
+      auth.authFetch('/admin/cron-interval', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ interval: parseInt($('cronSelect').value) })
+      }),
+      auth.authFetch('/admin/quality-schedule', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          followAggregation: followAggregation,
+          fullRepeatDays: parseInt($('qualityFullRepeatDaysInput').value) || 7,
+        })
+      })
+    ]);
+    const failed = results.find(function (res) { return !res.ok; });
+    if (!failed) {
       status.textContent = t('saved');
       status.className = 'status-text success';
+      loadQualityReport();
     } else {
-      status.textContent = d.error || t('saveFailed');
+      status.textContent = await responseError(failed, t('saveFailed'));
       status.className = 'status-text error';
     }
   } catch {
@@ -2780,7 +2815,7 @@ function startQualityPolling() {
       }
 
       setQualityButtonsRunning(false);
-      const status = $('qualityScheduleStatus');
+      const status = $('cronStatus');
       if (status && d.status && d.status.state === 'done') {
         status.textContent = t('qualityStateDone') + (d.status.mode ? ' · ' + qualityModeLabel(d.status.mode) : '');
         status.className = 'status-text success';
@@ -2798,7 +2833,7 @@ function startQualityPolling() {
 }
 
 function refreshQualityReport() {
-  const el = $('qualityScheduleStatus');
+  const el = $('cronStatus');
   loadQualityReport().then(function () {
     if (el) { el.textContent = t('qualityReportRefreshed'); el.className = 'status-text success'; setTimeout(function(){ el.textContent = ''; }, 3000); }
   });
@@ -2813,10 +2848,8 @@ function qualityTimezoneLabel(timezone) {
 function renderQualitySchedule(schedule) {
   if (!schedule) return;
   qualityScheduleCache = schedule;
-  $('qualityEnabledInput').checked = schedule.enabled !== false;
-  $('qualityTimesInput').value = (schedule.times || []).join(', ');
-  $('qualityRepeatDaysInput').value = schedule.repeatDays || 1;
-  $('qualityFullRepeatDaysInput').value = schedule.fullRepeatDays || 7;
+  if ($('qualityFollowAggregationInput')) $('qualityFollowAggregationInput').checked = schedule.followAggregation !== false;
+  if ($('qualityFullRepeatDaysInput')) $('qualityFullRepeatDaysInput').value = schedule.fullRepeatDays || 7;
   const tzLabel = $('qualityTimezoneLabel');
   if (tzLabel) tzLabel.textContent = qualityTimezoneLabel(schedule.timezone);
 }
@@ -2827,7 +2860,7 @@ function applyRecommendedQuota() {
  const maxParses = d.recommendedMaxParses ?? d.snapshot?.recommendedMaxParses ?? 3;
  const parseInput = $('maxParsesInput');
  if (parseInput) parseInput.value = String(maxParses);
-  const status = $('qualityScheduleStatus');
+  const status = $('cronStatus');
   if (status) {
     status.textContent = t('qualityRecommendedApplied');
     status.className = 'status-text success';
@@ -2835,39 +2868,9 @@ function applyRecommendedQuota() {
   }
 }
 
-async function saveQualitySchedule() {
-  const status = $('qualityScheduleStatus');
-  if (status) status.textContent = '';
-  const times = $('qualityTimesInput').value.split(',').map(function (v) { return v.trim(); }).filter(function (v) { return v.length > 0; });
-  const data = {
-    enabled: $('qualityEnabledInput').checked,
-    times: times,
-    repeatDays: parseInt($('qualityRepeatDaysInput').value) || 1,
-    fullRepeatDays: parseInt($('qualityFullRepeatDaysInput').value) || 7,
-  };
-  try {
-    const res = await auth.authFetch('/admin/quality-schedule', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    });
-    if (res.ok) {
-      const d = await res.json();
-      renderQualitySchedule(d);
-      if (status) { status.textContent = t('qualityScheduleSaved'); status.className = 'status-text success'; }
-      loadQualityReport();
-    } else if (status) {
-      status.textContent = t('saveFailed'); status.className = 'status-text error';
-    }
-  } catch {
-    if (status) { status.textContent = t('networkError'); status.className = 'status-text error'; }
-  }
-  setTimeout(function () { if (status) status.textContent = ''; }, 3000);
-}
-
 async function runQualityNow(mode) {
   mode = mode === 'full' ? 'full' : 'candidate';
-  const status = $('qualityScheduleStatus');
+  const status = $('cronStatus');
   setQualityButtonsRunning(true);
   if (status) {
     status.textContent = mode === 'full' ? t('qualityRunFullStarted') : t('qualityRunPoolStarted');

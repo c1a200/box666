@@ -6,6 +6,8 @@ import { runAggregation } from './aggregator';
 import { probeLiveUrlsBounded } from './core/channel-probe';
 import { loadLivePrepareState, runLivePrepareChunk } from './core/live-prepare';
 import { loadLivePrepareInputs } from './core/live-inputs';
+import { repairLiveProxyTextReadiness } from './core/live-source';
+import { rebuildLiveOutput } from './core/live-output';
 import { DEFAULT_SPEED_TIMEOUT_MS, DEFAULT_SITE_TIMEOUT_MS, DEFAULT_FETCH_TIMEOUT_MS, DEFAULT_SPEED_TEST_CONCURRENCY, DEFAULT_SPEED_TEST_BUDGET_MS, KV_CRON_INTERVAL, KV_LAST_UPDATE, KV_AGGREGATION_STATUS, KV_MERGED_CONFIG, DEFAULT_CRON_INTERVAL } from './core/config';
 import { currentAggregationPhase } from './core/logger';
 import {
@@ -334,30 +336,44 @@ export default {
 
     ctx.waitUntil(
       (async () => {
+        // 1) 无网络修复：升级前已落盘 live_txt 但清单缺少 textReady 的入口。
+        // 该步骤只读正文，不回源，不占用子请求预算。
+        const repaired = await repairLiveProxyTextReadiness(storage);
+        if (repaired.changed) {
+          await rebuildLiveOutput(storage, { reason: "readiness-repair" });
+          console.log("[scheduled] Live text readiness repaired: " + repaired.repaired + " restored, " + repaired.revoked + " revoked");
+        }
+
         if (livePrepareActive) {
-          console.log('[scheduled] Running live prepare chunk (cursor=' + (livePrepareState?.cursor ?? 0) + '/' + (livePrepareState?.total ?? 0) + ')');
+          console.log("[scheduled] Running live prepare chunk (cursor=" + (livePrepareState?.cursor ?? 0) + "/" + (livePrepareState?.total ?? 0) + ")");
           const prepareResult = await runLivePrepareChunk(storage, {
             batchSize: 8,
             timeoutMs: 6000,
             concurrency: 3,
           });
-          console.log('[scheduled] Live prepare chunk done: ' + prepareResult.state.cursor + '/' + prepareResult.state.total);
-          // 本 tick 只推进一个重任务，避免边界场景下与质量分片叠加超时。
+          console.log("[scheduled] Live prepare chunk done: " + prepareResult.state.cursor + "/" + prepareResult.state.total);
+          // prepare 与本轮小批探测叠加，不再直接 return，避免长期只有下载没有迭代验证。
+          await probeLiveUrlsBounded(storage, {
+            maxUrls: 16,
+            timeoutMs: 3000,
+            concurrency: 4,
+            budgetMs: 12000,
+          });
           return;
         }
         if (qualityActive) {
-          console.log('[scheduled] Running search quality chunk (due=' + qualityDue + ', state=' + qualityStatus.state + ')');
+          console.log("[scheduled] Running search quality chunk (due=" + qualityDue + ", state=" + qualityStatus.state + ")");
           await runQualityChunkWithStatus(storage, undefined, config.qualityTimezone);
         }
-        // 免费 Worker：非聚合周期只做一小批直播测速。
+        // 免费 Worker：前沿优先，一次最多 56 条；失败线路仅在重试到期后参与。
         await probeLiveUrlsBounded(storage, {
-          maxUrls: 28,
+          maxUrls: 56,
           timeoutMs: 3000,
           concurrency: 5,
           budgetMs: 25000,
         });
       })().catch((err) => {
-        console.warn('[scheduled] Non-aggregation tick failed:', err instanceof Error ? err.message : String(err));
+        console.warn("[scheduled] Non-aggregation tick failed:", err instanceof Error ? err.message : String(err));
       }),
     );
   },
