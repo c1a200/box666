@@ -43,6 +43,10 @@ export class CloudflareKVStorage implements Storage {
     }
   }
 
+  async putForced(key: string, value: string): Promise<void> {
+    await this.put(key, value);
+  }
+
   async put(key: string, value: string): Promise<void> {
     const url = `https://api.cloudflare.com/client/v4/accounts/${this.accountId}/storage/kv/namespaces/${this.namespaceId}/values/${encodeURIComponent(key)}`;
     try {

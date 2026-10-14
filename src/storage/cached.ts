@@ -45,6 +45,13 @@ export class MemoryCachedStorage implements Storage {
     return promise;
   }
 
+  async putForced(key: string, value: string): Promise<void> {
+    const forced = this.delegate.putForced;
+    if (forced) await forced.call(this.delegate, key, value);
+    else await this.delegate.put(key, value);
+    this.cache.set(key, { value, mtime: Date.now() });
+  }
+
   async put(key: string, value: string): Promise<void> {
     await this.delegate.put(key, value);
     this.cache.set(key, { value, mtime: Date.now() });

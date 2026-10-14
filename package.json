@@ -1,6 +1,6 @@
 {
   "name": "tvbox-source-aggregator",
-  "version": "3.3.27",
+  "version": "3.3.28",
   "private": true,
   "scripts": {
     "dev:cf": "wrangler dev",
@@ -17,7 +17,8 @@
     "check:admin": "node scripts/check-admin-inline-scripts.js",
     "check:quality": "node scripts/regression-quality-pool.cjs",
     "check:routes": "node scripts/regression-routes.cjs",
-    "check:live": "node scripts/regression-live-manifest.cjs"
+    "check:live": "node scripts/regression-live-manifest.cjs",
+    "check:dirty": "node scripts/regression-dirty-marker.cjs"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.0",

@@ -144,6 +144,8 @@ export class HybridStorage implements Storage {
 
   // 同一个 key 只保留最后一次待同步值，避免聚合进度等高频写入造成请求堆积。
   private pendingWrites = new Map<string, string>();
+  // 强制写只用于必须落盘的状态键；常规写入仍保留“未变化跳过”的额度优化。
+  private forceRemoteWrites = new Set<string>();
   private remoteWriteChains = new Map<string, Promise<void>>();
   private flushing = false;
   private remoteUnavailableUntil = 0;
@@ -252,7 +254,8 @@ export class HybridStorage implements Storage {
   private enqueueRemoteWrite(key: string, value: string): Promise<void> {
     const previous = this.remoteWriteChains.get(key) ?? Promise.resolve();
     const task = previous.then(async () => {
-      if (this.lastWriteValues.get(key) === value) return;
+      const force = this.forceRemoteWrites.has(key);
+      if (!force && this.lastWriteValues.get(key) === value) return;
       await this.remote.put(key, value);
       this.lastWriteValues.set(key, value);
       this.markRemoteSuccess('write');
@@ -384,6 +387,15 @@ export class HybridStorage implements Storage {
     } catch (err) {
       this.markRemoteFailure(err);
       return null;
+    }
+  }
+
+  async putForced(key: string, value: string): Promise<void> {
+    this.forceRemoteWrites.add(key);
+    try {
+      await this.put(key, value);
+    } finally {
+      this.forceRemoteWrites.delete(key);
     }
   }
 

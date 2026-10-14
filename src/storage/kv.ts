@@ -11,6 +11,11 @@ export class KVStorage implements Storage {
     return this.kv.get(key);
   }
 
+  async putForced(key: string, value: string): Promise<void> {
+    await this.kv.put(key, value);
+    this.writeStats.put++;
+  }
+
   async put(key: string, value: string): Promise<void> {
     // Cloudflare 免费版 KV 每日写入配额很小（约 1000 次）。定时任务若反复
     // 提交完全相同的时间戳/状态，会很快耗尽配额并让聚合与直播预热停摆。
