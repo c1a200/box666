@@ -11,7 +11,7 @@ routes = [
 ]
 
 [triggers]
-crons = ["*/15 * * * *"]  # 每15分钟触发：聚合按 Admin 间隔执行，搜索源质量分级按分片续跑
+crons = ["0 * * * *"]  # 每小时唤醒一次：聚合/分级仍按后台设置判断是否到期，降低 KV 与调度消耗
 
 [[kv_namespaces]]
 binding = "TVBOX_KV"

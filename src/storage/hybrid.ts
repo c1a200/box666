@@ -33,6 +33,7 @@ export const CRITICAL_STORAGE_KEYS = new Set<string>([
   'site_upstream_map',
   'search_quota',
   'cron_interval',
+  'cron_time',
   'speed_test_enabled',
   'edge_proxies',
   'blacklist',
@@ -46,6 +47,7 @@ export const CRITICAL_STORAGE_KEYS = new Set<string>([
   'group_order',
   'bg_settings',
   'channel_probe_enabled',
+  'channel_probe_interval',
   'search_quality_schedule',
 ]);
 

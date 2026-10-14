@@ -12,6 +12,7 @@ import {
   KV_CHANNEL_SPEED_MAP,
   KV_CHANNEL_PROBE_STATUS,
   KV_CHANNEL_PROBE_ENABLED,
+  KV_CHANNEL_PROBE_INTERVAL,
   KV_CHANNEL_MERGED_TREE,
   KV_CHANNEL_RUNTIME_TREE,
   KV_CHANNEL_CANDIDATE_URLS,
@@ -21,8 +22,11 @@ import {
   KV_LIVE_RUNTIME_TXT_VERSION,
   CHANNEL_PROBE_CONCURRENCY,
   CHANNEL_PROBE_TIMEOUT_MS,
+  DEFAULT_CHANNEL_PROBE_INTERVAL,
+  CHANNEL_PROBE_INTERVALS,
   CHANNEL_SPEED_TTL_MS,
   TVBOX_UA,
+  dailyCronFromTime,
 } from './config';
 import {
   bareLiveSourceUrl,
@@ -54,6 +58,31 @@ export async function isProbeEnabled(storage: Storage): Promise<boolean> {
 
 export async function setProbeEnabled(storage: Storage, enabled: boolean): Promise<void> {
   await storage.put(KV_CHANNEL_PROBE_ENABLED, enabled ? 'true' : 'false');
+}
+
+export function normalizeProbeInterval(value: unknown): number {
+  const minutes = typeof value === 'number' ? value : parseInt(String(value ?? ''));
+  return (CHANNEL_PROBE_INTERVALS as readonly number[]).includes(minutes)
+    ? minutes
+    : DEFAULT_CHANNEL_PROBE_INTERVAL;
+}
+
+export function intervalToChannelProbeCron(minutes: number, dailyTime = '05:00'): string {
+  switch (normalizeProbeInterval(minutes)) {
+    case 360: return '0 */6 * * *';
+    case 1440: return dailyCronFromTime(dailyTime);
+    default: return '0 */12 * * *';
+  }
+}
+
+export async function loadProbeInterval(storage: Storage): Promise<number> {
+  return normalizeProbeInterval(await storage.get(KV_CHANNEL_PROBE_INTERVAL));
+}
+
+export async function setProbeInterval(storage: Storage, minutes: number): Promise<number> {
+  const normalized = normalizeProbeInterval(minutes);
+  await storage.put(KV_CHANNEL_PROBE_INTERVAL, String(normalized));
+  return normalized;
 }
 
 export async function loadStatus(storage: Storage): Promise<ChannelProbeStatus> {

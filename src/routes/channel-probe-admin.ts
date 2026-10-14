@@ -9,6 +9,9 @@ import {
   loadStatus,
   runChannelProbe,
   isRunning,
+  loadProbeInterval,
+  setProbeInterval,
+  normalizeProbeInterval,
 } from '../core/channel-probe';
 
 function verifyAdmin(request: Request, config: AppConfig): boolean {
@@ -24,21 +27,24 @@ export interface ChannelProbeRouteDeps {
   triggerChannelProbe?: (
     trigger?: ChannelProbeTrigger,
   ) => Promise<void>;
+  onChannelProbeIntervalChange?: (intervalMinutes: number) => void;
 }
 
 export function mountChannelProbeRoutes(app: Hono, deps: ChannelProbeRouteDeps): void {
-  const { storage, config, triggerChannelProbe } = deps;
+  const { storage, config, triggerChannelProbe, onChannelProbeIntervalChange } = deps;
 
   // GET /admin/channel-probe/status — 查询状态 + 开关
   app.get('/admin/channel-probe/status', async (c) => {
     if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
-    const [enabled, status] = await Promise.all([
+    const [enabled, status, intervalMinutes] = await Promise.all([
       isProbeEnabled(storage),
       loadStatus(storage),
+      loadProbeInterval(storage),
     ]);
     return c.json({
       enabled,
       running: isRunning(),
+      intervalMinutes,
       status,
     });
   });
@@ -57,6 +63,24 @@ export function mountChannelProbeRoutes(app: Hono, deps: ChannelProbeRouteDeps):
     }
     await setProbeEnabled(storage, body.enabled);
     return c.json({ success: true, enabled: body.enabled });
+  });
+
+  // PUT /admin/channel-probe/interval — 定时测速周期（仅 Node/Docker）
+  app.put('/admin/channel-probe/interval', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
+    let body: { intervalMinutes?: number };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'Invalid JSON' }, 400);
+    }
+    const requested = Number(body.intervalMinutes);
+    if (!Number.isFinite(requested) || normalizeProbeInterval(requested) !== requested) {
+      return c.json({ error: 'intervalMinutes must be one of: 360, 720, 1440' }, 400);
+    }
+    const intervalMinutes = await setProbeInterval(storage, requested);
+    if (onChannelProbeIntervalChange) onChannelProbeIntervalChange(intervalMinutes);
+    return c.json({ success: true, intervalMinutes });
   });
 
   // POST /admin/channel-probe/trigger — 手动触发（异步启动，不阻塞响应）

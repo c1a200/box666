@@ -20,7 +20,7 @@ import * as dns from 'dns';
 import { createApp } from './routes';
 import { runAggregation } from './aggregator';
 import { collectJarEntriesForSites, prefetchJarBinaries } from './core/jar-proxy';
-import { runChannelProbe, isProbeEnabled } from './core/channel-probe';
+import { runChannelProbe, isProbeEnabled, loadProbeInterval, intervalToChannelProbeCron } from './core/channel-probe';
 import { currentAggregationPhase } from './core/logger';
 import { repairLiveProxyTextReadiness } from './core/live-source';
 import { rebuildLiveOutput } from './core/live-output';
@@ -48,7 +48,11 @@ import {
   KV_MERGED_CONFIG,
   KV_LAST_UPDATE,
   DEFAULT_CRON_INTERVAL,
-  CHANNEL_PROBE_CRON,
+  DEFAULT_CRON_TIME,
+  KV_CRON_TIME,
+  cronTimeFromSchedule,
+  normalizeCronTime,
+  dailyCronFromTime,
 } from './core/config';
 import type { Storage } from './storage/interface';
 import type { AppConfig, SearchQualityRunMode, ChannelProbeTrigger } from './core/types';
@@ -214,15 +218,16 @@ async function buildConfig(port: number): Promise<AppConfig> {
 
 // ─── 启动 ────────────────────────────────────────────────
 
-/** 将间隔分钟数转换为 cron 表达式 */
-function intervalToCron(minutes: number): string {
+/** 将间隔分钟数转换为 cron 表达式；每日任务使用配置的本地时刻。 */
+function intervalToCron(minutes: number, time = DEFAULT_CRON_TIME): string {
+  const daily = dailyCronFromTime(time);
   switch (minutes) {
     case 60:   return '0 */1 * * *';
     case 180:  return '0 */3 * * *';
     case 360:  return '0 */6 * * *';
     case 720:  return '0 */12 * * *';
-    case 1440: return '0 5 * * *';
-    default:   return '0 5 * * *';
+    case 1440: return daily;
+    default:   return daily;
   }
 }
 
@@ -573,35 +578,51 @@ async function main() {
     currentTask = cron.schedule(cronExpr, () => {
       console.log(`[cron] Triggered at ${new Date().toISOString()}`);
       runWithGuard();
-    });
+    }, { timezone: config.qualityTimezone || 'Asia/Shanghai' });
     console.log(`[cron] Scheduled: ${cronExpr}`);
   }
 
-  // 读取 KV 中的间隔设置，否则用环境变量/默认值
-  const storedInterval = await storage.get(KV_CRON_INTERVAL);
-  let initialSchedule: string;
+  // 读取 KV 中的间隔与每日时刻设置，否则沿用环境变量/默认值。
+  const [storedInterval, storedCronTime, channelProbeInterval] = await Promise.all([
+    storage.get(KV_CRON_INTERVAL),
+    storage.get(KV_CRON_TIME),
+    loadProbeInterval(storage),
+  ]);
+  let currentCronTime = normalizeCronTime(storedCronTime || cronTimeFromSchedule(config.cronSchedule));
+  let currentChannelProbeInterval = channelProbeInterval;
   let intervalMin: number;
+  let initialSchedule: string;
 
   if (storedInterval) {
     intervalMin = parseInt(storedInterval) || DEFAULT_CRON_INTERVAL;
-    initialSchedule = intervalToCron(intervalMin);
+    initialSchedule = intervalToCron(intervalMin, currentCronTime);
+  } else if (storedCronTime) {
+    // 已保存每日时刻但尚未保存间隔时，也要优先使用该时刻，不能被旧的 CRON_SCHEDULE 覆盖。
+    intervalMin = DEFAULT_CRON_INTERVAL;
+    initialSchedule = intervalToCron(intervalMin, currentCronTime);
   } else {
-    initialSchedule = config.cronSchedule || '0 5 * * *';
+    initialSchedule = config.cronSchedule || intervalToCron(DEFAULT_CRON_INTERVAL, currentCronTime);
     intervalMin = DEFAULT_CRON_INTERVAL;
   }
 
   scheduleCron(initialSchedule);
 
-  // 频道测速独立 cron（每 12 小时，默认关闭）
-  cron.schedule(CHANNEL_PROBE_CRON, () => {
-    try {
-      console.log(`[channel-probe-cron] Triggered at ${new Date().toISOString()}`);
-      void scheduleChannelProbe('cron', 0);
-    } catch (err) {
-      console.error('[channel-probe-cron] Error:', err);
-    }
-  });
-  console.log(`[channel-probe-cron] Scheduled: ${CHANNEL_PROBE_CRON} (runs when enabled)`);
+  // 频道测速独立 cron：周期可选 6/12/24 小时；24 小时使用配置的每日时刻。
+  let channelProbeTask: cron.ScheduledTask | null = null;
+  function scheduleChannelProbeCron(probeMinutes: number) {
+    if (channelProbeTask) channelProbeTask.stop();
+    const effectiveExpression = intervalToChannelProbeCron(probeMinutes, currentCronTime);
+    channelProbeTask = cron.schedule(effectiveExpression, () => {
+      try {
+        console.log(`[channel-probe-cron] Triggered at ${new Date().toISOString()}`);
+        void scheduleChannelProbe('cron', 0);
+      } catch (err) {
+        console.error('[channel-probe-cron] Error:', err);
+      }
+    }, { timezone: config.qualityTimezone || 'Asia/Shanghai' });
+    console.log(`[channel-probe-cron] Scheduled: ${effectiveExpression} (runs when enabled)`);
+  }
+  scheduleChannelProbeCron(channelProbeInterval);
 
   // 搜索源质量分级独立 cron（每分钟检查计划；到期后异步执行）
   // 候选池重排与全量分级分别按各自周期判断，互不阻塞 HTTP 请求。
@@ -685,10 +706,19 @@ async function main() {
     enableBuilder: true,
     isSyncing: () => refreshRunning,
     aggregationStatus,
-    onCronIntervalChange: (intervalMinutes: number) => {
-      const newCron = intervalToCron(intervalMinutes);
+    onCronIntervalChange: (intervalMinutes: number, time?: string) => {
+      if (time) currentCronTime = normalizeCronTime(time);
+      const newCron = intervalToCron(intervalMinutes, currentCronTime);
       console.log(`[cron] Interval changed to ${intervalLabel(intervalMinutes)} (${newCron})`);
       scheduleCron(newCron);
+      // 每日频道测速复用同一个执行时刻；改时刻时必须重建其 cron。
+      if (currentChannelProbeInterval === 1440) {
+        scheduleChannelProbeCron(currentChannelProbeInterval);
+      }
+    },
+    onChannelProbeIntervalChange: (probeMinutes: number) => {
+      currentChannelProbeInterval = probeMinutes;
+      scheduleChannelProbeCron(probeMinutes);
     },
   });
 

@@ -8,7 +8,7 @@ import { loadLivePrepareState, runLivePrepareChunk } from './core/live-prepare';
 import { loadLivePrepareInputs } from './core/live-inputs';
 import { repairLiveProxyTextReadiness } from './core/live-source';
 import { rebuildLiveOutput } from './core/live-output';
-import { DEFAULT_SPEED_TIMEOUT_MS, DEFAULT_SITE_TIMEOUT_MS, DEFAULT_FETCH_TIMEOUT_MS, DEFAULT_SPEED_TEST_CONCURRENCY, DEFAULT_SPEED_TEST_BUDGET_MS, KV_CRON_INTERVAL, KV_LAST_UPDATE, KV_AGGREGATION_STATUS, KV_MERGED_CONFIG, DEFAULT_CRON_INTERVAL } from './core/config';
+import { DEFAULT_SPEED_TIMEOUT_MS, DEFAULT_SITE_TIMEOUT_MS, DEFAULT_FETCH_TIMEOUT_MS, DEFAULT_SPEED_TEST_CONCURRENCY, DEFAULT_SPEED_TEST_BUDGET_MS, KV_CRON_INTERVAL, KV_CRON_TIME, KV_LAST_UPDATE, KV_AGGREGATION_STATUS, KV_MERGED_CONFIG, DEFAULT_CRON_INTERVAL, DEFAULT_CRON_TIME, normalizeCronTime } from './core/config';
 import { currentAggregationPhase } from './core/logger';
 import {
   beginQualityRun,
@@ -51,6 +51,39 @@ function buildConfig(env: CfEnv): AppConfig {
 }
 
 const QUALITY_CHUNK_SIZE = 40;
+
+function zonedDateTimeParts(date: Date, timezone: string): { year: number; month: number; day: number; hour: number; minute: number } {
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+  const parts = Object.fromEntries(formatter.formatToParts(date).map((part) => [part.type, part.value]));
+  return {
+    year: Number(parts.year),
+    month: Number(parts.month),
+    day: Number(parts.day),
+    hour: Number(parts.hour) % 24,
+    minute: Number(parts.minute),
+  };
+}
+
+function localDayOrdinal(parts: { year: number; month: number; day: number }): number {
+  return Math.floor(Date.UTC(parts.year, parts.month - 1, parts.day) / 86400000);
+}
+
+function localMinuteOfDay(parts: { hour: number; minute: number }): number {
+  return parts.hour * 60 + parts.minute;
+}
+
+function cronTimeMinutes(value: string): number {
+  const [hour, minute] = value.split(':').map(Number);
+  return hour * 60 + minute;
+}
 
 /**
  * Worker 实例内的实时状态。KV 负责跨实例/冷启动恢复，内存状态负责轮询时
@@ -295,13 +328,45 @@ export default {
     const config = buildConfig(env);
 
     // 聚合优先：先判断聚合是否到期，避免质量分片长期占用 cron 而饿死聚合。
-    const intervalRaw = await storage.get(KV_CRON_INTERVAL);
+    const [intervalRaw, cronTimeRaw, lastUpdateRaw] = await Promise.all([
+      storage.get(KV_CRON_INTERVAL),
+      storage.get(KV_CRON_TIME),
+      storage.get(KV_LAST_UPDATE),
+    ]);
     const intervalMinutes = intervalRaw ? parseInt(intervalRaw) : DEFAULT_CRON_INTERVAL;
-    const lastUpdateRaw = await storage.get(KV_LAST_UPDATE);
+    // cron_time 为空时保持默认每日时刻；CF 的 cron 仍为每小时检查。
+    const cronTime = normalizeCronTime(cronTimeRaw || DEFAULT_CRON_TIME);
     let aggregationDue = true;
-    if (lastUpdateRaw) {
+    const now = new Date();
+    if (intervalMinutes === 1440) {
+      // CF 的 cron 表达式在部署时固定为每小时一次；这里按本地时刻判断，
+      // 到点后的首个整点执行。Render 则使用精确 HH:MM。
+      const timezone = config.qualityTimezone || 'Asia/Shanghai';
+      const nowParts = zonedDateTimeParts(now, timezone);
+      const scheduledMinute = cronTimeMinutes(cronTime);
+      const nowMinute = localMinuteOfDay(nowParts);
+      const nowDay = localDayOrdinal(nowParts);
+      // Use the most recent due boundary. Before today's time, it is yesterday's boundary,
+      // so a late schedule such as 23:30 runs at the first hourly tick after midnight.
+      const dueBoundaryDay = nowMinute >= scheduledMinute ? nowDay : nowDay - 1;
+      let alreadyRanAfterDueBoundary = false;
+      if (lastUpdateRaw) {
+        const lastUpdate = Date.parse(lastUpdateRaw);
+        if (Number.isFinite(lastUpdate)) {
+          const lastParts = zonedDateTimeParts(new Date(lastUpdate), timezone);
+          const lastDay = localDayOrdinal(lastParts);
+          const lastMinute = localMinuteOfDay(lastParts);
+          alreadyRanAfterDueBoundary = lastDay > dueBoundaryDay
+            || (lastDay === dueBoundaryDay && lastMinute >= scheduledMinute);
+        }
+      }
+      aggregationDue = !alreadyRanAfterDueBoundary;
+      if (!aggregationDue) {
+        console.log('[scheduled] Daily aggregation not due: local ' + String(nowParts.hour).padStart(2, '0') + ':' + String(nowParts.minute).padStart(2, '0') + ', scheduled ' + cronTime);
+      }
+    } else if (lastUpdateRaw) {
       const lastUpdate = Date.parse(lastUpdateRaw);
-      const elapsed = Date.now() - lastUpdate;
+      const elapsed = now.getTime() - lastUpdate;
       const intervalMs = intervalMinutes * 60 * 1000;
       aggregationDue = !(Number.isFinite(lastUpdate) && elapsed >= 0 && elapsed < intervalMs);
       if (!aggregationDue) {

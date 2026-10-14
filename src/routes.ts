@@ -4,7 +4,7 @@ import { Hono } from 'hono';
 import { MemoryCachedStorage } from './storage/cached';
 import type { Storage } from './storage/interface';
 import type { AppConfig, MacCMSSourceEntry, LiveSourceEntry, NameTransformConfig, EdgeProxyConfig, SearchQualityRunMode } from './core/types';
-import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_STARTUP_SITE_POOL, KV_MANUAL_SOURCES, KV_LAST_UPDATE, KV_LAST_UPDATE_ERROR, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_RUNTIME_TXT, KV_LIVE_RUNTIME_TXT_VERSION, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, LIVE_PROXY_TTL, IMG_PROXY_TTL, KV_NAME_TRANSFORM, KV_CRON_INTERVAL, DEFAULT_CRON_INTERVAL, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_PARSE_HEALTH_REPORT, KV_AGG_LOGS, KV_BG_SETTINGS, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, KV_SMART_BASE_URL_ENABLED, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SITE_HEALTH_MAP, KV_CHANNEL_MERGED_TREE, KV_CHANNEL_RUNTIME_TREE, KV_CHANNEL_CANDIDATE_URLS, KV_LIVE_TEXT_PREFIX, KV_CREDENTIAL_DISTRIBUTION, KV_SEARCH_QUALITY_CANDIDATES, KV_LIVE_MERGE_REPORT, KV_LIVE_ATTACH_AUTH, KV_LIVE_OUTPUT_FINGERPRINT } from './core/config';
+import { KV_MERGED_CONFIG, KV_MERGED_CONFIG_FULL, KV_STARTUP_SITE_POOL, KV_MANUAL_SOURCES, KV_LAST_UPDATE, KV_LAST_UPDATE_ERROR, KV_MACCMS_SOURCES, KV_LIVE_SOURCES, KV_LIVE_MERGED_DATA, KV_LIVE_MERGED_TXT, KV_LIVE_MERGED_TXT_FALLBACK, KV_LIVE_MERGED_TXT_VERSION, KV_LIVE_RUNTIME_TXT, KV_LIVE_RUNTIME_TXT_VERSION, KV_LIVE_RUNTIME_EMPTY_AT, KV_BLACKLIST, LIVE_PROXY_TTL, IMG_PROXY_TTL, KV_NAME_TRANSFORM, KV_CRON_INTERVAL, DEFAULT_CRON_INTERVAL, KV_CRON_TIME, DEFAULT_CRON_TIME, isValidCronTime, normalizeCronTime, cronTimeFromSchedule, KV_SOURCE_HEALTH, KV_SPEED_TEST_ENABLED, KV_EDGE_PROXIES, KV_SEARCH_QUOTA_REPORT, KV_PARSE_HEALTH_REPORT, KV_AGG_LOGS, KV_BG_SETTINGS, KV_DEDUP_CONFIG, KV_LIVE_DISABLED, KV_LIVE_MERGE_MODE, KV_IGNORE_AGGREGATED_LIVES, KV_SMART_BASE_URL_ENABLED, KV_SITE_PROBE_DEPTH, KV_SITE_AUTO_CLEAN, KV_SITE_HEALTH_MAP, KV_CHANNEL_MERGED_TREE, KV_CHANNEL_RUNTIME_TREE, KV_CHANNEL_CANDIDATE_URLS, KV_LIVE_TEXT_PREFIX, KV_CREDENTIAL_DISTRIBUTION, KV_SEARCH_QUALITY_CANDIDATES, KV_LIVE_MERGE_REPORT, KV_LIVE_ATTACH_AUTH, KV_LIVE_OUTPUT_FINGERPRINT } from './core/config';
 import { getRequestBaseUrl, applyBaseUrlPlaceholder, assertHostAllowed } from './core/base-url';
 import { logger } from './core/logger';
 import { loadGroupOrder, saveGroupOrder } from './core/group-order';
@@ -71,9 +71,10 @@ export interface AppDeps {
   triggerRefresh: () => Promise<AggregationTriggerResult | void>;
   triggerLivePrepare?: () => Promise<unknown>; // 仅 Cloudflare 入口启用直播正文分片准备
   triggerQuality?: (mode: SearchQualityRunMode) => Promise<void>;   // Node/Docker 入口启用质量分级
-  onCronIntervalChange?: (intervalMinutes: number) => void;
+  onCronIntervalChange?: (intervalMinutes: number, time?: string) => void;
   enableChannelProbe?: boolean; // 仅 Node/Docker 入口启用
   triggerChannelProbe?: (trigger?: ChannelProbeTrigger) => Promise<void>;
+  onChannelProbeIntervalChange?: (intervalMinutes: number) => void;
   enableBuilder?: boolean;      // 仅 Node/Docker 入口启用（配置构建器）
   isSyncing?: () => boolean;
   aggregationStatus?: () => AggregationStatusResult | Promise<AggregationStatusResult>;
@@ -1670,14 +1671,18 @@ export function createApp(deps: AppDeps): Hono {
     return c.json({ success: true });
   });
 
-  // ─── 定时任务间隔 API ──────────────────────────────────
+  // ─── 定时任务间隔与每日时刻 API ────────────────────────
   app.get('/admin/cron-interval', async (c) => {
     if (!verifyAdmin(c.req.raw, config)) {
       return c.json({ error: 'Unauthorized' }, 401);
     }
-    const raw = await storage.get(KV_CRON_INTERVAL);
+    const [raw, rawTime] = await Promise.all([
+      storage.get(KV_CRON_INTERVAL),
+      storage.get(KV_CRON_TIME),
+    ]);
     const interval = raw ? parseInt(raw) : DEFAULT_CRON_INTERVAL;
-    return c.json({ interval });
+    const time = normalizeCronTime(rawTime || cronTimeFromSchedule(config.cronSchedule));
+    return c.json({ interval, time });
   });
 
   app.put('/admin/cron-interval', async (c) => {
@@ -1685,7 +1690,7 @@ export function createApp(deps: AppDeps): Hono {
       return c.json({ error: 'Unauthorized' }, 401);
     }
 
-    let body: { interval?: number };
+    let body: { interval?: number; time?: string };
     try {
       body = await c.req.json();
     } catch {
@@ -1698,13 +1703,21 @@ export function createApp(deps: AppDeps): Hono {
       return c.json({ error: `interval must be one of: ${validIntervals.join(', ')}` }, 400);
     }
 
-    await storage.put(KV_CRON_INTERVAL, String(interval));
-
-    if (deps.onCronIntervalChange) {
-      deps.onCronIntervalChange(interval);
+    const time = normalizeCronTime(body.time ?? DEFAULT_CRON_TIME);
+    if (body.time !== undefined && !isValidCronTime(body.time)) {
+      return c.json({ error: 'time must use HH:MM format' }, 400);
     }
 
-    return c.json({ success: true, interval });
+    await Promise.all([
+      storage.put(KV_CRON_INTERVAL, String(interval)),
+      storage.put(KV_CRON_TIME, time),
+    ]);
+
+    if (deps.onCronIntervalChange) {
+      deps.onCronIntervalChange(interval, time);
+    }
+
+    return c.json({ success: true, interval, time });
   });
 
   // ─── 站点测速开关 ──────────────────────────────────────
@@ -4252,7 +4265,7 @@ export function createApp(deps: AppDeps): Hono {
 
   // 频道级测速 admin 路由（仅 Node/Docker 启用）
   if (deps.enableChannelProbe) {
-    mountChannelProbeRoutes(app, { storage, config, triggerChannelProbe: deps.triggerChannelProbe });
+    mountChannelProbeRoutes(app, { storage, config, triggerChannelProbe: deps.triggerChannelProbe, onChannelProbeIntervalChange: deps.onChannelProbeIntervalChange });
   }
 
   // Builder 路由（仅 Node/Docker 启用，动态 import 避免 CF bundle 引入 fs/path）

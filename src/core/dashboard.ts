@@ -459,7 +459,7 @@ ${sharedStyles}
   </div>
 
   <div class="footer">
-    <span data-i18n="footer">TVBox Source Aggregator &middot; Cron 05:00 UTC Daily</span>
+    <span data-i18n="footer">TVBox Source Aggregator &middot; 按后台设置定时执行</span>
   </div>
 </div>
 
@@ -480,7 +480,7 @@ const translations = {
     sqName:'Name', sqSource:'Source', sqReason:'Reason',
     sqPinned:'pinned', sqHttp:'http', sqMainJar:'main jar', sqIndepJar:'indep jar',
     warnDockerNoBaseUrl:'Docker environment detected without BASE_URL configured. JAR proxy addresses may be unreachable from TVBox clients.<br>Set <b>BASE_URL=http://HOST_IP:PORT</b> in docker-compose.yml',
-    footer:'TVBox Source Aggregator &middot; Cron 05:00 UTC Daily',
+    footer:'TVBox Source Aggregator &middot; Runs on the schedule configured in Admin',
     navAdmin:'Admin', navConfigEditor:'Config Editor',
   },
   zh: {
@@ -496,7 +496,7 @@ const translations = {
     sqName:'名称', sqSource:'来源', sqReason:'原因',
     sqPinned:'置顶', sqHttp:'HTTP', sqMainJar:'主 JAR', sqIndepJar:'独立 JAR',
     warnDockerNoBaseUrl:'检测到 Docker 环境但未配置 BASE_URL，JAR 代理地址可能不可达。<br>请在 docker-compose.yml 中设置 <b>BASE_URL=http://宿主机IP:端口</b>',
-    footer:'TVBox 源聚合器 &middot; 每日 UTC 05:00 定时任务',
+    footer:'TVBox 源聚合器 &middot; 按后台设置定时执行',
     navAdmin:'管理', navConfigEditor:'配置编辑',
   }
 };

@@ -60,9 +60,38 @@ export const TVBOX_UA = 'okhttp/3.12.0';
 // 浏览器 UA 回退（部分源只接受浏览器 UA）
 export const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.54 Safari/537.36';
 
-// 定时任务间隔（分钟）
+// 定时任务间隔（分钟）与每日执行时刻（服务器本地时区）
 export const KV_CRON_INTERVAL = 'cron_interval';
+export const KV_CRON_TIME = 'cron_time';
 export const DEFAULT_CRON_INTERVAL = 1440; // 默认每天一次
+export const DEFAULT_CRON_TIME = '05:00';
+// CF Worker 的 cron 在部署时固定，无法由后台动态改成任意 HH:MM；
+// 因此 CF 使用每小时唤醒并在到点后的首个整点执行，Render/Node 可精确到分钟。
+
+export function isValidCronTime(value: unknown): value is string {
+  return typeof value === 'string' && /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value.trim());
+}
+
+export function normalizeCronTime(value: unknown): string {
+  return isValidCronTime(value) ? value.trim() : DEFAULT_CRON_TIME;
+}
+
+/** 将每日时刻转换为服务器本地时区的 5 段 cron 表达式。 */
+export function dailyCronFromTime(value: unknown): string {
+  const normalized = normalizeCronTime(value);
+  const [hour, minute] = normalized.split(':').map((part) => parseInt(part, 10));
+  return minute + ' ' + hour + ' * * *';
+}
+
+export function cronTimeFromSchedule(schedule: unknown): string {
+  if (typeof schedule !== 'string') return DEFAULT_CRON_TIME;
+  const parts = schedule.trim().split(/\s+/);
+  if (parts.length !== 5) return DEFAULT_CRON_TIME;
+  const minute = Number(parts[0]);
+  const hour = Number(parts[1]);
+  if (!Number.isInteger(minute) || !Number.isInteger(hour) || minute < 0 || minute > 59 || hour < 0 || hour > 23) return DEFAULT_CRON_TIME;
+  return String(hour).padStart(2, '0') + ':' + String(minute).padStart(2, '0');
+}
 
 // 边缘函数代理
 export const KV_EDGE_PROXIES = 'edge_proxies';
@@ -84,6 +113,7 @@ export const KV_PARSE_HEALTH_REPORT = 'parse_health_report';
 // ═══ 直播频道级测速（方案 D+）══════════════════════════
 export const KV_CHANNEL_SPEED_MAP = 'channel_speed_map';
 export const KV_CHANNEL_PROBE_ENABLED = 'channel_probe_enabled';
+export const KV_CHANNEL_PROBE_INTERVAL = 'channel_probe_interval'; // 定时频道测速周期（分钟）
 export const KV_CHANNEL_PROBE_STATUS = 'channel_probe_status';
 export const KV_CHANNEL_MERGED_TREE = 'channel_merged_tree'; // 主聚合产出的完整源树（probe 只能读，不能被过滤结果覆盖）
 export const KV_CHANNEL_RUNTIME_TREE = 'channel_runtime_tree'; // 应用测速/过滤后的运行时频道树（/live 输出与版本使用）
@@ -135,8 +165,10 @@ export const KV_SITE_AUTO_CLEAN = 'site_auto_clean';   // 'true' | 'false'
 export const KV_SOURCE_MAP = 'builder_source_map'; // { sites: Record, parses: Record, lives: Record }
 export const KV_SITE_UPSTREAM_MAP = 'site_upstream_map';
 
-// 频道测速 cron：每 12 小时
+// 频道测速 cron：兼容旧配置，默认 12 小时；新配置从 KV 读取。
 export const CHANNEL_PROBE_CRON = '0 */12 * * *';
+export const DEFAULT_CHANNEL_PROBE_INTERVAL = 720;
+export const CHANNEL_PROBE_INTERVALS = [360, 720, 1440] as const;
 // 并发与超时
 export const CHANNEL_PROBE_CONCURRENCY = 18;
 export const CHANNEL_PROBE_TIMEOUT_MS = 5000;

@@ -261,7 +261,8 @@ KV 超时或不可用不会阻塞 Render 服务。
 |------|------|--------|
 | `ADMIN_TOKEN` | 管理后台密码（必填） | - |
 | `PORT` | 服务端口（Docker/本地） | `5678` |
-| `CRON_SCHEDULE` | 定时聚合 Cron（UTC） | `0 5 * * *` |
+| `CRON_SCHEDULE` | 定时聚合回退 Cron（服务器本地时区，Docker/Render 为 Asia/Shanghai） | `0 5 * * *` |
+| 每日执行时刻 | 管理页“每天一次”可设置 HH:MM；Render/Node 精确到分钟，Cloudflare 每小时唤醒并在到点后的首个整点执行 | 05:00 |
 | `ZBAPE_API_KEY` | zbape.com 测速 API 密钥 | - |
 | `REFRESH_TOKEN` | 刷新接口独立 Token | - |
 | `SPEED_TIMEOUT_MS` | 源延迟阈值 | `5000` |

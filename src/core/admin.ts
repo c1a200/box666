@@ -405,8 +405,14 @@ ${sharedStyles}
       <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px">
         <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
           <input type="checkbox" id="channelProbeCheck" onchange="toggleChannelProbe()">
-          <span data-i18n="channelProbeEnable">Enable scheduled channel speed test (every 12h)</span>
+          <span data-i18n="channelProbeEnable">启用定时频道测速</span>
         </label>
+        <label class="form-label" style="margin:0" data-i18n="channelProbeIntervalLabel">测速周期</label>
+        <select id="channelProbeIntervalSelect" class="nt-input" style="width:auto;min-width:120px" onchange="saveChannelProbeInterval()">
+          <option value="360" data-i18n-text="cronEvery6h">每 6 小时</option>
+          <option value="720" data-i18n-text="cronEvery12h">每 12 小时</option>
+          <option value="1440" data-i18n-text="cronEveryDay">每天一次</option>
+        </select>
         <button class="btn btn-sm" id="channelProbeTriggerBtn" onclick="triggerChannelProbe()" data-i18n="channelProbeTrigger">Probe now</button>
         <button class="btn btn-sm" onclick="loadChannelProbe()" data-i18n="channelProbeRefresh">Refresh probe status</button>
       </div>
@@ -619,13 +625,15 @@ ${sharedStyles}
       <div class="section-title" data-i18n="updateScheduleTitle">更新与质量计划</div>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
         <label class="form-label" style="margin:0" data-i18n="aggregationInterval">聚合更新频率</label>
-        <select id="cronSelect" class="nt-input" style="width:auto;min-width:160px">
+        <select id="cronSelect" class="nt-input" style="width:auto;min-width:160px" onchange="toggleCronTimeVisibility()">
           <option value="60" data-i18n-text="cronEvery1h">每 1 小时</option>
           <option value="180" data-i18n-text="cronEvery3h">每 3 小时</option>
           <option value="360" data-i18n-text="cronEvery6h">每 6 小时</option>
           <option value="720" data-i18n-text="cronEvery12h">每 12 小时</option>
           <option value="1440" data-i18n-text="cronEveryDay">每天一次</option>
         </select>
+        <label class="form-label" style="margin:0" data-i18n="cronTimeLabel">每日执行时刻</label>
+        <input type="time" id="cronTimeInput" class="nt-input" style="width:120px" value="05:00">
         <label style="display:flex;gap:6px;align-items:center;font-size:0.85rem;cursor:pointer">
           <input type="checkbox" id="qualityFollowAggregationInput" checked>
           <span data-i18n="qualityFollowAggregation">聚合完成后重测质量池</span>
@@ -902,8 +910,10 @@ const translations = {
     ntPromoReplacePh:'e.g. Premium', ntExtraPatternsPh:'e.g. sponsor[：:]\\\\S+',
     updateScheduleTitle:'Update & Quality Schedule',
     aggregationInterval:'Aggregation interval',
+    cronTimeLabel:'Daily run time',
+    cronTimeDailyOnly:'Only used for the once-daily interval',
     qualityFollowAggregation:'Refresh quality pool after aggregation',
-    updateScheduleDesc:'The main aggregation runs at the selected interval; quality-pool rechecks follow the main aggregation to avoid duplicate probing and KV writes in the same window. Full grading is a low-frequency maintenance run that retires sources absent from recent aggregations.',
+    updateScheduleDesc:'The main aggregation runs at the selected interval; quality-pool rechecks follow the main aggregation to avoid duplicate probing and KV writes in the same window. Full grading is a low-frequency maintenance run that retires sources absent from recent aggregations. Render/Node executes the daily time exactly to the minute; Cloudflare checks hourly and runs at the first full hour after the configured time.',
     cronInterval:'Source Aggregation Schedule',
     speedTestToggle:'Media Site Speed Test', speedTestLabel:'Enable speed testing and remove unreachable media sites during aggregation', speedTestDesc:'This tests media-site API endpoints during aggregation. It is separate from search-quality grading and site-content probing.',
     edgeProxies:'Edge Function Proxies', edgeProxiesDesc:'Configure edge function URLs for proxy fallback (fetch retry + image CDN). Local Docker mode only.',
@@ -930,7 +940,7 @@ const translations = {
     qualityScheduleSaved:'Schedule saved', qualityReportRefreshed:'Report refreshed',
     searchQuota:'Client Parser Quota',
     maxParses:'Parser limit', autoSearchLimit:'Auto safe limit', searchQuotaDesc:'This only controls how many healthy parsers the root config serves. 0 means unlimited. Searchable source categories and counts are controlled per auth code; the root URL is no longer trimmed by a global searchable-source limit.', sortSearchBySpeed:'Sort by speed', sortSearchBySpeedDesc:'Uses existing site speed-test results to put faster sources first; no extra network requests. Pinned sources stay first.', leanStartup:'Lean startup', leanStartupDesc:'Removes remote JAR/extension sites from the root startup config to shorten TVBox startup; pinned sources are kept.', maxStartupQuickSearchDesc:'Quick-search cap used by the root startup config; 0 means unlimited. Full config remains available at /config-full.json.', startupOptimizationDesc:'Quick-search and root-startup limits default to unlimited. Searchable source categories and counts are selected per auth code; /config-full.json contains the full searchable set.', startupMode:'Startup mode', startupModeLean:'Lean', startupModeFull:'Full', startupModeDesc:'Lean serves a trimmed config at the root address for faster startup. Full is still available at /config-full.json.', pruneDeadParses:'Prune dead parsers', pruneDeadParsesDesc:'Probes parser endpoints and removes confirmed failures/timeouts so clients do not wait for each dead parser during startup.',
-    tabSearchQuota:'Search',
+    tabSearchQuota:'Quality Grades',
     sqStatsCurrent:'Current actual counts', sqStatsSearchable:'searchable sources', sqStatsQuick:'quick search', sqStatsQuickLimit:'automatic limit', sqStatsPool:'quality pool', sqStatsServerVerified:'server verified', sqStatsClientFallback:'client fallback', sqStatsParsers:'Parsers', sqStatsKept:'kept', sqStatsProbed:'probed', sqStatsRemoved:'removed', sqStatsLimit:'limit', sqStatsUnlimited:'unlimited', sqStatsQuality:'Quality grades', sqStatsNoData:'Run aggregation to show quality grades and parser counts.', sqPoolTotal:'Total quality-pool sources', sqStatsDistributable:'actual distributable', sqStatsBlocked:'blacklist blocked', sqQuality:'graded',
     sqKey:'Source identifier', sqName:'Source name', sqSource:'Source type', sqReason:'Exclusion reason', sqGrade:'Quality grade / score', sqSpeedStatus:'Response speed / confidence', sqRank:'Overall / category rank', sqAction:'Action',
     sqPin:'Pin', sqUnpin:'Unpin',
@@ -939,7 +949,8 @@ const translations = {
     sqXmlSources:'XML Sources', sqXmlDesc:'TVBox type 0 XML interface sources. Quality grades only affect their order within this list.', sqJsonSources:'JSON / MacCMS Sources', sqJsonDesc:'TVBox type 1 JSON or MacCMS interface sources.', sqJarSources:'JAR / Extension Sources', sqJarDesc:'TVBox type 3 local JAR or remote extension sources, excluding JS URL entries.', sqJsSources:'JS URL Sources', sqJsDesc:'TVBox type 3 sources whose API is an HTTP(S) URL.', sqRemoteSources:'Remote Sources', sqRemoteDesc:'TVBox type 4 remote site sources.', sqUncategorizedSources:'Other Sources', sqUncategorizedDesc:'Sources whose interface type could not be classified. They are listed separately instead of being mixed into a quality grade.', sqXml:'XML', sqJson:'JSON / MacCMS', sqJar:'JAR / Extension', sqJs:'JS URL', sqRemote:'Remote', sqOther:'Other', sqUnavailableSources:'Unavailable Sources', sqUnavailableDesc:'Searchable sources that are blocked, timed out, unusable, or outside the current quality pool. They are not distributed to clients.', sqBlockedSources:'Blocked Sources', sqBlockedDescLong:'Blocked sources are excluded from all client outputs but remain here so they can be restored.',
     sqLeanRemoved:'lean-removed',
     channelProbeTitle:'Channel Speed Probe (Node/Docker)',
-    channelProbeEnable:'Enable scheduled channel speed test (every 12h)',
+    channelProbeIntervalLabel:'Probe interval',
+    channelProbeEnable:'Enable scheduled channel speed test',
     channelProbeTrigger:'Probe now', channelProbeRefresh:'Refresh probe status',
     channelProbeIdle:'Idle', channelProbeRunning:'Running', channelProbeDone:'Completed', channelProbeError:'Error',
     channelProbeState:'State', channelProbeProgress:'Progress', channelProbeCoverage:'Coverage',
@@ -1071,8 +1082,10 @@ const translations = {
     ntPromoReplacePh:'如 精选推荐', ntExtraPatternsPh:'如 sponsor[：:]\\\\S+',
     updateScheduleTitle:'更新与质量计划',
     aggregationInterval:'聚合更新频率',
+    cronTimeLabel:'每日执行时刻',
+    cronTimeDailyOnly:'仅每天一次使用',
     qualityFollowAggregation:'聚合完成后重测质量池',
-    updateScheduleDesc:'主聚合按选定频率执行；质量池重测跟随主聚合，避免同一时段重复探测和重复写 KV。全量分级是低频维护任务，用于回收长时间未参与聚合的源。',
+    updateScheduleDesc:'主聚合按选定频率执行；质量池重测跟随主聚合，避免同一时段重复探测和重复写 KV。全量分级是低频维护任务，用于回收长时间未参与聚合的源。Render/Node 的每日任务按所选时刻精确到分钟执行；Cloudflare 每小时检查一次，并在到达所选时刻后的首个整点执行。',
     cronInterval:'源聚合计划',
     speedTestToggle:'影视站点测速', speedTestLabel:'聚合时测速并剔除不可达的影视站点', speedTestDesc:'这里测试的是影视站点 API；与下方的搜索源质量分级、站点内容验活不是同一项任务。',
     edgeProxies:'边缘函数代理', edgeProxiesDesc:'配置边缘函数 URL，用于本地 Docker 模式的请求代理回退和图片 CDN 加速',
@@ -1099,7 +1112,7 @@ const translations = {
     qualityScheduleSaved:'计划已保存', qualityReportRefreshed:'报告已刷新', qualityModePool:'质量池重测', qualityModeFull:'全量分级',
     searchQuota:'应用端解析器配额',
     maxParses:'解析器上限', autoSearchLimit:'自动安全配额', searchQuotaDesc:'这里只控制根配置下发的健康解析器数量；填 0 表示不限制。可搜索源的类型和数量由鉴权码设置决定，根链接不再按全局可搜索源上限裁剪。', sortSearchBySpeed:'按测速速度排序', sortSearchBySpeedDesc:'复用现有站点测速结果，将较快的源排在前面；不会额外发起测速请求。置顶源始终最前。', leanStartup:'轻量启动', leanStartupDesc:'根配置启动阶段去掉远程 JAR/扩展站点，缩短影视仓/TVBox 启动时间；置顶源仍保留。', maxStartupQuickSearchDesc:'根地址启动配置使用的快速搜索上限；0 表示不限制。完整配置仍可通过 /config-full.json 获取。', startupOptimizationDesc:'快速搜索源默认不限制。可搜索源的类型和数量由鉴权码按质量池顺序选择；/config-full.json 保留完整搜索源。', startupMode:'启动模式', startupModeLean:'轻量', startupModeFull:'完整', startupModeDesc:'轻量模式在根地址返回裁剪后的启动配置以加快启动；完整配置仍可通过 /config-full.json 获取。', pruneDeadParses:'剔除失效解析器', pruneDeadParsesDesc:'主动探测解析器地址并剔除确认超时或失效的项，避免客户端启动时逐个等待死解析器。',
-    tabSearchQuota:'搜索',
+    tabSearchQuota:'分级表',
     sqStatsCurrent:'当前实际数量', sqStatsSearchable:'可搜索源', sqStatsQuick:'快速搜索', sqStatsQuickLimit:'自动上限', sqStatsPool:'质量池', sqStatsServerVerified:'服务端已验证', sqStatsClientFallback:'客户端后备', sqStatsParsers:'解析器', sqStatsKept:'最终保留', sqStatsProbed:'探测', sqStatsRemoved:'剔除', sqStatsLimit:'上限', sqStatsUnlimited:'不限制', sqStatsQuality:'质量分级', sqStatsNoData:'执行聚合后显示质量分级和解析器数量。', sqPoolTotal:'质量池总数', sqStatsDistributable:'实际可下发', sqStatsBlocked:'黑名单屏蔽', sqQuality:'已分级',
     sqExcellent:'优', sqGood:'良', sqUsable:'可用', sqUntestable:'待客户端最终验证', sqTimeout:'超时', sqUnusable:'不可用', sqCumulative:'累计',
     sqReasonBlocked:'已屏蔽', sqReasonNotInFinal:'未进入最终列表', sqReasonNotSearchable:'不可搜索',
@@ -1110,7 +1123,8 @@ const translations = {
     sqXmlSources:'XML 源', sqXmlDesc:'TVBox 0 类 XML 接口源；质量等级决定其在统一排序和 XML 分类中的位置。', sqJsonSources:'JSON / MacCMS 源', sqJsonDesc:'TVBox 1 类 JSON 或 MacCMS 接口源。', sqJarSources:'JAR / 扩展源', sqJarDesc:'TVBox 3 类本地 JAR 或远程扩展源，不包含 API 为 HTTP(S) 的 JS 地址源。', sqJsSources:'JS 地址源', sqJsDesc:'TVBox 3 类且 API 为 HTTP(S) 地址的 JS 接口源。', sqRemoteSources:'远程站点源', sqRemoteDesc:'TVBox 4 类远程站点源。', sqUncategorizedSources:'其他类型源', sqUncategorizedDesc:'无法按接口机制归入上述类型的源，单独列出，不与质量等级混在一起。', sqUnavailableSources:'不可用 / 未入选源', sqUnavailableDesc:'可搜索但已屏蔽、超时、不可用或不在当前质量池中的源，不会下发到客户端。', sqBlockedSources:'屏蔽源', sqBlockedDescLong:'屏蔽源不会下发到任何客户端，但仍保留在管理列表中，可随时恢复。', sqXml:'XML', sqJson:'JSON / MacCMS', sqJar:'JAR / 扩展', sqJs:'JS 地址', sqRemote:'远程', sqOther:'其他',
     sqLeanRemoved:'轻量剔除',
     channelProbeTitle:'频道级测速（仅 Node/Docker）',
-    channelProbeEnable:'启用定时频道测速（每 12 小时）',
+    channelProbeIntervalLabel:'测速周期',
+    channelProbeEnable:'启用定时频道测速',
     channelProbeTrigger:'立即测速', channelProbeRefresh:'刷新测速状态',
     channelProbeIdle:'空闲', channelProbeRunning:'运行中', channelProbeDone:'已完成', channelProbeError:'失败',
     channelProbeState:'状态', channelProbeProgress:'进度', channelProbeCoverage:'覆盖率',
@@ -2154,6 +2168,8 @@ async function loadCronInterval() {
     if (intervalRes.ok) {
       const d = await intervalRes.json();
       $('cronSelect').value = String(d.interval || 1440);
+      $('cronTimeInput').value = d.time || '05:00';
+      toggleCronTimeVisibility();
     }
     if (qualityRes.ok) {
       const d = await qualityRes.json();
@@ -2165,6 +2181,15 @@ async function loadCronInterval() {
       if (tzLabel) tzLabel.textContent = qualityTimezoneLabel(schedule?.timezone);
     }
   } catch {}
+}
+
+function toggleCronTimeVisibility() {
+  const timeInput = $('cronTimeInput');
+  if (!timeInput) return;
+  const daily = parseInt($('cronSelect').value) === 1440;
+  timeInput.disabled = !daily;
+  timeInput.style.opacity = daily ? '1' : '0.55';
+  timeInput.title = daily ? '' : t('cronTimeDailyOnly');
 }
 
 async function saveUpdateSchedule() {
@@ -2180,7 +2205,7 @@ async function saveUpdateSchedule() {
       auth.authFetch('/admin/cron-interval', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ interval: parseInt($('cronSelect').value) })
+        body: JSON.stringify({ interval: parseInt($('cronSelect').value), time: $('cronTimeInput').value || '05:00' })
       }),
       auth.authFetch('/admin/quality-schedule', {
         method: 'PUT',
@@ -2263,6 +2288,7 @@ async function loadChannelProbe() {
     }
     const d = await res.json();
     $('channelProbeCheck').checked = !!d.enabled;
+    $('channelProbeIntervalSelect').value = String(d.intervalMinutes || 720);
     const s = d.status || {};
     const stateLabel = { idle: t('channelProbeIdle'), running: t('channelProbeRunning'), done: t('channelProbeDone'), error: t('channelProbeError') }[s.state] || s.state || '-';
     const triggerLabel = { startup: t('channelProbeTriggerStartup'), 'post-aggregation': t('channelProbeTriggerPostAggregation'), manual: t('channelProbeTriggerManual'), cron: t('channelProbeTriggerCron'), bounded: t('channelProbeTriggerBounded') }[s.trigger] || s.trigger || '-';
@@ -2300,6 +2326,25 @@ async function toggleChannelProbe() {
     });
     toast(t('saved'));
     loadChannelProbe();
+  } catch {
+    toast(t('networkError'), 'error');
+  }
+}
+
+async function saveChannelProbeInterval() {
+  const select = $('channelProbeIntervalSelect');
+  try {
+    const res = await auth.authFetch('/admin/channel-probe/interval', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ intervalMinutes: parseInt(select.value) })
+    });
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      toast(d.error || t('saveFailed'), 'error');
+      return;
+    }
+    toast(t('saved'));
   } catch {
     toast(t('networkError'), 'error');
   }
