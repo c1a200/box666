@@ -22,6 +22,8 @@ import { runAggregation } from './aggregator';
 import { collectJarEntriesForSites, prefetchJarBinaries } from './core/jar-proxy';
 import { runChannelProbe, isProbeEnabled } from './core/channel-probe';
 import { currentAggregationPhase } from './core/logger';
+import { repairLiveProxyTextReadiness } from './core/live-source';
+import { rebuildLiveOutput } from './core/live-output';
 import {
   beginQualityRun,
   finishQualityRun,
@@ -94,6 +96,25 @@ async function warmCachedJarBinaries(storage: Storage): Promise<void> {
     await prefetchJarBinaries(storage, entries, { writeBinary: createJarBinaryWriter() });
   } catch (error: unknown) {
     console.warn('[jar-proxy] Startup warm failed:', error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function repairCachedLiveReadiness(storage: Storage): Promise<void> {
+  try {
+    const repaired = await repairLiveProxyTextReadiness(storage);
+    if (!repaired.changed) return;
+    await rebuildLiveOutput(storage, { reason: 'startup-readiness-repair' });
+    console.log(
+      '[live] Startup readiness repaired: ' +
+        repaired.repaired + ' restored, ' +
+        repaired.revoked + ' revoked, ' +
+        repaired.distributable + ' distributable'
+    );
+  } catch (error: unknown) {
+    console.warn(
+      '[live] Startup readiness repair failed:',
+      error instanceof Error ? error.message : String(error)
+    );
   }
 }
 
@@ -697,9 +718,12 @@ async function main() {
     console.log(`  TVBox 填入地址: http://${displayHost}:${info.port}/`);
     console.log('');
 
-    // 先预热已缓存配置中的 JAR，随后再按策略启动聚合；预热不阻塞 HTTP 服务。
+    // JAR 预热与直播就绪修复均不阻塞 HTTP 服务；直播修复完成后再启动聚合，
+    // 避免启动修复与聚合并发写同一份直播清单。
     void warmCachedJarBinaries(storage);
-    void scheduleStartupAggregation();
+    void repairCachedLiveReadiness(storage).finally(() => {
+      void scheduleStartupAggregation();
+    });
   });
 
   // Render/Docker 滚动重启时给正在执行的聚合一段时间收尾。软超时只用于

@@ -715,9 +715,49 @@ assert(
 );
 
 
+// ── 19b. Node 启动修复：旧清单已有完整正文时恢复 textReady ──
+async function testStartupReadinessRepair() {
+  const memory = new Map();
+  const legacyEntries = [
+    entry(70, { key: 'legacy-ready', url: 'https://live.example/legacy-ready.txt', textReady: false }),
+    entry(71, { key: 'legacy-empty', url: 'https://live.example/legacy-empty.txt', textReady: false }),
+    entry(72, { key: 'legacy-invalid', url: 'https://live.example/legacy-invalid.txt', textReady: false, lastFailure: 'invalid' }),
+    entry(73, { key: 'legacy-blocked', url: 'https://live.example/legacy-blocked.txt', textReady: false, name: '音乐所' }),
+  ];
+  memory.set('live_proxy_manifest', JSON.stringify({
+    version: 4,
+    signature: 'legacy-readiness',
+    entries: legacyEntries,
+  }));
+  memory.set('live_txt:legacy-ready', '央视,#genre#\nCCTV-1,http://legacy.example/live');
+  memory.set('live_txt:legacy-invalid', '央视,#genre#\nCCTV-1,http://invalid.example/live');
+  memory.set('live_txt:legacy-blocked', '央视,#genre#\nCCTV-1,http://blocked.example/live');
+  const storage = {
+    async get(key) { return memory.has(key) ? memory.get(key) : null; },
+    async put(key, value) { memory.set(key, String(value)); },
+  };
+  const { repairLiveProxyTextReadiness } = require(outfile);
+  const repaired = await repairLiveProxyTextReadiness(storage);
+  assert(repaired.changed === true, 'startup repair must persist a changed manifest');
+  assert(repaired.repaired === 1, 'startup repair must restore exactly the eligible legacy source');
+  assert(repaired.revoked === 0, 'startup repair must not revoke already false entries');
+  assert(repaired.distributable === 1, 'startup repair must expose exactly one distributable source');
+  const persisted = JSON.parse(memory.get('live_proxy_manifest'));
+  const byKey = new Map(persisted.entries.map((item) => [item.key, item]));
+  assert(byKey.get('legacy-ready')?.textReady === true, 'startup repair must restore source with valid text');
+  assert(byKey.get('legacy-empty')?.textReady === false, 'startup repair must not restore source without text');
+  assert(byKey.get('legacy-invalid')?.textReady === false, 'startup repair must not restore explicitly invalid source');
+  assert(byKey.get('legacy-blocked')?.textReady === false, 'startup repair must not restore blocked source');
+  assert(isLiveProxyEntryDistributable(byKey.get('legacy-ready')) === true, 'restored source must be distributable');
+  assert(isLiveProxyEntryDistributable(byKey.get('legacy-empty')) === false, 'textless source must remain non-distributable');
+  assert(isLiveProxyEntryDistributable(byKey.get('legacy-invalid')) === false, 'invalid source must remain non-distributable');
+  assert(isLiveProxyEntryDistributable(byKey.get('legacy-blocked')) === false, 'blocked source must remain non-distributable');
+}
+
 async function main() {
   await testSuccessWithoutUsableText();
   await testManualValidationFailure();
+  await testStartupReadinessRepair();
   // ── 20. 源码裁剪：manifest 只保留允许 URL，不写入空 live:<key> ──
   const memory = new Map();
   memory.set('live_proxy_manifest', JSON.stringify({
