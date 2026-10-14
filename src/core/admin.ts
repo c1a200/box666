@@ -271,11 +271,11 @@ ${sharedStyles}
 
   <!-- Tabs -->
   <div class="tabs">
-    <div class="tab active" data-tab="sources" onclick="switchTab('sources')"><span data-i18n="tabSources">源</span> <span class="badge" id="badgeSources">0</span></div>
+    <div class="tab active" data-tab="sources" onclick="switchTab('sources')"><span data-i18n="tabSources">点播源</span> <span class="badge" id="badgeSources">0</span></div>
     <div class="tab" data-tab="maccms" onclick="switchTab('maccms')"><span data-i18n="tabMacCMS">MacCMS</span> <span class="badge" id="badgeMacCMS">0</span></div>
-    <div class="tab" data-tab="live" onclick="switchTab('live')"><span data-i18n="tabLive">直播</span> <span class="badge" id="badgeLive">0</span></div>
-    <div class="tab" data-tab="searchQuota" onclick="switchTab('searchQuota')" id="tabSearchQuota"><span data-i18n="tabSearchQuota">搜索</span> <span class="badge" id="badgeSearchQuota">0</span></div>
-    <div class="tab" data-tab="sourceDistribution" onclick="switchTab('sourceDistribution')"><span data-i18n="tabSourceDistribution">源下发</span></div>
+    <div class="tab" data-tab="live" onclick="switchTab('live')"><span data-i18n="tabLive">直播源</span> <span class="badge" id="badgeLive">0</span></div>
+    <div class="tab" data-tab="searchQuota" onclick="switchTab('searchQuota')" id="tabSearchQuota"><span data-i18n="tabSearchQuota">分级表</span> <span class="badge" id="badgeSearchQuota">0</span></div>
+    <div class="tab" data-tab="sourceDistribution" onclick="switchTab('sourceDistribution')"><span data-i18n="tabSourceDistribution">源分发</span></div>
     <div class="tab" data-tab="settings" onclick="switchTab('settings')"><span data-i18n="tabSettings">设置</span></div>
     <div class="tab" data-tab="aggLogs" onclick="switchTab('aggLogs')"><span data-i18n="tabAggLogs">日志</span></div>
   </div>
@@ -508,27 +508,6 @@ ${sharedStyles}
         </div>
       </div>
 
-      <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:10px">
-        <div style="font-size:0.82rem;color:var(--text-secondary);margin-bottom:6px" data-i18n="liveDistAttachHint">主配置附带：关闭后主配置不再携带直播，独立 /live、/lives 链接仍可用（受鉴权限制）。</div>
-        <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center">
-          <label style="display:flex;gap:6px;align-items:center;cursor:pointer">
-            <input type="checkbox" id="liveAttachRootCheck" onchange="saveLiveAttachRoot()">
-            <span data-i18n="liveAttachRoot">根链接附带直播</span>
-          </label>
-          <label style="display:flex;gap:6px;align-items:center;cursor:pointer">
-            <input type="checkbox" id="liveAttachAuthCheck" onchange="saveLiveAttachAuthDefault()">
-            <span data-i18n="liveAttachAuth">鉴权链接默认附带直播</span>
-          </label>
-          <span class="status-text" id="liveAttachStatus" style="font-size:0.8rem"></span>
-        </div>
-        <div style="font-size:0.78rem;color:var(--text-secondary);margin-top:6px" data-i18n="liveAttachLinkHint">独立直播链接：/live（聚合 TXT）、/lives（聚合 TXT 别名）、/live.json（JSON 数组）。</div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">
-          <button class="btn btn-sm" onclick="copyClientLink(window.location.origin + '/live')" data-i18n="liveCopyLive">复制 /live 链接</button>
-          <button class="btn btn-sm" onclick="copyClientLink(window.location.origin + '/lives')" data-i18n="liveCopyLives">复制 /lives 链接</button>
-          <button class="btn btn-sm" onclick="copyClientLink(window.location.origin + '/live.json')" data-i18n="liveCopyLiveJson">复制 /live.json 链接</button>
-        </div>
-        <div id="liveAttachAuthList" style="margin-top:8px;display:flex;flex-direction:column;gap:6px"></div>
-      </div>
 
       <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:10px">
         <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
@@ -576,37 +555,6 @@ ${sharedStyles}
   <!-- Source Distribution Tab -->
   <div class="tab-panel" id="panelSourceDistribution">
     <div class="section">
-      <div class="section-title" data-i18n="rootSourceSelectionTitle">根链接源选择</div>
-      <div class="credential-help" data-i18n="rootSourceSelectionHint">简单方式按统一质量排序从前向后取源；精细方式按质量等级和源类型分别取各自排序靠前的源。两种方式互斥。</div>
-      <div class="source-policy-summary">
-        <span class="credential-pill" id="rootSourceSelectionSummary">全部 / 不限</span>
-        <button class="btn btn-sm" onclick="copyClientLink(window.location.origin + '/')" data-i18n="credentialCopyRoot">复制根链接</button>
-        <button class="btn btn-sm" id="rootSourceSelectionToggle" onclick="toggleRootSourcePolicyDetails()" aria-expanded="false">设置源选择</button>
-        <button class="btn btn-sm" onclick="saveSearchQuota('root')" data-i18n="save">保存根链接选择</button>
-        <span class="status-text" id="rootSourceSelectionStatus" style="font-size:0.8rem"></span>
-      </div>
-      <div class="source-policy-details" id="rootSourceSelectionDetails">
-        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-          <label class="form-label" style="margin:0" data-i18n="sourceSelectionMode">选择方式</label>
-          <select id="rootSourceSelectionModeInput" class="nt-input" style="width:250px" onchange="toggleRootSourceSelection()">
-            <option value="simple" data-i18n-text="sourceSelectionSimple">简单选择：按质量池总排序</option>
-            <option value="category" data-i18n-text="sourceSelectionCategory">精细选择：按分类分别选择</option>
-          </select>
-          <label class="form-label" style="margin:0" data-i18n="rootSourceCount">下发源数量</label>
-          <select id="rootSourceCountModeInput" class="nt-input" style="width:130px" onchange="toggleRootSourceCount()">
-            <option value="all" data-i18n-text="credentialBucketAll">全部</option>
-            <option value="none" data-i18n-text="credentialBucketNone">不下发</option>
-            <option value="custom" data-i18n-text="credentialBucketCustom">自定义数量</option>
-          </select>
-          <input type="number" id="rootSourceCountInput" class="nt-input" style="width:90px" min="1" placeholder="数量" data-i18n-placeholder="sourceCountPlaceholder" oninput="syncRootSourceCountInput()">
-        </div>
-        <div id="rootSourceBuckets" style="display:none;margin-top:8px"></div>
-        <div style="margin-top:6px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="searchQuotaDesc">这里只控制根配置下发的健康解析器数量；源选择方式决定根链接下发哪些质量池源。</div>
-        <div style="margin-top:4px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="qualityGradeDesc">质量分级（后台分块测速，不影响应用端启动速度）：优 ≤1000ms、良 1001-3000ms、可用 3001-6000ms。服务端只验证可直接请求的源；可搜索 JAR/客户端运行时源无法由服务端直接确认，但仍参与客户端搜索；默认全部按质量排序下发，只有超时和屏蔽源排除。</div>
-      </div>
-    </div>
-
-    <div class="section">
       <div class="section-title" data-i18n="credentialDistributionTitle">客户端鉴权与源分发</div>
       <div class="credential-help" data-i18n="credentialDistributionDesc">鉴权码只控制下发哪些源，不再保存或注入任何网盘凭证。关闭强制鉴权时，根链接正常下发源；启用后根链接不下发源，必须使用 /auth/&lt;鉴权码&gt;/ 访问。</div>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px">
@@ -618,6 +566,49 @@ ${sharedStyles}
         <button class="btn btn-sm" onclick="saveCredentialDistribution()" data-i18n="save">保存</button>
         <span class="credential-status" id="credentialDistributionStatus"></span>
       </div>
+
+      <!-- Root link card -->
+      <div class="credential-auth-card credential-card" id="rootLinkCard" data-auth-id="__root__" style="margin-top:12px">
+        <div class="credential-card-head">
+          <div class="credential-card-title">
+            <strong style="color:var(--text-bright)" data-i18n="rootLinkTitle">根链接</strong>
+            <span class="credential-pill" id="rootSourceSelectionSummary">全部 / 不限</span>
+          </div>
+          <div class="credential-card-actions">
+            <button class="btn btn-sm" id="rootSourceSelectionToggle" onclick="toggleRootSourcePolicyDetails()" aria-expanded="false" data-i18n="showSourceSettings">设置源选择</button>
+            <button class="btn btn-sm" onclick="copyClientLink(window.location.origin + '/')" data-i18n="credentialCopyRoot">复制点播链接</button>
+            <button class="btn btn-sm" onclick="copyClientLink(window.location.origin + '/live')" data-i18n="credentialCopyLive">复制直播链接</button>
+            <button class="btn btn-sm" onclick="saveSearchQuota('root')" data-i18n="save">保存</button>
+            <span class="status-text" id="rootSourceSelectionStatus" style="font-size:0.8rem"></span>
+          </div>
+        </div>
+        <div class="source-policy-details" id="rootSourceSelectionDetails">
+          <div class="credential-help" data-i18n="rootSourceSelectionHint">简单方式按统一质量排序从前向后取源；精细方式按质量等级和源类型分别取各自排序靠前的源。两种方式互斥。</div>
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px">
+            <label class="form-label" style="margin:0" data-i18n="sourceSelectionMode">选择方式</label>
+            <select id="rootSourceSelectionModeInput" class="nt-input" style="width:250px" onchange="toggleRootSourceSelection()">
+              <option value="simple" data-i18n-text="sourceSelectionSimple">简单选择：按质量池总排序</option>
+              <option value="category" data-i18n-text="sourceSelectionCategory">精细选择：按分类分别选择</option>
+            </select>
+            <label class="form-label" style="margin:0" data-i18n="rootSourceCount">下发源数量</label>
+            <select id="rootSourceCountModeInput" class="nt-input" style="width:130px" onchange="toggleRootSourceCount()">
+              <option value="all" data-i18n-text="credentialBucketAll">全部</option>
+              <option value="none" data-i18n-text="credentialBucketNone">不下发</option>
+              <option value="custom" data-i18n-text="credentialBucketCustom">自定义数量</option>
+            </select>
+            <input type="number" id="rootSourceCountInput" class="nt-input" style="width:90px" min="1" placeholder="数量" data-i18n-placeholder="sourceCountPlaceholder" oninput="syncRootSourceCountInput()">
+          </div>
+          <div id="rootSourceBuckets" style="display:none;margin-top:8px"></div>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:10px">
+            <input type="checkbox" id="rootAttachLivesCheck" onchange="saveRootAttachLives()">
+            <span data-i18n="liveAttachPerAuth">点播链接附带直播源</span>
+            <span class="status-text" id="rootAttachLivesStatus" style="font-size:0.8rem"></span>
+          </label>
+          <div style="font-size:0.78rem;color:var(--text-secondary);margin-top:4px" data-i18n="liveAttachLinkHint">附带后应用端只需配置点播链接即可解析直播源；不附带时点播链接不含直播，可单独配置直播链接 /live。</div>
+          <div style="margin-top:6px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="qualityGradeDesc">质量分级（后台分块测速，不影响应用端启动速度）：优 ≤1000ms、良 1001-3000ms、可用 3001-6000ms。服务端只验证可直接请求的源；可搜索 JAR/客户端运行时源无法由服务端直接确认，但仍参与客户端搜索；默认全部按质量排序下发，只有超时和屏蔽源排除。</div>
+        </div>
+      </div>
+
       <div id="credentialDistributionList" class="credential-auth-list" style="margin-top:12px"></div>
     </div>
   </div>
@@ -866,7 +857,7 @@ const translations = {
     invalidToken:'Invalid token', enterToken:'Enter admin token', login:'Login',
     connectionFailed:'Connection failed', connecting:'Connecting', connected:'Connected', disconnected:'Disconnected',
     headerLabel:'Admin Console', navConfigEditor:'Config Editor', navDashboard:'Dashboard',
-    tabSources:'Sources', tabMacCMS:'MacCMS', tabLive:'Live', tabSettings:'Settings', tabAggLogs:'Logs', tabSourceDistribution:'Source Delivery',
+    tabSources:'On-demand Sources', tabMacCMS:'MacCMS', tabLive:'Live Sources', tabSettings:'Settings', tabAggLogs:'Logs', tabSourceDistribution:'Source Distribution',
     showSourceSettings:'Source settings', hideSourceSettings:'Hide source settings', rootSourcePolicySummary:'Root: {policy}', credentialConfiguredSources:'{count} auth code(s)',
     aggLogsTitle:'Aggregation Logs', clearLogs:'Clear All', liveLogsTitle:'Live Logs', connectLogs:'Connect', disconnectLogs:'Disconnect',
     dedupConfigTitle:'Similar Name Dedup', similarDedupLabel:'Enable similar-name dedup (keep fastest)', dedupThreshold:'Threshold',
@@ -973,7 +964,8 @@ const translations = {
     liveDistRecommended:'Use recommended', liveDistBucketAllSel:'Select all categories', liveDistBucketNoneSel:'Deselect all categories',
     liveDistAttachHint:'Attach to main config: when off, the main config carries no live sources, but /live and /lives stay available (auth still applies).',
     liveAttachRoot:'Root link attaches live sources', liveAttachAuth:'Auth links attach live sources by default',
-    liveAttachLinkHint:'Standalone live links: /live (aggregated TXT), /lives (alias), /live.json (JSON array).',
+    liveAttachLinkHint:'When attached, the client resolves live sources from the on-demand link alone; when detached, configure the standalone /live link instead.',
+    liveAttachPerAuth:'On-demand link carries live sources', liveAttachPerAuthHint:'Each auth code can attach live sources independently; changes take effect after saving.',
     liveCopyLive:'Copy /live link', liveCopyLives:'Copy /lives link', liveCopyLiveJson:'Copy /live.json link',
     livePoolTitle:'Live source quality pool', livePoolHint:'Ranked by the unified quality order: currently healthy sources first, then proven fallbacks, then never-verified sources. Block/pin only affects this table and delivery selection.',
     liveDistNoData:'No live source data yet. Run an aggregation first.', liveMergeReportTitle:'Merge report', liveMergeReportEmpty:'No merge report yet.',
@@ -989,16 +981,7 @@ const translations = {
     siteProbeDesc:'Deep mode checks type0/type1 content validity. Failed sites get [⚠] marker after 3 failures.',
     credentialDistributionTitle:'Client Authentication & Source Distribution',
     credentialDistributionDesc:'Auth codes control which sources are served; the server never stores or injects cloud-drive credentials. With authentication off, the root link serves sources normally. With it on, the root link serves no sources and clients must use /auth/<code>/.',
-    credentialSourceModeAll:'All quality pool sources',
-    credentialSourceModeSearch:'Searchable sources only',
-    credentialSourceModeSelected:'Selected quality-pool sources only',
-    credentialSourceModeCustom:'Custom key whitelist only',
-    credentialLegacyCustomNotice:'This is a legacy custom-key policy. Saving will keep it; choosing simple/detailed above will migrate the auth code to the shared root-link policy.',
-    credentialMaxSites:'Quality pool source limit',
     credentialSiteTypes:'Allowed site types',
-    credentialSiteTypesHint:'Leave all unchecked to allow every site type. Checked types are the only site types served.',
-    credentialPinnedKeys:'Pinned keys',
-    credentialIncludeGrades:'Quality grades',
     credentialRequireAuth:'Require an auth code; root link returns 401',
     credentialAuthCodes:'Client auth codes',
     credentialAuthCodesDesc:'Create one code per client or group. The client uses the shown /auth/<code>/ URL; each code has its own source policy.',
@@ -1006,12 +989,12 @@ const translations = {
     credentialNoCodes:'No auth codes yet. The root link serves the selected sources normally.',
     credentialCodeLabel:'Name / note',
     credentialCodeValue:'Auth code',
-    credentialSourceMode:'Source mode', sourceSelectionMode:'Source selection', sourceSelectionSimple:'Simple: top sources from the unified quality order', sourceSelectionCategory:'Detailed: choose a quantity for each category', rootSourceSelectionTitle:'Root link source selection', rootSourceSelectionHint:'Simple takes the first N sources from the unified quality order. Detailed takes the best N sources within each quality grade or source type.', rootSourceCount:'Source count', sourceCountPlaceholder:'Count',
-    credentialSelectedKeys:'Selected keys',
-    credentialSelectedKeysHint:'Used by custom mode; comma-separated site keys.',
-    credentialCodeEnabled:'Enabled',
-    credentialCopyRoot:'Copy root link',
+    sourceSelectionMode:'Source selection', sourceSelectionSimple:'Simple: top sources from the unified quality order', sourceSelectionCategory:'Detailed: choose a quantity for each category', rootSourceSelectionTitle:'Root link source selection', rootSourceSelectionHint:'Simple takes the first N sources from the unified quality order. Detailed takes the best N sources within each quality grade or source type.', rootSourceCount:'Source count', sourceCountPlaceholder:'Count',
+    credentialCopyRoot:'Copy on-demand link',
     credentialCopyAuth:'Copy authenticated link',
+    credentialCopyLive:'Copy live link',
+    rootLinkTitle:'Root link',
+    rootSourceCountInvalid:'Enter a valid source count (>= 1), or choose All / None.',
     credentialCopied:'Copied',
     credentialDelete:'Delete',
     credentialSaved:'Client authentication and source distribution saved',
@@ -1019,7 +1002,6 @@ const translations = {
     credentialCodeInvalid:'Auth code must be 1-64 characters: letters, numbers, underscore or hyphen.',
     credentialDefaultLabel:'Client',
     credentialRootPolicyFree:'Root link enabled',
-    credentialSelectedKeysRequired:'Custom source mode requires at least one selected key.',
     credentialBucketLimits:'Per-category limits',
     credentialBucketLimitsHint:'Each label shows the final distributable count for that category, including non-searchable JAR/plugin entries. Custom accepts 1 to that count; when both a quality grade and a site type are limited, the intersection is served. Choosing “none” removes that type completely and it is never silently restored.',
     sourceBucketAvailableCount:'{count} available',
@@ -1044,7 +1026,7 @@ const translations = {
     invalidToken:'无效的令牌', enterToken:'请输入管理令牌', login:'登录',
     connectionFailed:'连接失败',
     headerLabel:'管理控制台', navConfigEditor:'配置编辑', navBuilder:'配置构建', navDashboard:'运行状态',
-    tabSources:'源', tabMacCMS:'MacCMS', tabLive:'直播', tabSettings:'设置', tabAggLogs:'日志', tabSourceDistribution:'源下发',
+    tabSources:'点播源', tabMacCMS:'MacCMS', tabLive:'直播源', tabSettings:'设置', tabAggLogs:'日志', tabSourceDistribution:'源分发',
     showSourceSettings:'设置源选择', hideSourceSettings:'收起源选择', rootSourcePolicySummary:'根链接：{policy}', credentialConfiguredSources:'{count} 个鉴权码',
     aggLogsTitle:'聚合日志', clearLogs:'清空', liveLogsTitle:'实时日志', connectLogs:'连接', disconnectLogs:'断开',
     dedupConfigTitle:'相似名称去重', similarDedupLabel:'启用相似名称去重（保留最快）', dedupThreshold:'阈值',
@@ -1153,7 +1135,8 @@ const translations = {
     liveDistRecommended:'填入推荐值', liveDistBucketAllSel:'分类全选', liveDistBucketNoneSel:'分类全不选',
     liveDistAttachHint:'主配置附带：关闭后主配置不再携带直播，独立 /live、/lives 链接仍可用（受鉴权限制）。',
     liveAttachRoot:'根链接附带直播', liveAttachAuth:'鉴权链接默认附带直播',
-    liveAttachLinkHint:'独立直播链接：/live（聚合 TXT）、/lives（聚合 TXT 别名）、/live.json（JSON 数组）。',
+    liveAttachLinkHint:'附带后应用端只需配置点播链接即可解析直播源；不附带时点播链接不含直播，可单独配置直播链接 /live。',
+    liveAttachPerAuth:'点播链接附带直播源', liveAttachPerAuthHint:'每个鉴权码可独立设置是否附带直播，保存后即时生效。',
     liveCopyLive:'复制 /live 链接', liveCopyLives:'复制 /lives 链接', liveCopyLiveJson:'复制 /live.json 链接',
     livePoolTitle:'直播源质量池', livePoolHint:'按统一质量排名排列：当前健康优先，其次是有成功历史的可用后备，最后才是从未验证的源；明确失效不进入下发。屏蔽或置顶仅影响本表与下发选择。',
     liveDistNoData:'暂无直播源数据，请先执行一次聚合。', liveMergeReportTitle:'合并报告', liveMergeReportEmpty:'暂无合并报告。',
@@ -1169,16 +1152,7 @@ const translations = {
     siteProbeDesc:'深度模式会检查 0 类和 1 类站点是否返回有效内容。连续失败 3 次的站点会被标记 [⚠]。',
     credentialDistributionTitle:'客户端鉴权与源分发',
     credentialDistributionDesc:'鉴权码只控制下发哪些源，不再保存或注入任何网盘凭证。关闭强制鉴权时，根链接正常下发源；启用后根链接不下发源，必须使用 /auth/<鉴权码>/ 访问。',
-    credentialSourceModeAll:'质量池全部源',
-    credentialSourceModeSearch:'仅可搜索源',
-    credentialSourceModeSelected:'仅质量池精选源',
-    credentialSourceModeCustom:'仅自定义源标识白名单',
-    credentialLegacyCustomNotice:'这是旧版自定义源标识策略；保存会保留当前行为，切换上面的选择方式后会迁移为与根链接一致的分发规则。',
-    credentialMaxSites:'质量池源数量上限',
     credentialSiteTypes:'允许的站点类型',
-    credentialSiteTypesHint:'全部不勾选表示允许所有站点类型；勾选后只下发所选的站点类型。',
-    credentialPinnedKeys:'置顶源标识',
-    credentialIncludeGrades:'质量等级',
     credentialRequireAuth:'强制鉴权（根链接返回 401）',
     credentialAuthCodes:'客户端鉴权码',
     credentialAuthCodesDesc:'可给不同应用端或用户组分别建码。应用端填写卡片上生成的 /auth/<鉴权码>/ 链接，各码的源分发策略互不影响。',
@@ -1186,12 +1160,12 @@ const translations = {
     credentialNoCodes:'还没有鉴权码；根链接会正常下发所选源。',
     credentialCodeLabel:'名称 / 备注',
     credentialCodeValue:'鉴权码',
-    credentialSourceMode:'源模式', sourceSelectionMode:'源选择方式', sourceSelectionSimple:'简单选择：按质量池总排序取前 N 个', sourceSelectionCategory:'精细选择：按分类分别取前 N 个', rootSourceSelectionTitle:'根链接源选择', rootSourceSelectionHint:'简单方式按统一质量排序从前向后取源；精细方式按质量等级和源类型分别取各自排序靠前的源。两种方式互斥。', rootSourceCount:'下发源数量', sourceCountPlaceholder:'数量',
-    credentialSelectedKeys:'指定源标识',
-    credentialSelectedKeysHint:'“自定义源标识白名单”模式使用，多个源标识用逗号分隔。',
-    credentialCodeEnabled:'启用',
-    credentialCopyRoot:'复制根链接',
+    sourceSelectionMode:'源选择方式', sourceSelectionSimple:'简单选择：按质量池总排序取前 N 个', sourceSelectionCategory:'精细选择：按分类分别取前 N 个', rootSourceSelectionTitle:'根链接源选择', rootSourceSelectionHint:'简单方式按统一质量排序从前向后取源；精细方式按质量等级和源类型分别取各自排序靠前的源。两种方式互斥。', rootSourceCount:'下发源数量', sourceCountPlaceholder:'数量',
+    credentialCopyRoot:'复制点播链接',
     credentialCopyAuth:'复制鉴权链接',
+    credentialCopyLive:'复制直播链接',
+    rootLinkTitle:'根链接',
+    rootSourceCountInvalid:'请输入有效的下发数量（≥1），或选择“全部 / 不下发”。',
     credentialDelete:'删除',
     credentialSaved:'客户端鉴权与源分发已保存',
     credentialRootRequired:'启用强制鉴权前，至少需要保留一个启用的鉴权码。',
@@ -1199,7 +1173,6 @@ const translations = {
     credentialCopied:'已复制',
     credentialDefaultLabel:'客户端',
     credentialRootPolicyFree:'根链接已启用',
-    credentialSelectedKeysRequired:'“自定义源标识白名单”模式至少需要填写一个源标识。',
     credentialBucketLimits:'分类源数量',
     credentialBucketLimitsHint:'每个分类后的数字是该分类最终可下发数量，已包含不可搜索的 JAR/插件；自定义范围为 1 到该数量。质量等级与站点类型同时设置时按交集下发；选择“不选”会彻底移除该类型，系统不会补回未选中的插件。未设置的项目默认全部下发，根链接与鉴权码规则一致。',
     sourceBucketAvailableCount:'{count} 个可用',
@@ -1239,9 +1212,9 @@ const auth = initAuth('loginInput', 'loginError', 'loginOverlay', 'mainContent',
 const tabLoaders = {
   sources: async () => { await loadSourceHealth(); await Promise.all([loadSources(), loadStatus()]); },
   maccms: () => loadMacCMS(),
-  live: () => Promise.all([loadLives(), loadLiveDisabled(), loadLiveMergeMode(), loadIgnoreAggregatedLives(), loadChannelProbe(), loadRootAttach(), loadLiveDistribution(), loadLiveAttachAuth(), loadLiveMergeReport()]),
+  live: () => Promise.all([loadLives(), loadLiveDisabled(), loadLiveMergeMode(), loadIgnoreAggregatedLives(), loadChannelProbe(), loadLiveDistribution(), loadLiveMergeReport()]),
   searchQuota: () => Promise.all([loadSearchQuota(), loadQualityReport()]),
-  sourceDistribution: () => Promise.all([loadSearchQuota(), loadCredentialDistribution()]),
+  sourceDistribution: async () => { await Promise.all([loadSearchQuota(), loadLiveDistribution()]); await loadCredentialDistribution(); },
   settings: () => Promise.all([loadNameTransform(), loadBgSettings(), loadCronInterval(), loadSpeedTest(), loadEdgeProxies(), loadDedupConfig(), loadGroupOrder(), loadStorageDiagnostics(), loadSmartBaseUrl(), loadProbeDepth(), loadAutoClean()]),
   aggLogs: () => loadAggLogs(),
 };
@@ -2391,10 +2364,15 @@ let sqPinnedKeys = new Set();
 let sqBlockedKeys = new Set();
 let rootSourceSelection = { selectionMode: 'simple', maxSites: -1, bucketLimits: undefined };
 
+// 返回 { ok, value }：自定义数量为空或非法时明确失败，避免静默回退为 1。
 function rootLimitValue(mode, input) {
-  if (mode === 'none') return 0;
-  if (mode === 'custom') return Math.max(1, parseInt(input && input.value, 10) || 1);
-  return -1;
+  if (mode === 'none') return { ok: true, value: 0 };
+  if (mode === 'custom') {
+    const parsed = parseInt(input && input.value, 10);
+    if (!Number.isFinite(parsed) || parsed < 1) return { ok: false, value: -1 };
+    return { ok: true, value: Math.floor(parsed) };
+  }
+  return { ok: true, value: -1 };
 }
 
 function sourceBucketAvailableCount(group, key) {
@@ -2566,7 +2544,9 @@ function syncRootSourceCountInput() {
 function toggleRootSourceCount() {
   const select = $('rootSourceCountModeInput'); const input = $('rootSourceCountInput'); if (!select) return;
   if (input) { input.disabled = select.value !== 'custom'; input.style.display = select.value === 'custom' ? '' : 'none'; }
-  rootSourceSelection.maxSites = rootLimitValue(select.value, input);
+  const parsed = rootLimitValue(select.value, input);
+  // 仅当输入有效时才更新模型，避免用户清空输入时把数量静默改成 1。
+  if (parsed.ok) rootSourceSelection.maxSites = parsed.value;
   refreshRootSourcePolicySummary();
 }
 
@@ -2601,7 +2581,16 @@ async function saveSearchQuota(scope) {
   status.textContent = '';
   if (rootSourceSelection.selectionMode === 'simple') {
     const rootCount = $('rootSourceCountModeInput'); const rootCountInput = $('rootSourceCountInput');
-    if (rootCount) rootSourceSelection.maxSites = rootLimitValue(rootCount.value, rootCountInput);
+    if (rootCount) {
+      const parsed = rootLimitValue(rootCount.value, rootCountInput);
+      if (!parsed.ok) {
+        status.textContent = t('rootSourceCountInvalid');
+        status.className = 'status-text error';
+        setTimeout(() => { status.textContent = ''; }, 3000);
+        return;
+      }
+      rootSourceSelection.maxSites = parsed.value;
+    }
   }
   if (rootSourceSelection.selectionMode === 'category') {
     rootSourceSelection.bucketLimits = normalizeClientBucketLimitsForAvailable(rootSourceSelection.bucketLimits);
@@ -3464,8 +3453,6 @@ let credentialDistribution = {
   authCodes: [],
 };
 
-const CLIENT_SOURCE_MODES = ['all', 'search', 'selected', 'custom'];
-const CLIENT_GRADES = ['excellent', 'good', 'usable', 'untestable'];
 const CLIENT_BUCKET_QUALITY_KEYS = ['excellent', 'good', 'usable', 'untestable'];
 const SOURCE_CATEGORY_KEYS = ['xml', 'json', 'jar', 'js', 'remote', 'other'];
 let credentialSiteTypes = new Set();
@@ -3575,29 +3562,28 @@ function clientLimitLabel(value) {
 
 function normalizeClientAuthCode(item, index) {
   const now = new Date().toISOString();
-  const sourceMode = CLIENT_SOURCE_MODES.includes(item && item.sourceMode) ? item.sourceMode : 'all';
   return {
     id: (item && item.id) || ('auth_' + Date.now().toString(36) + '_' + index),
     label: (item && item.label) || (t('credentialDefaultLabel') + ' ' + (index + 1)),
     code: (item && item.code) || '',
     enabled: !item || item.enabled !== false,
-    sourceMode,
     selectionMode: item && (item.selectionMode === 'category' || item.selectionMode === 'simple')
       ? item.selectionMode
       : ((item && item.bucketLimits) ? 'category' : 'simple'),
     maxSites: parseCredentialLimit(item && item.maxSites, parseCredentialLimit(item && item.maxSearchable, -1)),
     bucketLimits: normalizeClientBucketLimits(item && item.bucketLimits),
-    includeGrades: Array.isArray(item && item.includeGrades) ? item.includeGrades.filter((grade) => CLIENT_GRADES.includes(grade)) : [],
-    siteTypes: Array.isArray(item && item.siteTypes)
-      ? [...new Set(item.siteTypes.flatMap((value) => normalizeCredentialSiteTypeValues(value)))]
-        .filter((key) => SOURCE_CATEGORY_KEYS.includes(key))
-      : [],
+    // 旧版 all/search/selected/custom 策略仍需在保存其他字段时原样保留，
+    // 避免管理页归一化把 custom 白名单静默扩大为 all。新 UI 不再暴露该字段。
+    sourceMode: ['all', 'search', 'selected', 'custom'].includes(item && item.sourceMode)
+      ? item.sourceMode
+      : 'all',
     selectedKeys: Array.isArray(item && item.selectedKeys)
       ? [...new Set(item.selectedKeys.filter((key) => typeof key === 'string' && key.trim()).map((key) => key.trim()))]
       : [],
     pinnedKeys: Array.isArray(item && item.pinnedKeys)
       ? [...new Set(item.pinnedKeys.filter((key) => typeof key === 'string' && key.trim()).map((key) => key.trim()))]
       : [],
+    attachLives: item && typeof item.attachLives === 'boolean' ? item.attachLives : undefined,
     createdAt: (item && item.createdAt) || now,
     updatedAt: (item && item.updatedAt) || now,
   };
@@ -3614,13 +3600,12 @@ function newCredentialAuthCode() {
     label: t('credentialDefaultLabel') + ' ' + (credentialDistribution.authCodes.length + 1),
     code: random,
     enabled: true,
-    sourceMode: 'all',
     selectionMode: 'simple',
     maxSites: -1,
-    includeGrades: [],
-    siteTypes: [],
+    sourceMode: 'all',
     selectedKeys: [],
     pinnedKeys: [],
+    attachLives: liveDistPolicy.attachToAuth !== false,
     createdAt: now,
     updatedAt: now,
   }, credentialDistribution.authCodes.length);
@@ -3630,13 +3615,6 @@ function syncCredentialDistributionForm() {
   const requireAuth = $('credentialRequireAuth');
   if (requireAuth) requireAuth.checked = credentialDistribution.requireAuth === true;
   renderCredentialDistribution();
-}
-
-function sourceModeLabel(mode) {
-  if (mode === 'search') return t('credentialSourceModeSearch');
-  if (mode === 'selected') return t('credentialSourceModeSelected');
-  if (mode === 'custom') return t('credentialSourceModeCustom');
-  return t('credentialSourceModeAll');
 }
 
 function credentialModeSummary(item) {
@@ -3649,9 +3627,6 @@ function credentialModeSummary(item) {
     parts.push(t('credentialBucketLimits') + ' ' + selected);
   } else {
     parts.push(t('rootSourceCount') + ' ' + clientLimitLabel(item.maxSites));
-  }
-  if (item.sourceMode === 'custom' && item.selectedKeys && item.selectedKeys.length) {
-    parts.push(t('credentialSourceModeCustom') + ' ' + item.selectedKeys.length);
   }
   return parts.join(' · ');
 }
@@ -3732,7 +3707,6 @@ function createCredentialLimitControl(labelText, value, onChange) {
 function renderCredentialBucketControls(container, item) {
   if (!container || !item) return;
   renderSourceBucketControls(container, item.bucketLimits, function(group, key, value) {
-    item.sourceMode = 'all';
     if (!item.bucketLimits) item.bucketLimits = {};
     if (!item.bucketLimits[group]) item.bucketLimits[group] = {};
     item.bucketLimits[group][key] = value;
@@ -3785,20 +3759,25 @@ function renderCredentialDistribution() {
 
     const summaryActions = document.createElement('div');
     summaryActions.className = 'credential-card-actions';
-    const copyAuth = document.createElement('button');
-    copyAuth.className = 'btn btn-sm';
-    copyAuth.textContent = t('credentialCopyAuth');
-    copyAuth.onclick = () => copyClientLink(window.location.origin + '/auth/' + encodeURIComponent(item.code || '') + '/');
     const toggleDetails = document.createElement('button');
     toggleDetails.className = 'btn btn-sm';
     toggleDetails.textContent = isExpanded ? t('hideSourceSettings') : t('showSourceSettings');
     toggleDetails.setAttribute('aria-expanded', isExpanded ? 'true' : 'false');
+    const copyAuth = document.createElement('button');
+    copyAuth.className = 'btn btn-sm';
+    copyAuth.textContent = t('credentialCopyAuth');
+    copyAuth.onclick = () => copyClientLink(window.location.origin + '/auth/' + encodeURIComponent(item.code || '') + '/');
+    const copyLive = document.createElement('button');
+    copyLive.className = 'btn btn-sm';
+    copyLive.textContent = t('credentialCopyLive');
+    copyLive.onclick = () => copyClientLink(window.location.origin + '/auth/' + encodeURIComponent(item.code || '') + '/live');
     const remove = document.createElement('button');
     remove.className = 'btn btn-sm btn-danger';
     remove.textContent = t('credentialDelete');
     remove.onclick = () => { credentialDistribution.authCodes.splice(index, 1); credentialDetailsExpanded.delete(item.id); renderCredentialDistribution(); };
-    summaryActions.appendChild(copyAuth);
     summaryActions.appendChild(toggleDetails);
+    summaryActions.appendChild(copyAuth);
+    summaryActions.appendChild(copyLive);
     summaryActions.appendChild(remove);
     top.appendChild(title);
     top.appendChild(summaryActions);
@@ -3836,25 +3815,13 @@ function renderCredentialDistribution() {
     selectionSelect.value = item.selectionMode;
     selectionSelect.onchange = () => {
       item.selectionMode = selectionSelect.value;
-      // 根链接与鉴权码统一使用同一套选择模型。旧版 all/search/selected
-      // 源模式在用户修改选择后自然迁移为统一质量池模式。
-      item.sourceMode = 'all';
       if (item.selectionMode === 'simple') item.bucketLimits = undefined;
       item.updatedAt = new Date().toISOString();
       renderCredentialDistribution();
     };
     addLabeledInput(grid, t('sourceSelectionMode'), selectionSelect);
 
-    if (item.sourceMode === 'custom' && item.selectedKeys && item.selectedKeys.length) {
-      const legacy = document.createElement('div');
-      legacy.className = 'credential-help';
-      legacy.style.gridColumn = '1 / -1';
-      legacy.textContent = t('credentialLegacyCustomNotice') + ' (' + item.selectedKeys.length + ')';
-      grid.appendChild(legacy);
-    }
-
     const simpleLimit = createCredentialLimitControl(t('rootSourceCount'), item.maxSites, (value) => {
-      item.sourceMode = 'all';
       item.maxSites = value;
       item.updatedAt = new Date().toISOString();
       summary.textContent = credentialModeSummary(item);
@@ -3881,6 +3848,22 @@ function renderCredentialDistribution() {
     details.appendChild(grid);
     details.appendChild(bucketPanel);
 
+    const attachWrap = document.createElement('label');
+    attachWrap.style.cssText = 'display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:12px;padding-top:12px;border-top:1px solid var(--border)';
+    const attachInput = document.createElement('input');
+    attachInput.type = 'checkbox';
+    attachInput.checked = item.attachLives !== undefined ? item.attachLives !== false : (liveDistPolicy.attachToAuth !== false);
+    attachInput.onchange = () => { item.attachLives = attachInput.checked; item.updatedAt = new Date().toISOString(); };
+    const attachText = document.createElement('span');
+    attachText.textContent = t('liveAttachPerAuth');
+    const attachHint = document.createElement('span');
+    attachHint.style.cssText = 'font-size:0.75rem;color:var(--text-secondary)';
+    attachHint.textContent = t('liveAttachPerAuthHint');
+    attachWrap.appendChild(attachInput);
+    attachWrap.appendChild(attachText);
+    attachWrap.appendChild(attachHint);
+    details.appendChild(attachWrap);
+
     card.appendChild(details);
     list.appendChild(card);
   });
@@ -3898,6 +3881,25 @@ function addCredentialAuthCode() {
   credentialDistribution.authCodes.push(item);
   credentialDetailsExpanded.add(item.id);
   renderCredentialDistribution();
+}
+
+async function saveRootAttachLives() {
+  const box = $('rootAttachLivesCheck');
+  const status = $('rootAttachLivesStatus');
+  if (!box) return;
+  const checked = !!box.checked;
+  liveDistPolicy.attachToRoot = checked;
+  try {
+    const res = await auth.authFetch('/admin/live-distribution', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ attachToRoot: checked }) });
+    if (!res.ok) throw new Error('save failed');
+    const d = await res.json();
+    const dist = d && d.distribution ? d.distribution : {};
+    liveDistPolicy.attachToRoot = dist.attachToRoot !== false;
+    liveDistPolicy.attachToAuth = dist.attachToAuth !== false;
+    if (status) { status.textContent = '✓ ' + t('liveAttachSaved'); setTimeout(function(){ status.textContent = ''; }, 2000); }
+  } catch (e) {
+    if (status) status.textContent = '✗ ' + t('saveFailed');
+  }
 }
 
 function copyClientLink(link) {
@@ -3921,7 +3923,6 @@ async function loadCredentialDistribution() {
       authCodes: Array.isArray(data.authCodes) ? data.authCodes.map(normalizeClientAuthCode) : [],
     };
     const configuredTypes = credentialDistribution.authCodes.flatMap((item) => [
-      ...(item.siteTypes || []),
       ...Object.keys((item.bucketLimits && item.bucketLimits.type) || {}),
     ]);
     rememberCredentialSiteTypes(cfg.sites, configuredTypes);
@@ -3948,10 +3949,6 @@ async function saveCredentialDistribution() {
   for (const item of credentialDistribution.authCodes || []) {
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(item.code || '')) {
       toast(t('credentialCodeInvalid'), 'error');
-      return;
-    }
-    if (item.sourceMode === 'custom' && (!Array.isArray(item.selectedKeys) || item.selectedKeys.length === 0)) {
-      toast(t('credentialSelectedKeysRequired'), 'error');
       return;
     }
   }
@@ -4300,8 +4297,7 @@ async function setLiveMergeMode(mode) {
 
 // ─── 直播源下发（候选池/质量池/下发池）──────────
 let liveDistData = null;
-let liveDistPolicy = { selectionMode: 'simple', maxSources: -1, bucketLimits: {}, pinnedKeys: [], blockedKeys: [] };
-let liveDistAttach = null;
+let liveDistPolicy = { selectionMode: 'simple', maxSources: -1, bucketLimits: {}, pinnedKeys: [], blockedKeys: [], attachToRoot: true, attachToAuth: true };
 
 function liveDistCountsText(counts) {
   return t('liveDistCandidates') + ': ' + (counts.candidates ?? '-')
@@ -4321,7 +4317,10 @@ async function loadLiveDistribution() {
       bucketLimits: dist.bucketLimits || {},
       pinnedKeys: Array.isArray(dist.pinnedKeys) ? dist.pinnedKeys.slice() : [],
       blockedKeys: Array.isArray(dist.blockedKeys) ? dist.blockedKeys.slice() : [],
+      attachToRoot: dist.attachToRoot !== false,
+      attachToAuth: dist.attachToAuth !== false,
     };
+    if ($('rootAttachLivesCheck')) $('rootAttachLivesCheck').checked = liveDistPolicy.attachToRoot;
     const counts = liveDistData.counts || {};
     $('liveDistCounts').textContent = liveDistCountsText(counts);
     $('liveDistMode').value = liveDistPolicy.selectionMode;
@@ -4437,8 +4436,8 @@ async function saveLiveDistributionPolicy() {
     bucketLimits,
     pinnedKeys: liveDistPolicy.pinnedKeys || [],
     blockedKeys: liveDistPolicy.blockedKeys || [],
-    attachToRoot: $('liveAttachRootCheck') ? !!$('liveAttachRootCheck').checked : true,
-    attachToAuth: $('liveAttachAuthCheck') ? !!$('liveAttachAuthCheck').checked : true,
+    attachToRoot: $('rootAttachLivesCheck') ? !!$('rootAttachLivesCheck').checked : (liveDistPolicy.attachToRoot !== false),
+    attachToAuth: liveDistPolicy.attachToAuth !== false,
   };
   try {
     const res = await auth.authFetch('/admin/live-distribution', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -4571,63 +4570,6 @@ async function liveDistToggleBlock(key) {
   if (idx >= 0) blocked.splice(idx, 1); else blocked.push(key);
   liveDistPolicy.blockedKeys = blocked;
   await saveLiveDistributionPolicy();
-}
-
-// ─── 主配置附带直播 + 鉴权码覆盖 ───────────
-async function loadLiveAttachAuth() {
-  try {
-    const res = await auth.authFetch('/admin/live-attach-auth');
-    if (!res.ok) return;
-    const d = await res.json();
-    liveDistAttach = d;
-    if ($('liveAttachAuthCheck')) $('liveAttachAuthCheck').checked = !!d.attachToAuth;
-    const list = $('liveAttachAuthList'); if (!list) return;
-    const configs = Array.isArray(d.configs) ? d.configs : [];
-    if (configs.length === 0) { list.innerHTML = ''; return; }
-    list.innerHTML = configs.map(function(c) {
-      return '<label style="display:flex;gap:8px;align-items:center;font-size:0.82rem;cursor:pointer' + (c.enabled === false ? ';opacity:0.5' : '') + '">'
-        + '<input type="checkbox" ' + (c.attachLives ? 'checked' : '') + (c.enabled === false ? ' disabled' : '') + ' onchange="saveLiveAttachAuthCode(&quot;' + escHtml(c.code) + '&quot;, this.checked)">'
-        + '<span>' + escHtml(c.label || c.code) + ' <span style="color:var(--text-secondary);font-family:var(--mono);font-size:0.72rem">/auth/' + escHtml(c.code) + '/</span></span>'
-        + (c.enabled === false ? '<span style="color:var(--red)">' + t('credentialRootRequired') + '</span>' : '')
-        + '</label>';
-    }).join('');
-  } catch {}
-}
-
-async function loadRootAttach() {
-  try {
-    const res = await auth.authFetch('/admin/live-distribution');
-    if (!res.ok) return;
-    const d = await res.json();
-    if ($('liveAttachRootCheck')) $('liveAttachRootCheck').checked = d.distribution ? d.distribution.attachToRoot !== false : true;
-  } catch {}
-}
-
-async function saveLiveAttachRoot() {
-  const checked = $('liveAttachRootCheck') ? !!$('liveAttachRootCheck').checked : true;
-  const status = $('liveAttachStatus');
-  try {
-    await auth.authFetch('/admin/live-distribution', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ attachToRoot: checked }) });
-    if (status) { status.textContent = '✓ ' + t('liveAttachSaved'); setTimeout(function(){ status.textContent=''; }, 2000); }
-  } catch { if (status) status.textContent = '✗ ' + t('saveFailed'); }
-}
-
-async function saveLiveAttachAuthDefault() {
-  const checked = $('liveAttachAuthCheck') ? !!$('liveAttachAuthCheck').checked : true;
-  const status = $('liveAttachStatus');
-  try {
-    await auth.authFetch('/admin/live-distribution', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ attachToAuth: checked }) });
-    if (status) { status.textContent = '✓ ' + t('liveAttachSaved'); setTimeout(function(){ status.textContent=''; }, 2000); }
-    loadLiveAttachAuth();
-  } catch { if (status) status.textContent = '✗ ' + t('saveFailed'); }
-}
-
-async function saveLiveAttachAuthCode(code, enabled) {
-  const status = $('liveAttachStatus');
-  try {
-    await auth.authFetch('/admin/live-attach-auth', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: code, enabled: enabled }) });
-    if (status) { status.textContent = '✓ ' + t('liveAttachSaved'); setTimeout(function(){ status.textContent=''; }, 2000); }
-  } catch { if (status) status.textContent = '✗ ' + t('saveFailed'); }
 }
 
 // ─── 合并报告 ───────────

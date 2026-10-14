@@ -61,11 +61,14 @@ function checkAdminInlineScripts() {
   if (!importSection.includes('data-i18n="importConfig"') || !importSection.includes('id="importInput"') || !importSection.includes('id="exportBtn"') || !importSection.includes('id="restoreBtn"') || !importSection.includes('data-i18n="backupHelp"')) {
     throw new Error('source backup and restore actions must live inside the collapsible batch import panel');
   }
-  if (!searchPanel.includes('id="rootSourceCountInput"') || !searchPanel.includes('oninput="syncRootSourceCountInput()"') || !html.includes('function syncRootSourceCountInput()') || !html.includes('rootSourceSelection.maxSites = rootLimitValue(rootCount.value, rootCountInput)')) {
+  if (!searchPanel.includes('id="rootSourceCountInput"') || !searchPanel.includes('oninput="syncRootSourceCountInput()"') || !html.includes('function syncRootSourceCountInput()') || !html.includes('const parsed = rootLimitValue(rootCount.value, rootCountInput)') || !html.includes('rootSourceSelection.maxSites = parsed.value')) {
     throw new Error('root simple source count must read the current custom value before saving');
   }
   if (!searchPanel.includes('sqRankingHint') || !html.includes('sqQualityOrder = rawQualityPoolKeys.slice()') || !html.includes('compareByQualityPoolOrder')) {
     throw new Error('search source ranking must explain and use the server quality-pool order');
+  }
+  if (!html.includes("['all', 'search', 'selected', 'custom'].includes(item && item.sourceMode)") || !html.includes('selectedKeys: Array.isArray(item && item.selectedKeys)')) {
+    throw new Error('legacy auth sourceMode/selectedKeys must round-trip through the admin editor');
   }
 
   for (const script of scripts) {

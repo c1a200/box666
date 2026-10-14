@@ -334,6 +334,40 @@ export async function shouldRunFullQualityNow(storage: Storage, now = new Date()
   return next <= now.getTime();
 }
 
+/**
+ * 解析本次应执行的质量任务。全量任务优先，并占用当天一般更新的首个
+ * 时段；全量当天已执行过时，不再额外触发同一天的一般更新。
+ */
+export async function resolveQualityRunMode(
+  storage: Storage,
+  now = new Date(),
+  timezone = QUALITY_TIMEZONE,
+): Promise<SearchQualityRunMode | null> {
+  const schedule = await loadQualitySchedule(storage, timezone);
+  if (!schedule.enabled) return null;
+
+  const nowMs = now.getTime();
+  const fullDue = schedule.nextFullRunAt
+    ? new Date(schedule.nextFullRunAt).getTime() <= nowMs
+    : false;
+  const candidateDue = schedule.nextRunAt
+    ? new Date(schedule.nextRunAt).getTime() <= nowMs
+    : false;
+
+  if (fullDue) return 'full';
+  if (!candidateDue) return null;
+
+  const local = zonedParts(now, normalizeQualityTimezone(timezone));
+  const lastFull = schedule.lastFullRunAt ? parseDate(schedule.lastFullRunAt) : null;
+  if (lastFull) {
+    const fullLocal = zonedParts(lastFull, normalizeQualityTimezone(timezone));
+    if (fullLocal.year === local.year && fullLocal.month === local.month && fullLocal.day === local.day) {
+      return null;
+    }
+  }
+  return 'candidate';
+}
+
 export async function markQualityRun(
   storage: Storage,
   at = new Date(),
@@ -347,6 +381,23 @@ export async function markQualityRun(
   if (mode === 'full') {
     schedule.lastFullRunAt = at.toISOString();
     schedule.nextFullRunAt = computeNextFullQualityRun(schedule, at, effectiveTimezone);
+    // 全量结果已经覆盖当天一般更新所需的信息；跳过同一天剩余的候选时段，
+    // 避免一次全量后紧接着又跑一遍一般分级。
+    const local = zonedParts(at, effectiveTimezone);
+    const times = (schedule.times || [])
+      .map((time: unknown) => normalizeTime(time))
+      .filter((time): time is string => !!time)
+      .sort();
+    const next = times.find((time) => {
+      const [hour, minute] = time.split(':').map(Number);
+      return hour * 60 + minute > local.hour * 60 + local.minute;
+    });
+    if (next) {
+      const [hour, minute] = next.split(':').map(Number);
+      schedule.nextRunAt = zonedLocalToUtcIso(local.year, local.month, local.day, hour, minute, effectiveTimezone);
+    } else {
+      schedule.nextRunAt = computeNextQualityRun(schedule, at, effectiveTimezone);
+    }
   }
   await storage.put(KV_SEARCH_QUALITY_SCHEDULE, JSON.stringify(schedule));
   return schedule;

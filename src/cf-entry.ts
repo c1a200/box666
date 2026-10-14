@@ -17,8 +17,7 @@ import {
   collectSearchableSites,
   loadQualityStatus,
   runQualityGradingChunk,
-  shouldRunQualityNow,
-  shouldRunFullQualityNow,
+  resolveQualityRunMode,
   updateQualityStatus,
 } from './core/quality';
 import type { AppConfig, SearchQualityRunMode } from './core/types';
@@ -209,8 +208,7 @@ async function runAggregationTracked(
 /** CF 单次执行一个分片；到期时自动开始新的一轮，running 时继续游标。 */
 async function runQualityChunkWithStatus(storage: KVStorage, requestedMode?: SearchQualityRunMode, timezone = 'Asia/Shanghai'): Promise<void> {
   let status = await loadQualityStatus(storage);
-  const fullDue = await shouldRunFullQualityNow(storage, new Date(), timezone);
-  const candidateDue = await shouldRunQualityNow(storage, new Date(), timezone);
+  const dueMode = await resolveQualityRunMode(storage, new Date(), timezone);
   const storedSites = await loadQualityCandidates(storage);
   const sites = collectSearchableSites(storedSites);
   if (sites.length === 0) {
@@ -221,9 +219,9 @@ async function runQualityChunkWithStatus(storage: KVStorage, requestedMode?: Sea
     return;
   }
   const resuming = status.state === 'running';
-  if (!resuming && !requestedMode && !fullDue && !candidateDue) return;
+  if (!resuming && !requestedMode && !dueMode) return;
   const mode: SearchQualityRunMode = requestedMode
-    || (resuming && status.mode ? status.mode : (fullDue ? 'full' : 'candidate'));
+    || (resuming && status.mode ? status.mode : (dueMode || 'candidate'));
   const cursor = resuming ? (status.cursor || 0) : 0;
   if (!resuming) {
     // 新的一轮：重置游标和进度后再取回状态，避免沿用上一轮的 processed
@@ -329,9 +327,8 @@ export default {
       && livePrepareInputs.sources.length > 0
       && (livePrepareState?.complete !== true || !livePrepareSignatureMatches);
     const qualityStatus = await loadQualityStatus(storage);
-    const candidateDue = await shouldRunQualityNow(storage, new Date(), config.qualityTimezone);
-    const fullDue = await shouldRunFullQualityNow(storage, new Date(), config.qualityTimezone);
-    const qualityDue = candidateDue || fullDue;
+    const qualityDueMode = await resolveQualityRunMode(storage, new Date(), config.qualityTimezone);
+    const qualityDue = qualityDueMode !== null;
     const qualityActive = qualityDue || qualityStatus.state === 'running';
 
     ctx.waitUntil(

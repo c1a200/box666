@@ -848,11 +848,14 @@ export function createApp(deps: AppDeps): Hono {
     authCode?: ClientAuthCode,
   ): Promise<boolean> {
     if (!authCode) return distribution.attachToRoot;
+    // 鉴权码自身的显式选择优先于历史兼容覆盖值；旧覆盖值只用于迁移前
+    // 已经保存过、但尚未写入 attachLives 的鉴权码。
+    if (authCode.attachLives !== undefined) return authCode.attachLives;
     const overrides = await loadLiveAttachOverrides();
     if (Object.prototype.hasOwnProperty.call(overrides, authCode.code)) {
       return overrides[authCode.code];
     }
-    return authCode.attachLives ?? distribution.attachToAuth;
+    return distribution.attachToAuth;
   }
 
   async function selectMergedLiveGroups(
@@ -939,6 +942,37 @@ export function createApp(deps: AppDeps): Hono {
   }
 
   /**
+   * 合并模式是否已有可安全下发的输出。这里只做只读就绪检查，
+   * 不在配置请求路径触发回源或重建，避免应用端启动被阻塞。
+   */
+  async function hasUsableMergedLiveOutput(
+    distribution: LiveDistributionConfig,
+  ): Promise<boolean> {
+    const liveMergeMode = (await storage.get(KV_LIVE_MERGE_MODE)) === 'merged' ? 'merged' : 'separated';
+    if (liveMergeMode !== 'merged') return false;
+    const expectedFingerprint = await computeLiveOutputFingerprint(storage, toLiveDistributionPolicy(distribution));
+    const cacheFingerprint = await storage.get(KV_LIVE_OUTPUT_FINGERPRINT);
+    const prebuiltVersion = await storage.get(KV_LIVE_MERGED_TXT_VERSION);
+    const runtimeVersion = await storage.get(KV_LIVE_RUNTIME_TXT_VERSION);
+    const expectedVersion = `${liveMergeMode}:${expectedFingerprint}`;
+    const freshCache = cacheFingerprint === expectedFingerprint
+      && prebuiltVersion === expectedVersion
+      && runtimeVersion === expectedVersion;
+    if (!freshCache) return false;
+    const prebuiltTxt = await storage.get(KV_LIVE_MERGED_TXT);
+    if (prebuiltTxt && prebuiltTxt.trim()
+      && prebuiltTxt !== KV_LIVE_MERGED_TXT_FALLBACK
+      && prebuiltTxt.includes('#genre#')
+      && !containsBlockedLiveUrl(prebuiltTxt)) {
+      return true;
+    }
+    const runtimeTxt = await storage.get(KV_LIVE_RUNTIME_TXT);
+    return Boolean(runtimeTxt && runtimeTxt.trim()
+      && runtimeTxt.includes('#genre#')
+      && !containsBlockedLiveUrl(runtimeTxt));
+  }
+
+  /**
    * 依当前模式生成主配置应携带的直播入口。
    * CF separated 输出多个 /live/<key>；merged 与 Node/Render 都只输出一个 /live。
    */
@@ -951,6 +985,11 @@ export function createApp(deps: AppDeps): Hono {
     if (mode === 'separated') {
       return getSeparatedLives(baseUrl);
     }
+
+    // 合并模式只有输出已经通过当前策略指纹校验时才下发聚合入口；
+    // 否则宁可暂不附带，也不能让 App 解析空文本或旧模式产物。
+    const distribution = await loadLiveDistribution(storage);
+    if (!(await hasUsableMergedLiveOutput(distribution))) return [];
 
     // 合并模式只允许一个聚合入口。保留旧入口的请求参数，但只保留一个。
     const existing = Array.isArray(parsed.lives) ? parsed.lives : [];

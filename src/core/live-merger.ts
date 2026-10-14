@@ -1219,6 +1219,27 @@ export async function mergeLivesToNative(
   );
   const sourceLabels: Record<string, string> = {};
   for (const source of preparedSources) sourceLabels[source.input.url] = source.sourceName;
+
+  // 合并模式同样必须为每个源生成可独立验证/复检的 TXT 正文。
+  // /live 返回聚合文本，但清单 textReady 仍按源记录；否则合并模式下
+  // 全部条目都会因缺少文本就绪证明而被质量池和下发池排除。
+  const sourceTexts: Record<string, string> = {};
+  for (const source of preparedSources) {
+    const byGroup = new Map<string, TVBoxLiveChannel[]>();
+    for (const { group, channel } of source.prepared.channels) {
+      if (!byGroup.has(group)) byGroup.set(group, []);
+      byGroup.get(group)!.push(channel);
+    }
+    const sourceGroups: TVBoxLiveGroup[] = [];
+    for (const [group, channels] of byGroup) {
+      sourceGroups.push({ group: scrubTypeLiteral(group), channels });
+    }
+    const sourceText = formatLiveGroupsAsTxt(sourceGroups);
+    if (sourceText.trim() && sourceText.includes('#genre#')) {
+      sourceTexts[source.input.url] = sourceText;
+    }
+  }
+
   return mergeResultDetails(
     cleanedGroups,
     totalUrls,
@@ -1228,7 +1249,7 @@ export async function mergeLivesToNative(
     sourceMetrics,
     preparedSources.length,
     sourceCategories,
-    undefined,
+    sourceTexts,
     sourceLabels,
   );
 }

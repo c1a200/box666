@@ -596,6 +596,13 @@ async function readSites(response) {
         },
       ],
     };
+    const modeCandidatePool = {
+      version: 1,
+      groups: [
+        { group: '央视', channels: [{ name: 'CCTV1', urls: ['https://live.example/cctv.m3u$测试直播A#abc12345'] }] },
+        { group: '卫视', channels: [{ name: '湖南卫视', urls: ['https://live.example/hunan.m3u$测试直播B#def67890'] }] },
+      ],
+    };
     const modeConfig = {
       sites: mergedConfig.sites,
       lives: [
@@ -614,7 +621,18 @@ async function readSites(response) {
     assert(separatedJson.lives.length === 2, 'separated /live.json must expose selected /live/<key> entries');
     assert(separatedJson.lives.every((live) => /\/live\/[^/]+$/.test(live.url)), 'separated /live.json must not expose aggregate /live');
 
-    const merged = makeApp({ mergedConfig: modeConfig, liveMergeMode: 'merged', liveProxyManifest: manifest });
+    const merged = makeApp({
+      mergedConfig: modeConfig,
+      liveMergeMode: 'merged',
+      liveProxyManifest: manifest,
+      channelCandidateUrls: modeCandidatePool,
+    });
+    const mergedRebuild = await merged.app.request('https://box.example/admin/live-distribution', {
+      method: 'PUT',
+      headers: { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ attachToRoot: true, attachToAuth: true }),
+    });
+    assert(mergedRebuild.status === 200, 'merged output must be rebuildable before config delivery');
     const mergedRoot = await (await merged.app.request('https://box.example/')).json();
     const mergedAuth = await (await merged.app.request('https://box.example/auth/code-a/')).json();
     assert(mergedRoot.lives.length === 1, 'merged root mode must deliver exactly one aggregate entry, got ' + mergedRoot.lives.length);
@@ -650,8 +668,15 @@ async function readSites(response) {
       mergedConfig: modeConfig,
       liveMergeMode: 'merged',
       liveProxyManifest: manifest,
+      channelCandidateUrls: modeCandidatePool,
       config: { workerBaseUrl: '', localBaseUrl: 'https://render.example' },
     });
+    const renderMergedRebuild = await renderMerged.app.request('https://render.example/admin/live-distribution', {
+      method: 'PUT',
+      headers: { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ attachToRoot: true, attachToAuth: true }),
+    });
+    assert(renderMergedRebuild.status === 200, 'render merged output must be rebuildable before config delivery');
     const renderMergedRoot = await (await renderMerged.app.request('https://render.example/')).json();
     assert(renderMergedRoot.lives.length === 1 && /\/live\/?$/.test(renderMergedRoot.lives[0].url), 'render merged root must deliver exactly one aggregate /live');
     assert(!renderMergedRoot.lives.some((live) => /\/live\/[^/]+$/.test(live.url)), 'render merged root must not leak /live/<key> entries');

@@ -31,8 +31,7 @@ import {
   collectSearchableSites,
   loadQualityStatus,
   runQualityGradingChunk,
-  shouldRunQualityNow,
-  shouldRunFullQualityNow,
+  resolveQualityRunMode,
   updateQualityStatus,
 } from './core/quality';
 import {
@@ -458,9 +457,9 @@ async function main() {
     try {
       const persisted = await loadQualityStatus(storage);
       const resuming = persisted.state === 'running';
-      const fullDue = await shouldRunFullQualityNow(storage, new Date(), config.qualityTimezone);
+      const dueMode = await resolveQualityRunMode(storage, new Date(), config.qualityTimezone);
       const mode: SearchQualityRunMode = requestedMode
-        || (resuming && persisted.mode ? persisted.mode : (fullDue ? 'full' : 'candidate'));
+        || (resuming && persisted.mode ? persisted.mode : (dueMode || 'candidate'));
       const storedSites = await loadQualityCandidates(storage);
       const allSites = collectSearchableSites(storedSites);
       if (allSites.length === 0) {
@@ -587,11 +586,10 @@ async function main() {
   // 候选池重排与全量分级分别按各自周期判断，互不阻塞 HTTP 请求。
   cron.schedule('* * * * *', async () => {
     try {
-      const candidateDue = await shouldRunQualityNow(storage, new Date(), config.qualityTimezone);
-      const fullDue = await shouldRunFullQualityNow(storage, new Date(), config.qualityTimezone);
-      if (!candidateDue && !fullDue) return;
-      console.log('[quality-cron] Triggered (' + (fullDue ? 'full' : 'candidate') + ') at ' + new Date().toISOString());
-      void runQualityWithGuard(fullDue ? 'full' : 'candidate');
+      const dueMode = await resolveQualityRunMode(storage, new Date(), config.qualityTimezone);
+      if (!dueMode) return;
+      console.log('[quality-cron] Triggered (' + dueMode + ') at ' + new Date().toISOString());
+      void runQualityWithGuard(dueMode);
     } catch (err) {
       console.error('[quality-cron] Error:', err);
     }
