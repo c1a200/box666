@@ -596,12 +596,12 @@ assert(groupOfChannel('CCTV-1') === '央视', 'real CCTV channel must stay in �
 assert((classifiedGroups.find((group) => group.group === '央视')?.channels.find((channel) => channel.name === 'CCTV-1')?.urls.length || 0) === 2, 'quality prefixes must merge into the same CCTV channel');
 assert(groupOfChannel('CCTV-5+') === '央视', 'CCTV-5+ must stay in 央视');
 assert(groupOfChannel('CCTV-4K') === '4K/8K', 'CCTV-4K must move to 4K/8K');
-assert(groupOfChannel('CCTV第一剧场') === '影视', 'CCTV specialty movie channel must move to 影视');
-assert(groupOfChannel('CCTV风云音乐') === '音乐', 'CCTV music channel must move to 音乐');
-assert(groupOfChannel('CCTV世界地理') === '纪录', 'CCTV documentary channel must move to 纪录');
+assert(groupOfChannel('CCTV第一剧场') === '影视·剧场', 'CCTV specialty movie channel must move to 影视·剧场');
+assert(groupOfChannel('CCTV风云音乐') === '音乐·歌曲', 'CCTV music channel must move to 音乐·歌曲');
+assert(groupOfChannel('CCTV世界地理') === '纪录·自然', 'CCTV documentary channel must move to 纪录·自然');
 assert(groupOfChannel('CETV-1') === '教育', 'CETV must move to 教育');
-assert(groupOfChannel('CGTN英语') === '国际', 'CGTN must move to 国际');
-assert(groupOfChannel('咪咕视频1') === '其他', 'Migu video must not enter 央视');
+assert(groupOfChannel('CGTN英语') === '国际·新闻', 'CGTN must move to 国际·新闻');
+assert(groupOfChannel('咪咕视频1') === '其他·咪咕', 'Migu video must not enter 央视');
 assert(groupOfChannel('NewTV东北热剧') === '电视剧', 'NewTV drama must move to 电视剧');
 assert(groupOfChannel('大庆公共') === '地方·黑龙江', 'Daqing public channel must move to 地方·黑龙江');
 assert(groupOfChannel('上海ICS') === '地方·上海', 'Shanghai ICS must move to 地方·上海');
@@ -610,6 +610,114 @@ assert(groupOfChannel('北京卫视') === '卫视', 'satellite channel must stay
 assert(groupOfChannel('综合频道') === '地方·其他', 'local group without a detectable region must use 地方·其他');
 assert(classifiedTxt.includes('地方·黑龙江,#genre#'), 'output must expose the 地方·黑龙江 group header');
 assert(classifiedTxt.includes('地方·上海,#genre#'), 'output must expose the 地方·上海 group header');
+// ── 17c. 超大目录扁平细分：平台/语义子目录，不改变频道总数 ──
+const subgroupGroups = [{
+  group: '一起看',
+  channels: [
+    { name: '虎牙电影1', urls: ['http://sub.example/huya$虎牙电影#11111111'] },
+    { name: '斗鱼游戏1', urls: ['http://sub.example/douyu$斗鱼游戏#22222222'] },
+    { name: 'YY音乐1', urls: ['http://sub.example/yy$YY音乐#33333333'] },
+  ],
+}, {
+  group: '其他',
+  channels: [
+    { name: 'abc news', urls: ['http://sub.example/abc'] },
+    { name: '咪咕视频1', urls: ['http://sub.example/migu'] },
+    { name: 'NewTv超级电影', urls: ['http://sub.example/newtv'] },
+    { name: '测试频道', urls: ['http://sub.example/test'] },
+    { name: '购物频道', urls: ['http://sub.example/shop'] },
+    { name: '生活服务频道', urls: ['http://sub.example/life'] },
+    { name: '未分类频道', urls: ['http://sub.example/other'] },
+  ],
+}, {
+  group: '影视',
+  channels: [
+    { name: '经典电影', urls: ['http://sub.example/movie'] },
+    { name: '电影剧场', urls: ['http://sub.example/drama'] },
+  ],
+}, {
+  group: '音乐',
+  channels: [
+    { name: '经典歌曲', urls: ['http://sub.example/song'] },
+    { name: 'DJ舞曲', urls: ['http://sub.example/dj'] },
+    { name: '演唱会现场', urls: ['http://sub.example/live'] },
+  ],
+}, {
+  group: '纪录',
+  channels: [
+    { name: '自然动物', urls: ['http://sub.example/nature'] },
+    { name: '历史人文', urls: ['http://sub.example/humanity'] },
+    { name: '科学探索', urls: ['http://sub.example/science'] },
+  ],
+}, {
+  group: '风景直播',
+  channels: [
+    { name: '景区直播', urls: ['http://sub.example/scenic'] },
+    { name: '城市街景', urls: ['http://sub.example/city'] },
+  ],
+}];
+const subgroupTxt = formatAggregatedLiveGroupsAsTxt(subgroupGroups);
+const subgroupParsed = parseLiveGroupsFromTxt(subgroupTxt);
+const subgroupOfChannel = (name) => {
+  const match = subgroupParsed.find((group) => group.channels.some((channel) => channel.name === name));
+  return match ? match.group : '';
+};
+assert(subgroupOfChannel('虎牙电影1') === '一起看·虎牙影视', 'huya movie channel must use platform + content subgroup');
+assert(subgroupOfChannel('斗鱼游戏1') === '一起看·斗鱼游戏', 'douyu game channel must use platform + content subgroup');
+assert(subgroupOfChannel('YY音乐1') === '一起看·YY音乐', 'YY music channel must use platform + content subgroup');
+assert(subgroupOfChannel('abc news') === '国际·新闻', 'English news channel must use international news subgroup');
+assert(subgroupOfChannel('咪咕视频1') === '其他·咪咕', 'Migu channel must use Migu subgroup');
+assert(subgroupOfChannel('NewTv超级电影') === '其他·NewTV', 'NewTV channel must use NewTV subgroup');
+assert(subgroupOfChannel('测试频道') === '其他·测试备用', 'test channel must use test/backup subgroup');
+assert(subgroupOfChannel('购物频道') === '其他·购物生活', 'shopping channel must use shopping/life subgroup');
+assert(subgroupOfChannel('生活服务频道') === '其他·生活服务', 'life-service channel must use life-service subgroup');
+assert(subgroupOfChannel('未分类频道') === '其他·中文A', 'unclassified Chinese channel must use a stable Chinese-initial subgroup');
+assert(subgroupOfChannel('经典电影') === '影视·电影', 'movie channel must use film subgroup');
+assert(subgroupOfChannel('电影剧场') === '影视·剧场', 'drama theater channel must use theater subgroup');
+assert(subgroupOfChannel('经典歌曲') === '音乐·歌曲', 'song channel must use song subgroup');
+assert(subgroupOfChannel('DJ舞曲') === '音乐·DJ', 'DJ channel must use DJ subgroup');
+assert(subgroupOfChannel('演唱会现场') === '音乐·现场', 'concert channel must use live-music subgroup');
+assert(subgroupOfChannel('自然动物') === '纪录·自然', 'nature channel must use nature subgroup');
+assert(subgroupOfChannel('历史人文') === '纪录·人文', 'humanity channel must use humanity subgroup');
+assert(subgroupOfChannel('科学探索') === '纪录·探索', 'science channel must use exploration subgroup');
+assert(subgroupOfChannel('景区直播') === '风景·景区', 'scenic channel must use scenic subgroup');
+assert(subgroupOfChannel('城市街景') === '风景·城市', 'city channel must use city subgroup');
+assert(
+  subgroupParsed.reduce((sum, group) => sum + group.channels.length, 0) === subgroupGroups.reduce((sum, group) => sum + group.channels.length, 0),
+  'subgrouping must not change channel count',
+);
+assert(
+  subgroupParsed.every((group) => group.group !== '一起看' && group.group !== '其他' && group.group !== '影视' && group.group !== '音乐' && group.group !== '纪录' && group.group !== '风景直播'),
+  'oversized parent groups must not be emitted after subgrouping',
+);
+
+// 17d. 超大主题目录按稳定顺序分页；地方省市目录保持完整，频道和线路不丢失。
+const pagedGroups = [{
+  group: '一起看',
+  channels: Array.from({ length: 401 }, (_, index) => ({
+    name: '虎牙中文' + String(index + 1).padStart(3, '0'),
+    urls: ['http://paged.example/huya/' + (1000000 + index) + '$虎牙#11111111'],
+  })),
+}, {
+  group: '地方',
+  channels: Array.from({ length: 220 }, (_, index) => ({
+    name: '浙江频道' + String(index + 1).padStart(3, '0'),
+    urls: ['http://paged.example/zj/' + index],
+  })),
+}];
+const pagedTxt = formatAggregatedLiveGroupsAsTxt(pagedGroups);
+const pagedParsed = parseLiveGroupsFromTxt(pagedTxt);
+const pagedHeaders = pagedParsed.map((group) => group.group);
+const huyaPages = pagedParsed.filter((group) => group.group.startsWith('一起看·虎牙中文'));
+const huyaPageBase = huyaPages[0]?.group.replace(/\d{2}$/, '') || '';
+assert(huyaPages.length === 3, '401 Huya channels must split into three controlled pages');
+assert(huyaPages[0].channels.length === 180 && huyaPages[1].channels.length === 180 && huyaPages[2].channels.length === 41, 'Huya pages must keep stable 180/180/41 capacity');
+assert(huyaPages.every((group) => group.group === huyaPageBase + '01' || group.group === huyaPageBase + '02' || group.group === huyaPageBase + '03'), 'Huya pages must expose readable 01/02/03 suffixes');
+assert(pagedHeaders.indexOf(huyaPageBase + '01') < pagedHeaders.indexOf(huyaPageBase + '02'), 'Huya page order must be stable');
+assert(pagedHeaders.indexOf(huyaPageBase + '02') < pagedHeaders.indexOf(huyaPageBase + '03'), 'Huya page order must remain stable');
+assert(pagedParsed.some((group) => group.group === '地方·浙江' && group.channels.length === 220), 'local province groups must stay complete and unpaged');
+assert(pagedParsed.reduce((sum, group) => sum + group.channels.length, 0) === 621, 'paging must not lose channels');
+assert(pagedParsed.reduce((sum, group) => sum + group.channels.reduce((urls, channel) => urls + channel.urls.length, 0), 0) === 621, 'paging must not lose channel URLs');
 // ── 18. 分片更新：仅撤销本批次未就绪文本，不清空其他已完成批次 ──
 const incrementalBase = mergeLiveProxyManifest(null, [entry(50), entry(51)], {
   checkedAt: '2026-10-13T02:00:00.000Z',

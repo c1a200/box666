@@ -370,9 +370,12 @@ export function sortLiveGroupsForOutput(groups: TVBoxLiveGroup[]): TVBoxLiveGrou
  * 安全清洗、同名分组头合并和同频道重复 URL 清理，不做跨名称归一。
  * 全局聚合的额外归一只在 formatAggregatedLiveGroupsAsTxt 中执行。
  */
+const MAX_AGGREGATE_CHANNELS_PER_GROUP = 180;
+
 function formatLiveGroupsAsTxtInternal(
   groups: TVBoxLiveGroup[],
   canonicalizeChannels: boolean,
+  maxChannelsPerGroup?: number,
 ): string {
   interface OutputChannel {
     name: string;
@@ -421,9 +424,24 @@ function formatLiveGroupsAsTxtInternal(
       .sort((a, b) => compareLiveChannelNames(a.name, b.name));
     if (outputChannels.length === 0) continue;
 
-    lines.push(`${groupName},#genre#`);
-    for (const channel of outputChannels) {
-      lines.push(`${channel.name},${channel.urls.join('#')}`);
+    // 客户端没有真正的三级目录能力，超大分类按稳定排序后的频道分页为
+    // “一级·二级01/02”，既不丢频道，也能避免单个目录过长。
+    // 地方目录已经按省市拆分，即使省份频道较多也应保持“地方·省份”
+    // 完整可读；只对跨节目主题的超大分类做容量分页。
+    const allowPaging = maxChannelsPerGroup && maxChannelsPerGroup > 0
+      && !/^地方·/.test(groupName);
+    const pageSize = allowPaging ? maxChannelsPerGroup : outputChannels.length;
+    const pageCount = Math.max(1, Math.ceil(outputChannels.length / pageSize));
+    for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
+      const start = pageIndex * pageSize;
+      const pageChannels = outputChannels.slice(start, start + pageSize);
+      const pageGroupName = pageCount > 1
+        ? groupName + String(pageIndex + 1).padStart(2, '0')
+        : groupName;
+      lines.push(`${pageGroupName},#genre#`);
+      for (const channel of pageChannels) {
+        lines.push(`${channel.name},${channel.urls.join('#')}`);
+      }
     }
   }
 
@@ -512,25 +530,194 @@ const LOCAL_REGION_ORDER = [
   '其他',
 ] as const;
 
+const INTERNATIONAL_SUBGROUP_ORDER = [
+  '国际·新闻',
+  '国际·影视',
+  '国际·体育',
+  '国际·少儿',
+  '国际·纪录',
+  ...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map((letter) => `国际·英语${letter}`),
+  '国际·俄语',
+  '国际·亚洲',
+  '国际·其他',
+] as const;
+
+const FILM_SUBGROUP_ORDER = [
+  '影视·电影',
+  '影视·剧场',
+  '影视·综合',
+] as const;
+
+const MUSIC_SUBGROUP_ORDER = [
+  '音乐·歌曲',
+  '音乐·DJ',
+  '音乐·现场',
+  '音乐·戏曲',
+  '音乐·综合',
+] as const;
+
+const DOCUMENTARY_SUBGROUP_ORDER = [
+  '纪录·自然',
+  '纪录·人文',
+  '纪录·探索',
+  '纪录·综合',
+] as const;
+
+const SCENERY_SUBGROUP_ORDER = [
+  '风景·城市',
+  '风景·景区',
+  '风景·自然',
+  '风景·综合',
+] as const;
+
+const TOGETHER_SUBGROUP_ORDER = [
+  '一起看·虎牙影视',
+  '一起看·虎牙游戏',
+  '一起看·虎牙音乐',
+  '一起看·虎牙生活',
+  '一起看·虎牙知识',
+  '一起看·虎牙中文A',
+  '一起看·虎牙中文B',
+  '一起看·虎牙中文C',
+  '一起看·虎牙中文D',
+  '一起看·虎牙中文E',
+  '一起看·虎牙中文F',
+  '一起看·虎牙中文G',
+  '一起看·虎牙中文H',
+  '一起看·虎牙中文J',
+  '一起看·虎牙中文K',
+  '一起看·虎牙中文L',
+  '一起看·虎牙中文M',
+  '一起看·虎牙中文N',
+  '一起看·虎牙中文P',
+  '一起看·虎牙中文Q',
+  '一起看·虎牙中文R',
+  '一起看·虎牙中文S',
+  '一起看·虎牙中文T',
+  '一起看·虎牙中文W',
+  '一起看·虎牙中文X',
+  '一起看·虎牙中文Y',
+  '一起看·虎牙中文Z',
+  '一起看·虎牙字母数字',
+  '一起看·斗鱼影视',
+  '一起看·斗鱼游戏',
+  '一起看·斗鱼音乐',
+  '一起看·斗鱼生活',
+  '一起看·斗鱼知识',
+  '一起看·斗鱼中文A',
+  '一起看·斗鱼中文B',
+  '一起看·斗鱼中文C',
+  '一起看·斗鱼中文D',
+  '一起看·斗鱼中文E',
+  '一起看·斗鱼中文F',
+  '一起看·斗鱼中文G',
+  '一起看·斗鱼中文H',
+  '一起看·斗鱼中文J',
+  '一起看·斗鱼中文K',
+  '一起看·斗鱼中文L',
+  '一起看·斗鱼中文M',
+  '一起看·斗鱼中文N',
+  '一起看·斗鱼中文P',
+  '一起看·斗鱼中文Q',
+  '一起看·斗鱼中文R',
+  '一起看·斗鱼中文S',
+  '一起看·斗鱼中文T',
+  '一起看·斗鱼中文W',
+  '一起看·斗鱼中文X',
+  '一起看·斗鱼中文Y',
+  '一起看·斗鱼中文Z',
+  '一起看·斗鱼字母数字',
+  '一起看·YY影视',
+  '一起看·YY游戏',
+  '一起看·YY音乐',
+  '一起看·YY生活',
+  '一起看·YY知识',
+  '一起看·YY中文A',
+  '一起看·YY中文B',
+  '一起看·YY中文C',
+  '一起看·YY中文D',
+  '一起看·YY中文E',
+  '一起看·YY中文F',
+  '一起看·YY中文G',
+  '一起看·YY中文H',
+  '一起看·YY中文J',
+  '一起看·YY中文K',
+  '一起看·YY中文L',
+  '一起看·YY中文M',
+  '一起看·YY中文N',
+  '一起看·YY中文P',
+  '一起看·YY中文Q',
+  '一起看·YY中文R',
+  '一起看·YY中文S',
+  '一起看·YY中文T',
+  '一起看·YY中文W',
+  '一起看·YY中文X',
+  '一起看·YY中文Y',
+  '一起看·YY中文Z',
+  '一起看·YY字母数字',
+  '一起看·B站影视',
+  '一起看·B站游戏',
+  '一起看·B站音乐',
+  '一起看·B站生活',
+  '一起看·B站知识',
+  '一起看·B站其他',
+  '一起看·短视频影视',
+  '一起看·短视频游戏',
+  '一起看·短视频音乐',
+  '一起看·短视频生活',
+  '一起看·短视频知识',
+  '一起看·短视频其他',
+  '一起看·其他影视',
+  '一起看·其他游戏',
+  '一起看·其他音乐',
+  '一起看·其他生活',
+  '一起看·其他知识',
+  '一起看·其他',
+] as const;
+
+const OTHER_SUBGROUP_ORDER = [
+  '其他·咪咕',
+  '其他·NewTV',
+  '其他·测试备用',
+  '其他·购物生活',
+  '其他·生活服务',
+  '其他·俄语',
+  '其他·音乐',
+  '其他·影视',
+  '其他·地方',
+  ...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map((letter) => `其他·字母${letter}`),
+  '其他·数字',
+  ...'ABCDEFGHJKLMNOPQRSTWXYZ'.split('').map((letter) => `其他·中文${letter}`),
+  '其他·中文其他',
+  '其他·综合',
+] as const;
+
 const AGGREGATE_GROUP_ORDER: readonly string[] = [
   '央视',
   '国际',
+  ...INTERNATIONAL_SUBGROUP_ORDER,
   '卫视',
   ...LOCAL_REGION_ORDER.map((region) => `地方·${region}`),
   '港澳台',
   '影视',
+  ...FILM_SUBGROUP_ORDER,
   '电视剧',
   '少儿',
   '体育',
   '音乐',
+  ...MUSIC_SUBGROUP_ORDER,
   '纪录',
+  ...DOCUMENTARY_SUBGROUP_ORDER,
   '新闻财经',
   '教育',
   '春晚',
   '风景直播',
+  ...SCENERY_SUBGROUP_ORDER,
   '4K/8K',
   '一起看',
+  ...TOGETHER_SUBGROUP_ORDER,
   '其他',
+  ...OTHER_SUBGROUP_ORDER,
 ];
 
 /**
@@ -645,10 +832,203 @@ function classifyNewTv(compact: string): string {
   return '其他';
 }
 
+function collectLiveSourceLabels(channel?: TVBoxLiveChannel): string {
+  return (channel?.urls || [])
+    .join('\n')
+    .match(/\$([^#\n]+)#[0-9a-f]{8}/gi)
+    ?.map((value) => compactChannelText(value.replace(/^\$/, '').replace(/#[0-9a-f]{8}$/i, '')))
+    .join(' ') || '';
+}
+
+function classifyTogetherSubgroup(
+  rawGroup: string,
+  channelName: string,
+  channel?: TVBoxLiveChannel,
+): string {
+  const text = compactChannelText(rawGroup) + compactChannelText(channelName) + collectLiveSourceLabels(channel);
+  let platform = '其他';
+  if (/虎牙|huya/i.test(text)) platform = '虎牙';
+  else if (/斗鱼|douyu/i.test(text)) platform = '斗鱼';
+  else if (/yy|歪歪/i.test(text)) platform = 'YY';
+  else if (/b站|哔哩|bilibili/i.test(text)) platform = 'B站';
+  else if (/抖音|快手|短视频/i.test(text)) platform = '短视频';
+
+  let kind = '';
+  if (/游戏|电竞|王者|和平精英|英雄联盟|lol|吃鸡|我的世界|原神|传奇|魔兽|主机|单机|手游|街机|csgo|dota|绝地求生|永劫无间|apex|pubg|比赛|赛事|联赛|开黑|攻略|对战|竞技/i.test(text)) {
+    kind = '游戏';
+  } else if (/音乐|歌曲|歌|dj|电音|舞曲|慢摇|演唱会|音乐会|音乐节|钢琴|吉他|乐器|戏曲|京剧|越剧|豫剧|黄梅|评剧|昆曲|民乐|唱见|歌姬|歌手|好声音|声生不息/i.test(text)) {
+    kind = '音乐';
+  } else if (/影视|电影|影院|剧场|电视剧|连续剧|剧集|港剧|美剧|韩剧|短剧|动漫|动画|番剧|国漫|综艺|追剧|看剧|影评|影迷|观影|大片|老片|喜剧|科幻|恐怖|战争|武侠|动作|悬疑|犯罪|爱情|纪录片|纪录|解说/i.test(text)) {
+    kind = '影视';
+  } else if (/生活|日常|户外|旅行|旅游|赶海|钓鱼|美食|吃播|乡村|农村|宠物|动物|健身|运动|舞蹈|广场舞|手工|绘画|时尚|美妆|汽车|摩托|露营|探险|越野|房车|探店|城市|风景|摄影|萌宠|田园|三农|vlog/i.test(text)) {
+    kind = '生活';
+  } else if (/科普|科学|历史|法律|军事|财经|商业|教育|学习|讲坛|百家|故事|说书|文学|读书|科技|数码|编程|数学|英语|地理|自然|人文|知识|课堂|考试|演讲|哲学|心理|医学|健康/i.test(text)) {
+    kind = '知识';
+  }
+  if (kind) return '一起看·' + platform + kind;
+  if (platform === 'B站' || platform === '短视频' || platform === '其他') return '一起看·' + platform + '其他';
+  return '一起看·' + platform + togetherFallbackBucket(platform, channel);
+}
+
+function togetherFallbackBucket(platform: string, channel?: TVBoxLiveChannel): string {
+  if (platform === 'YY') {
+    const name = (channel?.name || '').trim().replace(/^[\s\[【（(]+/, '');
+    const first = Array.from(name)[0] || '';
+    const initial = 'ABCDEFGHJKLMNOPQRSTWXYZ'.includes(first.toUpperCase()) ? first.toUpperCase() : '';
+    if (initial) return '字母数字';
+    if (/[0-9a-z]/i.test(first)) return '字母数字';
+    if (/[\u4e00-\u9fff]/.test(first)) return '中文' + chineseBucketInitial(name);
+    return '其他';
+  }
+  const idText = (channel?.urls || [])
+    .map((url) => url.match(/\/(?:huya|douyu)\/(\d+)/i)?.[1] || '')
+    .find(Boolean) || '';
+  const id = Number(idText);
+  if (!Number.isFinite(id) || id <= 0) return '字母数字';
+  // 平台 ID 跨度从万级到千万级且中高号段密集，使用 16 档对数桶控制单桶规模。
+  const bucket = Math.floor(Math.log2(id) * 1.5);
+  const labels = [
+    '中文A', '中文B', '中文C', '中文D',
+    '中文E', '中文F', '中文G', '中文H',
+    '中文J', '中文K', '中文L', '中文M',
+    '中文N', '中文P', '中文Q', '中文R',
+  ];
+  return labels[Math.min(labels.length - 1, Math.max(0, bucket - 18))];
+}
+
+function chineseBucketInitial(name: string): string {
+  const first = Array.from(name)[0] || '';
+  const ranges = [
+    ['A', '啊', '芭'], ['B', '芭', '擦'], ['C', '擦', '搭'], ['D', '搭', '蛾'],
+    ['E', '蛾', '发'], ['F', '发', '噶'], ['G', '噶', '哈'], ['H', '哈', '击'],
+    ['J', '击', '喀'], ['K', '喀', '垃'], ['L', '垃', '妈'], ['M', '妈', '拿'],
+    ['N', '拿', '哦'], ['O', '哦', '啪'], ['P', '啪', '期'], ['Q', '期', '然'],
+    ['R', '然', '撒'], ['S', '撒', '塌'], ['T', '塌', '挖'], ['W', '挖', '昔'],
+    ['X', '昔', '压'], ['Y', '压', '匝'], ['Z', '匝', '\u9fff'],
+  ] as const;
+  for (const [initial, start, end] of ranges) {
+    if (first >= start && first < end) return initial;
+  }
+  return '其他';
+}
+
+function classifyInternationalSubgroup(
+  rawGroup: string,
+  channelName: string,
+  channel?: TVBoxLiveChannel,
+): string | null {
+  const raw = compactChannelText(rawGroup);
+  const name = compactChannelText(channelName);
+  const text = raw + name + collectLiveSourceLabels(channel);
+  if (!name) return null;
+
+  if (/^(?:cctv|cetv|newtv|migu|咪咕|中国教育电视台|中央电视|央视)/i.test(name)
+    || /卫视|港澳台|香港|澳门|台湾|tvb|翡翠|明珠|凤凰|东森|中视|台视|三立|纬来|tvbs|rthk|澳视/.test(text)
+    || /地方频道|省频道|市频道|县频道/.test(text)) return null;
+  if (/4k|8k|uhd/i.test(text)) return null;
+
+  const hasExplicitInternationalGroup = /国际|海外|外语|境外/.test(raw);
+  const hasInternationalBrand = /cgtn|中国国际电视台|bbc|cnn|abc|nbc|cbs|fox|bloomberg|cnbc|aljazeera|jazeera|euronews|france24|dw|nhk|arirang|kbs|mbc|sbs|tv5|skynews|discovery|animalplanet|natgeo|nationalgeographic|cartoonnetwork|disney|nickelodeon|espn|hbo|cinemax|starmovies|tvbs?|foxnews/i.test(text);
+  const latinOnly = /[a-z]{2,}/i.test(name) && !/[\u4e00-\u9fff]/.test(name);
+  const hasForeignLanguageHint = /英语|英文|俄语|俄罗斯|俄羅斯|日本|韩国|印度|亚洲|新加坡|马来西亚|泰国|越南|菲律宾/.test(text);
+  if (!hasExplicitInternationalGroup && !hasInternationalBrand && !latinOnly) return null;
+  if (hasExplicitInternationalGroup && /[\u4e00-\u9fff]/.test(name)
+    && !hasInternationalBrand && !hasForeignLanguageHint
+    && !/新闻|体育|少儿|纪录|影视|电影/.test(text)) return null;
+
+  if (/news|新闻|资讯|business|财经|bloomberg|cnbc|bbc|cnn|aljazeera|euronews|france24|dw|nhk|arirang|abc|nbc|cbs|foxnews|skynews/i.test(text)) return '国际·新闻';
+  if (/sports?|足球|篮球|体育|espn|football|nba|premierleague|tennis/i.test(text)) return '国际·体育';
+  if (/cartoon|kids|少儿|儿童|卡通|disney|nickelodeon|nick/i.test(text)) return '国际·少儿';
+  if (/discovery|animalplanet|natgeo|nationalgeographic|history|science|documentary|纪录|探索|自然/i.test(text)) return '国际·纪录';
+  if (/movie|cinema|film|drama|series|hbo|cinemax|starmovies|影视|电影|剧场/i.test(text)) return '国际·影视';
+  if (/俄语|俄罗斯|俄羅斯|russia|russian|русск|россия|перв|тнт|стс|нтв|карусель|ukraine|бел|kazakh|哈萨克/i.test(text)) return '国际·俄语';
+  if (/日本|japan|nhk|韩国|korea|kbs|mbc|sbs|arirang|tvn|jtbc|印度|india|asianet|astro|亚洲|asia|singapore|malaysia|thai|vietnam|印尼|泰国|越南|菲律宾/i.test(text)) return '国际·亚洲';
+  if (latinOnly) {
+    const first = (name.replace(/^[^a-z0-9]+/i, '')[0] || 'A').toUpperCase();
+    const bucket = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.includes(first) ? first : 'A';
+    return '国际·英语' + bucket;
+  }
+  return '国际·英语';
+}
+
+function classifyFilmSubgroup(compact: string): string {
+  if (/剧场|电视剧|连续剧|剧集|港剧|美剧|韩剧|短剧|经典剧|大剧|戏剧|电视轮播|电视轮|电视剧场/.test(compact)) {
+    return '影视·剧场';
+  }
+  if (/电影|影院|大片|动作片|喜剧片|科幻片|恐怖片|战争片|武侠片|港片|周星驰|成龙|林正英|周润发|邵氏|好片|经典怀旧|警匪悬疑|科幻梦工场|速度与激情|视觉/.test(compact)) {
+    return '影视·电影';
+  }
+  return '影视·综合';
+}
+
+function classifyMusicSubgroup(compact: string): string {
+  if (/戏曲|梨园|京剧|越剧|豫剧|黄梅|评剧|昆曲|曲艺/.test(compact)) return '音乐·戏曲';
+  if (/dj|电音|舞曲|慢摇|酒吧/i.test(compact)) return '音乐·DJ';
+  if (/演唱会|现场|音乐会|音乐节|live/i.test(compact)) return '音乐·现场';
+  if (/歌曲|歌手|港乐|经典|金曲|情歌|串烧|风云音乐|欣赏音乐/.test(compact)) return '音乐·歌曲';
+  return '音乐·综合';
+}
+
+function classifyDocumentarySubgroup(compact: string): string {
+  if (/(?:一套|二套|综合|公共|影综艺|汉语|哈萨克语|蒙古语|藏语|维语)$/.test(compact)
+    && !/动物|自然|野生|纪录|纪实|探索|科学/.test(compact)) return '地方·其他';
+  if (/动物|自然|野生|丛林|大象|海豚|海鬣蜥|棕熊|潜水|田园|地理|世界地理|风光|生态|狮子|狮|老虎|虎|猎豹|豹|北极熊|熊|狼|鳄鱼|鳄|蟒蛇|蛇|鲸鱼|鲸|鲨鱼|鲨|海獭|水獭|猴子|猴|猩猩|猫科|大猫|角马|斑马|长颈鹿|犀牛|河马|企鹅|雪鸮|鸮|鸟|鹰|鹤|鹿|马|牛|羊|兔|鼠|鱼|龟|昆虫|捕食|捕猎|猎手|生存|进化|家族|幼崽|幼狮|幼虎|幼豹|海洋|深海|海底|河流|河|湖泊|湖|森林|草原|荒野|沙漠|冰川|冰雪|极地|雨林|湿地|山脉|巨兽|宠物|狗|猫/.test(compact)) return '纪录·自然';
+  if (/人文|历史|老故事|中国村庄|人物|文化|考古|美食|旅行|地理中国|美丽中国|美丽云南|乘着火车看中国|国家公园|世界遗产|古镇|民俗|非遗/.test(compact)) return '纪录·人文';
+  if (/探索|发现|科学|科技|宇宙|军事|兵器|神秘|未解|纪录|纪实|真相|谜|UFO|飞碟|未来|工程|机械|医学/.test(compact)) return '纪录·探索';
+  return '纪录·综合';
+}
+
+function classifyScenerySubgroup(compact: string): string {
+  if (/城市|街景|道路|港口|车站|机场|校园|商圈|步行街|夜景|码头|广场|大厦|立交|高铁|地铁/.test(compact)) return '风景·城市';
+  if (/景区|景点|旅游|直播中国|熊猫直播|中央电视塔|航拍|风景|黄山|泰山|华山|长城|古镇|古城|瀑布|峡谷|雪山|温泉|观景台|湿地|动物园|植物园|云海|日出|日落|山|湖|寺|塔|桥|岛|湾/.test(compact)) return '风景·景区';
+  if (/森林|草原|海洋|沙漠|冰川|雨林|极地|自然|河流|湖泊|湿地/.test(compact)) return '风景·自然';
+  return '风景·综合';
+}
+
+function classifyOtherSubgroup(
+  rawGroup: string,
+  channelName: string,
+  channel?: TVBoxLiveChannel,
+): string {
+  const raw = compactChannelText(rawGroup);
+  const name = compactChannelText(channelName);
+  const text = raw + name + collectLiveSourceLabels(channel);
+
+  if (/咪咕|咪视界/.test(text)) return '其他·咪咕';
+  if (/newtv/i.test(text)) return '其他·NewTV';
+  if (/测试|备用|防走失|直播源|接口/.test(text)) return '其他·测试备用';
+  if (/购物|商城|电视购物|好物|种草|消费/.test(text)) return '其他·购物生活';
+  if (/俄语|俄罗斯|俄羅斯|russia|russian|русск|россия|перв|тнт|стс|нтв|карусель|哈萨克/i.test(text)) return '其他·俄语';
+  if (/音乐|歌曲|歌mv|mv|dj|电音|舞曲|慢摇|演唱会|音乐会|音乐节|戏曲|京剧|越剧|豫剧|黄梅|评剧|昆曲|曲艺/i.test(text)) return '其他·音乐';
+  if (/影视|电影|影院|剧场|电视剧|连续剧|剧集|港剧|美剧|韩剧|短剧|动漫|动画|番剧|国漫|综艺|大片|老片|喜剧|科幻|恐怖|战争|武侠|动作|悬疑|犯罪|爱情|解说/i.test(text)) return '其他·影视';
+  const region = detectLocalRegion(rawGroup, channelName);
+  if (region) return '地方·' + region;
+  if (/生活|美食|健康|汽车|房产|家居|时尚|美妆|旅游|民生|都市|法治|茶|教育/.test(text)) return '其他·生活服务';
+  const first = name.replace(/^[^a-z0-9\u4e00-\u9fff]+/i, '')[0] || '';
+  if (/[a-z]/i.test(first)) return '其他·字母' + first.toUpperCase();
+  if (/[0-9]/.test(first)) return '其他·数字';
+  if (/[\u4e00-\u9fff]/.test(first)) return '其他·中文' + chineseBucketInitial(name);
+  return '其他·综合';
+}
+
 function aggregateGroupRank(group: string): number {
   const index = AGGREGATE_GROUP_ORDER.indexOf(group);
   if (index >= 0) return index;
+
+  // 聚合输出会把超大分类分页为“基础名称01/02”。分页标签必须紧跟
+  // 对应基础分类，不能因为未命中顺序表而被排到所有已知分类之后。
+  const pageMatch = group.match(/^(.*?)(\d{2})$/);
+  if (pageMatch) {
+    const baseRank = aggregateGroupRank(pageMatch[1]);
+    if (baseRank < AGGREGATE_GROUP_ORDER.length) {
+      return baseRank + Number(pageMatch[2]) / 1000;
+    }
+  }
+
   if (group.startsWith('地方·')) return AGGREGATE_GROUP_ORDER.indexOf('地方·其他');
+  const parent = group.split('·', 1)[0];
+  const parentIndex = AGGREGATE_GROUP_ORDER.indexOf(parent);
+  if (parentIndex >= 0) return parentIndex + 0.5;
   return AGGREGATE_GROUP_ORDER.length;
 }
 
@@ -659,7 +1039,7 @@ function aggregateGroupRank(group: string): number {
  * 这样既能修正上游把地方台塞进央视、把纪录片塞进地方等问题，也能让
  * 带省市信息的本地频道统一进入“地方·省/市”子目录，便于客户端查找。
  */
-function normalizeAggregateChannelGroup(
+function normalizeAggregateChannelGroupBase(
   rawGroup: string,
   rawChannelName: string,
 ): string {
@@ -707,7 +1087,7 @@ function normalizeAggregateChannelGroup(
   if (/之江纪录|飞碟之谜|航拍中国|中国村庄|动物|自然|野生|丛林|大象|海豚|海鬣蜥|棕熊|潜水|田园|纪录片|探索|地理|人文/.test(compact)) return '纪录';
   if (/^[\u4e00-\u9fa5]{1,8}(?:4k|8k)$/.test(compact.replace(/(?:频道)?超?$/, ''))) return '4K/8K';
   if (/新闻|资讯|财经|商业/.test(compact)) return fromLocalGroup ? '地方·其他' : '新闻财经';
-  if (/电视剧|连续剧|剧集|港剧|美剧|韩剧|短剧|经典剧|大剧|戏剧|射雕|神雕|倚天屠龙|笑傲江湖|寻秦记|创世纪|大时代|楚汉骄雄|大唐双龙传|法政先锋|鉴证实录|妙手仁心|陀枪师姐|洗冤录|刑事侦缉档案|金枝欲孽|活佛济公|西游记|封神榜|倩女幽魂|龙门飞甲|甄嬛传|还珠格格|亮剑|雪豹|华山论剑|三国|流星花园|大地恩情|凡人修仙|粤经典|水浒传|天龙八部|鹿鼎记|绝代双娇|神探狄仁|铁齿铜牙|神医喜来|父母爱情|白鹿原|大染坊|炊事班|士兵突击|我的团长|雍正王朝|康熙微服|玫瑰故事|梦华录|星汉灿烂|永夜星河|问心|漫长的季节|爱情公寓|家有儿女|海绵宝宝|蜡笔小新|叮当|龙珠|柯南|圣斗士|四驱兄弟|头文字|足球小将|全职高手|一人之下|一人之上|笑看风云|庆余年|雪中悍刀行|延禧攻略|武林外传|仙剑奇侠传|新白娘子|我爱男保姆|我的前半生|传闻中的芊芊|第一滴血|火蓝刀锋|炮神|渗透|风筝|开端|流金岁月|少寒|如果岁月|电视轮播|电视轮|电视|轮播/.test(compact)) return '电视剧';
+  if (/电视剧|连续剧|剧集|港剧|美剧|韩剧|短剧|经典剧|大剧|戏剧|射雕|神雕|倚天屠龙|笑傲江湖|寻秦记|创世纪|大时代|楚汉骄雄|大唐双龙传|法政先锋|鉴证实录|妙手仁心|陀枪师姐|洗冤录|刑事侦缉档案|金枝欲孽|活佛济公|西游记|封神榜|倩女幽魂|龙门飞甲|甄嬛传|还珠格格|亮剑|雪豹|华山论剑|三国|流星花园|大地恩情|凡人修仙|粤经典|水浒传|天龙八部|鹿鼎记|绝代双娇|神探狄仁|铁齿铜牙|神医喜来|父母爱情|白鹿原|大染坊|炊事班|士兵突击|我的团长|雍正王朝|康熙微服|玫瑰故事|梦华录|星汉灿烂|永夜星河|问心|漫长的季节|爱情公寓|家有儿女|海绵宝宝|蜡笔小新|叮当|龙珠|柯南|圣斗士|四驱兄弟|头文字|足球小将|全职高手|一人之下|一人之上|笑看风云|庆余年|雪中悍刀行|延禧攻略|武林外传|仙剑奇侠传|新白娘子|我爱男保姆|我的前半生|传闻中的芊芊|第一滴血|火蓝刀锋|炮神|渗透|风筝|开端|流金岁月|少寒|如果岁月|电视轮播|电视轮|轮播/.test(compact)) return '电视剧';
   if (/电影|影院|影视|剧场|大片|动作片|喜剧片|科幻片|恐怖片|战争片|武侠片|港片|周星驰|成龙|林正英|周润发|邵氏|陈翔六点半|视觉|重温经典|古装|妖魔|好片|经典怀旧|警匪悬疑|科幻梦工场|速度与激情/.test(compact)) return '影视';
   if (/生活|民生|都市/.test(compact)) {
     // 地方组的综合/民生台保留地方归属；普通节目名不再误判为地方台。
@@ -736,6 +1116,36 @@ function normalizeAggregateChannelGroup(
  * - 同义分类合并，无法判断内容时归入“其他”；
  * - 空分类不输出，频道线路仍按 URL 去重并保留多线路。
  */
+function normalizeAggregateChannelGroup(
+  rawGroup: string,
+  rawChannelName: string,
+  channel?: TVBoxLiveChannel,
+): string {
+  const group = normalizeAggregateGroupName(rawGroup);
+  const name = sanitizeTxtLabel(rawChannelName, '未命名');
+  const compact = compactChannelText(name);
+
+  if (/cgtn|中国国际电视台/i.test(compact)) return '国际·新闻';
+  if (/newtv/i.test(compact)) return classifyNewTv(compact) === '电视剧' ? '电视剧' : '其他·NewTV';
+  if (/咪咕视频|咪视界/.test(compact)) return '其他·咪咕';
+  if (/4k|8k|uhd/i.test(compact)) return '4K/8K';
+
+  const international = classifyInternationalSubgroup(rawGroup, name, channel);
+  if (international) return international;
+
+  if (group === '一起看' || group.startsWith('一起看·')) return classifyTogetherSubgroup(rawGroup, name, channel);
+  if (/一起看|虎牙|斗鱼|b站|原创|zonghe|综合直播|抖音|快手/i.test(compact)) return classifyTogetherSubgroup(rawGroup, name, channel);
+
+  const base = normalizeAggregateChannelGroupBase(rawGroup, rawChannelName);
+  if (base === '国际') return classifyInternationalSubgroup(rawGroup, name, channel) || '国际·其他';
+  if (base === '影视') return classifyFilmSubgroup(compact);
+  if (base === '音乐') return classifyMusicSubgroup(compact);
+  if (base === '纪录') return classifyDocumentarySubgroup(compact);
+  if (base === '风景直播') return classifyScenerySubgroup(compact);
+  if (base === '一起看') return classifyTogetherSubgroup(rawGroup, name, channel);
+  if (base === '其他') return classifyOtherSubgroup(rawGroup, name, channel);
+  return base;
+}
 function normalizeAggregateGroupName(raw: string): string {
   const label = sanitizeTxtLabel(raw, '其他')
     .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '')
@@ -804,7 +1214,7 @@ export function formatAggregatedLiveGroupsAsTxt(groups: TVBoxLiveGroup[]): strin
     const byGroup = new Map<string, TVBoxLiveChannel[]>();
     for (const channel of group.channels || []) {
       if (isAggregateNoiseChannel(channel.name || '')) continue;
-      const targetGroup = normalizeAggregateChannelGroup(group.group || '', channel.name || '');
+      const targetGroup = normalizeAggregateChannelGroup(group.group || '', channel.name || '', channel);
       const list = byGroup.get(targetGroup) || [];
       list.push(channel);
       byGroup.set(targetGroup, list);
@@ -814,7 +1224,7 @@ export function formatAggregatedLiveGroupsAsTxt(groups: TVBoxLiveGroup[]): strin
     }
   }
   normalized.sort((a, b) => aggregateGroupRank(a.group) - aggregateGroupRank(b.group));
-  return formatLiveGroupsAsTxtInternal(normalized, true);
+  return formatLiveGroupsAsTxtInternal(normalized, true, MAX_AGGREGATE_CHANNELS_PER_GROUP);
 }
 
 /**
