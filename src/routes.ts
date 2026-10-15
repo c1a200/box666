@@ -3357,6 +3357,7 @@ export function createApp(deps: AppDeps): Hono {
       try { compiledRegex.push({ re: new RegExp(rule.pattern, 'i'), field: rule.field }); } catch { /* skip */ }
     }
     const overrideSet = new Set(blacklist.regexBlockOverrides);
+    const liveOverrideSet = new Set(blacklist.regexLiveBlockOverrides);
 
     // Build sites with fingerprint + blocked status + group.
     const sites = [];
@@ -3375,13 +3376,14 @@ export function createApp(deps: AppDeps): Hono {
       const fpBlocked = siteSet.has(fp);
       let regexBlocked = false;
       let regexPattern = '';
-      if (!fpBlocked && !overrideSet.has(site.name || '')) {
+      if (!overrideSet.has(site.name || '')) {
         for (const { re, field } of compiledRegex) {
           const value = String((site as unknown as Record<string, unknown>)[field] || '');
           if (re.test(value)) { regexBlocked = true; regexPattern = re.source; break; }
         }
       }
-      const blocked = fpBlocked || regexBlocked;
+      const manualBlocked = fpBlocked;
+      const blocked = manualBlocked || regexBlocked;
       const entry = qualityEntryMap.get(site.key);
       // Pool membership is independent of the blacklist: blocked sources stay
       // in the ledger so the admin can unblock them without a re-aggregation.
@@ -3395,6 +3397,7 @@ export function createApp(deps: AppDeps): Hono {
         ...site,
         fingerprint: fp,
         blocked,
+        manualBlocked,
         regexBlocked,
         regexPattern,
         group,
@@ -3417,10 +3420,31 @@ export function createApp(deps: AppDeps): Hono {
       blocked: parseSet.has(p.url),
     }));
 
-    const lives = (listingParsed.lives || []).map(l => ({
-      ...l,
-      blocked: liveSet.has(l.url || l.api || ''),
-    }));
+    const lives = (listingParsed.lives || []).map(l => {
+      const url = l.url || l.api || '';
+      const manualBlocked = !!url && liveSet.has(url);
+      let regexBlocked = false;
+      let regexPattern = '';
+      if (!liveOverrideSet.has(url)) {
+        for (const { re, field } of compiledRegex) {
+          const value = field === 'api'
+            ? (l.api || l.url || '')
+            : (field === 'name' ? (l.name || '') : '');
+          if (value && re.test(value)) {
+            regexBlocked = true;
+            regexPattern = re.source;
+            break;
+          }
+        }
+      }
+      return {
+        ...l,
+        blocked: manualBlocked || regexBlocked,
+        manualBlocked,
+        regexBlocked,
+        regexPattern,
+      };
+    });
 
     const siteByKey = new Map(sites.map(site => [site.key, site]));
     // Preserve the persisted quality order. This is the single source order
@@ -3553,19 +3577,80 @@ export function createApp(deps: AppDeps): Hono {
     return c.json({ success: true, added });
   });
 
-  app.delete('/admin/blacklist', async (c) => {
+  app.post('/admin/blacklist/batch-delete', async (c) => {
     if (!verifyAdmin(c.req.raw, config)) {
       return c.json({ error: 'Unauthorized' }, 401);
     }
 
-    let body: { type?: string; id?: string };
+    let body: { type?: string; ids?: string[]; regexNames?: string[]; regexLiveUrls?: string[] };
     try {
       body = await c.req.json();
     } catch {
       return c.json({ error: 'Invalid JSON' }, 400);
     }
 
-    const { type, id } = body;
+    const { type, ids, regexNames, regexLiveUrls } = body;
+    if (!type || !Array.isArray(ids) || ids.length === 0) {
+      return c.json({ error: 'type and ids[] are required' }, 400);
+    }
+    if (ids.length > 500) {
+      return c.json({ error: 'Too many ids (max 500)' }, 400);
+    }
+    if (!['sites', 'parses', 'lives'].includes(type)) {
+      return c.json({ error: 'type must be sites, parses, or lives' }, 400);
+    }
+
+    const blacklist = await loadBlacklist(storage);
+    const key = type as keyof typeof blacklist;
+    const idSet = new Set(ids.filter((id): id is string => typeof id === 'string'));
+    const before = (blacklist[key] as string[]).length;
+    (blacklist[key] as string[]) = (blacklist[key] as string[]).filter((v: string) => !idSet.has(v));
+    const removed = before - (blacklist[key] as string[]).length;
+
+    // 正则命中的站点不在 sites 黑名单中；恢复时写入 override，阻止同一
+    // 条规则再次命中。这样“恢复”与“再次屏蔽”都能从编辑器闭环完成。
+    let overridesAdded = 0;
+    if (type === 'sites' && Array.isArray(regexNames)) {
+      const overrideSet = new Set(blacklist.regexBlockOverrides);
+      for (const name of regexNames) {
+        if (typeof name === 'string' && name && !overrideSet.has(name)) {
+          overrideSet.add(name);
+          overridesAdded++;
+        }
+      }
+      blacklist.regexBlockOverrides = [...overrideSet];
+    }
+    if (type === 'lives' && Array.isArray(regexLiveUrls)) {
+      const liveOverrideSet = new Set(blacklist.regexLiveBlockOverrides);
+      for (const url of regexLiveUrls) {
+        if (typeof url === 'string' && url && !liveOverrideSet.has(url)) {
+          liveOverrideSet.add(url);
+          overridesAdded++;
+        }
+      }
+      blacklist.regexLiveBlockOverrides = [...liveOverrideSet];
+    }
+
+    await saveBlacklist(storage, blacklist);
+    await markOutputDirty();
+    await patchMergedConfig();
+
+    return c.json({ success: true, removed, overridesAdded });
+  });
+
+  app.delete('/admin/blacklist', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+
+    let body: { type?: string; id?: string; regexName?: string; regexLiveUrl?: string };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'Invalid JSON' }, 400);
+    }
+
+    const { type, id, regexName, regexLiveUrl } = body;
     if (!type || !id) return c.json({ error: 'type and id are required' }, 400);
     if (!['sites', 'parses', 'lives'].includes(type)) {
       return c.json({ error: 'type must be sites, parses, or lives' }, 400);
@@ -3574,6 +3659,16 @@ export function createApp(deps: AppDeps): Hono {
     const blacklist = await loadBlacklist(storage);
     const key = type as keyof typeof blacklist;
     (blacklist[key] as string[]) = (blacklist[key] as string[]).filter((v: string) => v !== id);
+    if (type === 'sites' && typeof regexName === 'string' && regexName) {
+      const overrideSet = new Set(blacklist.regexBlockOverrides);
+      overrideSet.add(regexName);
+      blacklist.regexBlockOverrides = [...overrideSet];
+    }
+    if (type === 'lives' && typeof regexLiveUrl === 'string' && regexLiveUrl) {
+      const liveOverrideSet = new Set(blacklist.regexLiveBlockOverrides);
+      liveOverrideSet.add(regexLiveUrl);
+      blacklist.regexLiveBlockOverrides = [...liveOverrideSet];
+    }
     await saveBlacklist(storage, blacklist);
     await markOutputDirty();
     await patchMergedConfig();

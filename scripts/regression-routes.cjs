@@ -456,6 +456,69 @@ async function readSites(response) {
     assert(quotaReport.blockedPoolCount === 1, 'search-quota report must report the blocked count; got ' + quotaReport.blockedPoolCount);
   }
   {
+    // Config editor must expose manual and regex blocks separately, and
+    // restoring a regex-blocked item must write an override so it stays
+    // restored on the next config-data / output refresh.
+    const regexSite = { key: 'bk-regex-site', name: 'Regex Site Alpha', type: 1, api: 'https://regex.example/site', searchable: 1, quickSearch: 1 };
+    const regexLive = { name: 'Regex Live Alpha', url: 'https://regex.example/live.m3u' };
+    const regexEntries = [
+      { key: regexSite.key, name: regexSite.name, grade: 'excellent', speedMs: 100, result: 'ok', consecutiveFailures: 0 },
+    ];
+    const { app, storage } = makeApp({
+      mergedConfig: { sites: [regexSite], lives: [regexLive] },
+      mergedConfigFull: { sites: [regexSite], lives: [regexLive] },
+      qualityPool: { updatedAt: new Date().toISOString(), entries: regexEntries },
+      qualityCandidates: [regexSite],
+      blacklist: {
+        sites: [], parses: [], lives: [], regexRules: [
+          { id: 'r-site', pattern: 'Regex Site', field: 'name', enabled: true, createdAt: new Date().toISOString() },
+          { id: 'r-live', pattern: 'Regex Live', field: 'name', enabled: true, createdAt: new Date().toISOString() },
+        ], regexBlockOverrides: [], regexLiveBlockOverrides: [],
+      },
+      quota: {
+        startupMode: 'full', leanStartup: false, selectionMode: 'simple', maxSites: -1,
+        quotaSchemaVersion: 9, bucketLimits: { quality: { untestable: -1 } },
+      },
+    });
+
+    let data = await (await app.request('https://box.example/admin/config-data', {
+      headers: { Authorization: 'Bearer test-token' },
+    })).json();
+    const siteRow = data.sites.find((site) => site.key === regexSite.key);
+    const liveRow = data.lives.find((live) => live.url === regexLive.url);
+    assert(siteRow, 'config-data must include the regex test site; rows=' + JSON.stringify(data.sites.map(s => ({ key: s.key, blocked: s.blocked, regexBlocked: s.regexBlocked, manualBlocked: s.manualBlocked }))));
+    assert(siteRow.blocked === true && siteRow.regexBlocked === true && siteRow.manualBlocked !== true,
+      'config-data must mark regex-blocked sites with separate status; row=' + JSON.stringify(siteRow));
+    assert(liveRow, 'config-data must include the regex test live; rows=' + JSON.stringify(data.lives.map(l => ({ url: l.url, blocked: l.blocked, regexBlocked: l.regexBlocked, manualBlocked: l.manualBlocked }))));
+    assert(liveRow.blocked === true && liveRow.regexBlocked === true && liveRow.manualBlocked === false,
+      'config-data must mark regex-blocked lives with separate status; row=' + JSON.stringify(liveRow));
+
+    let response = await app.request('https://box.example/admin/blacklist', {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'sites', id: siteRow.fingerprint, regexName: regexSite.name }),
+    });
+    assert(response.status === 200, 'single regex site restore should succeed');
+
+    response = await app.request('https://box.example/admin/blacklist/batch-delete', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'lives', ids: [regexLive.url], regexLiveUrls: [regexLive.url] }),
+    });
+    assert(response.status === 200, 'batch regex live restore should succeed');
+
+    const stored = JSON.parse(await storage.get('blacklist'));
+    assert(stored.regexBlockOverrides.includes(regexSite.name), 'site regex restore must persist name override');
+    assert(stored.regexLiveBlockOverrides.includes(regexLive.url), 'live regex restore must persist URL override');
+
+    data = await (await app.request('https://box.example/admin/config-data', {
+      headers: { Authorization: 'Bearer test-token' },
+    })).json();
+    const restoredSite = data.sites.find((site) => site.key === regexSite.key);
+    const restoredLive = data.lives.find((live) => live.url === regexLive.url);
+    assert(restoredSite && restoredSite.blocked === false, 'restored regex site must become available');
+    assert(restoredLive && restoredLive.blocked === false, 'restored regex live must become available');
+  }  {
     // Schema 8 used untestable:0 as an implicit cap. It must migrate to
     // unlimited so old KV values do not hide all client-verifiable sources.
     const legacyQuota = {

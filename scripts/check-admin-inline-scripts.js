@@ -5,9 +5,9 @@ const vm = require('vm');
 
 const ROOT = path.resolve(__dirname, '..');
 
-function loadAdminHtml() {
+function loadHtml(entryFile, exportName) {
   const result = buildSync({
-    entryPoints: [path.join(ROOT, 'src', 'core', 'admin.ts')],
+    entryPoints: [path.join(ROOT, 'src', 'core', entryFile)],
     bundle: true,
     platform: 'node',
     format: 'cjs',
@@ -15,27 +15,57 @@ function loadAdminHtml() {
     write: false,
   });
   const source = result.outputFiles[0].text;
-  const filename = path.join(ROOT, 'dist', '.admin-inline-check.cjs');
+  const filename = path.join(ROOT, 'dist', '.inline-check.cjs');
   const mod = new Module(filename, module);
   mod.filename = filename;
   mod.paths = Module._nodeModulePaths(path.dirname(filename));
   mod._compile(source, filename);
-  return mod.exports.adminHtml;
+  return mod.exports[exportName];
 }
 
-function checkAdminInlineScripts() {
-  const html = loadAdminHtml();
+function loadAdminHtml() {
+  return loadHtml('admin.ts', 'adminHtml');
+}
+
+function loadConfigEditorHtml() {
+  return loadHtml('config-editor.ts', 'configEditorHtml');
+}
+
+function checkHtmlInlineScripts(label, html, required) {
   if (typeof html !== 'string' || html.length === 0) {
-    throw new Error('adminHtml is empty or not a string');
+    throw new Error(label + ' HTML is empty or not a string');
   }
 
   const scripts = [...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)]
     .map((match, index) => ({ index: index + 1, code: match[1] }));
 
   if (scripts.length === 0) {
-    throw new Error('adminHtml has no inline scripts');
+    throw new Error(label + ' HTML has no inline scripts');
   }
 
+  for (const snippet of required || []) {
+    if (!html.includes(snippet)) {
+      throw new Error(label + ' is missing required content: ' + snippet);
+    }
+  }
+
+  for (const script of scripts) {
+    try {
+      new vm.Script(script.code, {
+        filename: label.toLowerCase().replace(/[^a-z0-9]+/g, '-') + '-inline-' + script.index + '.js',
+      });
+    } catch (error) {
+      throw new Error(label + ' inline script ' + script.index + ' syntax error: ' + error.message);
+    }
+  }
+
+  const totalBytes = scripts.reduce((sum, script) => sum + Buffer.byteLength(script.code), 0);
+  console.log(label + ' inline scripts OK: ' + scripts.length + ' script(s), ' + totalBytes + ' byte(s)');
+  return { count: scripts.length, bytes: totalBytes };
+}
+
+function checkAdminInlineScripts() {
+  const html = loadAdminHtml();
   const searchPanelStart = html.indexOf('id="panelSearchQuota"');
   const settingsPanelStart = html.indexOf('id="panelSettings"');
   if (searchPanelStart < 0 || settingsPanelStart < 0 || settingsPanelStart <= searchPanelStart) {
@@ -71,26 +101,47 @@ function checkAdminInlineScripts() {
     throw new Error('legacy auth sourceMode/selectedKeys must round-trip through the admin editor');
   }
 
-  for (const script of scripts) {
-    try {
-      new vm.Script(script.code, { filename: 'admin-inline-' + script.index + '.js' });
-    } catch (error) {
-      throw new Error('admin inline script ' + script.index + ' syntax error: ' + error.message);
-    }
-  }
+  return checkHtmlInlineScripts('Admin', html, [
+    'id="rootSourceSelectionModeInput"',
+    'id="rootSourceCountModeInput"',
+    'id="rootSourceBuckets"',
+    "saveSearchQuota('root')",
+    'id="rootSourceCountInput"',
+    'oninput="syncRootSourceCountInput()"',
+    'function syncRootSourceCountInput()',
+    'const parsed = rootLimitValue(rootCount.value, rootCountInput)',
+    'rootSourceSelection.maxSites = parsed.value',
+    'data-i18n="sqRankingHint"',
+    'sqQualityOrder = rawQualityPoolKeys.slice()',
+    'compareByQualityPoolOrder',
+    "['all', 'search', 'selected', 'custom'].includes(item && item.sourceMode)",
+    'selectedKeys: Array.isArray(item && item.selectedKeys)',
+  ]);
+}
 
-  const totalBytes = scripts.reduce((sum, script) => sum + Buffer.byteLength(script.code), 0);
-  console.log('Admin inline scripts OK: ' + scripts.length + ' script(s), ' + totalBytes + ' byte(s)');
-  return { count: scripts.length, bytes: totalBytes };
+function checkConfigEditorInlineScripts() {
+  const html = loadConfigEditorHtml();
+  return checkHtmlInlineScripts('Config editor', html, [
+    'data-filter="all"',
+    'data-filter="available"',
+    'data-filter="blocked"',
+    'data-filter="manual"',
+    'data-filter="regex"',
+    'function setFilter(filter)',
+    'function matchesFilter(item)',
+    'function batchRestore()',
+    'regexLiveUrl',
+  ]);
 }
 
 if (require.main === module) {
   try {
     checkAdminInlineScripts();
+    checkConfigEditorInlineScripts();
   } catch (error) {
     console.error(error instanceof Error ? error.stack : String(error));
     process.exit(1);
   }
 }
 
-module.exports = { checkAdminInlineScripts };
+module.exports = { checkAdminInlineScripts, checkConfigEditorInlineScripts };

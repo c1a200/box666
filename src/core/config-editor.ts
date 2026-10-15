@@ -84,7 +84,7 @@ ${sharedStyles}
 .item:last-child{border-bottom:none}
 .item:hover{background:var(--surface-2)}
 
-.item.blocked{opacity:0.4}
+.item.blocked{opacity:0.58}
 
 .item-name{
   flex:1;
@@ -221,7 +221,41 @@ ${sharedStyles}
   flex-shrink:0;
 }
 .group-check{margin-right:4px}
-.item.blocked .item-check{display:none}
+
+/* Status badge */
+.item-status{
+  font-size:0.6rem;
+  padding:2px 7px;
+  border-radius:10px;
+  font-weight:600;
+  white-space:nowrap;
+  flex-shrink:0;
+}
+.item-status.manual{background:var(--red-dim);color:var(--red)}
+.item-status.regex{background:var(--amber-dim);color:var(--amber)}
+.item-status.available{background:var(--green-dim);color:var(--green)}
+
+/* Filter bar */
+.filter-bar{
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+  align-items:center;
+  margin:-4px 0 16px;
+}
+.filter-btn{
+  font-family:var(--mono);
+  font-size:0.68rem;
+  padding:6px 12px;
+  border:1px solid var(--border);
+  border-radius:14px;
+  background:var(--surface);
+  color:var(--text-dim);
+  cursor:pointer;
+  transition:all 0.15s;
+}
+.filter-btn:hover{border-color:var(--green);color:var(--green)}
+.filter-btn.active{background:var(--green-dim);border-color:var(--green);color:var(--green);font-weight:600}
 
 /* Batch bar */
 .batch-bar{
@@ -292,6 +326,15 @@ ${sharedStyles}
     <input type="text" id="searchInput" data-i18n-placeholder="searchPh" placeholder="搜索名称、API、URL..." oninput="doSearch()">
   </div>
 
+  <!-- Filters -->
+  <div class="filter-bar" id="filterBar">
+    <button type="button" class="filter-btn active" data-filter="all" onclick="setFilter('all')" data-i18n="filterAll">全部</button>
+    <button type="button" class="filter-btn" data-filter="available" onclick="setFilter('available')" data-i18n="filterAvailable">仅可用</button>
+    <button type="button" class="filter-btn" data-filter="blocked" onclick="setFilter('blocked')" data-i18n="filterBlocked">仅屏蔽</button>
+    <button type="button" class="filter-btn" data-filter="manual" onclick="setFilter('manual')" data-i18n="filterManual">手动屏蔽</button>
+    <button type="button" class="filter-btn" data-filter="regex" onclick="setFilter('regex')" data-i18n="filterRegex">正则屏蔽</button>
+  </div>
+
   <!-- Stats -->
   <div class="stats" id="statsBar"></div>
 
@@ -335,6 +378,7 @@ ${sharedStyles}
 <div class="batch-bar" id="batchBar" style="display:none">
   <span><span class="batch-count" id="batchCount">0</span> <span data-i18n="batchSelected">selected</span></span>
   <button class="btn sm danger" onclick="batchBlock()" data-i18n="batchBlock">Batch Block</button>
+  <button class="btn sm secondary" onclick="batchRestore()" data-i18n="batchRestore">Batch Restore</button>
   <button class="btn sm secondary" onclick="clearSelection()" data-i18n="batchCancel">Cancel</button>
 </div>
 
@@ -351,6 +395,9 @@ const _translations = {
     searchPh:'Search name, API, URL...', loading:'Loading...',
     available:'Available:', blocked:'Blocked:',
     sites:'sites', parses:'parses', lives:'lives',
+    filterAll:'All', filterAvailable:'Available', filterBlocked:'Blocked',
+    filterManual:'Manual block', filterRegex:'Regex block',
+    statusManual:'Manual blocked', statusRegex:'Regex blocked', statusRegexPattern:'Regex: ',
     restore:'Restore', block:'Block',
     groupOther:'Other', groupRemotePrefix:'Remote: ', groupRemote:'Remote',
     siteType0:'XML site: fetches video data via XML API',
@@ -365,7 +412,7 @@ const _translations = {
     liveType0:'Live source: M3U/TXT format channel list file',
     liveType3:'Live plugin: fetches channels via JAR/Python plugin',
     selectAll:'Select all',
-    batchBlock:'Batch Block', batchSelected:'selected', batchCancel:'Cancel',
+    batchBlock:'Batch Block', batchRestore:'Batch Restore', batchSelected:'selected', batchCancel:'Cancel',
     typePrefix:'Type ',
     regexTab:'Regex Rules',
     regexDelete:'Delete', regexNoRules:'No regex rules. Add a pattern above to auto-block matching sites.',
@@ -381,6 +428,9 @@ const _translations = {
     searchPh:'搜索名称、API、URL...', loading:'加载中...',
     available:'可用:', blocked:'已屏蔽:',
     sites:'站点', parses:'解析', lives:'直播',
+    filterAll:'全部', filterAvailable:'仅可用', filterBlocked:'仅屏蔽',
+    filterManual:'手动屏蔽', filterRegex:'正则屏蔽',
+    statusManual:'手动屏蔽', statusRegex:'正则屏蔽', statusRegexPattern:'正则: ',
     restore:'恢复', block:'屏蔽',
     groupOther:'其他', groupRemotePrefix:'远程: ', groupRemote:'远程源',
     siteType0:'XML 站点：通过 XML 接口获取影视数据',
@@ -395,7 +445,7 @@ const _translations = {
     liveType0:'直播源：M3U/TXT 格式的频道列表文件',
     liveType3:'直播插件：通过 JAR/Python 插件获取频道',
     selectAll:'全选',
-    batchBlock:'批量屏蔽', batchSelected:'已选', batchCancel:'取消',
+    batchBlock:'批量屏蔽', batchRestore:'批量恢复', batchSelected:'已选', batchCancel:'取消',
     typePrefix:'类型 ',
     regexTab:'正则规则',
     regexDelete:'删除', regexNoRules:'暂无正则规则，在上方添加规则可批量自动屏蔽匹配的站点',
@@ -417,6 +467,7 @@ function doToggleLang() {
 let TOKEN = '';
 let DATA = null;
 let CURRENT_TAB = 'sites';
+let CURRENT_FILTER = 'all';
 
 const auth = initAuth('tokenInput', 'loginError', 'loginOverlay', 'mainContent', '/admin/config-data', function() {
   TOKEN = auth.getToken();
@@ -496,19 +547,88 @@ function render() {
   renderParses();
   renderLives();
   updateStats();
+  doSearch();
   updateBatchBar();
+}
+
+function blockingState(item, type) {
+  const regexBlocked = item.regexBlocked === true;
+  const manualBlocked = type === 'parses'
+    ? item.blocked === true
+    : item.manualBlocked === true || (item.blocked === true && !regexBlocked);
+  return { blocked: item.blocked === true || manualBlocked || regexBlocked, manualBlocked, regexBlocked };
+}
+
+function countSourceStates(items, type) {
+  let manual = 0;
+  let regex = 0;
+  for (const item of items || []) {
+    const state = blockingState(item, type);
+    if (state.manualBlocked) manual++;
+    if (state.regexBlocked) regex++;
+  }
+  const available = (items || []).filter(item => !blockingState(item, type).blocked).length;
+  return { available, manual, regex };
+}
+
+function statBlock(label, state, showRegex) {
+  return '<div class="stat"><strong>' + esc(label) + '</strong> '
+    + _t('available') + ' <span class="num">' + state.available + '</span>'
+    + ' &middot; ' + _t('statusManual') + ' <span class="blocked-num">' + state.manual + '</span>'
+    + (showRegex ? ' &middot; ' + _t('statusRegex') + ' <span class="blocked-num">' + state.regex + '</span>' : '')
+    + '</div>';
 }
 
 function updateStats() {
   if (!DATA) return;
-  const bs = DATA.sites.filter(s => s.blocked).length;
-  const bp = DATA.parses.filter(p => p.blocked).length;
-  const bl = DATA.lives.filter(l => l.blocked).length;
-  $('statsBar').innerHTML =
-    '<div class="stat">' + _t('available') + ' <span class="num">' + (DATA.sites.length - bs) + '</span> ' + _t('sites') + ', '
-    + '<span class="num">' + (DATA.parses.length - bp) + '</span> ' + _t('parses') + ', '
-    + '<span class="num">' + (DATA.lives.length - bl) + '</span> ' + _t('lives') + '</div>'
-    + (bs + bp + bl > 0 ? '<div class="stat">' + _t('blocked') + ' <span class="blocked-num">' + (bs + bp + bl) + '</span></div>' : '');
+  const siteStats = countSourceStates(DATA.sites, 'sites');
+  const parseStats = countSourceStates(DATA.parses, 'parses');
+  const liveStats = countSourceStates(DATA.lives, 'lives');
+  $('statsBar').innerHTML = statBlock(_t('sites'), siteStats, true)
+    + statBlock(_t('parses'), parseStats, false)
+    + statBlock(_t('lives'), liveStats, true);
+}
+
+function attr(s) {
+  return esc(String(s ?? '')).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function statusBadge(item, type) {
+  const state = blockingState(item, type);
+  let html = '';
+  if (state.manualBlocked) {
+    html += '<span class="item-status manual">' + esc(_t('statusManual')) + '</span>';
+  }
+  if (state.regexBlocked) {
+    const pattern = item.regexPattern || '';
+    html += '<span class="item-status regex" title="' + attr(_t('statusRegexPattern') + pattern) + '">'
+      + esc(_t('statusRegex')) + (pattern ? ': ' + esc(pattern) : '') + '</span>';
+  }
+  return html;
+}
+
+function itemActionButton(item, type) {
+  const blocked = item.blocked === true;
+  const action = blocked ? 'unblockItem(this)' : 'blockItem(this)';
+  const label = blocked ? _t('restore') : _t('block');
+  const cls = blocked ? 'secondary' : 'danger';
+  return '<button class="btn sm ' + cls + '" onclick="' + action + '">' + esc(label) + '</button>';
+}
+
+function rowData(item, type, id, searchText) {
+  const state = blockingState(item, type);
+  return ' data-id="' + attr(id) + '"'
+    + ' data-type="' + attr(type) + '"'
+    + ' data-search="' + attr(searchText) + '"'
+    + ' data-name="' + attr(item.name || '') + '"'
+    + ' data-blocked="' + (state.blocked ? 'true' : 'false') + '"'
+    + ' data-manual-blocked="' + (state.manualBlocked ? 'true' : 'false') + '"'
+    + ' data-regex-blocked="' + (state.regexBlocked ? 'true' : 'false') + '"'
+    + ' data-regex-pattern="' + attr(item.regexPattern || '') + '"';
+}
+
+function sourceCheckbox(id) {
+  return id ? '<input type="checkbox" class="item-check" onchange="updateBatchBar()">' : '';
 }
 
 function typeSpan(type, tips) {
@@ -541,16 +661,14 @@ function renderSites() {
 
 function siteRow(s) {
   const cls = s.blocked ? 'item blocked' : 'item';
-  const check = s.blocked ? '' : '<input type="checkbox" class="item-check" onchange="updateBatchBar()">';
-  const btn = s.blocked
-    ? '<button class="btn sm secondary" onclick="unblock(\\'sites\\',\\'' + s.fingerprint + '\\')">' + _t('restore') + '</button>'
-    : '<button class="btn sm danger" onclick="block(\\'sites\\',\\'' + s.fingerprint + '\\')">' + _t('block') + '</button>';
-  return '<div class="' + cls + '" data-id="' + esc(s.fingerprint) + '" data-type="sites" data-search="' + esc((s.name||'') + ' ' + s.key + ' ' + s.api) + '">'
-    + check
-    + '<span class="item-name" title="' + esc(s.key) + '">' + esc(s.name || s.key) + '</span>'
+  const id = s.fingerprint || '';
+  return '<div class="' + cls + '"' + rowData(s, 'sites', id, (s.name || '') + ' ' + (s.key || '') + ' ' + (s.api || '')) + '>'
+    + sourceCheckbox(id)
+    + '<span class="item-name" title="' + attr(s.key || '') + '">' + esc(s.name || s.key || '') + '</span>'
     + typeSpan(s.type, SITE_TYPE_TIPS)
-    + '<span class="item-api" title="' + esc(s.api) + '">' + esc(s.api) + '</span>'
-    + '<span class="item-actions">' + btn + '</span>'
+    + statusBadge(s, 'sites')
+    + '<span class="item-api" title="' + attr(s.api || '') + '">' + esc(s.api || '') + '</span>'
+    + '<span class="item-actions">' + itemActionButton(s, 'sites') + '</span>'
     + '</div>';
 }
 
@@ -566,17 +684,14 @@ function renderParses() {
 
 function parseRow(p) {
   const cls = p.blocked ? 'item blocked' : 'item';
-  const id = p.url;
-  const check = p.blocked ? '' : '<input type="checkbox" class="item-check" onchange="updateBatchBar()">';
-  const btn = p.blocked
-    ? '<button class="btn sm secondary" onclick="unblock(\\'parses\\',\\'' + esc(id) + '\\')">' + _t('restore') + '</button>'
-    : '<button class="btn sm danger" onclick="block(\\'parses\\',\\'' + esc(id) + '\\')">' + _t('block') + '</button>';
-  return '<div class="' + cls + '" data-id="' + esc(id) + '" data-type="parses" data-search="' + esc((p.name||'') + ' ' + p.url) + '">'
-    + check
-    + '<span class="item-name">' + esc(p.name) + '</span>'
+  const id = p.url || '';
+  return '<div class="' + cls + '"' + rowData(p, 'parses', id, (p.name || '') + ' ' + (p.url || '')) + '>'
+    + sourceCheckbox(id)
+    + '<span class="item-name">' + esc(p.name || '') + '</span>'
     + typeSpan(p.type, PARSE_TYPE_TIPS)
-    + '<span class="item-api" title="' + esc(p.url) + '">' + esc(p.url) + '</span>'
-    + '<span class="item-actions">' + btn + '</span>'
+    + statusBadge(p, 'parses')
+    + '<span class="item-api" title="' + attr(p.url || '') + '">' + esc(p.url || '') + '</span>'
+    + '<span class="item-actions">' + itemActionButton(p, 'parses') + '</span>'
     + '</div>';
 }
 
@@ -593,23 +708,37 @@ function renderLives() {
 function liveRow(l) {
   const url = l.url || l.api || '';
   const cls = l.blocked ? 'item blocked' : 'item';
-  const check = (l.blocked || !url) ? '' : '<input type="checkbox" class="item-check" onchange="updateBatchBar()">';
-  const btn = url
-    ? (l.blocked
-      ? '<button class="btn sm secondary" onclick="unblock(\\'lives\\',\\'' + esc(url) + '\\')">' + _t('restore') + '</button>'
-      : '<button class="btn sm danger" onclick="block(\\'lives\\',\\'' + esc(url) + '\\')">' + _t('block') + '</button>')
-    : '';
-  return '<div class="' + cls + '" data-id="' + esc(url) + '" data-type="lives" data-search="' + esc((l.name||'') + ' ' + url) + '">'
-    + check
+  return '<div class="' + cls + '"' + rowData(l, 'lives', url, (l.name || '') + ' ' + url) + '>'
+    + sourceCheckbox(url)
     + '<span class="item-name">' + esc(l.name || '(unnamed)') + '</span>'
     + typeSpan(l.type, LIVE_TYPE_TIPS)
-    + '<span class="item-api" title="' + esc(url) + '">' + esc(url) + '</span>'
-    + '<span class="item-actions">' + btn + '</span>'
+    + statusBadge(l, 'lives')
+    + '<span class="item-api" title="' + attr(url) + '">' + esc(url) + '</span>'
+    + '<span class="item-actions">' + itemActionButton(l, 'lives') + '</span>'
     + '</div>';
 }
 
 function toggleGroup(el) {
   el.parentElement.classList.toggle('open');
+}
+
+function setFilter(filter) {
+  CURRENT_FILTER = filter || 'all';
+  document.querySelectorAll('.filter-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.filter === CURRENT_FILTER);
+  });
+  doSearch();
+}
+
+function matchesFilter(item) {
+  const blocked = item.dataset.blocked === 'true';
+  const manual = item.dataset.manualBlocked === 'true';
+  const regex = item.dataset.regexBlocked === 'true';
+  if (CURRENT_FILTER === 'available') return !blocked;
+  if (CURRENT_FILTER === 'blocked') return blocked;
+  if (CURRENT_FILTER === 'manual') return manual;
+  if (CURRENT_FILTER === 'regex') return regex;
+  return true;
 }
 
 function doSearch() {
@@ -618,7 +747,8 @@ function doSearch() {
   if (!panel) return;
   panel.querySelectorAll('.item').forEach(item => {
     const text = (item.dataset.search || '').toLowerCase();
-    item.style.display = (!q || text.includes(q)) ? '' : 'none';
+    const matches = (!q || text.includes(q)) && matchesFilter(item);
+    item.style.display = matches ? '' : 'none';
   });
   panel.querySelectorAll('.group').forEach(g => {
     const visible = g.querySelectorAll('.item:not([style*="display: none"])').length;
@@ -626,7 +756,42 @@ function doSearch() {
   });
 }
 
+function findDataItem(type, id) {
+  if (type === 'sites') return DATA.sites.find(s => s.fingerprint === id);
+  if (type === 'parses') return DATA.parses.find(p => p.url === id);
+  if (type === 'lives') return DATA.lives.find(l => (l.url || l.api || '') === id);
+  return null;
+}
+
+function updateLocalBlock(type, id, blocked) {
+  const item = findDataItem(type, id);
+  if (!item) return;
+  item.blocked = blocked;
+  item.manualBlocked = blocked;
+  item.regexBlocked = false;
+  item.regexPattern = '';
+}
+
+function blockItem(button) {
+  const item = button.closest('.item');
+  if (item) block(item.dataset.type, item.dataset.id);
+}
+
+function unblockItem(button) {
+  const item = button.closest('.item');
+  if (!item) return;
+  const type = item.dataset.type;
+  const id = item.dataset.id;
+  const info = {};
+  if (item.dataset.regexBlocked === 'true') {
+    if (type === 'sites') info.regexName = item.dataset.name || '';
+    if (type === 'lives') info.regexLiveUrl = id;
+  }
+  unblock(type, id, info);
+}
+
 async function block(type, id) {
+  if (!type || !id) return;
   try {
     const res = await fetch('/admin/blacklist', {
       method: 'POST',
@@ -634,66 +799,32 @@ async function block(type, id) {
       body: JSON.stringify({ type, id })
     });
     if (!res.ok) { alert('Failed: ' + (await res.json()).error); return; }
-    if (type === 'sites') {
-      const s = DATA.sites.find(s => s.fingerprint === id);
-      if (s) s.blocked = true;
-    } else if (type === 'parses') {
-      const p = DATA.parses.find(p => p.url === id);
-      if (p) p.blocked = true;
-    } else if (type === 'lives') {
-      const l = DATA.lives.find(l => (l.url || l.api || '') === id);
-      if (l) l.blocked = true;
-    }
-    updateItemDom(type, id, true);
-    updateStats();
-    updateBatchBar();
+    updateLocalBlock(type, id, true);
+    render();
   } catch (e) { alert('Network error'); }
 }
 
-async function unblock(type, id) {
+async function unblock(type, id, regexInfo) {
+  if (!type || !id) return;
   try {
+    const body = { type, id };
+    if (regexInfo && regexInfo.regexName) body.regexName = regexInfo.regexName;
+    if (regexInfo && regexInfo.regexLiveUrl) body.regexLiveUrl = regexInfo.regexLiveUrl;
     const res = await fetch('/admin/blacklist', {
       method: 'DELETE',
       headers: { 'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type, id })
+      body: JSON.stringify(body)
     });
     if (!res.ok) { alert('Failed: ' + (await res.json()).error); return; }
-    if (type === 'sites') {
-      const s = DATA.sites.find(s => s.fingerprint === id);
-      if (s) s.blocked = false;
-    } else if (type === 'parses') {
-      const p = DATA.parses.find(p => p.url === id);
-      if (p) p.blocked = false;
-    } else if (type === 'lives') {
-      const l = DATA.lives.find(l => (l.url || l.api || '') === id);
-      if (l) l.blocked = false;
-    }
-    updateItemDom(type, id, false);
-    updateStats();
+    updateLocalBlock(type, id, false);
+    render();
   } catch (e) { alert('Network error'); }
-}
-
-function updateItemDom(type, id, blocked) {
-  const panel = type === 'sites' ? 'panelSites' : type === 'parses' ? 'panelParses' : 'panelLives';
-  const el = $(panel).querySelector('[data-id="' + CSS.escape(id) + '"]');
-  if (!el) return;
-  if (blocked) {
-    el.classList.add('blocked');
-    const cb = el.querySelector('.item-check');
-    if (cb) cb.remove();
-    el.querySelector('.item-actions').innerHTML = '<button class="btn sm secondary" onclick="unblock(\\'' + type + '\\',\\'' + esc(id) + '\\')">' + _t('restore') + '</button>';
-  } else {
-    el.classList.remove('blocked');
-    if (!el.querySelector('.item-check')) {
-      el.insertAdjacentHTML('afterbegin', '<input type="checkbox" class="item-check" onchange="updateBatchBar()">');
-    }
-    el.querySelector('.item-actions').innerHTML = '<button class="btn sm danger" onclick="block(\\'' + type + '\\',\\'' + esc(id) + '\\')">' + _t('block') + '</button>';
-  }
 }
 
 function toggleGroupSelect(checkbox) {
   const group = checkbox.closest('.group');
-  group.querySelectorAll('.item:not(.blocked) .item-check').forEach(cb => { cb.checked = checkbox.checked; });
+  if (!group) return;
+  group.querySelectorAll('.item:not([style*="display: none"]) .item-check').forEach(cb => { cb.checked = checkbox.checked; });
   updateBatchBar();
 }
 
@@ -713,36 +844,77 @@ function clearSelection() {
   updateBatchBar();
 }
 
-async function batchBlock() {
-  const checked = document.querySelectorAll('.tab-panel.active .item-check:checked');
-  if (checked.length === 0) return;
+function checkedItems(blocked) {
+  return [...document.querySelectorAll('.tab-panel.active .item-check:checked')]
+    .map(cb => cb.closest('.item'))
+    .filter(item => item && (item.dataset.blocked === 'true') === blocked);
+}
+
+function groupItemsByType(items) {
   const byType = {};
-  checked.forEach(cb => {
-    const item = cb.closest('.item');
+  for (const item of items) {
     const type = item.dataset.type;
-    const id = item.dataset.id;
+    if (!type) continue;
     if (!byType[type]) byType[type] = [];
-    byType[type].push(id);
-  });
+    byType[type].push(item);
+  }
+  return byType;
+}
+
+async function batchBlock() {
+  const items = checkedItems(false);
+  if (items.length === 0) return;
+  const byType = groupItemsByType(items);
   try {
     for (const type of Object.keys(byType)) {
-      const ids = byType[type];
+      const entries = byType[type];
+      const ids = entries.map(item => item.dataset.id).filter(Boolean);
+      if (ids.length === 0) continue;
       const res = await fetch('/admin/blacklist/batch', {
         method: 'POST',
         headers: { 'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/json' },
         body: JSON.stringify({ type, ids })
       });
       if (!res.ok) { alert('Failed: ' + (await res.json()).error); return; }
-      ids.forEach(id => {
-        if (type === 'sites') { const s = DATA.sites.find(s => s.fingerprint === id); if (s) s.blocked = true; }
-        else if (type === 'parses') { const p = DATA.parses.find(p => p.url === id); if (p) p.blocked = true; }
-        else if (type === 'lives') { const l = DATA.lives.find(l => (l.url || l.api || '') === id); if (l) l.blocked = true; }
-        updateItemDom(type, id, true);
-      });
+      ids.forEach(id => updateLocalBlock(type, id, true));
     }
-    updateStats();
-    updateBatchBar();
-    document.querySelectorAll('.group-check:checked').forEach(cb => { cb.checked = false; });
+    render();
+  } catch (e) { alert('Network error'); }
+}
+
+async function batchRestore() {
+  const items = checkedItems(true);
+  if (items.length === 0) return;
+  const byType = groupItemsByType(items);
+  try {
+    for (const type of Object.keys(byType)) {
+      const entries = byType[type];
+      const ids = entries.map(item => item.dataset.id).filter(Boolean);
+      if (ids.length === 0) continue;
+      const body = { type, ids };
+      if (type === 'sites') {
+        const regexNames = entries
+          .filter(item => item.dataset.regexBlocked === 'true')
+          .map(item => item.dataset.name)
+          .filter(Boolean);
+        if (regexNames.length > 0) body.regexNames = regexNames;
+      }
+      if (type === 'lives') {
+        const regexLiveUrls = entries
+          .filter(item => item.dataset.regexBlocked === 'true')
+          .map(item => item.dataset.id)
+          .filter(Boolean);
+        if (regexLiveUrls.length > 0) body.regexLiveUrls = regexLiveUrls;
+      }
+      const res = await fetch('/admin/blacklist/batch-delete', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      if (!res.ok) { alert('Failed: ' + (await res.json()).error); return; }
+      ids.forEach(id => updateLocalBlock(type, id, false));
+    }
+    render();
   } catch (e) { alert('Network error'); }
 }
 

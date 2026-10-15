@@ -9,9 +9,13 @@ export interface Blacklist {
   lives: string[];   // live url
   regexRules: RegexRule[];
   regexBlockOverrides: string[];  // 正则命中但手动恢复的站点名
+  regexLiveBlockOverrides: string[];  // 正则命中但手动恢复的直播源 URL
 }
 
-const EMPTY_BLACKLIST: Blacklist = { sites: [], parses: [], lives: [], regexRules: [], regexBlockOverrides: [] };
+function emptyBlacklist(): Blacklist {
+  return { sites: [], parses: [], lives: [], regexRules: [], regexBlockOverrides: [], regexLiveBlockOverrides: [] };
+}
+
 
 export async function siteFingerprint(site: TVBoxSite): Promise<string> {
   const ext = typeof site.ext === 'string' ? site.ext : JSON.stringify(site.ext || '');
@@ -24,11 +28,11 @@ export async function siteFingerprint(site: TVBoxSite): Promise<string> {
 export async function loadBlacklist(storage: Storage): Promise<Blacklist> {
   try {
     const raw = await storage.get(KV_BLACKLIST);
-    if (!raw) return EMPTY_BLACKLIST;
+    if (!raw) return emptyBlacklist();
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed.sites) || !Array.isArray(parsed.parses) || !Array.isArray(parsed.lives)) {
       logger.warn('blacklist', 'Invalid structure, skipping');
-      return EMPTY_BLACKLIST;
+      return emptyBlacklist();
     }
     return {
       sites: parsed.sites,
@@ -36,10 +40,11 @@ export async function loadBlacklist(storage: Storage): Promise<Blacklist> {
       lives: parsed.lives,
       regexRules: Array.isArray(parsed.regexRules) ? parsed.regexRules : [],
       regexBlockOverrides: Array.isArray(parsed.regexBlockOverrides) ? parsed.regexBlockOverrides : [],
+      regexLiveBlockOverrides: Array.isArray(parsed.regexLiveBlockOverrides) ? parsed.regexLiveBlockOverrides : [],
     };
   } catch (e) {
     logger.error('blacklist', `Failed to load, skipping filter: ${e instanceof Error ? e.message : String(e)}`);
-    return EMPTY_BLACKLIST;
+    return emptyBlacklist();
   }
 }
 
@@ -160,6 +165,7 @@ export async function applyBlacklist(
 
   // 过滤 lives
   let lives = config.lives || [];
+  const liveOverrideSet = new Set(blacklist.regexLiveBlockOverrides);
   if (liveSet.size > 0 || activeRules.length > 0) {
     lives = lives.filter((l) => {
       const url = l.url || l.api || '';
@@ -175,7 +181,7 @@ export async function applyBlacklist(
           const val = rule.field === 'api'
             ? (l.api || l.url || '')
             : (rule.field === 'name' ? (l.name || '') : '');
-          if (val && re.test(val)) {
+          if (val && re.test(val) && !liveOverrideSet.has(url)) {
             removedByRegex++;
             return false;
           }
