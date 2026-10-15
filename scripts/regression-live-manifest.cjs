@@ -7,6 +7,7 @@ const qualityOutfile = path.join(root, '.tmp-regression-build', 'live-quality.cj
 const prepareOutfile = path.join(root, '.tmp-regression-build', 'live-prepare.cjs');
 const inputsOutfile = path.join(root, '.tmp-regression-build', 'live-inputs.cjs');
 const mergerOutfile = path.join(root, '.tmp-regression-build', 'live-merger.cjs');
+const outputOutfile = path.join(root, '.tmp-regression-build', 'live-output.cjs');
 
 buildSync({
   entryPoints: [path.join(root, 'src/core/live-source.ts')],
@@ -61,6 +62,15 @@ buildSync({
   target: 'node20',
   format: 'cjs',
   outfile: inputsOutfile,
+});
+
+buildSync({
+  entryPoints: [path.join(root, 'src/core/live-output.ts')],
+  bundle: true,
+  platform: 'node',
+  target: 'node20',
+  format: 'cjs',
+  outfile: outputOutfile,
 });
 
 const {
@@ -913,10 +923,35 @@ async function testStartupReadinessRepair() {
   assert(isLiveProxyEntryDistributable(byKey.get('legacy-blocked')) === false, 'blocked source must remain non-distributable');
 }
 
+
+async function testRuntimeCacheIsUnified() {
+  const memory = new Map();
+  memory.set('live_merge_mode', 'separated');
+  memory.set('live_runtime_txt', '旧,#genre#\n旧频道,http://old.example/live');
+  memory.set('live_proxy_manifest', JSON.stringify({
+    version: 1,
+    signature: 'runtime-unified',
+    entries: [entry(80, { key: '1234567890abcdef', name: '源R', url: 'https://live.example/runtime.txt', textReady: true })],
+  }));
+  memory.set('live_txt:1234567890abcdef', '央视,#genre#\nCCTV-1,http://runtime.example/live$源R#12345678');
+  memory.set('channel_merged_tree', JSON.stringify([{ group: '央视', channels: [{ name: 'CCTV-1', urls: ['http://runtime.example/live$源R#12345678'] }] }]));
+  const storage = {
+    async get(key) { return memory.has(key) ? memory.get(key) : null; },
+    async put(key, value) { memory.set(key, String(value)); },
+  };
+  const { rebuildLiveOutput } = require(outputOutfile);
+  const rebuilt = await rebuildLiveOutput(storage);
+  assert(rebuilt.txt.includes('央视,#genre#'), 'runtime rebuild must produce aggregate txt');
+  assert(memory.get('live_runtime_txt') === rebuilt.txt, 'runtime cache must be overwritten with unified output');
+  assert(memory.get('live_runtime_txt_version') === rebuilt.version, 'runtime cache version must match unified output');
+  assert(!memory.get('live_runtime_txt').includes('旧频道'), 'stale runtime cache must not survive rebuild');
+}
+
 async function main() {
   await testSuccessWithoutUsableText();
   await testManualValidationFailure();
   await testStartupReadinessRepair();
+  await testRuntimeCacheIsUnified();
   // ── 20. 源码裁剪：manifest 只保留允许 URL，不写入空 live:<key> ──
   const memory = new Map();
   memory.set('live_proxy_manifest', JSON.stringify({

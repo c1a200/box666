@@ -8,6 +8,7 @@ import {
   KV_LIVE_MERGED_TXT,
   KV_LIVE_MERGED_TXT_VERSION,
   KV_LIVE_RUNTIME_TXT_VERSION,
+  KV_LIVE_RUNTIME_TXT,
   KV_LIVE_OUTPUT_FINGERPRINT,
   KV_LIVE_MERGE_MODE,
   KV_LIVE_DISABLED,
@@ -180,14 +181,16 @@ async function buildSnapshot(
 
   const previousTree = await storage.get(KV_CHANNEL_RUNTIME_TREE);
   const previousTxt = await storage.get(KV_LIVE_MERGED_TXT);
+  const previousRuntimeTxt = await storage.get(KV_LIVE_RUNTIME_TXT);
   const previousFingerprint = await storage.get(KV_LIVE_OUTPUT_FINGERPRINT);
-  const changed = previousFingerprint !== fp || previousTree !== JSON.stringify(runtimeGroups) || previousTxt !== txt;
+  const changed = previousFingerprint !== fp || previousTree !== JSON.stringify(runtimeGroups) || previousTxt !== txt || previousRuntimeTxt !== txt;
 
   if (changed) {
     await Promise.all([
       storage.put(KV_CHANNEL_RUNTIME_TREE, JSON.stringify(runtimeGroups)),
       storage.put(KV_LIVE_MERGED_TXT, txt),
       storage.put(KV_LIVE_MERGED_TXT_VERSION, version),
+      storage.put(KV_LIVE_RUNTIME_TXT, txt),
       storage.put(KV_LIVE_RUNTIME_TXT_VERSION, version),
       storage.put(KV_LIVE_OUTPUT_FINGERPRINT, fp),
     ]);
