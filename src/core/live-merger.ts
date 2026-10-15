@@ -446,14 +446,24 @@ export function formatLiveGroupsAsTxt(groups: TVBoxLiveGroup[]): string {
  * “东方卫视4K”“变形金刚_4K”这类本身带 4K 的普通频道名改掉。
  */
 function canonicalAggregateChannelName(raw: string): string {
-  const base = sanitizeTxtLabel(raw, '未命名').trim();
+  // 聚合输出中上游常用 [BD]/[HD]/[SD]/[VGA] 标画质。它们是同一频道的
+  // 不同线路，不应当因前缀不同而拆成多个频道名；单源 /live/<key> 输出
+  // 不经过这里，仍保留上游原始名称。
+  const base = sanitizeTxtLabel(raw, '未命名')
+    .replace(/^\s*\[(?:BD|HD|SD|VGA|UHD|FHD)\]\s*/i, '')
+    .replace(/^\s*[（(]\s*(?:BD|HD|SD|VGA|UHD|FHD)\s*[）)]\s*/i, '')
+    .trim();
   if (!/^(?:CCTV|中央|央视)/i.test(base)) return base;
   const cleaned = base
     .replace(/\s*(?:高清|超清|蓝光|1080p?|720p?)$/i, '')
     .replace(/[-_\s]*(?:咪咕|移动)$/i, '')
+    .replace(/[（(]\s*[）)]\s*$/g, '')
     .trim();
-  // CCTV4K/8K 是独立超高清频道，不参与普通 CCTV 数字频道归一。
-  if (/^(?:CCTV|中央|央视)[-_\s]*(?:4k|8k)$/i.test(base)) return base;
+  // CCTV4K/CCTV8K 等超高清频道是独立频道，不参与普通 CCTV 数字频道归一。
+  const ultraHd = base.match(/^(?:CCTV|中央|央视)[-_\s]*(4k|8k)(?:\s*超(?:高清)?)?$/i);
+  if (ultraHd) return `CCTV-${ultraHd[1].toUpperCase()}`;
+  // CCTV5 plus / CCTV5plus体育赛事 先归一为 CCTV-5+，避免落入普通 5 频道。
+  if (/^(?:CCTV|中央|央视)[-_\s]*0*5(?:\s*plus|\s*plus\s*5)/i.test(cleaned)) return 'CCTV-5+';
   // 兼容 CCTV-01广州、CCTV-13FYtv、CCTV-5+体育赛事、CCTV-7国防军事 等后缀。
   const match = cleaned.match(
     /^(?:CCTV|中央|央视)[-_\s]*(?:0*(\d{1,2}))(\+)?(?:[-_\s]*(\d+(?:[A-Za-z]*|[\u4e00-\u9fa5]{1,8})?|[A-Za-z][A-Za-z0-9]*|[\u4e00-\u9fa5]{1,8}))?$/i,
@@ -461,13 +471,52 @@ function canonicalAggregateChannelName(raw: string): string {
   if (!match) return cleaned;
   const number = Number(match[1]);
   if (!Number.isInteger(number) || number < 1 || number > 17) return cleaned;
+  // 兼容 CCTV5 plus / CCTV5plus体育赛事 这类上游写法。
+  if (number === 5 && /(?:5\s*plus|plus\s*5)/i.test(cleaned)) return 'CCTV-5+';
   return `CCTV-${number}${match[2] ? '+' : ''}`;
 }
 
-const AGGREGATE_GROUP_ORDER = [
+/** 地方目录按全国行政区划顺序排列，避免上游顺序造成目录跳动。 */
+const LOCAL_REGION_ORDER = [
+  '北京',
+  '天津',
+  '河北',
+  '山西',
+  '内蒙古',
+  '辽宁',
+  '吉林',
+  '黑龙江',
+  '上海',
+  '江苏',
+  '浙江',
+  '安徽',
+  '福建',
+  '江西',
+  '山东',
+  '河南',
+  '湖北',
+  '湖南',
+  '广东',
+  '广西',
+  '海南',
+  '重庆',
+  '四川',
+  '贵州',
+  '云南',
+  '西藏',
+  '陕西',
+  '甘肃',
+  '青海',
+  '宁夏',
+  '新疆',
+  '其他',
+] as const;
+
+const AGGREGATE_GROUP_ORDER: readonly string[] = [
   '央视',
+  '国际',
   '卫视',
-  '地方',
+  ...LOCAL_REGION_ORDER.map((region) => `地方·${region}`),
   '港澳台',
   '影视',
   '电视剧',
@@ -482,20 +531,133 @@ const AGGREGATE_GROUP_ORDER = [
   '4K/8K',
   '一起看',
   '其他',
-] as const;
+];
+
+/**
+ * 地方频道别名表。省级名称优先，城市别名用于把“大庆公共”“广州综合”
+ * 这类频道归入对应省份。只保留辨识度较高的地名，避免把普通节目词误判成地方台。
+ */
+const LOCAL_REGION_ALIASES: ReadonlyArray<readonly [string, readonly string[]]> = [
+  ['北京', ['北京']],
+  ['天津', ['天津', '滨海']],
+  ['河北', ['河北', '石家庄', '唐山', '秦皇岛', '邯郸', '邢台', '保定', '张家口', '承德', '沧州', '廊坊', '衡水', '昌黎', '滦平', '任丘', '平泉', '清河']],
+  ['山西', ['山西', '太原', '大同', '阳泉', '长治', '晋城', '朔州', '晋中', '运城', '忻州', '临汾', '吕梁', '太谷', '灵石', '平遥', '潞城', '怀仁', '汾西', '古县', '定襄', '万荣']],
+  ['内蒙古', ['内蒙古', '内蒙', '呼和浩特', '呼市', '包头', '乌海', '赤峰', '通辽', '鄂尔多斯', '呼伦贝尔', '巴彦淖尔', '乌兰察布', '兴安盟', '锡林郭勒', '阿拉善', '满洲里', '二连浩特', '蒙语']],
+  ['辽宁', ['辽宁', '沈阳', '大连', '鞍山', '抚顺', '本溪', '丹东', '锦州', '营口', '阜新', '辽阳', '盘锦', '铁岭', '朝阳', '葫芦岛']],
+  ['吉林', ['吉林', '长春', '四平', '辽源', '通化', '白山', '松原', '白城', '延边', '延吉', '敦化', '桦甸', '舒兰', '磐石', '双辽', '通化县', '柳河', '辉南', '靖宇', '九台', '龙井', '汪清', '珲春', '东丰', '长白', '长影']],
+  ['黑龙江', ['黑龙江', '哈尔滨', '齐齐哈尔', '鸡西', '鹤岗', '双鸭山', '大庆', '伊春', '佳木斯', '七台河', '牡丹江', '黑河', '绥化', '大兴安岭', '甘南县']],
+  ['上海', ['上海', '哈哈炫动', 'ics']],
+  ['江苏', ['江苏', '南京', '无锡', '徐州', '常州', '苏州', '南通', '连云港', '淮安', '盐城', '扬州', '镇江', '泰州', '宿迁', '江阴', '宜兴', '常熟', '张家港', '昆山', '吴江', '太仓', '溧水', '金湖', '句容', '靖江', '新沂', '溧阳', '高邮', '仪征', '丹阳', '扬中', '兴化', '泰兴', '沭阳', '泗洪', '泗阳']],
+  ['浙江', ['浙江', '杭州', '宁波', '温州', '嘉兴', '湖州', '绍兴', '金华', '衢州', '舟山', '台州', '丽水', '余杭', '萧山', '义乌', '诸暨', '上虞', '嵊州', '新昌', '余姚', '慈溪', '象山', '宁海', '奉化', '苍南', '平湖', '海宁', '桐乡', '嘉善', '海盐', '长兴', '德清', '安吉', '兰溪', '东阳', '永康', '武义', '浦江', '磐安', '开化', '龙游', '常山', '江山', '天台', '仙居', '三门', '温岭', '临海', '玉环', '青田', '缙云', '遂昌', '松阳', '云和', '庆元', '龙泉', '景宁', '岱山', '嵊泗', '洞头', '永嘉', '平阳', '文成', '泰顺', '瑞安', '乐清', '中国蓝', 'htv', '普陀']],
+  ['安徽', ['安徽', '合肥', '芜湖', '蚌埠', '淮南', '马鞍山', '淮北', '铜陵', '安庆', '黄山', '滁州', '阜阳', '宿州', '六安', '亳州', '池州', '宣城', '广德', '涡阳', '灵璧', '祁门', '固镇']],
+  ['福建', ['福建', '福州', '厦门', '莆田', '三明', '泉州', '漳州', '南平', '龙岩', '宁德', '晋江', '石狮', '南安', '惠安', '安溪', '永春', '德化', '龙海', '云霄', '漳浦', '诏安', '东山', '平和', '南靖', '长泰', '华安', '上杭', '武平', '长汀', '连城', '永定', '福清', '长乐']],
+  ['江西', ['江西', '南昌', '景德镇', '萍乡', '九江', '新余', '鹰潭', '赣州', '吉安', '宜春', '抚州', '上饶', '瑞金', '井冈山', '丰城', '樟树', '高安', '鄱阳', '婺源']],
+  ['山东', ['山东', '济南', '青岛', '淄博', '枣庄', '东营', '烟台', '潍坊', '济宁', '泰安', '威海', '日照', '临沂', '德州', '聊城', '滨州', '菏泽', '莱芜', '章丘', '胶州', '即墨', '平度', '莱西', '滕州', '龙口', '莱阳', '莱州', '招远', '蓬莱', '栖霞', '海阳', '青州', '诸城', '寿光', '安丘', '高密', '昌邑', '曲阜', '邹城', '新泰', '肥城', '荣成', '乳山', '乐陵', '禹城']],
+  ['河南', ['河南', '郑州', '开封', '洛阳', '平顶山', '安阳', '鹤壁', '新乡', '焦作', '濮阳', '许昌', '漯河', '三门峡', '南阳', '商丘', '信阳', '周口', '驻马店', '济源', '新野', '荥阳', '永城', '固始', '邓州', '汝州', '长垣', '鹿邑']],
+  ['湖北', ['湖北', '武汉', '黄石', '十堰', '宜昌', '襄阳', '鄂州', '荆门', '孝感', '荆州', '黄冈', '咸宁', '随州', '恩施', '仙桃', '潜江', '天门', '神农架', '江夏', '大冶', '宜都', '当阳', '枝江', '老河口', '枣阳', '钟祥', '京山', '沙洋', '汉川', '应城', '安陆', '云梦', '麻城', '武穴', '赤壁', '嘉鱼']],
+  ['湖南', ['湖南', '长沙', '株洲', '湘潭', '衡阳', '邵阳', '岳阳', '常德', '张家界', '益阳', '郴州', '永州', '怀化', '娄底', '湘西', '浏阳', '醴陵', '湘乡', '韶山', '耒阳', '常宁', '武冈', '临湘', '汨罗', '津市', '沅江', '资兴', '洪江', '冷水江', '涟源', '吉首']],
+  ['广东', ['广东', '广州', '韶关', '深圳', '珠海', '汕头', '佛山', '江门', '湛江', '茂名', '肇庆', '惠州', '梅州', '汕尾', '河源', '阳江', '清远', '东莞', '中山', '潮州', '揭阳', '云浮', '番禺', '南沙', '增城', '从化', '花都', '龙岗', '宝安', '龙华', '光明', '坪山', '斗门', '金湾', '澄海', '潮阳', '潮南', '顺德', '南海', '三水', '高明', '新会', '台山', '开平', '鹤山', '恩平', '遂溪', '廉江', '雷州', '吴川', '高州', '化州', '信宜', '电白', '四会', '高要', '广宁', '怀集', '博罗', '惠东', '龙门', '梅县', '兴宁', '五华', '丰顺', '大埔', '蕉岭', '平远', '陆丰', '海丰', '陆河', '紫金', '龙川', '连平', '和平', '东源', '阳春', '阳西', '英德', '连州', '佛冈', '阳山', '饶平', '揭西', '惠来', '罗定', '新兴', '郁南', '珠江', '南国']],
+  ['广西', ['广西', '南宁', '柳州', '桂林', '梧州', '北海', '防城港', '钦州', '贵港', '玉林', '百色', '贺州', '河池', '来宾', '崇左', '灌阳', '宜州', '合山', '凭祥']],
+  ['海南', ['海南', '海口', '三亚', '三沙', '儋州', '琼海', '文昌', '万宁', '五指山', '澄迈', '定安', '屯昌', '临高', '白沙', '昌江', '乐东', '陵水', '保亭', '琼中']],
+  ['重庆', ['重庆', '江津', '璧山', '垫江', '荣昌', '万州', '涪陵', '黔江', '长寿', '永川', '合川', '南川', '綦江', '大足', '铜梁', '潼南', '开州', '梁平', '武隆', '城口', '丰都', '忠县', '云阳', '奉节', '巫山', '巫溪', '石柱', '秀山', '酉阳', '彭水']],
+  ['四川', ['四川', '成都', '自贡', '攀枝花', '泸州', '德阳', '绵阳', '广元', '遂宁', '内江', '乐山', '南充', '眉山', '宜宾', '广安', '达州', '雅安', '巴中', '资阳', '阿坝', '甘孜', '凉山', '泸县', '金川', '青川', '剑阁', '旺苍', '苍溪', '营山', '仁寿', '夹江', '井研', '名山', '荥经', '叙州', '兴文', '长宁', '高县', '珙县', '筠连', '屏山', '天全', '芦山', '宝兴', '松潘', '汶川', '九寨沟', '康定', '西昌', '朝天']],
+  ['贵州', ['贵州', '贵阳', '六盘水', '遵义', '安顺', '毕节', '铜仁', '黔西南', '黔东南', '黔南', '仁怀', '赤水', '清镇']],
+  ['云南', ['云南', '昆明', '曲靖', '玉溪', '保山', '昭通', '丽江', '普洱', '临沧', '楚雄', '红河', '文山', '西双版纳', '大理', '德宏', '怒江', '迪庆', '易门']],
+  ['西藏', ['西藏', '拉萨', '日喀则', '昌都', '林芝', '山南', '那曲', '阿里']],
+  ['陕西', ['陕西', '西安', '铜川', '宝鸡', '咸阳', '渭南', '延安', '汉中', '榆林', '安康', '商洛', '杨凌']],
+  ['甘肃', ['甘肃', '兰州', '嘉峪关', '金昌', '白银', '天水', '武威', '张掖', '平凉', '酒泉', '庆阳', '定西', '陇南', '临夏', '甘南', '永昌', '天祝', '渭源']],
+  ['青海', ['青海', '西宁', '海东', '海北', '黄南', '果洛', '玉树', '海西']],
+  ['宁夏', ['宁夏', '银川', '石嘴山', '吴忠', '固原', '中卫']],
+  ['新疆', ['新疆', '乌鲁木齐', '克拉玛依', '吐鲁番', '哈密', '昌吉', '博尔塔拉', '巴音郭楞', '阿克苏', '克孜勒苏', '喀什', '和田', '伊犁', '塔城', '阿勒泰', '石河子', '阿拉尔', '图木舒克', '五家渠', '北屯', '铁门关', '可克达拉', '昆玉', '胡杨河', '兵团']],
+];
+
+const LOCAL_CHANNEL_SUFFIX_RE = /频道|电视台|广播电视台|新闻|综合|公共|都市|生活|影视|电影|电视剧|经济|经视|科教|教育|文化|旅游|体育|少儿|国际|资讯|导视|党建|农村|乡村|农业|民生|社会|法制|城市|一套|二套|三套|四套|五套|六套|七套|八套|台$/;
+const LOCAL_CHANNEL_BRAND_RE = /哈哈炫动|ics|珠江|南国|中国蓝|htv|长影|普陀|蒙语|兵团|可克达拉|石河子|胡杨河/;
+const NON_LOCAL_PROGRAM_RE = /电影节|颁奖|典礼|开幕式|闭幕式|晚会|演唱会/;
+
+function compactChannelText(value: string): string {
+  return sanitizeTxtLabel(value, '')
+    .replace(/^\[[^\]]+\]\s*/g, '')
+    .replace(/^【[^】]+】\s*/g, '')
+    .replace(/[（(][^）)]*[）)]/g, '')
+    .replace(/[·•・]/g, '')
+    .replace(/\s+/g, '')
+    .toLowerCase()
+    .replace(/廣/g, '广')
+    .replace(/東/g, '东')
+    .replace(/內/g, '内')
+    .replace(/臺/g, '台')
+    .replace(/灣/g, '湾')
+    .replace(/衛/g, '卫')
+    .replace(/視/g, '视');
+}
+
+function detectLocalRegion(rawGroup: string, channelName: string): string | null {
+  const raw = compactChannelText(rawGroup);
+  const name = compactChannelText(channelName);
+  const text = raw + name;
+  if (!text) return null;
+  if (/香港|澳门|台湾|港台|港澳台|tvb|翡翠|明珠|凤凰|东森|中视|台视|三立|纬来|tvbs|rthk|澳视/.test(text)) return null;
+  if (/卫视/.test(name) || /卫视/.test(raw)) return null;
+  // “甘南县”属于黑龙江，不能与甘肃“甘南”混淆；“海南州”属于青海。
+  if (/甘南县/.test(text)) return '黑龙江';
+  if (/海南州|海南藏族/.test(text)) return '青海';
+  if (NON_LOCAL_PROGRAM_RE.test(name)) return null;
+  for (const [region, aliases] of LOCAL_REGION_ALIASES) {
+    if (aliases.some((alias) => text.includes(alias))) return region;
+  }
+  return null;
+}
+
+function shouldUseLocalRegion(rawGroup: string, channelName: string): boolean {
+  const raw = compactChannelText(rawGroup);
+  const name = compactChannelText(channelName);
+  if (NON_LOCAL_PROGRAM_RE.test(name)) return false;
+  // 节目名里含“生活”不等于地方台；只有地区+台/频道/新闻/综合等
+  // 结构化特征同时存在时才进入地方目录。
+  if (/生活技巧|生活时尚|幸福生活|北漂生活|夜魔人|papi酱|朱一旦/.test(name)) return false;
+  if (/地方|省频道|市频道|县频道|城市|地方台/.test(raw)) return true;
+  return LOCAL_CHANNEL_SUFFIX_RE.test(name) || LOCAL_CHANNEL_BRAND_RE.test(name);
+}
+
+function classifyCctvSpecial(compact: string): string | null {
+  if (/第一剧场|怀旧剧场|风云剧场|文化精品|兵器科技|电视指南|放映室/.test(compact)) return '影视';
+  if (/发现之旅|老故事|世界地理/.test(compact)) return '纪录';
+  if (/风云音乐/.test(compact)) return '音乐';
+  if (/女性时尚|卫生健康/.test(compact)) return '其他';
+  if (/高网|弈坛春秋|黑莓电竞/.test(compact)) return '体育';
+  if (/(?:cctv|央视|中央电视)/.test(compact) && /(?:4k|8k)/.test(compact)) return '4K/8K';
+  return null;
+}
+
+function isCctvMainChannel(compact: string): boolean {
+  const match = compact.match(/^(?:cctv|中央电视|中央电视台|央视)[-_\s]*0*(\d{1,2})(\+)?/i);
+  if (!match) return false;
+  const number = Number(match[1]);
+  return Number.isInteger(number) && number >= 1 && number <= 17;
+}
+
+function classifyNewTv(compact: string): string {
+  if (/爱情喜剧|惊悚悬疑/.test(compact)) return '影视';
+  if (/东北热剧/.test(compact)) return '电视剧';
+  if (/军事评论/.test(compact)) return '新闻财经';
+  if (/武搏世界|中国功夫/.test(compact)) return '体育';
+  return '其他';
+}
 
 function aggregateGroupRank(group: string): number {
-  const index = AGGREGATE_GROUP_ORDER.indexOf(group as (typeof AGGREGATE_GROUP_ORDER)[number]);
-  return index >= 0 ? index : AGGREGATE_GROUP_ORDER.length;
+  const index = AGGREGATE_GROUP_ORDER.indexOf(group);
+  if (index >= 0) return index;
+  if (group.startsWith('地方·')) return AGGREGATE_GROUP_ORDER.indexOf('地方·其他');
+  return AGGREGATE_GROUP_ORDER.length;
 }
 
 /**
  * 对聚合后的频道做有限的内容纠偏。
  *
- * 上游存在把地方综合台塞进“纪录频道”、把港剧塞进“电影频道”、
- * 把地方频道塞进“卫视/央视”等情况。这里只识别语义非常明确的频道名，
- * 且把地方/省/市/县频道组整体保留在“地方”，避免把普通地方新闻、综合、
- * 生活台拆散成多个只有几个台的小分类。
+ * 核心顺序是：港澳台/国际/央视特殊频道 → 卫视 → 明确地方地区 → 内容主题。
+ * 这样既能修正上游把地方台塞进央视、把纪录片塞进地方等问题，也能让
+ * 带省市信息的本地频道统一进入“地方·省/市”子目录，便于客户端查找。
  */
 function normalizeAggregateChannelGroup(
   rawGroup: string,
@@ -503,76 +665,65 @@ function normalizeAggregateChannelGroup(
 ): string {
   const group = normalizeAggregateGroupName(rawGroup);
   const name = sanitizeTxtLabel(rawChannelName, '未命名');
-  const rawGroupCompact = sanitizeTxtLabel(rawGroup, '').replace(/\s+/g, '').toLowerCase();
-  const compact = name.replace(/\s+/g, '').toLowerCase();
+  const compact = compactChannelText(name);
+  const rawGroupCompact = compactChannelText(rawGroup);
   if (!compact) return group;
 
   // 实时风景机位名称可能包含“中央”，必须先于央视兜底判断。
   if (/熊猫直播|中央电视塔|直播中国|风景|景区/.test(compact)
     || (/航拍/.test(compact) && !/航拍中国/.test(compact))) return '风景直播';
 
-  // 央视付费频道中语义明确的类型先于“央视”兜底处理。
-  if (/^(?:cctv)?(?:第一剧场|怀旧剧场|文化精品|风云剧场|兵器科技|电视指南|发现之旅|老故事)$/.test(compact)
-    || /^chc/.test(compact)) return '影视';
-  if (/^(?:cctv|中央|央视)/.test(compact) && /台球|足球|网球/.test(compact)) return '体育';
-  if (/^(?:cctv|中央|央视)/.test(compact)) return '央视';
-  if (/第一财经/.test(compact)) return '新闻财经';
-  if (/教育|教科|学习/.test(compact)) return '教育';
-  if (/之江纪录|cgtn纪录|cgtn记录|飞碟之谜|航拍中国|中国村庄/.test(compact)) return '纪录';
+  // 港澳台先于地方和主题判断，避免“香港/台湾”被地方别名误吸。
+  if (/港澳台|港台|香港|澳门|台湾|tvb|翡翠|明珠|凤凰|东森|中视|台视|三立|纬来|tvbs|rthk|澳视/.test(compact)) return '港澳台';
+
+  // 国际、教育及常见数字付费频道品牌先于央视兜底，避免混入央视。
+  if (/cgtn|中国国际电视台/.test(compact)) return '国际';
+  if (/cetv|中国教育电视台/.test(compact)) return '教育';
+  if (/newtv/.test(compact)) return classifyNewTv(compact);
+  if (/咪咕视频/.test(compact)) return '其他';
+  if (/求索/.test(compact)) return '纪录';
+  if (/家庭理财/.test(compact)) return '新闻财经';
+  if (/置业频道/.test(compact)) return '其他';
+  if (/弈坛春秋|黑莓电竞|央视高网/.test(compact)) return '体育';
+
+  // 央视付费频道和超高清频道先于央视主频道判断。
+  const cctvSpecial = classifyCctvSpecial(compact);
+  if (cctvSpecial) return cctvSpecial;
+  if (isCctvMainChannel(compact)) return '央视';
   if (/卫视/.test(compact)) return '卫视';
+
+  // 地方频道：只要频道名或上游分组能识别出明确地区，就进入对应地方子目录。
+  const region = detectLocalRegion(rawGroup, name);
+  if (region && shouldUseLocalRegion(rawGroup, name)) return `地方·${region}`;
+
+  const fromLocalGroup = group === '地方'
+    || group.startsWith('地方·')
+    || /地方频道|省频道|市频道|县频道|浙江频道|广州电信/.test(rawGroupCompact);
+
+  // 内容主题只处理语义非常明确的频道；普通地方综合/公共/新闻台仍留在地方目录。
+  if (/第一财经|财富天下/.test(compact)) return '新闻财经';
+  if (/新闻综合|综合新闻/.test(compact)) return fromLocalGroup ? '地方·其他' : '新闻财经';
+  if (/教育|教科|学习/.test(compact)) return '教育';
+  if (/之江纪录|飞碟之谜|航拍中国|中国村庄|动物|自然|野生|丛林|大象|海豚|海鬣蜥|棕熊|潜水|田园|纪录片|探索|地理|人文/.test(compact)) return '纪录';
   if (/^[\u4e00-\u9fa5]{1,8}(?:4k|8k)$/.test(compact.replace(/(?:频道)?超?$/, ''))) return '4K/8K';
-
-  // 地方频道组里的综合/公共/新闻台仍属于地方台；少儿、体育、音乐、教育
-  // 等语义明确的频道再按内容迁出，避免“新闻综合”被拆进新闻财经。
-  const fromLocalGroup = group === '地方' || /地方频道|省频道|市频道|县频道|浙江频道|广州电信/.test(rawGroupCompact);
-  if (group === '少儿' || group === '体育' || group === '音乐' || group === '电视剧' || group === '春晚' || group === '港澳台') return group;
-  if (fromLocalGroup && !/少儿|儿童|卡通|动漫|动画|青少|体育|足球|篮球|网球|台球|斯诺克|赛事|运动|音乐|歌曲|演唱会|港乐|dj|串烧|教育|教科|学习/.test(compact)) return group;
-
-  const explicitProvinceOrCity = /北京|上海|天津|重庆|河北|山西|辽宁|吉林|黑龙江|江苏|浙江|安徽|福建|江西|山东|河南|湖北|湖南|广东|广西|海南|四川|贵州|云南|陕西|甘肃|青海|宁夏|新疆|西藏|内蒙古|内蒙|广州|深圳|杭州|南京|苏州|东阳|武汉|成都|西安|哈尔滨|长春|沈阳|济南|郑州|长沙|合肥|福州|南昌|昆明|贵阳|南宁|海口|太原|石家庄|兰州|西宁|银川|乌鲁木齐|拉萨|呼和浩特/.test(compact);
-
-  if (/新闻综合|综合新闻/.test(compact)) return '地方';
-  if (/第一财经|财经|新闻|资讯|商业|财富天下/.test(compact)) {
-    if (group === '地方' && !/第一财经|财经|新闻|资讯|商业|财富天下/.test(rawGroupCompact)) return group;
-    return '新闻财经';
+  if (/新闻|资讯|财经|商业/.test(compact)) return fromLocalGroup ? '地方·其他' : '新闻财经';
+  if (/电视剧|连续剧|剧集|港剧|美剧|韩剧|短剧|经典剧|大剧|戏剧|射雕|神雕|倚天屠龙|笑傲江湖|寻秦记|创世纪|大时代|楚汉骄雄|大唐双龙传|法政先锋|鉴证实录|妙手仁心|陀枪师姐|洗冤录|刑事侦缉档案|金枝欲孽|活佛济公|西游记|封神榜|倩女幽魂|龙门飞甲|甄嬛传|还珠格格|亮剑|雪豹|华山论剑|三国|流星花园|大地恩情|凡人修仙|粤经典|水浒传|天龙八部|鹿鼎记|绝代双娇|神探狄仁|铁齿铜牙|神医喜来|父母爱情|白鹿原|大染坊|炊事班|士兵突击|我的团长|雍正王朝|康熙微服|玫瑰故事|梦华录|星汉灿烂|永夜星河|问心|漫长的季节|爱情公寓|家有儿女|海绵宝宝|蜡笔小新|叮当|龙珠|柯南|圣斗士|四驱兄弟|头文字|足球小将|全职高手|一人之下|一人之上|笑看风云|庆余年|雪中悍刀行|延禧攻略|武林外传|仙剑奇侠传|新白娘子|我爱男保姆|我的前半生|传闻中的芊芊|第一滴血|火蓝刀锋|炮神|渗透|风筝|开端|流金岁月|少寒|如果岁月|电视轮播|电视轮|电视|轮播/.test(compact)) return '电视剧';
+  if (/电影|影院|影视|剧场|大片|动作片|喜剧片|科幻片|恐怖片|战争片|武侠片|港片|周星驰|成龙|林正英|周润发|邵氏|陈翔六点半|视觉|重温经典|古装|妖魔|好片|经典怀旧|警匪悬疑|科幻梦工场|速度与激情/.test(compact)) return '影视';
+  if (/生活|民生|都市/.test(compact)) {
+    // 地方组的综合/民生台保留地方归属；普通节目名不再误判为地方台。
+    if (fromLocalGroup && !/生活技巧|生活时尚|幸福生活|北漂生活|夜魔人|papi酱|朱一旦/.test(compact)) return '地方·其他';
+    return '其他';
   }
-  if (/教育|学习/.test(compact)) return '教育';
-  if (/生活|民生|都市/.test(compact)) return '地方';
-  if (/体育|足球|篮球|网球|台球|斯诺克|赛事|运动|竞技|格斗/.test(compact)) return '体育';
+  if (/体育|足球|篮球|网球|台球|斯诺克|赛事|运动|竞技|格斗|全运|spotv|sports?|football/.test(compact)) return '体育';
   if (/少儿|儿童|卡通|动漫|动画|青少|猫和老鼠|七龙珠|中华小当家/.test(compact)) return '少儿';
   if (/音乐|歌曲|演唱会|港乐|dj|串烧|风云音乐|音乐现场/.test(compact)) return '音乐';
+  if (/春晚|春节|贺岁/.test(compact)) return '春晚';
+  if (/直播中国|风景|景区|航拍/.test(compact)) return '风景直播';
+  if (/一起看|虎牙|斗鱼|b站|原创|zonghe|综合直播|抖音|快手/.test(compact)) return '一起看';
+  if (/女性时尚|时尚|咪视界|爱奇艺综|脱口秀|颁奖典礼|颁奖礼|红地毯|走红毯|广场舞|梨园|欣赏频道|数字频道|解说频道|car|测试|备用/.test(compact)) return '其他';
 
-  if (group === '一起看') {
-    // 只迁移内容语义明确的频道；普通主播昵称继续留在“一起看”，
-    // 避免为了整理分类把主播错误归入影视/剧集等专题。
-    if (/少儿|儿童|卡通|动漫|动画|猫和老鼠|蜡笔小新|龙珠|叮当|海绵宝宝|樱桃小丸|米老鼠|数码宝贝|神奇宝贝|奥特曼|假面骑士/.test(compact)) return '少儿';
-    if (/说电影|评电影|看电影|电影解说|电影|影视|影院|放映|放映厅|大片|动作片|喜剧片|科幻片|恐怖片|战争片|武侠片|港片|成龙|古天乐|黄渤|李连杰|刘德华|林正英|周润发|周星驰|沈腾|王晶|甄子丹|洪金宝|强森|杰森斯坦|星爷|邵氏|动作|枪战|怪兽|黑帮|恐怖|喜剧|战争|悬疑|警匪/.test(compact)) return '影视';
-    if (/说剧|看剧|追剧|剧迷|电视剧|连续剧|剧集|短剧|港剧|美剧|韩剧|泰剧|剧场|小品|相声|戏剧|大剧|经典剧|古装|宫斗|爱情公寓|白鹿原|镖行天下|超异能族|陈情令|陈翔六点|楚汉骄雄|创世纪|炊事班|大染坊|大宋提刑|大唐双龙|盗墓|地下交通|谍战|法证先锋|风云雄霸|封神榜|父母爱情|活佛济公|家有儿女|将夜|金枝欲孽|精绝古城|绝代双娇|康熙微服|鹿鼎记|漫威|漫长季节|梦华录|妙手仁心|怒晴湘西|三国演义|扫黄先锋|神雕侠侣|神探狄仁|神医喜来|士兵突击|水月洞天|死神来了|铁齿铜牙|铁道游击|铁梨花|陀枪师姐|问心|我的团长|乌龙院|无心法师|五福星|西游记|洗冤录|小李飞刀|笑看风云|新楚留香|新三国|新水浒传|星汉灿烂|刑事侦缉|玄幻|寻秦记|野蛮奶奶|一代枭雄|医馆笑传|倚天屠龙|英叔|雍正王朝|永夜星河|御赐仵作|云南虫谷|长相思|征服|周海媚|罪犯/.test(compact)) return '电视剧';
-    if (/音乐|歌曲|演唱会|翻唱|串烧|港乐|dj/.test(compact)) return '音乐';
-    if (/体育|足球|篮球|网球|台球|斯诺克|赛事|运动|竞技|格斗|看球/.test(compact)) return '体育';
-    if (/纪录|纪实|探索|科普|地理|人文|自然|慢直播|监视/.test(compact)) return '纪录';
-    return group;
-  }
-
-  if (/电视剧|连续剧|剧集|港剧|美剧|韩剧|短剧|经典剧|大剧|戏剧|射雕|神雕|倚天屠龙|笑傲江湖|寻秦记|创世纪|大时代|楚汉骄雄|大唐双龙传|法政先锋|鉴证实录|妙手仁心|陀枪师姐|洗冤录|刑事侦缉档案|金枝欲孽|活佛济公|西游记|封神榜|倩女幽魂|龙门飞甲|甄嬛传|还珠格格|亮剑|雪豹|华山论剑|三国|流星花园|大地恩情|凡人修仙|粤经典|水浒传|天龙八部|鹿鼎记|绝代双娇|神探狄仁|铁齿铜牙|神医喜来|父母爱情|白鹿原|大染坊|炊事班|士兵突击|我的团长|雍正王朝|康熙微服|玫瑰故事|梦华录|星汉灿烂|永夜星河|问心|漫长的季节|爱情公寓|家有儿女|海绵宝宝|蜡笔小新|叮当|龙珠|柯南|圣斗士|四驱兄弟|头文字|足球小将|全职高手|一人之下|一人之上|笑看风云|庆余年|雪中悍刀行|延禧攻略|武林外传|仙剑奇侠传|新白娘子|我爱男保姆|我的前半生|传闻中的芊芊|第一滴血|火蓝刀锋|炮神|渗透|风筝|开端|流金岁月|少寒|如果岁月|电视轮播|电视轮|电视|轮播/.test(compact)) return '电视剧';
-  const localComprehensiveChannel = /东丰|敦化一套|桦甸|靖宇|九台|柳河|龙井|磐石|双辽|通化县|汪清|白山公共|舒兰新闻|辉南新闻|珲春新闻/.test(compact);
-  if (localComprehensiveChannel) return '地方';
-  if (/纪录|纪实|探索|地理|人文|自然|飞碟之谜|航拍中国|中国村庄|之江纪录|cgtn纪录/.test(compact)) return '纪录';
-  if (/spotv|sports?|football/.test(compact)) return '体育';
-  if (/港澳台|^凤凰|翡翠|无线|tvb|rthk|东森|民视|中视|中天|台视|三立|纬来|龙华|now|澳门|澳视|八度空间|astro|有线|华艺|tvbs|香港c|香港|ch[58u]|ch\d|elta|jet|rock娱乐|astr|欢喜|plus综合/.test(compact)) return '港澳台';
-  if (/football|sports?|全运.*(?:开幕|闭幕)|全运会?/.test(compact)) return '体育';
-  if (/广东珠江|广州南国|番薯综合|南国|珠江/.test(compact)) return '地方';
-  if (/动物星球|自然|地理|纪录|纪实|探索/.test(compact)) return '纪录';
-  if (/古装|妖魔|好片|经典怀旧|警匪悬疑|科幻梦工场|马年.*贺岁|速度与激情/.test(compact)) return '影视';
-  if (/红楼梦|鹊刀门传奇|传奇剧|雪豹|经典剧/.test(compact)) return '电视剧';
-  if (explicitProvinceOrCity && /综合|公共|都市|生活|影视|新闻|经济|经视|科教|文化|导视|频道|电视|乡村|农村|国际|旅游|资讯/.test(compact)) return '地方';
-  if (/综合|公共/.test(compact) && /白山|东丰|敦化|桦甸|辉南|珲春|靖宇|九台|柳河|龙井|磐石|舒兰|双辽|通化|汪清|德惠|昌黎|朝天|定襄|汾西|古县|固镇|灌阳|广安|广元|甘南|海宁|邯郸|河源|衡水|衡阳|湖州|怀仁|黄山|嘉兴|嘉峪关|剑阁|津南|晋江|缙云|荆门|井研|靖江|句容|开化|可克达拉|来宾|兰溪|六安|龙泉|龙游/.test(compact)) return '地方';
-
-  if (/重温经典/.test(compact)) return '影视';
-  if (/电影|影院|影视|剧场|大片|动作片|喜剧片|科幻片|恐怖片|战争片|武侠片|港片|周星驰|成龙|林正英|周润发|邵氏|陈翔六点半|视觉/.test(compact)) return '影视';
-  if (/新闻|资讯|财经|商业/.test(compact)) return '新闻财经';
-  if (/女性时尚|时尚|咪视界|爱奇艺综|脱口秀|颁奖典礼|颁奖礼|红地毯|走红毯|广场舞/.test(compact)) return '其他';
-
-  return group;
+  if (fromLocalGroup) return group.startsWith('地方·') ? group : '地方·其他';
+  return group === '其他' ? '其他' : group;
 }
 
 /**
@@ -581,7 +732,7 @@ function normalizeAggregateChannelGroup(
  * 这里只处理最终聚合输出，不影响 /live/<key> 的单源代理内容。
  *
  * 原则：
- * - 只输出固定主分类，来源名和专题名不再作为独立分类；
+ * - 只输出固定主分类；地方频道额外输出“地方·省/市”子目录；
  * - 同义分类合并，无法判断内容时归入“其他”；
  * - 空分类不输出，频道线路仍按 URL 去重并保留多线路。
  */
@@ -590,19 +741,27 @@ function normalizeAggregateGroupName(raw: string): string {
     .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '')
     .replace(/[·•・]/g, '')
     .trim();
-  const compact = label.replace(/\s+/g, '').toLowerCase();
+  const compact = compactChannelText(label);
   if (!compact) return '其他';
 
-  if (/cctv|央视|中央电视|央卫|咪咕|cg?tn/.test(compact)) {
+  // 已经是“地方·XX”的运行时分组必须保持幂等，避免二次归一退化成“地方”。
+  for (const region of LOCAL_REGION_ORDER) {
+    if (compact === `地方${region}`) return `地方·${region}`;
+  }
+  if (/^地方(?:频道|台|省频道|市频道|县频道)?$/.test(compact)) return '地方';
+
+  if (compact === '国际' || /cgtn|中国国际电视台/.test(compact)) return '国际';
+  if (/cetv|中国教育电视台/.test(compact)) return '教育';
+  if (/咪咕/.test(compact)) return '其他';
+  if (/求索/.test(compact)) return '纪录';
+  if (/卫视/.test(compact)) return '卫视';
+  if (/港澳台|港台/.test(compact)) return '港澳台';
+  const region = detectLocalRegion(label, '');
+  if (region && !/卫视/.test(compact)) return `地方·${region}`;
+
+  if (/cctv|央视|中央电视|央卫/.test(compact)) {
     if (/第一剧场|怀旧剧场|文化精品|风云剧场|兵器科技|电视指南|发现之旅|老故事/.test(compact)) return '影视';
     return '央视';
-  }
-  if (/卫视/.test(compact)) return '卫视';
-  if (/港澳台|港·澳·台|港台/.test(compact)) return '港澳台';
-  const provinceOrCity = /北京|上海|天津|重庆|河北|山西|辽宁|吉林|黑龙江|江苏|浙江|安徽|福建|江西|山东|河南|湖北|湖南|广东|广西|海南|四川|贵州|云南|陕西|甘肃|青海|宁夏|新疆|西藏|内蒙古|内蒙|广州|深圳|杭州|南京|苏州|武汉|成都|西安|哈尔滨|长春|沈阳|济南|郑州|长沙|合肥|福州|南昌|昆明|贵阳|南宁|海口|太原|石家庄|兰州|西宁|银川|乌鲁木齐|拉萨|呼和浩特/.test(compact);
-  if ((/地方|省频道|市频道|县频道|频道/.test(compact) && provinceOrCity)
-    || /广州电信|电信频道|地方频道/.test(compact)) {
-    return '地方';
   }
   if (/少儿|儿童|卡通|动漫|动画|青少|童年/.test(compact)) return '少儿';
   if (/体育|足球|篮球|网球|台球|斯诺克|赛事|运动|竞技|全运/.test(compact)) return '体育';
@@ -616,7 +775,6 @@ function normalizeAggregateGroupName(raw: string): string {
   if (/一起看|虎牙|斗鱼|b站|原创|zonghe|综合直播|抖音|快手/.test(compact)) return '一起看';
   if (/^(?:4k8k频道|4k频道|8k频道|超高清|高清频道)$/.test(compact)) return '4K/8K';
   if (/教育|学习/.test(compact)) return '教育';
-  if (/生活|民生|都市/.test(compact)) return '地方';
   if (/欣赏频道|咪视界|数字频道|解说频道|car|测试|备用/.test(compact)) return '其他';
 
   return '其他';

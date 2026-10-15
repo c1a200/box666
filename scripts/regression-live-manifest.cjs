@@ -380,6 +380,7 @@ const {
   extractUrlsForSourceLabels,
   filterGroupsBySourceLabels,
   parseLiveCandidatePool,
+  formatAggregatedLiveGroupsAsTxt,
   parseLiveGroupsFromTxt,
   reorderGroupsBySourcePriority,
   serializeLiveCandidatePool,
@@ -559,6 +560,56 @@ assert(legacyCandidateSnapshot.groups.length === 1, 'legacy URL array must expos
 assert(legacyCandidateSnapshot.urls.length === 2, 'legacy URL array must restore both probe URLs');
 assert(parseLiveCandidatePool('not-json').source === 'none', 'invalid candidate snapshot must fail closed');
 
+// ── 17b. 聚合分类：央视白名单、国际/教育/专题频道与地方二级目录 ──
+const classificationGroups = [{
+  group: '央视',
+  channels: [
+    { name: '[HD]CCTV-1', urls: ['http://classify.example/cctv1'] },
+    { name: 'CCTV-1', urls: ['http://classify.example/cctv1-alt'] },
+    { name: 'CCTV-5+', urls: ['http://classify.example/cctv5plus'] },
+    { name: 'CCTV-4K', urls: ['http://classify.example/cctv4k'] },
+    { name: 'CCTV第一剧场', urls: ['http://classify.example/cctv-theater'] },
+    { name: 'CCTV风云音乐', urls: ['http://classify.example/cctv-music'] },
+    { name: 'CCTV世界地理', urls: ['http://classify.example/cctv-geography'] },
+    { name: 'CETV-1', urls: ['http://classify.example/cetv1'] },
+    { name: 'CGTN英语', urls: ['http://classify.example/cgtn'] },
+    { name: '咪咕视频1', urls: ['http://classify.example/migu'] },
+    { name: 'NewTV东北热剧', urls: ['http://classify.example/newtv'] },
+    { name: '大庆公共', urls: ['http://classify.example/daqing'] },
+    { name: '上海ICS', urls: ['http://classify.example/shics'] },
+    { name: '广东民生', urls: ['http://classify.example/gd'] },
+    { name: '北京卫视', urls: ['http://classify.example/bjtv'] },
+  ],
+}, {
+  group: '地方',
+  channels: [
+    { name: '综合频道', urls: ['http://classify.example/local-general'] },
+  ],
+}];
+const classifiedTxt = formatAggregatedLiveGroupsAsTxt(classificationGroups);
+const classifiedGroups = parseLiveGroupsFromTxt(classifiedTxt);
+const groupOfChannel = (name) => {
+  const match = classifiedGroups.find((group) => group.channels.some((channel) => channel.name === name));
+  return match ? match.group : '';
+};
+assert(groupOfChannel('CCTV-1') === '央视', 'real CCTV channel must stay in 央视');
+assert((classifiedGroups.find((group) => group.group === '央视')?.channels.find((channel) => channel.name === 'CCTV-1')?.urls.length || 0) === 2, 'quality prefixes must merge into the same CCTV channel');
+assert(groupOfChannel('CCTV-5+') === '央视', 'CCTV-5+ must stay in 央视');
+assert(groupOfChannel('CCTV-4K') === '4K/8K', 'CCTV-4K must move to 4K/8K');
+assert(groupOfChannel('CCTV第一剧场') === '影视', 'CCTV specialty movie channel must move to 影视');
+assert(groupOfChannel('CCTV风云音乐') === '音乐', 'CCTV music channel must move to 音乐');
+assert(groupOfChannel('CCTV世界地理') === '纪录', 'CCTV documentary channel must move to 纪录');
+assert(groupOfChannel('CETV-1') === '教育', 'CETV must move to 教育');
+assert(groupOfChannel('CGTN英语') === '国际', 'CGTN must move to 国际');
+assert(groupOfChannel('咪咕视频1') === '其他', 'Migu video must not enter 央视');
+assert(groupOfChannel('NewTV东北热剧') === '电视剧', 'NewTV drama must move to 电视剧');
+assert(groupOfChannel('大庆公共') === '地方·黑龙江', 'Daqing public channel must move to 地方·黑龙江');
+assert(groupOfChannel('上海ICS') === '地方·上海', 'Shanghai ICS must move to 地方·上海');
+assert(groupOfChannel('广东民生') === '地方·广东', 'Guangdong livelihood channel must move to 地方·广东');
+assert(groupOfChannel('北京卫视') === '卫视', 'satellite channel must stay in 卫视');
+assert(groupOfChannel('综合频道') === '地方·其他', 'local group without a detectable region must use 地方·其他');
+assert(classifiedTxt.includes('地方·黑龙江,#genre#'), 'output must expose the 地方·黑龙江 group header');
+assert(classifiedTxt.includes('地方·上海,#genre#'), 'output must expose the 地方·上海 group header');
 // ── 18. 分片更新：仅撤销本批次未就绪文本，不清空其他已完成批次 ──
 const incrementalBase = mergeLiveProxyManifest(null, [entry(50), entry(51)], {
   checkedAt: '2026-10-13T02:00:00.000Z',
