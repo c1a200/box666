@@ -28,6 +28,13 @@ import {
 } from './live-merger';
 import { loadSpeedMap } from './channel-probe';
 
+/**
+ * 直播 TXT 展示格式版本。
+ * 分类、目录分页、频道名归一等纯展示逻辑发生变化时必须递增，
+ * 否则持久化指纹不变，线上会继续命中旧 runtime TXT。
+ */
+const LIVE_OUTPUT_FORMAT_VERSION = 2;
+
 export interface RebuildLiveOutputOptions {
   reason?: string;
   policy?: LiveDistributionPolicy;
@@ -125,6 +132,7 @@ async function fingerprint(storage: Storage, policy: LiveDistributionPolicy): Pr
   // 候选树、质量清单、测速表、模式、开关与策略。
   const text = [
     mode,
+    String(LIVE_OUTPUT_FORMAT_VERSION),
     disabledRaw || 'false',
     ignoreAggregatedRaw || 'false',
     stablePolicyKey(policy),
