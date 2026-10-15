@@ -947,11 +947,97 @@ async function testRuntimeCacheIsUnified() {
   assert(!memory.get('live_runtime_txt').includes('旧频道'), 'stale runtime cache must not survive rebuild');
 }
 
+async function testBareUrlCandidateMapping() {
+  const memory = new Map();
+  const key = 'bare-url-source';
+  memory.set('live_merge_mode', 'separated');
+  memory.set('live_proxy_manifest', JSON.stringify({
+    version: 4,
+    signature: 'bare-url-source',
+    entries: [entry(81, {
+      key,
+      name: '裸URL源',
+      url: 'https://live.example/bare.txt',
+      textReady: true,
+      health: 'healthy',
+      everSucceeded: true,
+      successfulAt: '2026-10-13T00:00:00.000Z',
+    })],
+  }));
+  memory.set('live_txt:' + key, '央视,#genre#\nCCTV-1,http://runtime.example/live');
+  memory.set('channel_merged_tree', JSON.stringify([
+    { group: '央视', channels: [{ name: 'CCTV-1', urls: ['http://runtime.example/live'] }] },
+    { group: '地方', channels: [{ name: '上海', urls: ['http://other.example/live'] }] },
+  ]));
+  const storage = {
+    async get(k) { return memory.has(k) ? memory.get(k) : null; },
+    async put(k, value) { memory.set(k, String(value)); },
+  };
+  const { rebuildLiveOutput } = require(outputOutfile);
+  const rebuilt = await rebuildLiveOutput(storage, {
+    policy: { selectionMode: 'simple', maxSources: -1 },
+  });
+  assert(rebuilt.txt.includes('央视,#genre#'), 'bare-url mapping must keep selected group');
+  assert(rebuilt.txt.includes('http://runtime.example/live'), 'bare-url mapping must keep selected url');
+  assert(!rebuilt.txt.includes('http://other.example/live'), 'bare-url mapping must not leak unselected url');
+  assert(memory.get('live_runtime_txt') === rebuilt.txt, 'bare-url mapping must refresh runtime txt');
+  assert(memory.get('live_merged_txt') === rebuilt.txt, 'bare-url mapping must refresh merged txt');
+  assert(memory.get('live_runtime_txt_version') === rebuilt.version, 'bare-url mapping must refresh runtime version');
+  assert(memory.get('live_merged_txt_version') === rebuilt.version, 'bare-url mapping must refresh merged version');
+}
+
+async function testEmptyRebuildKeepsPreviousCache() {
+  const memory = new Map();
+  const key = 'mapping-miss-source';
+  const previousTxt = '旧,#genre#\n旧频道,http://old.example/live';
+  memory.set('live_merge_mode', 'separated');
+  memory.set('live_runtime_txt', previousTxt);
+  memory.set('live_merged_txt', previousTxt);
+  memory.set('live_runtime_txt_version', 'old-runtime-version');
+  memory.set('live_merged_txt_version', 'old-merged-version');
+  memory.set('live_output_fingerprint', 'old-fingerprint');
+  memory.set('live_proxy_manifest', JSON.stringify({
+    version: 4,
+    signature: 'mapping-miss-source',
+    entries: [entry(82, {
+      key,
+      name: '失配源',
+      url: 'https://live.example/missing.txt',
+      textReady: true,
+      health: 'healthy',
+      everSucceeded: true,
+      successfulAt: '2026-10-13T00:00:00.000Z',
+    })],
+  }));
+  memory.set('channel_merged_tree', JSON.stringify([
+    { group: '央视', channels: [{ name: 'CCTV-1', urls: ['http://candidate.example/live'] }] },
+  ]));
+  const storage = {
+    async get(k) { return memory.has(k) ? memory.get(k) : null; },
+    async put(k, value) { memory.set(k, String(value)); },
+  };
+  const { rebuildLiveOutput } = require(outputOutfile);
+  let failed = false;
+  try {
+    await rebuildLiveOutput(storage, {
+      policy: { selectionMode: 'simple', maxSources: -1 },
+    });
+  } catch {
+    failed = true;
+  }
+  assert(failed, 'empty rebuild must fail instead of writing empty output');
+  assert(memory.get('live_runtime_txt') === previousTxt, 'failed rebuild must keep previous runtime txt');
+  assert(memory.get('live_merged_txt') === previousTxt, 'failed rebuild must keep previous merged txt');
+  assert(memory.get('live_output_fingerprint') === 'old-fingerprint', 'failed rebuild must keep previous fingerprint');
+}
+
 async function main() {
   await testSuccessWithoutUsableText();
   await testManualValidationFailure();
   await testStartupReadinessRepair();
   await testRuntimeCacheIsUnified();
+  await testBareUrlCandidateMapping();
+  await testEmptyRebuildKeepsPreviousCache();
   // ── 20. 源码裁剪：manifest 只保留允许 URL，不写入空 live:<key> ──
   const memory = new Map();
   memory.set('live_proxy_manifest', JSON.stringify({

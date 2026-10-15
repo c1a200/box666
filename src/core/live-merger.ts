@@ -1996,6 +1996,11 @@ export function bareLiveSourceUrl(url: string): string {
   return bareLiveUrl(url);
 }
 
+/** 提取线路写入时使用的源标签；裸 URL 返回空字符串。 */
+export function liveUrlSourceLabel(url: string): string {
+  return splitLiveUrlLabel(url).label;
+}
+
 export interface LiveCandidatePoolSnapshot {
   version: 1;
   groups: TVBoxLiveGroup[];

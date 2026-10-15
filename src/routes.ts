@@ -11,10 +11,10 @@ import { loadGroupOrder, saveGroupOrder } from './core/group-order';
 import { validateMacCMS } from './core/maccms';
 import { lookupJarUrl, isMd5Key, base64ToUint8Array, rewriteJarUrls, normalizeJarRequestKey, loadJarReadyKeys, markJarReady, getJarKeyForSite } from './core/jar-proxy';
 import { BASE_URL_PLACEHOLDER } from './core/config';
-import { lookupLiveSource, listLiveProxyEntries, listAllLiveProxyEntries, isLiveProxyEntryDistributable, liveProxyEntryLabel, recordLiveProxyValidation, removeLiveProxyEntry, updateLiveProxyManifest, parseLiveProxyManifest, KV_LIVE_PROXY_MANIFEST } from './core/live-source';
+import { lookupLiveSource, listLiveProxyEntries, listAllLiveProxyEntries, isLiveProxyEntryDistributable, recordLiveProxyValidation, removeLiveProxyEntry, updateLiveProxyManifest, parseLiveProxyManifest, KV_LIVE_PROXY_MANIFEST } from './core/live-source';
 import { loadLiveDistribution, saveLiveDistribution, toLiveDistributionPolicy } from './core/live-distribution-store';
 import { selectLiveDistribution } from './core/live-quality';
-import { computeLiveOutputFingerprint, rebuildLiveOutput } from './core/live-output';
+import { computeLiveOutputFingerprint, rebuildLiveOutput, selectLiveGroupsForPolicy } from './core/live-output';
 import { adminHtml } from './core/admin';
 import { dashboardHtml } from './core/dashboard';
 import { configEditorHtml } from './core/config-editor';
@@ -36,7 +36,7 @@ import {
   getQualityPoolHealth,
 } from './core/quality';
 import { loadClientDistribution, saveClientDistribution, findClientAuthCode, normalizeClientDistributionConfig, createClientAuthCode } from './core/client-auth-store';
-import { formatAggregatedLiveGroupsAsTxt, formatLiveGroupsAsTxt, filterLivesBySourceDetailed, filterGroupsBySourceLabels, reorderGroupsBySourcePriority, normalizeSourceLabelKey, parseLiveCandidatePool } from './core/live-merger';
+import { formatAggregatedLiveGroupsAsTxt, formatLiveGroupsAsTxt, filterLivesBySourceDetailed, parseLiveCandidatePool } from './core/live-merger';
 import { containsBlockedLiveUrl, isBlockedLiveSource, isBlockedLiveUrl } from './core/live-policy';
 import { autoNameFromUrl, backupTypeMismatch, createSourceBackup, extractBackupItems, parseSourceList } from './core/source-list-parser';
 import type { TVBoxConfig, TVBoxSite, SearchQuotaConfig, SiteQualityGrade, TVBoxLive, TVBoxLiveGroup, ClientAuthCode, ClientDistributionConfig, LiveDistributionConfig, SourceDistributionMode, SourceSelectionMode, ChannelProbeTrigger } from './core/types';
@@ -865,23 +865,13 @@ export function createApp(deps: AppDeps): Hono {
   ): Promise<TVBoxLiveGroup[]> {
     // 即使是“全选(-1)”，也必须经过质量池门禁与统一排序，
     // 不能再直接返回候选 groups，否则 invalid/blocked 会绕过筛选。
-    const selected = selectLiveDistribution(
-      (await listAllLiveProxyEntries(storage)).filter(isLiveProxyEntryDistributable),
+    // 与统一重建器共用选择逻辑，兼容标签树和 Cloudflare 裸 URL 文本。
+    const selection = await selectLiveGroupsForPolicy(
+      storage,
+      groups,
       toLiveDistributionPolicy(distribution),
     );
-    const selectedLabels = new Set<string>();
-    const priorityLabels: string[] = [];
-    for (const entry of selected) {
-      const label = liveProxyEntryLabel(entry, groups);
-      if (!label) continue;
-      selectedLabels.add(normalizeSourceLabelKey(label));
-      priorityLabels.push(label);
-    }
-    if (selectedLabels.size === 0) return [];
-    return reorderGroupsBySourcePriority(
-      filterGroupsBySourceLabels(groups, selectedLabels, false),
-      priorityLabels,
-    );
+    return selection.groups;
   }
 
   async function buildFilteredLiveTxt(distribution: LiveDistributionConfig): Promise<string | null> {
