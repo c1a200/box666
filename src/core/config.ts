@@ -172,5 +172,8 @@ export const CHANNEL_PROBE_INTERVALS = [360, 720, 1440] as const;
 // 并发与超时
 export const CHANNEL_PROBE_CONCURRENCY = 18;
 export const CHANNEL_PROBE_TIMEOUT_MS = 5000;
+// Persist probe results in short batches so a process restart can resume without
+// losing the whole priority/background phase.
+export const CHANNEL_PROBE_BATCH_SIZE = 180;
 // 缓存过期（7 天）
 export const CHANNEL_SPEED_TTL_MS = 7 * 24 * 60 * 60 * 1000;

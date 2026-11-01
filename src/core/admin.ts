@@ -954,6 +954,7 @@ const translations = {
     channelProbeTrigger:'Probe now', channelProbeRefresh:'Refresh probe status',
     channelProbeIdle:'Idle', channelProbeRunning:'Running', channelProbeDone:'Completed', channelProbeError:'Error',
     channelProbeState:'State', channelProbeProgress:'Progress', channelProbeCoverage:'Coverage',
+    channelProbePhasePriority:'Testing priority lines', channelProbePhaseBackground:'Testing remaining lines', channelProbePhaseFinalizing:'Updating live output', channelProbeRemaining:'Unmeasured', channelProbeLastProgress:'Last progress',
     channelProbeTriggerSource:'Trigger', channelProbePriority:'Priority URLs',
     channelProbePriorityProbed:'Priority probed', channelProbeBackgroundProbed:'Background probed',
     channelProbeTriggerStartup:'Startup', channelProbeTriggerPostAggregation:'Post-aggregation',
@@ -1128,6 +1129,7 @@ const translations = {
     channelProbeTrigger:'立即测速', channelProbeRefresh:'刷新测速状态',
     channelProbeIdle:'空闲', channelProbeRunning:'运行中', channelProbeDone:'已完成', channelProbeError:'失败',
     channelProbeState:'状态', channelProbeProgress:'进度', channelProbeCoverage:'覆盖率',
+    channelProbePhasePriority:'正在测速优先线路', channelProbePhaseBackground:'正在补测其余线路', channelProbePhaseFinalizing:'正在更新直播输出', channelProbeRemaining:'待测速', channelProbeLastProgress:'最近进度',
     channelProbeTriggerSource:'触发来源', channelProbePriority:'优先线路',
     channelProbePriorityProbed:'优先已测', channelProbeBackgroundProbed:'后台补测',
     channelProbeTriggerStartup:'启动', channelProbeTriggerPostAggregation:'聚合完成后',
@@ -2295,8 +2297,11 @@ async function loadChannelProbe() {
     const lines = [];
     lines.push(t('channelProbeState') + ': ' + stateLabel + (d.running ? ' ⏳' : ''));
     lines.push(t('channelProbeTriggerSource') + ': ' + triggerLabel);
+    const phaseLabel = { priority: t('channelProbePhasePriority'), background: t('channelProbePhaseBackground'), finalizing: t('channelProbePhaseFinalizing') }[s.phase];
+    if (phaseLabel) lines.push(phaseLabel);
     if (s.totalUrls) {
       lines.push(t('channelProbeProgress') + ': ' + (s.probed || 0) + ' / ' + s.totalUrls + ' | ' + t('channelProbeCoverage') + ': ' + (s.coverage || 0) + '% | ' + t('channelProbeChannels') + ': ' + (s.totalChannels || 0));
+      if (Number.isFinite(s.remaining)) lines.push(t('channelProbeRemaining') + ': ' + s.remaining);
     }
     if (s.priorityUrls || s.priorityProbed || s.backgroundProbed) {
       lines.push(t('channelProbePriority') + ': ' + (s.priorityUrls || 0) + ' | ' + t('channelProbePriorityProbed') + ': ' + (s.priorityProbed || 0) + ' | ' + t('channelProbeBackgroundProbed') + ': ' + (s.backgroundProbed || 0));
@@ -2306,6 +2311,9 @@ async function loadChannelProbe() {
     }
     if (s.finishedAt) {
       lines.push(t('channelProbeFinished') + ': ' + new Date(s.finishedAt).toLocaleString());
+    }
+    if (s.lastProgressAt) {
+      lines.push(t('channelProbeLastProgress') + ': ' + new Date(s.lastProgressAt).toLocaleString());
     }
     if (s.error) {
       lines.push('⚠️ ' + s.error);

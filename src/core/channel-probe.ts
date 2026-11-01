@@ -22,6 +22,7 @@ import {
   KV_LIVE_RUNTIME_TXT_VERSION,
   CHANNEL_PROBE_CONCURRENCY,
   CHANNEL_PROBE_TIMEOUT_MS,
+  CHANNEL_PROBE_BATCH_SIZE,
   DEFAULT_CHANNEL_PROBE_INTERVAL,
   CHANNEL_PROBE_INTERVALS,
   CHANNEL_SPEED_TTL_MS,
@@ -96,8 +97,10 @@ export async function loadStatus(storage: Storage): Promise<ChannelProbeStatus> 
         const recovered: ChannelProbeStatus = {
           ...parsed,
           state: 'error',
+          phase: undefined,
           finishedAt: parsed.finishedAt || new Date().toISOString(),
-          error: parsed.error || 'Previous run was interrupted by a service restart',
+          lastProgressAt: new Date().toISOString(),
+          error: parsed.error || 'Previous run was interrupted; saved batches are preserved and a new run will resume from uncached URLs',
         };
         await saveStatus(storage, recovered);
         return recovered;
@@ -238,46 +241,59 @@ async function probeSingle(url: string, timeoutMs = CHANNEL_PROBE_TIMEOUT_MS): P
   const isTs = /\.(?:ts|flv|mp4)(?:\?|$)/i.test(url);
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), Math.max(500, timeoutMs));
+  const effectiveTimeoutMs = Math.max(500, timeoutMs);
   const start = Date.now();
+  let timer: ReturnType<typeof setTimeout> | undefined;
 
   try {
-    if (isM3U8) return await verifyHlsPlayback(url, start, controller);
+    const attempt = async (): Promise<ProbeResult> => {
+      if (isM3U8) return verifyHlsPlayback(url, start, controller);
 
-    const resp = await fetch(url, {
-      signal: controller.signal,
-      headers: { 'User-Agent': TVBOX_UA },
-    });
-    const ttfb = Date.now() - start;
+      const resp = await fetch(url, {
+        signal: controller.signal,
+        headers: { 'User-Agent': TVBOX_UA },
+      });
+      const ttfb = Date.now() - start;
 
-    if (!resp.ok) {
-      return { url, speedMs: 0, kind: 'fail', failureReason: 'http' };
-    }
-
-    const reader = resp.body?.getReader();
-    if (!reader) return { url, speedMs: ttfb, kind: 'tcp' };
-
-    try {
-      const { value } = await reader.read();
-      if (!value) return { url, speedMs: ttfb, kind: 'tcp' };
-
-      if (isTs) {
-        const end = Math.min(4096, value.length);
-        for (let i = 0; i < end; i += 188) {
-          if (value[i] === 0x47) return { url, speedMs: ttfb, kind: 'ts' };
-        }
-        return { url, speedMs: ttfb, kind: 'tcp' };
+      if (!resp.ok) {
+        return { url, speedMs: 0, kind: 'fail', failureReason: 'http' };
       }
 
-      return { url, speedMs: ttfb, kind: 'tcp' };
-    } finally {
-      reader.cancel().catch(() => {});
-    }
+      const reader = resp.body?.getReader();
+      if (!reader) return { url, speedMs: ttfb, kind: 'tcp' };
+
+      try {
+        const { value } = await reader.read();
+        if (!value) return { url, speedMs: ttfb, kind: 'tcp' };
+
+        if (isTs) {
+          const end = Math.min(4096, value.length);
+          for (let i = 0; i < end; i += 188) {
+            if (value[i] === 0x47) return { url, speedMs: ttfb, kind: 'ts' };
+          }
+          return { url, speedMs: ttfb, kind: 'tcp' };
+        }
+
+        return { url, speedMs: ttfb, kind: 'tcp' };
+      } finally {
+        reader.cancel().catch(() => {});
+      }
+    };
+
+    // AbortController normally stops fetch and stream reads. Promise.race is a
+    // second, hard deadline for runtimes/transports that fail to settle on abort.
+    const deadline = new Promise<ProbeResult>((resolve) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        resolve({ url, speedMs: 0, kind: 'fail', failureReason: 'timeout' });
+      }, effectiveTimeoutMs);
+    });
+    return await Promise.race([attempt(), deadline]);
   } catch (err) {
     const aborted = controller.signal.aborted || (err instanceof Error && err.name === 'AbortError');
     return { url, speedMs: 0, kind: 'fail', failureReason: aborted ? 'timeout' : 'network' };
   } finally {
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
   }
 }
 // ─── 并发池 ────────────────────────────────────────────
@@ -585,10 +601,13 @@ export async function runChannelProbe(
   running = true;
   const startedAt = new Date().toISOString();
   const startMs = Date.now();
+  const fresh: ChannelSpeedMap = {};
   const status: ChannelProbeStatus = {
     state: 'running',
     trigger,
+    phase: 'priority',
     startedAt,
+    lastProgressAt: startedAt,
     totalUrls: urls.length,
     probed: 0,
     priorityUrls: priorityUrls.length,
@@ -598,157 +617,155 @@ export async function runChannelProbe(
     failed: 0,
     totalChannels,
     coverage: 0,
+    remaining: urls.length,
   };
-  await saveStatus(storage, status);
-
-  console.log(
-    '[channel-probe] Started: ' + urls.length + ' total URLs, ' +
-    priorityUrls.length + ' priority URLs, ' + totalChannels + ' channels, concurrency=' +
-    CHANNEL_PROBE_CONCURRENCY + ', trigger=' + trigger,
-  );
 
   try {
-    const fresh: ChannelSpeedMap = { ...pruneExpired(await loadSpeedMap(storage)) };
+    Object.assign(fresh, pruneExpired(await loadSpeedMap(storage)));
     const probeNow = Date.now();
-    const priorityCandidates = selectProbeCandidates(
-      priorityUrls,
-      fresh,
-      probeNow,
-      Number.POSITIVE_INFINITY,
-    );
+    const priorityCandidates = selectProbeCandidates(priorityUrls, fresh, probeNow);
     const backgroundCandidates = selectProbeCandidates(
       urls.filter((url) => !prioritySet.has(url)),
       fresh,
       probeNow,
-      Number.POSITIVE_INFINITY,
     );
-    let priorityProbed = 0;
-    let backgroundProbed = 0;
-    let lastProgressSave = 0;
 
     const recalculate = (): void => {
       let successCount = 0;
       let failedCount = 0;
+      let probedCount = 0;
+      let priorityCount = 0;
+      let backgroundCount = 0;
       for (const url of urls) {
         const entry = fresh[url];
         if (!entry) continue;
+        probedCount++;
+        if (prioritySet.has(url)) priorityCount++;
+        else backgroundCount++;
         if (entry.kind === 'fail') failedCount++;
         else successCount++;
       }
+      status.probed = probedCount;
+      status.priorityProbed = priorityCount;
+      status.backgroundProbed = backgroundCount;
       status.success = successCount;
       status.failed = failedCount;
       status.coverage = urls.length > 0 ? Math.round((successCount / urls.length) * 100) : 0;
+      status.remaining = Math.max(0, urls.length - probedCount);
     };
     recalculate();
+    await saveStatus(storage, { ...status });
 
-    const makeProgressHandler = (phase: 'priority' | 'background') =>
-      (done: number, total: number, result: ProbeResult): void => {
+    console.log(
+      '[channel-probe] Started: ' + urls.length + ' total URLs, ' +
+      priorityUrls.length + ' priority URLs, ' + totalChannels + ' channels, concurrency=' +
+      CHANNEL_PROBE_CONCURRENCY + ', batch=' + CHANNEL_PROBE_BATCH_SIZE + ', trigger=' + trigger,
+    );
+
+    const persistBatch = async (
+      phase: 'priority' | 'background',
+      batch: readonly string[],
+      results: readonly ProbeResult[],
+    ): Promise<void> => {
+      const probedAt = new Date().toISOString();
+      for (const result of results) {
         const previous = fresh[result.url];
         const failed = result.kind === 'fail';
         fresh[result.url] = {
           speedMs: result.speedMs,
-          probedAt: new Date().toISOString(),
+          probedAt,
           kind: result.kind,
           ...(result.verification ? { verification: result.verification } : {}),
           ...(result.failureReason ? { failureReason: result.failureReason } : {}),
           ...(failed ? { consecutiveFailures: (previous?.consecutiveFailures || 0) + 1 } : {}),
         };
-        if (phase === 'priority') priorityProbed = done;
-        else backgroundProbed = done;
-        status.probed = priorityProbed + backgroundProbed;
-        status.priorityProbed = priorityProbed;
-        status.backgroundProbed = backgroundProbed;
-        recalculate();
+      }
+      await saveSpeedMap(storage, fresh);
+      status.phase = phase;
+      status.lastProgressAt = new Date().toISOString();
+      recalculate();
+      await saveStatus(storage, { ...status });
+      console.log(
+        `[channel-probe] ${phase} progress: ${status.probed}/${urls.length}; ` +
+        `${batch.length} URLs in the last saved batch`,
+      );
+    };
 
-        const now = Date.now();
-        if (now - lastProgressSave >= 250 || done === total) {
-          lastProgressSave = now;
-          saveStatus(storage, { ...status }).catch(() => {});
-        }
-        if (done % 200 === 0 || done === total) {
-          console.log('[channel-probe] ' + phase + ' progress: ' + done + '/' + total);
-        }
-      };
+    const runPhase = async (
+      phase: 'priority' | 'background',
+      candidates: readonly { url: string }[],
+    ): Promise<void> => {
+      status.phase = phase;
+      status.lastProgressAt = new Date().toISOString();
+      await saveStatus(storage, { ...status });
+      console.log(`[channel-probe] ${phase} probe: ${candidates.length} due URLs`);
+      for (let offset = 0; offset < candidates.length; offset += CHANNEL_PROBE_BATCH_SIZE) {
+        const batch = candidates
+          .slice(offset, offset + CHANNEL_PROBE_BATCH_SIZE)
+          .map((item) => item.url);
+        const results = await runWithConcurrency(
+          batch,
+          CHANNEL_PROBE_CONCURRENCY,
+          (url) => probeSingle(url),
+        );
+        await persistBatch(phase, batch, results);
+      }
+    };
 
-    const persist = async (reason: string): Promise<void> => {
+    const persistOutput = async (reason: string): Promise<void> => {
       recalculate();
       await saveSpeedMap(storage, fresh);
       await rebuildLiveOutput(storage, { reason });
+      status.phase = 'finalizing';
+      status.lastProgressAt = new Date().toISOString();
       await saveStatus(storage, { ...status });
     };
 
-    if (priorityCandidates.length > 0) {
-      console.log(
-        '[channel-probe] Priority probe: ' + priorityCandidates.length + ' new URLs (' +
-        (priorityUrls.length - priorityCandidates.length) + ' cached)',
-      );
-      await runWithConcurrency(
-        priorityCandidates.map((item) => item.url),
-        CHANNEL_PROBE_CONCURRENCY,
-        (url) => probeSingle(url),
-        makeProgressHandler('priority'),
-      );
-    } else {
-      console.log('[channel-probe] Priority probe: all ' + priorityUrls.length + ' URLs cached');
-    }
-    await persist('channel-probe-priority');
-
-    if (backgroundCandidates.length > 0) {
-      console.log('[channel-probe] Background probe: ' + backgroundCandidates.length + ' new URLs');
-      await runWithConcurrency(
-        backgroundCandidates.map((item) => item.url),
-        CHANNEL_PROBE_CONCURRENCY,
-        (url) => probeSingle(url),
-        makeProgressHandler('background'),
-      );
-      await persist('channel-probe-background');
-    }
+    await runPhase('priority', priorityCandidates);
+    await persistOutput('channel-probe-priority');
+    await runPhase('background', backgroundCandidates);
+    await persistOutput('channel-probe-background');
 
     recalculate();
+    const finishedAt = new Date().toISOString();
     const durationMs = Date.now() - startMs;
     const finalStatus: ChannelProbeStatus = {
+      ...status,
       state: 'done',
-      trigger,
-      startedAt,
-      finishedAt: new Date().toISOString(),
+      phase: undefined,
+      finishedAt,
+      lastProgressAt: finishedAt,
       durationMs,
       totalUrls: urls.length,
-      probed: priorityProbed + backgroundProbed,
-      priorityUrls: priorityUrls.length,
-      priorityProbed,
-      backgroundProbed,
-      success: status.success,
-      failed: status.failed,
       totalChannels,
-      coverage: status.coverage,
     };
     await saveStatus(storage, finalStatus);
     console.log(
       '[channel-probe] Done in ' + (durationMs / 1000).toFixed(1) + 's: ' +
-      priorityProbed + ' priority + ' + backgroundProbed + ' background probed, ' +
-      status.success + ' success, ' + status.failed + ' failed',
+      status.priorityProbed + ' priority + ' + status.backgroundProbed + ' background covered; ' +
+      status.success + ' success, ' + status.failed + ' failed, ' + status.remaining + ' remaining',
     );
     return finalStatus;
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
+    const finishedAt = new Date().toISOString();
     const errStatus: ChannelProbeStatus = {
+      ...status,
       state: 'error',
-      trigger,
-      startedAt,
-      finishedAt: new Date().toISOString(),
+      phase: undefined,
+      finishedAt,
+      lastProgressAt: finishedAt,
       durationMs: Date.now() - startMs,
       totalUrls: urls.length,
-      probed: status.probed,
-      priorityUrls: priorityUrls.length,
-      priorityProbed: status.priorityProbed,
-      backgroundProbed: status.backgroundProbed,
-      success: status.success,
-      failed: status.failed,
       totalChannels,
-      coverage: status.coverage,
       error: msg,
     };
-    await saveStatus(storage, errStatus);
+    try {
+      await saveSpeedMap(storage, fresh);
+      await saveStatus(storage, errStatus);
+    } catch (persistError) {
+      console.error('[channel-probe] Failed to persist interrupted status:', persistError);
+    }
     console.error('[channel-probe] Error: ' + msg);
     return errStatus;
   } finally {

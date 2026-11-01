@@ -503,8 +503,10 @@ export type ChannelProbeTrigger = 'startup' | 'post-aggregation' | 'manual' | 'c
 
 export interface ChannelProbeStatus {
   state: ChannelProbeState;
+  phase?: 'priority' | 'background' | 'finalizing';
   startedAt?: string;
   finishedAt?: string;
+  lastProgressAt?: string;
   durationMs?: number;
   totalUrls: number;
   probed: number;            // 当前已测完数
@@ -516,5 +518,6 @@ export interface ChannelProbeStatus {
   failed: number;            // 超时/失败
   totalChannels: number;     // 合并后频道数
   coverage: number;          // 覆盖率（success/totalUrls，百分比）
+  remaining?: number;
   error?: string;
 }

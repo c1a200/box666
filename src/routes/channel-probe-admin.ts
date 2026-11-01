@@ -89,7 +89,11 @@ export function mountChannelProbeRoutes(app: Hono, deps: ChannelProbeRouteDeps):
     if (!(await isProbeEnabled(storage))) {
       return c.json({ success: false, error: 'Probe is disabled, enable it first' }, 400);
     }
-    // 统一调度器负责串行门禁；已有任务运行时，本次手动触发会排队执行。
+    // Avoid queuing a duplicate full-pool run behind a long probe. The shared
+    // scheduler still lets manual requests overtake startup waiters.
+    if (isRunning()) {
+      return c.json({ success: false, running: true, error: 'Probe is already running' }, 409);
+    }
     if (triggerChannelProbe) {
       void triggerChannelProbe('manual').catch((err) => {
         console.error('[channel-probe-admin] Trigger error:', err);
