@@ -3327,7 +3327,7 @@ function renderSearchSources() {
         rowHtml += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem" onclick="togglePin(&quot;' + escHtml(s.key) + '&quot;)">' + t('sqUnpin') + '</button> ';
       } else {
         rowHtml += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem" onclick="togglePin(&quot;' + escHtml(s.key) + '&quot;, &quot;global&quot;)">' + t('sqPinGlobal') + '</button> ';
-        if (rootSourceSelection.selectionMode === 'category') rowHtml += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem" onclick="togglePin(&quot;' + escHtml(s.key) + '&quot;, &quot;category&quot;)">' + t('sqPinCategory') + '</button> ';
+        rowHtml += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem" onclick="togglePin(&quot;' + escHtml(s.key) + '&quot;, &quot;category&quot;)">' + t('sqPinCategory') + '</button> ';
       }
     }
     rowHtml += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem;color:var(--red)" onclick="toggleBlocked(&quot;' + escHtml(s.key) + '&quot;)">' + (isBlocked ? t('sqUnblock') : t('sqBlock')) + '</button>';
@@ -4613,9 +4613,7 @@ function renderLiveDistribution() {
       pinActions = '<button class="btn btn-sm" onclick="liveDistTogglePin(&quot;' + escHtml(e.key) + '&quot;)">' + t('liveActionUnpin') + '</button> ';
     } else {
       pinActions = '<button class="btn btn-sm" onclick="liveDistTogglePin(&quot;' + escHtml(e.key) + '&quot;, &quot;global&quot;)">' + t('liveActionPinGlobal') + '</button> ';
-      if (liveDistPolicy.selectionMode === 'category') {
-        pinActions += '<button class="btn btn-sm" onclick="liveDistTogglePin(&quot;' + escHtml(e.key) + '&quot;, &quot;category&quot;)">' + t('liveActionPinCategory') + '</button> ';
-      }
+      pinActions += '<button class="btn btn-sm" onclick="liveDistTogglePin(&quot;' + escHtml(e.key) + '&quot;, &quot;category&quot;)">' + t('liveActionPinCategory') + '</button> ';
     }
     html += '<tr style="border-bottom:1px solid var(--border)' + (invalid||isBlocked ? ';opacity:0.55' : '') + '">'
       + '<td style="padding:4px">' + (e.rank || '') + '</td>'
@@ -4648,7 +4646,7 @@ async function liveDistTogglePin(key, scope) {
   if (isPinned) {
     pinned = pinned.filter(function(k){ return k !== key; });
     categoryPinned = categoryPinned.filter(function(k){ return k !== key; });
-  } else if (scope === 'category' && liveDistPolicy.selectionMode === 'category') {
+  } else if (scope === 'category') {
     pinned = pinned.filter(function(k){ return k !== key; });
     categoryPinned.push(key);
   } else {

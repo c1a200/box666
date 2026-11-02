@@ -97,6 +97,13 @@ function checkAdminInlineScripts() {
   if (!searchPanel.includes('sqRankingHint') || !html.includes('sqQualityOrder = rawQualityPoolKeys.slice()') || !html.includes('compareByQualityPoolOrder')) {
     throw new Error('search source ranking must explain and use the server quality-pool order');
   }
+  const searchCategoryPinLine = html.split('\n').find(line => line.includes('onclick="togglePin') && line.includes("t('sqPinCategory')"));
+  const liveCategoryPinLine = html.split('\n').find(line => line.includes('onclick="liveDistTogglePin') && line.includes("t('liveActionPinCategory')"));
+  if (!searchCategoryPinLine || searchCategoryPinLine.includes("selectionMode === 'category'")
+      || !liveCategoryPinLine || liveCategoryPinLine.includes("selectionMode === 'category'")
+      || !html.includes("} else if (scope === 'category') {")) {
+    throw new Error('global and category pin actions must remain available independently of the current selection mode');
+  }
   if (!html.includes("['all', 'search', 'selected', 'custom'].includes(item && item.sourceMode)") || !html.includes('selectedKeys: Array.isArray(item && item.selectedKeys)')) {
     throw new Error('legacy auth sourceMode/selectedKeys must round-trip through the admin editor');
   }
