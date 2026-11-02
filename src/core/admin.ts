@@ -500,10 +500,19 @@ ${sharedStyles}
           </select>
           <input type="number" id="liveDistCountInput" class="nt-input" style="width:100px;display:none" min="1" placeholder="数量" data-i18n-placeholder="liveDistCountPh" oninput="syncLiveDistCountInput()">
         </span>
+        <span id="liveDistChannelUrlControls" style="display:contents">
+          <label class="form-label" style="margin:0" data-i18n="liveDistChannelUrlLabel">每频道线路数</label>
+          <select id="liveDistChannelUrlMode" class="nt-input" style="width:150px" onchange="toggleLiveDistChannelUrlCount()">
+            <option value="all" data-i18n-text="liveDistChannelUrlAll">全部</option>
+            <option value="custom" data-i18n-text="liveDistChannelUrlCustom">自定义数量</option>
+          </select>
+          <input type="number" id="liveDistChannelUrlCount" class="nt-input" style="width:100px;display:none" min="1" placeholder="线路数" data-i18n-placeholder="liveDistChannelUrlPh">
+        </span>
         <button class="btn btn-sm" onclick="saveLiveDistributionPolicy()" data-i18n="save">保存</button>
         <span class="status-text" id="liveDistStatus" style="font-size:0.8rem"></span>
       </div>
       <div id="liveDistSimpleHint" style="font-size:0.78rem;color:var(--text-secondary);margin-top:4px" data-i18n="liveDistSimpleHint">选择“全部”即质量池全部下发，不做任何隐式截断；应用端会一次性获得所有可用直播源。</div>
+      <div id="liveDistChannelUrlHint" style="font-size:0.78rem;color:var(--text-secondary);margin-top:4px" data-i18n="liveDistChannelUrlHint">合并模式按频道内质量排序后限制线路数；例如设为 9，即每个频道保留优选的前 9 条线路，选择全部则保留所有优选线路。</div>
 
       <div id="liveDistCategoryWrap" style="display:none;margin-top:10px">
         <div style="font-size:0.78rem;color:var(--text-secondary);margin-bottom:6px" data-i18n="liveDistCategoryHint">为每个分类分别设置下发数量；每个分类只在该分类自己的质量排名内取靠前的源。留空或选“全部”表示该分类不限制；“不下发”表示该分类不选择。</div>
@@ -973,7 +982,9 @@ const translations = {
     liveDistSelectedOnly:'Delivered only', liveDistSelectedExcluded:'Not delivered only', liveDistSelectedInvalid:'Explicitly invalid only',
     liveDistMode:'Delivery mode', liveDistModeSimple:'Simple: by quality-pool rank', liveDistModeCategory:'Detailed: per category',
     liveDistCountLabel:'Delivery count', liveDistCountAll:'All (-1)', liveDistCountNone:'Deliver none (0)', liveDistCountCustom:'Custom count',
-    liveDistCountPh:'Count', liveDistSimpleHint:'Choosing “All” delivers the entire quality pool with no implicit truncation; the client receives every usable live source at once.',
+    liveDistCountPh:'Count', liveDistChannelUrlLabel:'Lines per channel', liveDistChannelUrlAll:'All', liveDistChannelUrlCustom:'Custom count', liveDistChannelUrlPh:'Lines',
+    liveDistChannelUrlHint:'In merged mode, lines are ranked within each channel before limiting. For example, 9 keeps the top 9 preferred lines for every channel; All keeps every preferred line.',
+    liveDistSimpleHint:'Choosing “All” delivers the entire quality pool with no implicit truncation; the client receives every usable live source at once.',
     liveDistCategoryHint:'Set a delivery count per category; each category picks only its own top-ranked sources. Blank or “All” means unlimited; “None” excludes the category.',
     liveDistRecommended:'Use recommended', liveDistBucketAllSel:'Select all categories', liveDistBucketNoneSel:'Deselect all categories',
     liveDistAttachHint:'Attach to main config: when off, the main config carries no live sources, but /live and /lives stay available (auth still applies).',
@@ -1148,7 +1159,9 @@ const translations = {
     liveDistSelectedOnly:'仅已下发', liveDistSelectedExcluded:'仅未下发', liveDistSelectedInvalid:'仅明确失效',
     liveDistMode:'下发方式', liveDistModeSimple:'简单方式：按质量池总排名', liveDistModeCategory:'精细方式：按分类分别选择',
     liveDistCountLabel:'下发数量', liveDistCountAll:'全部（-1）', liveDistCountNone:'不下发（0）', liveDistCountCustom:'自定义数量',
-    liveDistCountPh:'数量', liveDistSimpleHint:'选择“全部”即质量池全部下发，不做任何隐式截断；应用端会一次性获得所有可用直播源。',
+    liveDistCountPh:'数量', liveDistChannelUrlLabel:'每频道线路数', liveDistChannelUrlAll:'全部', liveDistChannelUrlCustom:'自定义数量', liveDistChannelUrlPh:'线路数',
+    liveDistChannelUrlHint:'合并模式按频道内质量排序后限制线路数；例如设为 9，即每个频道保留优选的前 9 条线路，选择全部则保留所有优选线路。',
+    liveDistSimpleHint:'选择“全部”即质量池全部下发，不做任何隐式截断；应用端会一次性获得所有可用直播源。',
     liveDistCategoryHint:'为每个分类分别设置下发数量；每个分类只在该分类自己的质量排名内取靠前的源。留空或选“全部”表示该分类不限制；“不下发”表示该分类不选择。',
     liveDistRecommended:'填入推荐值', liveDistBucketAllSel:'分类全选', liveDistBucketNoneSel:'分类全不选',
     liveDistAttachHint:'主配置附带：关闭后主配置不再携带直播，独立 /live、/lives 链接仍可用（受鉴权限制）。',
@@ -4349,12 +4362,17 @@ async function loadLiveDisabled() {
 }
 function updateLiveStrategyState() {
   const disabled = !!$('liveDisabledCheck')?.checked;
+  const merged = !!$('liveMergeMerged')?.checked;
   const options = $('liveStrategyOptions');
   if (options) {
     options.querySelectorAll('input, button').forEach((el) => { el.disabled = disabled; });
   }
   const hint = $('liveStrategyHint');
   if (hint) hint.textContent = disabled ? t('liveStrategyDisabledHint') : '';
+  const channelUrlControls = $('liveDistChannelUrlControls');
+  const channelUrlHint = $('liveDistChannelUrlHint');
+  if (channelUrlControls) channelUrlControls.style.display = merged ? 'contents' : 'none';
+  if (channelUrlHint) channelUrlHint.style.display = merged ? '' : 'none';
 }
 async function saveLiveDisabled() {
   const disabled = $('liveDisabledCheck').checked;
@@ -4428,7 +4446,7 @@ async function setLiveMergeMode(mode) {
 
 // ─── 直播源下发（候选池/质量池/下发池）──────────
 let liveDistData = null;
-let liveDistPolicy = { selectionMode: 'simple', maxSources: -1, bucketLimits: {}, pinnedKeys: [], categoryPinnedKeys: [], blockedKeys: [], attachToRoot: true, attachToAuth: true };
+let liveDistPolicy = { selectionMode: 'simple', maxSources: -1, maxUrlsPerChannel: 9, bucketLimits: {}, pinnedKeys: [], categoryPinnedKeys: [], blockedKeys: [], attachToRoot: true, attachToAuth: true };
 
 function liveDistCountsText(counts) {
   return t('liveDistCandidates') + ': ' + (counts.candidates ?? '-')
@@ -4445,6 +4463,7 @@ async function loadLiveDistribution() {
     liveDistPolicy = {
       selectionMode: dist.selectionMode === 'category' ? 'category' : 'simple',
       maxSources: typeof dist.maxSources === 'number' ? dist.maxSources : -1,
+      maxUrlsPerChannel: normalizeLiveDistChannelUrlLimit(dist.maxUrlsPerChannel),
       bucketLimits: dist.bucketLimits || {},
       pinnedKeys: Array.isArray(dist.pinnedKeys) ? dist.pinnedKeys.slice() : [],
       categoryPinnedKeys: Array.isArray(dist.categoryPinnedKeys) ? dist.categoryPinnedKeys.slice() : [],
@@ -4459,6 +4478,7 @@ async function loadLiveDistribution() {
     const cm = $('liveDistCountMode'); const ci = $('liveDistCountInput');
     if (cm) cm.value = liveDistPolicy.maxSources === 0 ? 'none' : (liveDistPolicy.maxSources > 0 ? 'custom' : 'all');
     if (ci && liveDistPolicy.maxSources > 0) ci.value = String(liveDistPolicy.maxSources);
+    syncLiveDistChannelUrlControls();
     toggleLiveDistMode();
     toggleLiveDistCount();
     renderLiveDistribution();
@@ -4485,6 +4505,29 @@ function syncLiveDistCountInput() {
   const select = $('liveDistCountMode'); const input = $('liveDistCountInput');
   if (!select || select.value !== 'custom' || !input) return;
 }
+
+function normalizeLiveDistChannelUrlLimit(value) {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  return Number.isInteger(parsed) && (parsed === -1 || parsed > 0) ? parsed : 9;
+}
+
+function toggleLiveDistChannelUrlCount() {
+  const select = $('liveDistChannelUrlMode'); const input = $('liveDistChannelUrlCount');
+  if (!select || !input) return;
+  const custom = select.value === 'custom';
+  input.disabled = !custom;
+  input.style.display = custom ? '' : 'none';
+  if (custom && !input.value) input.value = '9';
+}
+
+function syncLiveDistChannelUrlControls() {
+  const select = $('liveDistChannelUrlMode'); const input = $('liveDistChannelUrlCount');
+  const limit = normalizeLiveDistChannelUrlLimit(liveDistPolicy.maxUrlsPerChannel);
+  if (select) select.value = limit === -1 ? 'all' : 'custom';
+  if (input) input.value = limit > 0 ? String(limit) : '';
+  toggleLiveDistChannelUrlCount();
+}
+
 
 function liveDistCategories() {
   const categories = liveDistData && liveDistData.categories ? liveDistData.categories : {};
@@ -4564,9 +4607,17 @@ async function saveLiveDistributionPolicy() {
   } else {
     bucketLimits = liveDistPolicy.bucketLimits || {};
   }
+  const channelUrlMode = $('liveDistChannelUrlMode') ? $('liveDistChannelUrlMode').value : 'all';
+  const channelUrlInput = $('liveDistChannelUrlCount');
+  let maxUrlsPerChannel = -1;
+  if (channelUrlMode === 'custom') {
+    const parsed = channelUrlInput ? parseInt(channelUrlInput.value, 10) : NaN;
+    maxUrlsPerChannel = Number.isFinite(parsed) && parsed >= 1 ? parsed : 9;
+  }
   const body = {
     selectionMode: mode === 'category' ? 'category' : 'simple',
     maxSources,
+    maxUrlsPerChannel,
     bucketLimits,
     pinnedKeys: liveDistPolicy.pinnedKeys || [],
     categoryPinnedKeys: liveDistPolicy.categoryPinnedKeys || [],
@@ -4582,6 +4633,7 @@ async function saveLiveDistributionPolicy() {
     liveDistPolicy = {
       selectionMode: dist.selectionMode === 'category' ? 'category' : 'simple',
       maxSources: typeof dist.maxSources === 'number' ? dist.maxSources : -1,
+      maxUrlsPerChannel: normalizeLiveDistChannelUrlLimit(dist.maxUrlsPerChannel),
       bucketLimits: dist.bucketLimits || {},
       pinnedKeys: Array.isArray(dist.pinnedKeys) ? dist.pinnedKeys.slice() : [],
       categoryPinnedKeys: Array.isArray(dist.categoryPinnedKeys) ? dist.categoryPinnedKeys.slice() : [],
@@ -4589,6 +4641,7 @@ async function saveLiveDistributionPolicy() {
     };
     const counts = liveDistData.counts || {};
     $('liveDistCounts').textContent = liveDistCountsText(counts);
+    syncLiveDistChannelUrlControls();
     if (status) { status.textContent = '✓ ' + t('liveDistSaved'); setTimeout(function(){ status.textContent=''; }, 2500); }
     renderLiveDistribution();
   } catch(e) {

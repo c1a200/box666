@@ -20,6 +20,9 @@ export const LIVE_CATEGORIES: readonly LiveCategory[] = [
   'other',
 ];
 
+/** 合并模式未配置时的兼容默认值；历史上固定为每频道 9 条线路。 */
+export const DEFAULT_LIVE_MAX_URLS_PER_CHANNEL = 9;
+
 export const LIVE_CATEGORY_LABELS: Readonly<Record<LiveCategory, string>> = {
   cctv: '央视',
   satellite: '卫视',
@@ -313,6 +316,8 @@ export interface LiveDistributionPolicy {
   selectionMode: SourceSelectionMode;
   /** 简单模式下发数量上限：-1=质量池全部；0=不下发；正数=质量排序 Top N */
   maxSources: number;
+  /** 合并模式每频道线路数：-1=全部；正数=按频道内质量排序取前 N */
+  maxUrlsPerChannel: number;
   /** 分类模式各分类上限；未配置=不限制该分类；0=不选；-1=全部；正数=该分类 Top N */
   bucketLimits?: Partial<Record<LiveCategory, number>>;
   /** 总榜置顶 key：简单模式优先占用总名额，分类模式优先占用所属分类名额。 */
@@ -326,6 +331,7 @@ export interface LiveDistributionPolicy {
 export const DEFAULT_LIVE_DISTRIBUTION_POLICY: LiveDistributionPolicy = {
   selectionMode: 'simple',
   maxSources: -1,
+  maxUrlsPerChannel: DEFAULT_LIVE_MAX_URLS_PER_CHANNEL,
   pinnedKeys: [],
   categoryPinnedKeys: [],
   blockedKeys: [],
@@ -338,6 +344,13 @@ function parseThreeState(value: unknown, fallback: number): number {
   return fallback;
 }
 
+function parseChannelUrlLimit(value: unknown): number {
+  const number = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(number) || !Number.isInteger(number)) return DEFAULT_LIVE_MAX_URLS_PER_CHANNEL;
+  if (number === -1 || number > 0) return number;
+  return DEFAULT_LIVE_MAX_URLS_PER_CHANNEL;
+}
+
 /** 规范化任意来源的直播下发策略，容忍缺省与历史脏数据。 */
 export function normalizeLiveDistributionPolicy(raw: unknown): LiveDistributionPolicy {
   const source = raw && typeof raw === 'object' && !Array.isArray(raw)
@@ -345,6 +358,7 @@ export function normalizeLiveDistributionPolicy(raw: unknown): LiveDistributionP
     : {};
   const selectionMode: SourceSelectionMode = source.selectionMode === 'category' ? 'category' : 'simple';
   const maxSources = parseThreeState(source.maxSources, -1);
+  const maxUrlsPerChannel = parseChannelUrlLimit(source.maxUrlsPerChannel);
   const normalizeKeys = (value: unknown): string[] => Array.isArray(value)
     ? [...new Set(value.filter((key): key is string => typeof key === 'string').map((key) => key.trim()).filter(Boolean))]
     : [];
@@ -368,6 +382,7 @@ export function normalizeLiveDistributionPolicy(raw: unknown): LiveDistributionP
   return {
     selectionMode,
     maxSources,
+    maxUrlsPerChannel,
     ...(bucketLimits ? { bucketLimits } : {}),
     pinnedKeys,
     categoryPinnedKeys,

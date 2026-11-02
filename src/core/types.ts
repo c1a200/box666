@@ -279,6 +279,8 @@ export interface LiveDistributionConfig {
   selectionMode: SourceSelectionMode;
   /** 简单模式下发数量上限：-1=质量池全部；0=不下发；正数=按统一质量排名取前 N */
   maxSources: number;
+  /** 合并模式每频道线路数：-1=全部；正数=按频道内质量排序取前 N */
+  maxUrlsPerChannel: number;
   /** 分类模式各分类上限；未配置=该分类不限制；0=不选；-1=全部；正数=该分类质量排名前 N */
   bucketLimits?: Partial<Record<'cctv' | 'satellite' | 'local' | 'variety' | 'special' | 'ipv6' | 'other', number>>;
   /** 总榜置顶 key：简单模式优先占用总名额，分类模式优先占用所属分类名额。 */

@@ -10,7 +10,7 @@ import type {
 import type { Storage } from '../storage/interface';
 import { TVBOX_UA, BROWSER_UA, KV_LIVE_SOURCE_CACHE } from './config';
 import { isBlockedLiveSource, isBlockedLiveUrl } from './live-policy';
-import { classifyLiveCategory, compareLiveRank, computeLiveSourceQualityScore, type LiveCategory, type LiveSourceMetrics } from './live-quality';
+import { classifyLiveCategory, compareLiveRank, computeLiveSourceQualityScore, DEFAULT_LIVE_MAX_URLS_PER_CHANNEL, type LiveCategory, type LiveSourceMetrics } from './live-quality';
 
 // ─── 输入条目 ──────────────────────────────────────────
 
@@ -181,7 +181,7 @@ interface ChannelEntry {
 const AD_KEYWORDS = /广告|购物|福利|加微|微\s*信|群|客\s*服|优惠|测试|测\s*试|防走失|专属|添加|关注|订阅|赞助/i;
 
 const SEPARATED_MAX_URLS_PER_CHANNEL = 6;
-export const AGGREGATED_MAX_URLS_PER_CHANNEL = 9;
+export const AGGREGATED_MAX_URLS_PER_CHANNEL = DEFAULT_LIVE_MAX_URLS_PER_CHANNEL;
 const SEPARATED_MAX_CHANNELS = 12000;
 const LIVE_KNOWN_MAX_SPEED_MS = 5000;
 const SEPARATED_MIN_CHANNELS_PER_SOURCE = 5;
@@ -2102,7 +2102,7 @@ export function extractAllUrls(groups: TVBoxLiveGroup[]): string[] {
  * - 已验证成功且未超速的线路按速度优先；
  * - 未知线路保留为后备，但始终排在已验证线路之后；
  * - 单次/两次失败保留为最后备选，连续三次失败才剔除；
- * - 每频道条数限制在分层之后执行，避免坏线路挤掉好线路。
+ * - 每频道条数限制在分层之后执行，避免坏线路挤掉好线路；-1 表示保留全部。
  */
 export function applyChannelSpeedToGroups(
   groups: TVBoxLiveGroup[],
@@ -2111,7 +2111,7 @@ export function applyChannelSpeedToGroups(
   maxUrlsPerChannel = SEPARATED_MAX_URLS_PER_CHANNEL,
 ): TVBoxLiveGroup[] {
   const speedLimit = Math.max(0, maxSpeedMs);
-  const perChannelLimit = Math.max(1, maxUrlsPerChannel);
+  const perChannelLimit = maxUrlsPerChannel === -1 ? -1 : Math.max(1, maxUrlsPerChannel);
   const output: TVBoxLiveGroup[] = [];
 
   for (const group of groups) {
@@ -2150,7 +2150,8 @@ export function applyChannelSpeedToGroups(
       unknown.sort((a, b) => a.index - b.index);
       transient.sort((a, b) => a.index - b.index);
       const selected = [...verified, ...unknown, ...transient];
-      const urls = selected.slice(0, perChannelLimit).map((item) => item.url);
+      const limited = perChannelLimit < 0 ? selected : selected.slice(0, perChannelLimit);
+      const urls = limited.map((item) => item.url);
       if (urls.length > 0) channels.push({ ...channel, urls });
     }
     if (channels.length > 0) output.push({ ...group, channels });

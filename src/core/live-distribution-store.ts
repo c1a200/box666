@@ -2,6 +2,7 @@ import type { LiveDistributionConfig } from './types';
 import type { Storage } from '../storage/interface';
 import { KV_LIVE_DISTRIBUTION } from './config';
 import {
+  DEFAULT_LIVE_MAX_URLS_PER_CHANNEL,
   LIVE_CATEGORIES,
   normalizeLiveDistributionPolicy,
   type LiveCategory,
@@ -11,6 +12,7 @@ import {
 export const DEFAULT_LIVE_DISTRIBUTION: LiveDistributionConfig = {
   selectionMode: 'simple',
   maxSources: -1,
+  maxUrlsPerChannel: DEFAULT_LIVE_MAX_URLS_PER_CHANNEL,
   pinnedKeys: [],
   categoryPinnedKeys: [],
   blockedKeys: [],
@@ -41,6 +43,7 @@ export function normalizeLiveDistributionConfig(raw: unknown): LiveDistributionC
   return {
     selectionMode: policy.selectionMode,
     maxSources: policy.maxSources,
+    maxUrlsPerChannel: policy.maxUrlsPerChannel,
     ...(Object.keys(bucketLimits).length > 0 ? { bucketLimits } : {}),
     pinnedKeys: [...(policy.pinnedKeys || [])],
     categoryPinnedKeys: [...(policy.categoryPinnedKeys || [])],
@@ -75,7 +78,7 @@ export async function saveLiveDistribution(storage: Storage, raw: unknown): Prom
     : {};
   const merged: Record<string, unknown> = { ...current };
   for (const key of [
-    'selectionMode', 'maxSources', 'bucketLimits', 'pinnedKeys', 'categoryPinnedKeys', 'blockedKeys',
+    'selectionMode', 'maxSources', 'maxUrlsPerChannel', 'bucketLimits', 'pinnedKeys', 'categoryPinnedKeys', 'blockedKeys',
     'attachToRoot', 'attachToAuth',
   ]) {
     if (Object.prototype.hasOwnProperty.call(patch, key)) merged[key] = patch[key];

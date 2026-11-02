@@ -268,6 +268,10 @@ const normalized = normalizeLiveDistributionPolicy({ maxSources: '3', blockedKey
 assert(normalized.maxSources === 3, 'string maxSources must normalize to a number');
 assert(JSON.stringify(normalized.blockedKeys) === JSON.stringify(['x']), 'blockedKeys must be de-duplicated');
 assert(normalizeLiveDistributionPolicy({ maxSources: -5 }).maxSources === -1, 'illegal maxSources must fall back to -1');
+assert(normalizeLiveDistributionPolicy({}).maxUrlsPerChannel === 9, 'missing per-channel URL limit must preserve the legacy merged default');
+assert(normalizeLiveDistributionPolicy({ maxUrlsPerChannel: '12' }).maxUrlsPerChannel === 12, 'string per-channel URL limit must normalize to a number');
+assert(normalizeLiveDistributionPolicy({ maxUrlsPerChannel: -1 }).maxUrlsPerChannel === -1, 'per-channel URL limit -1 must mean all lines');
+assert(normalizeLiveDistributionPolicy({ maxUrlsPerChannel: 0 }).maxUrlsPerChannel === 9, 'illegal per-channel URL limit must fall back to 9');
 
 // ── 11. 可用性分层优先于历史高分：本轮健康源必须压过历史后备源 ──
 const availabilityTierPool = [
@@ -536,6 +540,19 @@ assert(recovered[0].channels[0].urls[0].includes('failed.example'), 'a successfu
 const manyLines = [{ group: '测试', channels: [{ name: '限量', urls: Array.from({ length: AGGREGATED_MAX_URLS_PER_CHANNEL + 4 }, (_, i) => 'http://line' + i + '.example/live#abc' + i) }] }];
 const limitedLines = applyChannelSpeedToGroups(manyLines, {}, 5000, AGGREGATED_MAX_URLS_PER_CHANNEL);
 assert(limitedLines[0].channels[0].urls.length === AGGREGATED_MAX_URLS_PER_CHANNEL, 'merged output must cap each channel at AGGREGATED_MAX_URLS_PER_CHANNEL');
+const perChannelLines = [{
+  group: '测试',
+  channels: [
+    { name: '频道甲', urls: ['http://a1.example/live', 'http://a2.example/live', 'http://a3.example/live', 'http://a4.example/live'] },
+    { name: '频道乙', urls: ['http://b1.example/live', 'http://b2.example/live', 'http://b3.example/live', 'http://b4.example/live'] },
+  ],
+}];
+const twoLinesPerChannel = applyChannelSpeedToGroups(perChannelLines, {}, 5000, 2);
+assert(twoLinesPerChannel[0].channels.every((channel) => channel.urls.length === 2), 'per-channel limits must be counted independently for every channel');
+assert(twoLinesPerChannel[0].channels[0].urls.join(',') === 'http://a1.example/live,http://a2.example/live', 'per-channel limit must preserve quality order within each channel');
+assert(twoLinesPerChannel[0].channels[1].urls.join(',') === 'http://b1.example/live,http://b2.example/live', 'per-channel limit must not consume a global shared quota');
+const allLinesPerChannel = applyChannelSpeedToGroups(perChannelLines, {}, 5000, -1);
+assert(allLinesPerChannel[0].channels.every((channel) => channel.urls.length === 4), 'per-channel limit -1 must keep every preferred line');
 
 const labels = { 'https://live.example/labeled.txt': '源C#cccccccc' };
 const preparedWithLabel = prepareManifestEntries([
@@ -1013,6 +1030,52 @@ async function testBareUrlCandidateMapping() {
   assert(memory.get('live_merged_txt_version') === rebuilt.version, 'bare-url mapping must refresh merged version');
 }
 
+async function testMergedLiveOutputLimitsEachChannel() {
+  const memory = new Map();
+  const key = 'merged-channel-limit-source';
+  const channelTree = [{
+    group: '央视',
+    channels: [
+      { name: 'CCTV-1', urls: ['http://cctv1.example/1', 'http://cctv1.example/2', 'http://cctv1.example/3', 'http://cctv1.example/4'] },
+      { name: 'CCTV-2', urls: ['http://cctv2.example/1', 'http://cctv2.example/2', 'http://cctv2.example/3', 'http://cctv2.example/4'] },
+    ],
+  }];
+  memory.set('live_merge_mode', 'merged');
+  memory.set('live_proxy_manifest', JSON.stringify({
+    version: 4,
+    signature: 'merged-channel-limit',
+    entries: [entry(83, {
+      key,
+      name: '聚合源',
+      url: 'https://live.example/merged-limit.txt',
+      textReady: true,
+      health: 'healthy',
+      everSucceeded: true,
+      successfulAt: '2026-10-13T00:00:00.000Z',
+    })],
+  }));
+  memory.set('live_txt:' + key, formatAggregatedLiveGroupsAsTxt(channelTree));
+  memory.set('channel_merged_tree', JSON.stringify(channelTree));
+  const storage = {
+    async get(k) { return memory.has(k) ? memory.get(k) : null; },
+    async put(k, value) { memory.set(k, String(value)); },
+  };
+  const { rebuildLiveOutput } = require(outputOutfile);
+
+  const limited = await rebuildLiveOutput(storage, {
+    policy: { selectionMode: 'simple', maxSources: -1, maxUrlsPerChannel: 2 },
+  });
+  assert(limited.groups.every((group) => group.channels.every((channel) => channel.urls.length === 2)), 'merged rebuild must apply the configured per-channel URL limit independently');
+  assert(limited.groups[0].channels[0].urls.join(',') === 'http://cctv1.example/1,http://cctv1.example/2', 'merged rebuild must keep the top lines in existing quality order');
+  assert(memory.get('channel_runtime_tree') === JSON.stringify(limited.groups), 'merged rebuild must persist the limited channel tree');
+
+  const all = await rebuildLiveOutput(storage, {
+    policy: { selectionMode: 'simple', maxSources: -1, maxUrlsPerChannel: -1 },
+  });
+  assert(all.groups.every((group) => group.channels.every((channel) => channel.urls.length === 4)), 'merged rebuild with -1 must persist every preferred line');
+  assert(memory.get('channel_runtime_tree') === JSON.stringify(all.groups), 'merged rebuild must replace the limited tree when All is selected');
+}
+
 async function testEmptyRebuildKeepsPreviousCache() {
   const memory = new Map();
   const key = 'mapping-miss-source';
@@ -1077,12 +1140,18 @@ async function testLiveFingerprintIncludesCategoryPins() {
     ...basePolicy,
     pinnedKeys: ['k3'],
   });
+  const channelUrlLimited = await computeLiveOutputFingerprint(storage, {
+    ...basePolicy,
+    maxUrlsPerChannel: 2,
+  });
   assert(baseline !== categoryPinned, 'category pin changes must change live output fingerprint');
   assert(baseline !== globallyPinned, 'global pin changes must change live output fingerprint');
   assert(categoryPinned !== globallyPinned, 'global and category pin scopes must have distinct live output fingerprints');
+  assert(baseline !== channelUrlLimited, 'per-channel URL limit changes must change live output fingerprint');
 }
 
 async function main() {
+  await testMergedLiveOutputLimitsEachChannel();
   await testLiveFingerprintIncludesCategoryPins();
   await testSuccessWithoutUsableText();
   await testManualValidationFailure();

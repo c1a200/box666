@@ -23,9 +23,8 @@ import {
   parseLiveProxyManifest,
   type LiveProxyManifestEntry,
 } from './live-source';
-import { selectLiveDistribution, type LiveDistributionPolicy } from './live-quality';
+import { normalizeLiveDistributionPolicy, selectLiveDistribution, type LiveDistributionPolicy } from './live-quality';
 import {
-  AGGREGATED_MAX_URLS_PER_CHANNEL,
   applyChannelSpeedToGroups,
   bareLiveSourceUrl,
   liveUrlSourceLabel,
@@ -101,15 +100,17 @@ async function loadCandidateGroups(storage: Storage): Promise<TVBoxLiveGroup[]> 
 }
 
 function stablePolicyKey(policy: LiveDistributionPolicy): string {
-  const pinned = [...(policy.pinnedKeys || [])];
-  const categoryPinned = [...(policy.categoryPinnedKeys || [])];
-  const blocked = [...(policy.blockedKeys || [])];
-  const buckets = policy.bucketLimits
-    ? Object.fromEntries(Object.entries(policy.bucketLimits).sort(([a], [b]) => a.localeCompare(b)))
+  const normalized = normalizeLiveDistributionPolicy(policy);
+  const pinned = [...(normalized.pinnedKeys || [])];
+  const categoryPinned = [...(normalized.categoryPinnedKeys || [])];
+  const blocked = [...(normalized.blockedKeys || [])];
+  const buckets = normalized.bucketLimits
+    ? Object.fromEntries(Object.entries(normalized.bucketLimits).sort(([a], [b]) => a.localeCompare(b)))
     : {};
   return JSON.stringify({
-    selectionMode: policy.selectionMode,
-    maxSources: policy.maxSources,
+    selectionMode: normalized.selectionMode,
+    maxSources: normalized.maxSources,
+    maxUrlsPerChannel: normalized.maxUrlsPerChannel,
     bucketLimits: buckets,
     pinnedKeys: pinned,
     categoryPinnedKeys: categoryPinned,
@@ -278,12 +279,13 @@ async function buildSnapshot(
   storage: Storage,
   policy: LiveDistributionPolicy,
 ): Promise<LiveOutputSnapshot> {
+  const normalizedPolicy = normalizeLiveDistributionPolicy(policy);
   const candidateGroups = await loadCandidateGroups(storage);
-  const selection = await selectLiveGroupsForPolicy(storage, candidateGroups, policy);
+  const selection = await selectLiveGroupsForPolicy(storage, candidateGroups, normalizedPolicy);
   const selected = selection.selected;
   const labels = selection.labels;
   const liveMergeMode = (await storage.get(KV_LIVE_MERGE_MODE)) || 'separated';
-  const maxUrlsPerChannel = liveMergeMode === 'merged' ? AGGREGATED_MAX_URLS_PER_CHANNEL : 6;
+  const maxUrlsPerChannel = liveMergeMode === 'merged' ? normalizedPolicy.maxUrlsPerChannel : 6;
   const speedMap = await loadSpeedMap(storage);
   const runtimeGroups = selection.groups.length > 0
     ? applyChannelSpeedToGroups(selection.groups, speedMap, undefined, maxUrlsPerChannel)
@@ -299,7 +301,7 @@ async function buildSnapshot(
     throw new Error('Live output rebuild produced invalid TXT');
   }
 
-  const fp = await fingerprint(storage, policy);
+  const fp = await fingerprint(storage, normalizedPolicy);
   const version = `${liveMergeMode}:${fp}`;
 
   const previousTree = await storage.get(KV_CHANNEL_RUNTIME_TREE);

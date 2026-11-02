@@ -382,7 +382,7 @@ async function loadCandidateTree(storage: Storage): Promise<TVBoxLiveGroup[]> {
     return [{ group: '候选恢复', channels: [{ name: '全部线路', urls: candidateUrls }] }];
   }
 
-  // 运行时 TXT 只保留当前下发前沿（每频道最多 9 条），候选索引保留完整去重线路。
+  // 运行时 TXT 只保留当前下发前沿（每频道线路数由下发配置决定），候选索引保留完整去重线路。
   // 将前沿未覆盖的 URL 补进“候选恢复”分组，专门供后台补测；输出重建仍使用
   // 带频道结构的运行时树，不会把这两个候选线路误当成正式频道下发。
   const frontierUrls = new Set(extractAllUrls(recoveredGroups));
