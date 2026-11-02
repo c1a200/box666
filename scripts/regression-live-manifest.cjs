@@ -74,6 +74,10 @@ buildSync({
 });
 
 const {
+  computeLiveOutputFingerprint,
+} = require(outputOutfile);
+
+const {
   filterLiveSourcesDetailed: filterLiveSourcesDetailedForRegression,
 } = require(mergerOutfile);
 
@@ -217,6 +221,9 @@ assert(pinnedSelected.every((e) => e.key !== 'k9'), 'pinning an out-of-selection
 const pinnedBlocked = selectLiveDistribution(pool, { selectionMode: 'simple', maxSources: 3, pinnedKeys: ['k2'], blockedKeys: ['k2'] });
 assert(pinnedBlocked.every((e) => e.key !== 'k2'), 'blocking must win over pinning');
 
+const pinnedSlot = selectLiveDistribution(pool, { selectionMode: 'simple', maxSources: 1, pinnedKeys: ['k5'] });
+assert(pinnedSlot.length === 1 && pinnedSlot[0].key === 'k5', 'global pin must occupy a simple-mode slot, got ' + pinnedSlot.map((e) => e.key).join(','));
+
 // ── 8. 分类模式：每个分类独立取 TopN ──
 const catPool = [
   ranked(1, { category: 'cctv', qualityScore: 95 }),
@@ -230,6 +237,26 @@ const categoryPicked = selectLiveDistribution(catPool, { selectionMode: 'categor
 const keys = categoryPicked.map((e) => e.key).sort();
 assert(JSON.stringify(keys) === JSON.stringify(['k1', 'k2', 'k4']), 'category mode must take per-category TopN and honour zero buckets, got ' + keys.join(','));
 assert(selectLiveDistribution(catPool, { selectionMode: 'category', maxSources: 1, bucketLimits: {} }).length === 6, 'category mode without limits must deliver every category fully');
+
+const categoryPinIgnored = selectLiveDistribution(catPool, { selectionMode: 'simple', maxSources: 1, categoryPinnedKeys: ['k3'] });
+assert(categoryPinIgnored.length === 1 && categoryPinIgnored[0].key === 'k1', 'simple mode must ignore category pins, got ' + categoryPinIgnored.map((e) => e.key).join(','));
+
+const categoryPinSlot = selectLiveDistribution(catPool, {
+  selectionMode: 'category',
+  maxSources: -1,
+  bucketLimits: { cctv: 1 },
+  categoryPinnedKeys: ['k3'],
+});
+assert(categoryPinSlot.filter((e) => e.category === 'cctv').map((e) => e.key).join(',') === 'k3', 'category pin must occupy its own category slot, got ' + categoryPinSlot.map((e) => e.key).join(','));
+
+const categoryPinBlocked = selectLiveDistribution(catPool, {
+  selectionMode: 'category',
+  maxSources: -1,
+  bucketLimits: { cctv: 1 },
+  categoryPinnedKeys: ['k3'],
+  blockedKeys: ['k3'],
+});
+assert(categoryPinBlocked.filter((e) => e.category === 'cctv').map((e) => e.key).join(',') === 'k1', 'blocking must win over category pinning, got ' + categoryPinBlocked.map((e) => e.key).join(','));
 
 // ── 9. 稳定排序：同分不打乱 ──
 const tieA = [ranked(1, { qualityScore: 50 }), ranked(2, { qualityScore: 50 })];
@@ -1031,7 +1058,32 @@ async function testEmptyRebuildKeepsPreviousCache() {
   assert(memory.get('live_output_fingerprint') === 'old-fingerprint', 'failed rebuild must keep previous fingerprint');
 }
 
+async function testLiveFingerprintIncludesCategoryPins() {
+  const storage = { async get() { return null; } };
+  const basePolicy = {
+    selectionMode: 'category',
+    maxSources: -1,
+    bucketLimits: { cctv: 1 },
+    pinnedKeys: [],
+    categoryPinnedKeys: [],
+    blockedKeys: [],
+  };
+  const baseline = await computeLiveOutputFingerprint(storage, basePolicy);
+  const categoryPinned = await computeLiveOutputFingerprint(storage, {
+    ...basePolicy,
+    categoryPinnedKeys: ['k3'],
+  });
+  const globallyPinned = await computeLiveOutputFingerprint(storage, {
+    ...basePolicy,
+    pinnedKeys: ['k3'],
+  });
+  assert(baseline !== categoryPinned, 'category pin changes must change live output fingerprint');
+  assert(baseline !== globallyPinned, 'global pin changes must change live output fingerprint');
+  assert(categoryPinned !== globallyPinned, 'global and category pin scopes must have distinct live output fingerprints');
+}
+
 async function main() {
+  await testLiveFingerprintIncludesCategoryPins();
   await testSuccessWithoutUsableText();
   await testManualValidationFailure();
   await testStartupReadinessRepair();

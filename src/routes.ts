@@ -19,7 +19,7 @@ import { adminHtml } from './core/admin';
 import { dashboardHtml } from './core/dashboard';
 import { configEditorHtml } from './core/config-editor';
 import { siteFingerprint, loadBlacklist, saveBlacklist, saveRegexRule, deleteRegexRule, updateRegexRule, validateRegexRule, testRegexAgainstSites, applyBlacklist } from './core/blacklist';
-import { loadSearchQuota, saveSearchQuota, applySiteBucketLimits, normalizeSiteBucketLimits, classifySearchSource, SEARCH_SOURCE_CATEGORIES } from './core/search-quota';
+import { loadSearchQuota, saveSearchQuota, applySiteBucketLimits, normalizeSiteBucketLimits, classifySearchSource, selectSiteDistribution, SEARCH_SOURCE_CATEGORIES } from './core/search-quota';
 import {
   loadQualityCandidates,
   loadQualityPool,
@@ -558,7 +558,9 @@ export function createApp(deps: AppDeps): Hono {
 
     // 根链接与鉴权码使用同一套质量池和分发规则。
     // “全部”表示质量池中所有符合条件的去重源，不是隐式只取少量后备源。
-    const rootQuota = context.authCode ? null : await loadSearchQuota(storage);
+    const quota = await loadSearchQuota(storage);
+    const rootQuota = context.authCode ? null : quota;
+    const blockedKeys = new Set(quota.blockedKeys || []);
     const policy = context.authCode || {
       sourceMode: 'all' as SourceDistributionMode,
       selectionMode: (rootQuota?.selectionMode || 'simple') as SourceSelectionMode,
@@ -566,6 +568,7 @@ export function createApp(deps: AppDeps): Hono {
       bucketLimits: rootQuota?.bucketLimits,
       selectedKeys: [] as string[],
       pinnedKeys: rootQuota?.pinnedKeys || [],
+      categoryPinnedKeys: rootQuota?.categoryPinnedKeys || [],
     };
     const mode: SourceDistributionMode = policy.sourceMode || 'all';
     const selectionMode: SourceSelectionMode = policy.selectionMode === 'category' ? 'category' : 'simple';
@@ -614,6 +617,11 @@ export function createApp(deps: AppDeps): Hono {
         }
         if (!blockedByRegex) sites.push(site);
       }
+    }
+    // 管理端屏蔽是全局硬门禁，必须对根链接和每个鉴权码同时生效。
+    // 候选快照可能恢复当前最终配置中已移除的源，因此要在恢复后再次过滤。
+    if (blockedKeys.size > 0) {
+      sites = sites.filter((site) => !blockedKeys.has(site.key));
     }
     const searchableKeys = new Set(
       sites.filter((site) => site.searchable === 1).map((site) => site.key),
@@ -696,44 +704,22 @@ export function createApp(deps: AppDeps): Hono {
       });
     }
 
-    // 分桶在质量排序之后执行，保证分类 Top-N 是该分类内的真实 Top-N。
-    // 类型分桶覆盖可搜索源和不可搜索 JAR/扩展，因此鉴权码明确选择
-    // “JAR 不选”或指定数量时，不会再被后续逻辑悄悄补回扩展源。
-    if (selectionMode === 'category' && effectiveBucketLimits) {
-      const gradeByKey = new Map((effectiveQualityPool?.entries || []).map((entry) => [entry.key, entry.grade]));
-      sites = applySiteBucketLimits(
-        sites,
-        effectiveBucketLimits,
-        (site) => gradeByKey.get(site.key) || 'untestable',
-        { enforceTypeOnNonSearchable: true },
-      );
-    }
-
-    // 鉴权码置顶只改变已筛选结果的顺序，不能绕过任何质量、类型、分桶或数量限制。
-    // Quality pool count: 0 serves no searchable pool source, -1 serves all,
-    // and a positive value takes the first N in the shared quality order.
-    const maxSites = typeof policy.maxSites === 'number' && Number.isFinite(policy.maxSites)
-      ? Math.floor(policy.maxSites)
-      : -1;
-    if (selectionMode === 'simple' && maxSites >= 0) {
-      // 简单模式从完整、已排序的可下发集合中取前 N。JAR/扩展也占用名额，
-      // 不能再把未选中的功能插件无上限追加回来。
-      sites = maxSites === 0 ? [] : sites.slice(0, maxSites);
-    }
-
-    // Pinning is an order preference only. Apply it after the quality,
-    // category, and count filters so a lower-quality pinned source cannot
-    // consume a Top-N slot.
-    const pinnedOrder = new Map(
-      (policy.pinnedKeys || []).map((key, index) => [key, index] as const),
+    // 所有硬门禁完成后统一按置顶占位规则选择：总榜置顶优先占用简单模式
+    // 的总名额或分类模式下所属分类的名额；分类置顶只在分类模式生效。
+    // 类型分桶覆盖可搜索源和不可搜索 JAR/扩展，置顶不能绕过屏蔽、
+    // 质量池、sourceMode 或数量限制。
+    sites = selectSiteDistribution(
+      sites,
+      {
+        selectionMode,
+        maxSites: policy.maxSites ?? -1,
+        bucketLimits: effectiveBucketLimits,
+        pinnedKeys: policy.pinnedKeys || [],
+        categoryPinnedKeys: policy.categoryPinnedKeys || [],
+        enforceTypeOnNonSearchable: true,
+      },
+      (site) => qualityEntries.get(site.key)?.grade || 'untestable',
     );
-    if (pinnedOrder.size > 0) {
-      const pinned = sites
-        .filter((site) => pinnedOrder.has(site.key))
-        .sort((a, b) => (pinnedOrder.get(a.key) as number) - (pinnedOrder.get(b.key) as number));
-      const pinnedKeys = new Set(pinned.map((site) => site.key));
-      sites = [...pinned, ...sites.filter((site) => !pinnedKeys.has(site.key))];
-    }
 
     const seenSiteKeys = new Set<string>();
     parsed.sites = sites.filter((site) => {
@@ -1051,6 +1037,7 @@ export function createApp(deps: AppDeps): Hono {
       : undefined;
     const distributionMaxSites = authCode?.maxSites ?? quota.maxSites ?? -1;
     const distributionPinnedKeys = authCode?.pinnedKeys ?? quota.pinnedKeys;
+    const distributionCategoryPinnedKeys = authCode?.categoryPinnedKeys ?? quota.categoryPinnedKeys;
     const blockedKeys = new Set(
       (quota.blockedKeys || []).filter((key): key is string => typeof key === 'string')
     );
@@ -1153,32 +1140,20 @@ export function createApp(deps: AppDeps): Hono {
       orderedSites = [...fallbackByKey.values()];
     }
 
-    // Apply category/grade limits before pinning. A pinned lower-quality source
-    // may move ahead within the already selected set, but cannot consume a
-    // category or grade Top-N slot that belongs to a better source.
-    if (distributionBucketLimits) {
-      orderedSites = applySiteBucketLimits(
-        orderedSites,
-        distributionBucketLimits,
-        (site) => qualityGradeByKey.get(site.key) || 'untestable',
-        { enforceTypeOnNonSearchable: true },
-      );
-    }
-    if (distributionSelectionMode === 'simple' && distributionMaxSites >= 0) {
-      // 根链接与鉴权码一致：简单模式直接取完整有序列表前 N，0 表示不下发。
-      orderedSites = distributionMaxSites === 0 ? [] : orderedSites.slice(0, distributionMaxSites);
-    }
-    const pinnedOrder = new Map(
-      (distributionPinnedKeys || []).map((key, index) => [key, index] as const),
+    // 缓存启动链路和聚合下发链路共用同一套置顶占位规则。调用前已完成
+    // 屏蔽、质量池、可下发性和 sourceMode 门禁，置顶不会绕过它们。
+    orderedSites = selectSiteDistribution(
+      orderedSites,
+      {
+        selectionMode: distributionSelectionMode,
+        maxSites: distributionMaxSites,
+        bucketLimits: distributionSelectionMode === 'category' ? distributionBucketLimits : undefined,
+        pinnedKeys: distributionPinnedKeys || [],
+        categoryPinnedKeys: distributionCategoryPinnedKeys || [],
+        enforceTypeOnNonSearchable: true,
+      },
+      (site) => qualityGradeByKey.get(site.key) || 'untestable',
     );
-    const pinnedSites = orderedSites
-      .filter((site) => pinnedOrder.has(site.key) && !blockedKeys.has(site.key))
-      .sort((a, b) => (pinnedOrder.get(a.key) as number) - (pinnedOrder.get(b.key) as number));
-    const pinnedKeySet = new Set(pinnedSites.map((site) => site.key));
-    orderedSites = [
-      ...pinnedSites,
-      ...orderedSites.filter((site) => !pinnedKeySet.has(site.key) && !blockedKeys.has(site.key)),
-    ];
     // 轻量启动要等远程 JAR 已落到本部署缓存后再下发，避免客户端逐个等待
     // 慢速上游；完整启动模式不做这层裁剪。客户端插件 type=3 源始终保留，
     // 因为它们在客户端登录后可直接使用。/config-full.json 始终保留完整配置。
@@ -1832,10 +1807,6 @@ export function createApp(deps: AppDeps): Hono {
     if (Array.isArray(body.blockedKeys)) {
       current.blockedKeys = [...new Set(body.blockedKeys.filter((key): key is string => typeof key === 'string'))];
     }
-    {
-      const blocked = new Set(current.blockedKeys || []);
-      current.pinnedKeys = (current.pinnedKeys || []).filter((key) => !blocked.has(key));
-    }
     // autoLimit is retired in schema 8; the two user-facing caps are explicit.
     if (typeof body.sortBySpeed === 'boolean') current.sortBySpeed = body.sortBySpeed;
     if (typeof body.leanStartup === 'boolean') current.leanStartup = body.leanStartup;
@@ -1844,12 +1815,18 @@ export function createApp(deps: AppDeps): Hono {
     if (body.bucketLimits !== undefined) {
       current.bucketLimits = normalizeSiteBucketLimits(body.bucketLimits);
     }
-    if (Array.isArray(body.pinnedKeys)) {
+    if (Array.isArray(body.pinnedKeys)) current.pinnedKeys = body.pinnedKeys;
+    if (Array.isArray(body.categoryPinnedKeys)) current.categoryPinnedKeys = body.categoryPinnedKeys;
+    {
       const blocked = new Set(current.blockedKeys || []);
-      current.pinnedKeys = [...new Set(body.pinnedKeys.filter((key): key is string => typeof key === 'string'))]
-        .filter((key) => !blocked.has(key));
+      const normalize = (keys: unknown): string[] => Array.isArray(keys)
+        ? [...new Set(keys.filter((key): key is string => typeof key === 'string').map((key) => key.trim()).filter(Boolean))]
+        : [];
+      current.pinnedKeys = normalize(current.pinnedKeys).filter((key) => !blocked.has(key));
+      const globalPinned = new Set(current.pinnedKeys);
+      current.categoryPinnedKeys = normalize(current.categoryPinnedKeys)
+        .filter((key) => !blocked.has(key) && !globalPinned.has(key));
     }
-
 
     await saveSearchQuota(storage, current);
     await markOutputDirty();
@@ -1858,20 +1835,31 @@ export function createApp(deps: AppDeps): Hono {
 
   app.post('/admin/search-quota/pinned', async (c) => {
     if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
-    let body: { keys?: string[] };
+    let body: { keys?: string[]; scope?: 'global' | 'category' };
     try { body = await c.req.json(); } catch { return c.json({ error: 'Invalid JSON' }, 400); }
     if (!Array.isArray(body.keys)) return c.json({ error: 'keys must be an array' }, 400);
 
     const current = await loadSearchQuota(storage);
     const blocked = new Set(current.blockedKeys || []);
-    const set = new Set(current.pinnedKeys);
+    const globalPinned = new Set(current.pinnedKeys);
+    const categoryPinned = new Set(current.categoryPinnedKeys || []);
+    const scope = body.scope === 'category' ? 'category' : 'global';
     for (const key of body.keys) {
-      if (!blocked.has(key)) set.add(key);
+      if (typeof key !== 'string' || !key.trim() || blocked.has(key)) continue;
+      const normalizedKey = key.trim();
+      if (scope === 'category') {
+        globalPinned.delete(normalizedKey);
+        categoryPinned.add(normalizedKey);
+      } else {
+        categoryPinned.delete(normalizedKey);
+        globalPinned.add(normalizedKey);
+      }
     }
-    current.pinnedKeys = [...set];
+    current.pinnedKeys = [...globalPinned];
+    current.categoryPinnedKeys = [...categoryPinned].filter((key) => !globalPinned.has(key));
     await saveSearchQuota(storage, current);
     await markOutputDirty();
-    return c.json({ success: true, pinnedKeys: current.pinnedKeys });
+    return c.json({ success: true, pinnedKeys: current.pinnedKeys, categoryPinnedKeys: current.categoryPinnedKeys });
   });
 
   // 重排 pinned 顺序（整体替换）
@@ -1885,9 +1873,11 @@ export function createApp(deps: AppDeps): Hono {
     const blocked = new Set(current.blockedKeys || []);
     current.pinnedKeys = [...new Set(body.keys.filter((key): key is string => typeof key === 'string'))]
       .filter((key) => !blocked.has(key));
+    const globalPinned = new Set(current.pinnedKeys);
+    current.categoryPinnedKeys = (current.categoryPinnedKeys || []).filter((key) => !globalPinned.has(key));
     await saveSearchQuota(storage, current);
     await markOutputDirty();
-    return c.json({ success: true, pinnedKeys: current.pinnedKeys });
+    return c.json({ success: true, pinnedKeys: current.pinnedKeys, categoryPinnedKeys: current.categoryPinnedKeys });
   });
 
   app.delete('/admin/search-quota/pinned', async (c) => {
@@ -1897,11 +1887,12 @@ export function createApp(deps: AppDeps): Hono {
     if (!Array.isArray(body.keys)) return c.json({ error: 'keys must be an array' }, 400);
 
     const current = await loadSearchQuota(storage);
-    const removeSet = new Set(body.keys);
+    const removeSet = new Set(body.keys.filter((key): key is string => typeof key === 'string'));
     current.pinnedKeys = current.pinnedKeys.filter(k => !removeSet.has(k));
+    current.categoryPinnedKeys = (current.categoryPinnedKeys || []).filter(k => !removeSet.has(k));
     await saveSearchQuota(storage, current);
     await markOutputDirty();
-    return c.json({ success: true, pinnedKeys: current.pinnedKeys });
+    return c.json({ success: true, pinnedKeys: current.pinnedKeys, categoryPinnedKeys: current.categoryPinnedKeys });
   });
 
   // 报告（admin 需鉴权）
@@ -1953,7 +1944,8 @@ export function createApp(deps: AppDeps): Hono {
         quickSearchable,
         maxQuickSearch: quota.maxQuickSearch,
         autoLimit: quota.autoLimit === true,
-        pinnedCount: (quota.pinnedKeys || []).filter(key => searchableKeys.has(key)).length,
+        pinnedCount: [...new Set([...(quota.pinnedKeys || []), ...(quota.categoryPinnedKeys || [])])]
+          .filter(key => searchableKeys.has(key)).length,
         blockedCount,
         truncated: 0,
         quickTruncated: 0,

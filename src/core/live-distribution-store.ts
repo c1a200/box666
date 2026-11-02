@@ -12,6 +12,7 @@ export const DEFAULT_LIVE_DISTRIBUTION: LiveDistributionConfig = {
   selectionMode: 'simple',
   maxSources: -1,
   pinnedKeys: [],
+  categoryPinnedKeys: [],
   blockedKeys: [],
   attachToRoot: true,
   attachToAuth: true,
@@ -42,6 +43,7 @@ export function normalizeLiveDistributionConfig(raw: unknown): LiveDistributionC
     maxSources: policy.maxSources,
     ...(Object.keys(bucketLimits).length > 0 ? { bucketLimits } : {}),
     pinnedKeys: [...(policy.pinnedKeys || [])],
+    categoryPinnedKeys: [...(policy.categoryPinnedKeys || [])],
     blockedKeys: [...(policy.blockedKeys || [])],
     attachToRoot: source.attachToRoot !== false,
     attachToAuth: source.attachToAuth !== false,
@@ -55,11 +57,11 @@ export function toLiveDistributionPolicy(config: LiveDistributionConfig): LiveDi
 
 export async function loadLiveDistribution(storage: Storage): Promise<LiveDistributionConfig> {
   const raw = await storage.get(KV_LIVE_DISTRIBUTION);
-  if (!raw) return { ...DEFAULT_LIVE_DISTRIBUTION, pinnedKeys: [] };
+  if (!raw) return { ...DEFAULT_LIVE_DISTRIBUTION, pinnedKeys: [], categoryPinnedKeys: [], blockedKeys: [] };
   try {
     return normalizeLiveDistributionConfig(JSON.parse(raw));
   } catch {
-    return { ...DEFAULT_LIVE_DISTRIBUTION, pinnedKeys: [] };
+    return { ...DEFAULT_LIVE_DISTRIBUTION, pinnedKeys: [], categoryPinnedKeys: [], blockedKeys: [] };
   }
 }
 
@@ -73,7 +75,7 @@ export async function saveLiveDistribution(storage: Storage, raw: unknown): Prom
     : {};
   const merged: Record<string, unknown> = { ...current };
   for (const key of [
-    'selectionMode', 'maxSources', 'bucketLimits', 'pinnedKeys', 'blockedKeys',
+    'selectionMode', 'maxSources', 'bucketLimits', 'pinnedKeys', 'categoryPinnedKeys', 'blockedKeys',
     'attachToRoot', 'attachToAuth',
   ]) {
     if (Object.prototype.hasOwnProperty.call(patch, key)) merged[key] = patch[key];

@@ -256,7 +256,10 @@ export interface ClientAuthCode {
   // 新配置使用 xml/json/jar/js/remote/other；旧数字类型仍会在读取时迁移。
   siteTypes: SourceCategory[];
   selectedKeys: string[];
+  /** 总榜置顶：简单模式优先占用下发名额，分类模式优先占用对应分类名额。 */
   pinnedKeys: string[];
+  /** 分类置顶：仅分类模式生效，优先占用该源所属分类的名额。 */
+  categoryPinnedKeys: string[];
   /** 该鉴权码主配置是否附带直播源；未设置时继承全局配置。 */
   attachLives?: boolean;
   createdAt: string;
@@ -276,8 +279,10 @@ export interface LiveDistributionConfig {
   maxSources: number;
   /** 分类模式各分类上限；未配置=该分类不限制；0=不选；-1=全部；正数=该分类质量排名前 N */
   bucketLimits?: Partial<Record<'cctv' | 'satellite' | 'local' | 'variety' | 'special' | 'ipv6' | 'other', number>>;
-  /** 置顶源 key：只调整顺序，不绕过质量、分类与数量门禁 */
+  /** 总榜置顶 key：简单模式优先占用总名额，分类模式优先占用所属分类名额。 */
   pinnedKeys: string[];
+  /** 分类置顶 key：仅分类模式生效，优先占用所属分类名额。 */
+  categoryPinnedKeys: string[];
   /** 管理端主动屏蔽的直播源 key：直接排除在下发池之外 */
   blockedKeys: string[];
   /** 根链接主配置是否附带直播源；关闭后 /live 与 /lives 专用链接仍可用 */
@@ -292,7 +297,8 @@ export interface SearchQuotaConfig {
   maxStartupQuickSearch?: number; // 根配置启动阶段快速搜索源上限，0 = 不额外裁剪
   startupSiteLimit?: number;      // 根配置启动源数量；0 = 使用启动快速源上限
   autoLimit?: boolean;          // 是否使用按部署形态自动选择的默认上限
-  pinnedKeys: string[];         // 置顶源 key 列表（排到 sites 最前面）
+  pinnedKeys: string[];         // 总榜置顶 key：优先占用简单模式或分类模式的对应名额
+  categoryPinnedKeys: string[]; // 分类置顶 key：仅分类模式优先占用所属分类名额
   sortBySpeed: boolean;         // 是否复用站点测速结果，将较快的可搜索源排在前面
   leanStartup?: boolean;        // 轻量启动：剔除不参与搜索的远程 JAR/扩展站点
   startupMode?: 'lean' | 'full';// 客户端根配置模式：lean=快速启动，full=完整功能

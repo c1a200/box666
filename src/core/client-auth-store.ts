@@ -71,6 +71,16 @@ function normalizeStringArray(value: unknown, max = 500): string[] {
   )].slice(0, max);
 }
 
+function normalizePinnedKeyScopes(record: Record<string, unknown>): { pinnedKeys: string[]; categoryPinnedKeys: string[] } {
+  const pinnedKeys = normalizeStringArray(record.pinnedKeys, 2000);
+  const globalKeys = new Set(pinnedKeys);
+  return {
+    pinnedKeys,
+    categoryPinnedKeys: normalizeStringArray(record.categoryPinnedKeys, 2000)
+      .filter((key) => !globalKeys.has(key)),
+  };
+}
+
 function normalizeGrades(value: unknown): SiteQualityGrade[] {
   if (!Array.isArray(value)) return [];
   return [...new Set(
@@ -207,6 +217,7 @@ function normalizeAuthCode(raw: unknown, usedCodes: Set<string>, usedIds: Set<st
   const maxSites = hasMaxSites
     ? parseThreeStateInteger(entry.maxSites, -1)
     : parseThreeStateInteger(entry.maxSearchable, -1);
+  const pinned = normalizePinnedKeyScopes(entry);
 
   return {
     id,
@@ -221,7 +232,8 @@ function normalizeAuthCode(raw: unknown, usedCodes: Set<string>, usedIds: Set<st
     includeGrades: [],
     siteTypes: [],
     selectedKeys: normalizeStringArray(entry.selectedKeys, 2000),
-    pinnedKeys: normalizeStringArray(entry.pinnedKeys, 2000),
+    pinnedKeys: pinned.pinnedKeys,
+    categoryPinnedKeys: pinned.categoryPinnedKeys,
     ...(typeof entry.attachLives === 'boolean' ? { attachLives: entry.attachLives } : {}),
     createdAt,
     updatedAt,
@@ -256,6 +268,7 @@ export function createClientAuthCode(raw: Partial<ClientAuthCode> = {}): ClientA
   const maxSites = hasMaxSites
     ? parseThreeStateInteger(rawRecord.maxSites, -1)
     : parseThreeStateInteger(rawRecord.maxSearchable, -1);
+  const pinned = normalizePinnedKeyScopes(rawRecord);
   return {
     id: typeof raw.id === 'string' && raw.id.trim() ? raw.id.trim() : randomAuthId(),
     label: typeof raw.label === 'string' && raw.label.trim() ? raw.label.trim().slice(0, 80) : 'Auth code',
@@ -268,7 +281,8 @@ export function createClientAuthCode(raw: Partial<ClientAuthCode> = {}): ClientA
     includeGrades: [],
     siteTypes: [],
     selectedKeys: normalizeStringArray(raw.selectedKeys, 2000),
-    pinnedKeys: normalizeStringArray(raw.pinnedKeys, 2000),
+    pinnedKeys: pinned.pinnedKeys,
+    categoryPinnedKeys: pinned.categoryPinnedKeys,
     ...(typeof raw.attachLives === 'boolean' ? { attachLives: raw.attachLives } : {}),
     createdAt: typeof raw.createdAt === 'string' && raw.createdAt ? raw.createdAt : now,
     updatedAt: typeof raw.updatedAt === 'string' && raw.updatedAt ? raw.updatedAt : now,

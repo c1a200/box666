@@ -315,8 +315,10 @@ export interface LiveDistributionPolicy {
   maxSources: number;
   /** 分类模式各分类上限；未配置=不限制该分类；0=不选；-1=全部；正数=该分类 Top N */
   bucketLimits?: Partial<Record<LiveCategory, number>>;
-  /** 置顶 key：仅调整顺序，不绕过质量/分类/数量门禁 */
+  /** 总榜置顶 key：简单模式优先占用总名额，分类模式优先占用所属分类名额。 */
   pinnedKeys?: readonly string[];
+  /** 分类置顶 key：仅分类模式优先占用所属分类名额。 */
+  categoryPinnedKeys?: readonly string[];
   /** 管理端主动屏蔽的 key：直接排除在下发池之外（不参与排序，也不因置顶恢复） */
   blockedKeys?: readonly string[];
 }
@@ -325,6 +327,7 @@ export const DEFAULT_LIVE_DISTRIBUTION_POLICY: LiveDistributionPolicy = {
   selectionMode: 'simple',
   maxSources: -1,
   pinnedKeys: [],
+  categoryPinnedKeys: [],
   blockedKeys: [],
 };
 
@@ -342,12 +345,15 @@ export function normalizeLiveDistributionPolicy(raw: unknown): LiveDistributionP
     : {};
   const selectionMode: SourceSelectionMode = source.selectionMode === 'category' ? 'category' : 'simple';
   const maxSources = parseThreeState(source.maxSources, -1);
-  const pinnedKeys = Array.isArray(source.pinnedKeys)
-    ? [...new Set(source.pinnedKeys.filter((key): key is string => typeof key === 'string').map((key) => key.trim()).filter(Boolean))]
+  const normalizeKeys = (value: unknown): string[] => Array.isArray(value)
+    ? [...new Set(value.filter((key): key is string => typeof key === 'string').map((key) => key.trim()).filter(Boolean))]
     : [];
-  const blockedKeys = Array.isArray(source.blockedKeys)
-    ? [...new Set(source.blockedKeys.filter((key): key is string => typeof key === 'string').map((key) => key.trim()).filter(Boolean))]
-    : [];
+  const blockedKeys = normalizeKeys(source.blockedKeys);
+  const blocked = new Set(blockedKeys);
+  const pinnedKeys = normalizeKeys(source.pinnedKeys).filter((key) => !blocked.has(key));
+  const globalPinned = new Set(pinnedKeys);
+  const categoryPinnedKeys = normalizeKeys(source.categoryPinnedKeys)
+    .filter((key) => !blocked.has(key) && !globalPinned.has(key));
   let bucketLimits: Partial<Record<LiveCategory, number>> | undefined;
   const rawBuckets = source.bucketLimits;
   if (rawBuckets && typeof rawBuckets === 'object' && !Array.isArray(rawBuckets)) {
@@ -364,6 +370,7 @@ export function normalizeLiveDistributionPolicy(raw: unknown): LiveDistributionP
     maxSources,
     ...(bucketLimits ? { bucketLimits } : {}),
     pinnedKeys,
+    categoryPinnedKeys,
     blockedKeys,
   };
 }
@@ -375,7 +382,9 @@ export function normalizeLiveDistributionPolicy(raw: unknown): LiveDistributionP
  * - 简单模式取统一质量排名 Top-N；全选(-1)即整个质量池，绝不隐式截断。
  * - 分类模式对每个分类在其自身的质量池内独立取 Top-N，保证“该分类最优”。
  * - 未在 bucketLimits 中出现的分类默认不限制（全部下发）。
- * - 置顶仅把已入选的源前移；不会把未入选/被否决的源带入下发池。
+ * - 总榜置顶优先占用简单模式总名额，分类模式下优先占用所属分类名额。
+ * - 分类置顶仅分类模式生效，并优先占用所属分类名额。
+ * - 置顶不会把被质量、屏蔽、文本或数量门禁否决的源带入下发池。
  * - 全流程保持质量排序稳定，重复调用结果一致。
  */
 export function selectLiveDistribution<T extends LiveRankView>(
@@ -392,44 +401,37 @@ export function selectLiveDistribution<T extends LiveRankView>(
     const key = entry.key || entry.url || '';
     return key === '' || !blocked.has(key);
   });
-  let selected: T[];
-
-  if (normalized.selectionMode === 'simple') {
-    selected = normalized.maxSources < 0
-      ? [...allowed]
-      : allowed.slice(0, normalized.maxSources);
-  } else {
-    const limits = normalized.bucketLimits;
-    const perCategoryCount = new Map<LiveCategory, number>();
-    selected = [];
-    for (const entry of allowed) {
-      const category = normalizeLiveCategory(entry.category);
-      if (limits) {
-        if (Object.prototype.hasOwnProperty.call(limits, category)) {
-          const limit = limits[category] as number;
-          if (limit === 0) continue;
-          if (limit > 0) {
-            const used = perCategoryCount.get(category) ?? 0;
-            if (used >= limit) continue;
-            perCategoryCount.set(category, used + 1);
-          }
-        }
-      }
-      selected.push(entry);
-    }
-  }
-
-  // 置顶：仅在已入选集合内前移，保持各自相对顺序。
-  const pinnedOrder = new Map(
-    (normalized.pinnedKeys || []).map((key, index) => [key, index] as const),
-  );
-  if (pinnedOrder.size === 0) return selected;
-  const pinned = selected
+  const activePinnedKeys = normalized.selectionMode === 'simple'
+    ? (normalized.pinnedKeys || [])
+    : [...(normalized.pinnedKeys || []), ...(normalized.categoryPinnedKeys || [])];
+  const pinnedOrder = new Map(activePinnedKeys.map((key, index) => [key, index] as const));
+  const pinned = allowed
     .filter((entry) => pinnedOrder.has(entry.key || entry.url || ''))
     .sort((a, b) => (pinnedOrder.get(a.key || a.url || '') as number) - (pinnedOrder.get(b.key || b.url || '') as number));
   const pinnedSet = new Set(pinned.map((entry) => entry.key || entry.url || ''));
-  return [
-    ...pinned,
-    ...selected.filter((entry) => !pinnedSet.has(entry.key || entry.url || '')),
-  ];
+  const ordered = [...pinned, ...allowed.filter((entry) => !pinnedSet.has(entry.key || entry.url || ''))];
+
+  if (normalized.selectionMode === 'simple') {
+    return normalized.maxSources < 0
+      ? ordered
+      : ordered.slice(0, normalized.maxSources);
+  }
+
+  const limits = normalized.bucketLimits;
+  const perCategoryCount = new Map<LiveCategory, number>();
+  const selected: T[] = [];
+  for (const entry of ordered) {
+    const category = normalizeLiveCategory(entry.category);
+    if (limits && Object.prototype.hasOwnProperty.call(limits, category)) {
+      const limit = limits[category] as number;
+      if (limit === 0) continue;
+      if (limit > 0) {
+        const used = perCategoryCount.get(category) ?? 0;
+        if (used >= limit) continue;
+        perCategoryCount.set(category, used + 1);
+      }
+    }
+    selected.push(entry);
+  }
+  return selected;
 }

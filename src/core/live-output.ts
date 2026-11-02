@@ -102,6 +102,7 @@ async function loadCandidateGroups(storage: Storage): Promise<TVBoxLiveGroup[]> 
 
 function stablePolicyKey(policy: LiveDistributionPolicy): string {
   const pinned = [...(policy.pinnedKeys || [])];
+  const categoryPinned = [...(policy.categoryPinnedKeys || [])];
   const blocked = [...(policy.blockedKeys || [])];
   const buckets = policy.bucketLimits
     ? Object.fromEntries(Object.entries(policy.bucketLimits).sort(([a], [b]) => a.localeCompare(b)))
@@ -111,6 +112,7 @@ function stablePolicyKey(policy: LiveDistributionPolicy): string {
     maxSources: policy.maxSources,
     bucketLimits: buckets,
     pinnedKeys: pinned,
+    categoryPinnedKeys: categoryPinned,
     blockedKeys: blocked,
   });
 }

@@ -574,9 +574,9 @@ async function readSites(response) {
     const sites = await readSites(await app.request('https://box.example/'));
     const keys = sites.map((site) => site.key);
     assert(keys.includes('source-client-fallback'), 'explicit untestable quota should allow a bounded client fallback');
-    assert(!keys.includes('source-xml-good'), 'lower-quality pinned source must not consume the XML Top-N slot');
-    assert(keys.includes('source-excellent'), 'XML Top-N must keep the best XML source');
-    assert(keys.indexOf('source-client-fallback') < keys.indexOf('source-excellent'), 'pinning should reorder only after bucket selection');
+    assert(keys.includes('source-xml-good'), 'pinned source must occupy the XML Top-1 slot');
+    assert(!keys.includes('source-excellent'), 'pinned XML source must displace the normally selected best XML source');
+    assert(keys.indexOf('source-xml-good') < keys.indexOf('source-client-fallback'), 'global pins must retain their saved order across buckets');
   }
 
   {
@@ -1102,6 +1102,107 @@ async function readSites(response) {
   }
 
   {
+    const baseQuota = {
+      maxQuickSearch: 20,
+      maxStartupQuickSearch: 20,
+      maxParses: 3,
+      selectionMode: 'simple',
+      maxSites: 1,
+      pinnedKeys: [],
+      categoryPinnedKeys: [],
+      blockedKeys: [],
+      sortBySpeed: true,
+      leanStartup: false,
+      startupMode: 'full',
+      quotaSchemaVersion: 9,
+    };
+
+    const globalPinApp = makeApp({ quota: { ...baseQuota, pinnedKeys: ['source-good'] } });
+    const globalPinSites = await readSites(await globalPinApp.app.request('https://box.example/'));
+    assert(globalPinSites.length === 1 && globalPinSites[0].key === 'source-good',
+      'simple mode global pin must occupy a Top-N slot, got ' + globalPinSites.map((site) => site.key).join(','));
+
+    const categoryIgnoredApp = makeApp({ quota: { ...baseQuota, categoryPinnedKeys: ['source-good'] } });
+    const categoryIgnoredSites = await readSites(await categoryIgnoredApp.app.request('https://box.example/'));
+    assert(categoryIgnoredSites.length === 1 && categoryIgnoredSites[0].key === 'source-excellent',
+      'simple mode must ignore category pins, got ' + categoryIgnoredSites.map((site) => site.key).join(','));
+
+    const categoryPinApp = makeApp({
+      quota: {
+        ...baseQuota,
+        selectionMode: 'category',
+        maxSites: -1,
+        bucketLimits: { type: { xml: 1 } },
+        categoryPinnedKeys: ['source-xml-good'],
+      },
+    });
+    const categoryPinSites = await readSites(await categoryPinApp.app.request('https://box.example/'));
+    const categoryPinKeys = categoryPinSites.filter((site) => site.searchable === 1).map((site) => site.key);
+    assert(categoryPinKeys.includes('source-xml-good') && !categoryPinKeys.includes('source-excellent'),
+      'category pin must occupy its own source-type slot, got ' + categoryPinKeys.join(','));
+
+    const blockedPinApp = makeApp({
+      quota: { ...baseQuota, pinnedKeys: ['source-good'], blockedKeys: ['source-good'] },
+    });
+    const blockedPinSites = await readSites(await blockedPinApp.app.request('https://box.example/'));
+    assert(blockedPinSites.length === 1 && blockedPinSites[0].key === 'source-excellent',
+      'blocked source must not be restored by a pin, got ' + blockedPinSites.map((site) => site.key).join(','));
+
+    const pinApiApp = makeApp({
+      quota: {
+        ...baseQuota,
+        maxSites: -1,
+        pinnedKeys: ['source-good', 'source-client-fallback'],
+        categoryPinnedKeys: ['source-xml-good'],
+      },
+    });
+    const adminHeaders = {
+      Authorization: 'Bearer test-token',
+      'Content-Type': 'application/json',
+    };
+    const deletePinResponse = await pinApiApp.app.request('https://box.example/admin/search-quota/pinned', {
+      method: 'DELETE',
+      headers: adminHeaders,
+      body: JSON.stringify({ keys: ['source-good', 'source-xml-good'] }),
+    });
+    assert(deletePinResponse.status === 200, 'DELETE pinned should succeed, got ' + deletePinResponse.status);
+    const deletePinResult = await deletePinResponse.json();
+    assert(JSON.stringify(deletePinResult.pinnedKeys) === JSON.stringify(['source-client-fallback'])
+      && Array.isArray(deletePinResult.categoryPinnedKeys) && deletePinResult.categoryPinnedKeys.length === 0,
+    'row-level unpin must remove the key from both global and category pin scopes');
+
+    const scopeApp = makeApp({
+      quota: {
+        ...baseQuota,
+        maxSites: -1,
+        pinnedKeys: ['source-client-fallback'],
+        categoryPinnedKeys: ['source-xml-good'],
+      },
+    });
+    const moveToCategoryResponse = await scopeApp.app.request('https://box.example/admin/search-quota/pinned', {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify({ keys: ['source-client-fallback'], scope: 'category' }),
+    });
+    assert(moveToCategoryResponse.status === 200, 'scope move should succeed, got ' + moveToCategoryResponse.status);
+    const movedToCategory = await moveToCategoryResponse.json();
+    assert(movedToCategory.pinnedKeys.length === 0
+      && ['source-client-fallback', 'source-xml-good'].every((key) => movedToCategory.categoryPinnedKeys.includes(key)),
+    'moving a pin to category scope must remove it from the global scope');
+
+    const moveToGlobalResponse = await scopeApp.app.request('https://box.example/admin/search-quota/pinned', {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify({ keys: ['source-client-fallback'], scope: 'global' }),
+    });
+    assert(moveToGlobalResponse.status === 200, 'scope move back should succeed, got ' + moveToGlobalResponse.status);
+    const movedToGlobal = await moveToGlobalResponse.json();
+    assert(JSON.stringify(movedToGlobal.pinnedKeys) === JSON.stringify(['source-client-fallback'])
+      && JSON.stringify(movedToGlobal.categoryPinnedKeys) === JSON.stringify(['source-xml-good']),
+    'moving a pin to global scope must remove it from the category scope');
+  }
+
+  {
     const zeroAuthDistribution = {
       requireAuth: false,
       authCodes: [{
@@ -1216,7 +1317,7 @@ async function readSites(response) {
     };
     const limited = makeApp({ distribution: pinnedLimitDistribution });
     const limitedSites = await readSites(await limited.app.request('https://box.example/auth/pinned-limit/'));
-    assert(limitedSites.filter((site) => site.searchable === 1).length === 1 && limitedSites[0].key === 'source-excellent', 'pinned keys must only affect order and must not exceed maxSites, got ' + limitedSites.map((site) => site.key).join(','));
+    assert(limitedSites.filter((site) => site.searchable === 1).length === 1 && limitedSites.find((site) => site.searchable === 1).key === 'source-good', 'pinned keys must occupy maxSites slots in saved order without exceeding the cap, got ' + limitedSites.map((site) => site.key).join(','));
   }
 
   {

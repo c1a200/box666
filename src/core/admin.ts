@@ -480,6 +480,7 @@ ${sharedStyles}
           <option value="selected" data-i18n="liveDistSelectedOnly">仅已下发</option>
           <option value="excluded" data-i18n="liveDistSelectedExcluded">仅未下发</option>
           <option value="invalid" data-i18n="liveDistSelectedInvalid">仅明确失效</option>
+          <option value="pinned" data-i18n="liveDistSelectedPinned">仅置顶</option>
         </select>
         <span id="liveDistFilterCount" style="font-size:0.75rem;color:var(--text-secondary)"></span>
       </div>
@@ -544,6 +545,7 @@ ${sharedStyles}
         <input id="sqSourceFilter" class="nt-input" style="width:220px" placeholder="搜索源名称或源标识..." data-i18n-placeholder="sqSourceFilterPh" oninput="renderSearchSources()">
         <select id="sqGradeFilter" class="nt-input" style="width:190px" onchange="renderSearchSources()">
           <option value="all" data-i18n="sqFilterAll">全部等级</option>
+          <option value="pinned" data-i18n="sqFilterPinned">仅置顶源</option>
           <option value="excellent" data-i18n="sqExcellent">优</option>
           <option value="good" data-i18n="sqGood">良</option>
           <option value="usable" data-i18n="sqUsable">可用</option>
@@ -943,9 +945,9 @@ const translations = {
     tabSearchQuota:'Quality Grades',
     sqStatsCurrent:'Current actual counts', sqStatsSearchable:'searchable sources', sqStatsQuick:'quick search', sqStatsQuickLimit:'automatic limit', sqStatsPool:'quality pool', sqStatsServerVerified:'server verified', sqStatsClientFallback:'client fallback', sqStatsParsers:'Parsers', sqStatsKept:'kept', sqStatsProbed:'probed', sqStatsRemoved:'removed', sqStatsLimit:'limit', sqStatsUnlimited:'unlimited', sqStatsQuality:'Quality grades', sqStatsNoData:'Run aggregation to show quality grades and parser counts.', sqPoolTotal:'Total quality-pool sources', sqStatsDistributable:'actual distributable', sqStatsBlocked:'blacklist blocked', sqQuality:'graded',
     sqKey:'Source identifier', sqName:'Source name', sqSource:'Source type', sqReason:'Exclusion reason', sqGrade:'Quality grade / score', sqSpeedStatus:'Response speed / confidence', sqRank:'Overall / category rank', sqAction:'Action',
-    sqPin:'Pin', sqUnpin:'Unpin',
-    sqBlock:'Block', sqUnblock:'Unblock', sqBlocked:'Blocked', sqBlockedDesc:'Blocked sources are excluded from all client outputs but remain here so they can be restored.', sqSourceFilterPh:'Search source name or key...', sqFilterAll:'All grades', sqFilterMatched:'Matched', sqFilterNoMatch:'No matching sources',
-    sqPinned:'Pinned', sqPinnedDesc:'Drag to reorder. Pinned sources are searched first and still count toward their source-type quota.', sqOtherSources:'Quality Pool Sources', sqQualityPoolDesc:'Sources in the ordered quality pool and eligible for distribution. Pinned sources are searched first; blocked sources stay in this list but are excluded from every client output.', sqExcludedSources:'Sources Outside Quality Pool', sqExcludedDesc:'Searchable sources that were assessed but are outside the quality pool, for example timeout or unusable sources. They are not distributed to clients.', sqReasonJsUrlExcluded:'JS URL excluded', sqReasonTimeout:'Timeout', sqReasonUnusable:'Unusable', sqReasonNotInPool:'Not in quality pool', sqReasonOutsideQualityPool:'Outside quality pool',
+    sqPin:'Pin', sqUnpin:'Unpin', sqPinGlobal:'Pin globally', sqPinCategory:'Pin in category', sqPinnedGlobal:'Global pin', sqPinnedCategory:'Category pin',
+    sqBlock:'Block', sqUnblock:'Unblock', sqBlocked:'Blocked', sqBlockedDesc:'Blocked sources are excluded from all client outputs but remain here so they can be restored.', sqSourceFilterPh:'Search source name or key...', sqFilterAll:'All grades', sqFilterPinned:'Pinned only', sqFilterMatched:'Matched', sqFilterNoMatch:'No matching sources',
+    sqPinned:'Pinned', sqPinnedDesc:'Pinned sources take precedence for their delivery slots. Global pins consume slots in simple and category modes; category pins apply only in category mode. Use the Pinned only filter, then click Unpin on a row to remove one.', sqOtherSources:'Quality Pool Sources', sqQualityPoolDesc:'Sources in the ordered quality pool and eligible for distribution. Pinned sources take precedence for their delivery slots; blocked sources stay in this list but are excluded from every client output.', sqExcludedSources:'Sources Outside Quality Pool', sqExcludedDesc:'Searchable sources that were assessed but are outside the quality pool, for example timeout or unusable sources. They are not distributed to clients.', sqReasonJsUrlExcluded:'JS URL excluded', sqReasonTimeout:'Timeout', sqReasonUnusable:'Unusable', sqReasonNotInPool:'Not in quality pool', sqReasonOutsideQualityPool:'Outside quality pool',
     sqXmlSources:'XML Sources', sqXmlDesc:'TVBox type 0 XML interface sources. Quality grades only affect their order within this list.', sqJsonSources:'JSON / MacCMS Sources', sqJsonDesc:'TVBox type 1 JSON or MacCMS interface sources.', sqJarSources:'JAR / Extension Sources', sqJarDesc:'TVBox type 3 local JAR or remote extension sources, excluding JS URL entries.', sqJsSources:'JS URL Sources', sqJsDesc:'TVBox type 3 sources whose API is an HTTP(S) URL.', sqRemoteSources:'Remote Sources', sqRemoteDesc:'TVBox type 4 remote site sources.', sqUncategorizedSources:'Other Sources', sqUncategorizedDesc:'Sources whose interface type could not be classified. They are listed separately instead of being mixed into a quality grade.', sqXml:'XML', sqJson:'JSON / MacCMS', sqJar:'JAR / Extension', sqJs:'JS URL', sqRemote:'Remote', sqOther:'Other', sqUnavailableSources:'Unavailable Sources', sqUnavailableDesc:'Searchable sources that are blocked, timed out, unusable, or outside the current quality pool. They are not distributed to clients.', sqBlockedSources:'Blocked Sources', sqBlockedDescLong:'Blocked sources are excluded from all client outputs but remain here so they can be restored.',
     sqLeanRemoved:'lean-removed',
     channelProbeTitle:'Channel Speed Probe (Node/Docker)',
@@ -979,12 +981,12 @@ const translations = {
     liveAttachLinkHint:'When attached, the client resolves live sources from the on-demand link alone; when detached, configure the standalone /live link instead.',
     liveAttachPerAuth:'On-demand link carries live sources', liveAttachPerAuthHint:'Each auth code can attach live sources independently; changes take effect after saving.',
     liveCopyLive:'Copy /live link', liveCopyLives:'Copy /lives link', liveCopyLiveJson:'Copy /live.json link',
-    livePoolTitle:'Live source quality pool', livePoolHint:'Ranked by the unified quality order: currently healthy sources first, then proven fallbacks, then never-verified sources. Block/pin only affects this table and delivery selection.',
-    liveDistNoData:'No live source data yet. Run an aggregation first.', liveMergeReportTitle:'Merge report', liveMergeReportEmpty:'No merge report yet.',
+    livePoolTitle:'Live source quality pool', livePoolHint:'Ranked by the unified quality order: currently healthy sources first, then proven fallbacks, then never-verified sources. Global pins consume slots in simple and category modes; category pins apply only in category mode. Use the Pinned only filter, then click Unpin on a row to remove one.',
+    liveDistNoData:'No live source data yet. Run an aggregation first.', liveDistSelectedPinned:'Pinned only', liveMergeReportTitle:'Merge report', liveMergeReportEmpty:'No merge report yet.',
     liveCatCctv:'CCTV', liveCatSatellite:'Satellite', liveCatLocal:'Local', liveCatVariety:'Variety/Entertainment', liveCatSpecial:'4K/Special', liveCatIpv6:'IPv6', liveCatOther:'Other',
     liveDistBucketPh:'Count', liveTableRank:'Rank', liveTableSource:'Source', liveTableKind:'Origin', liveTableFormat:'Format', liveTableCategory:'Category', liveTableQuality:'Quality', liveTableHealth:'Health', liveTableChannels:'Channels', liveTablePlayable:'Playable', liveTableAd:'Ads', liveTableSpeed:'Download', liveTableChecked:'Last checked', liveTableAction:'Actions',
-    liveKindAggregated:'Upstream', liveKindManual:'Manual', liveHealthHealthy:'Healthy', liveHealthUnhealthy:'Fallback', liveStateInvalid:'Invalid', liveStateSelected:'Delivered', liveStateExcluded:'Excluded', liveStateBlocked:'Blocked', liveStatePinned:'Pinned',
-    liveActionPin:'Pin', liveActionUnpin:'Unpin', liveActionBlock:'Block', liveActionUnblock:'Unblock', liveActionVerify:'Verify now', liveVerifyRunning:'Verifying...', liveVerifyFailed:'Verification failed', liveDistSaved:'Saved', liveDistCandidates:'Candidates', liveDistDelivered:'Delivered', liveMergeSources:'sources', liveMergeAccepted:'accepted', liveMergeQualityPool:'quality pool', liveMergeGroups:'groups', liveMergeChannels:'channels', liveMergeUrls:'lines', liveMergeCacheHits:'cache hits', liveMergeCacheMisses:'cache misses', liveMergeFailed:'failed', liveMergeUpdated:'updated',
+    liveKindAggregated:'Upstream', liveKindManual:'Manual', liveHealthHealthy:'Healthy', liveHealthUnhealthy:'Fallback', liveStateInvalid:'Invalid', liveStateSelected:'Delivered', liveStateExcluded:'Excluded', liveStateBlocked:'Blocked', liveStatePinned:'Pinned', liveStatePinnedGlobal:'Global pin', liveStatePinnedCategory:'Category pin',
+    liveActionPin:'Pin', liveActionPinGlobal:'Pin globally', liveActionPinCategory:'Pin in category', liveActionUnpin:'Unpin', liveActionBlock:'Block', liveActionUnblock:'Unblock', liveActionVerify:'Verify now', liveVerifyRunning:'Verifying...', liveVerifyFailed:'Verification failed', liveDistSaved:'Saved', liveDistCandidates:'Candidates', liveDistDelivered:'Delivered', liveMergeSources:'sources', liveMergeAccepted:'accepted', liveMergeQualityPool:'quality pool', liveMergeGroups:'groups', liveMergeChannels:'channels', liveMergeUrls:'lines', liveMergeCacheHits:'cache hits', liveMergeCacheMisses:'cache misses', liveMergeFailed:'failed', liveMergeUpdated:'updated',
     liveAttachSaved:'Saved', liveDistRecommendedApplied:'Recommended values filled',
     smartBaseUrlTitle:'Smart Base URL', smartBaseUrlLabel:'Auto-detect client host for JAR/image URLs (LAN only, set DMZ=0 to allow public)',
     siteProbeTitle:'Site Content Probe & Auto Clean', probeDepthLabel:'Probe depth:',
@@ -1118,9 +1120,9 @@ const translations = {
     sqExcellent:'优', sqGood:'良', sqUsable:'可用', sqUntestable:'待客户端最终验证', sqTimeout:'超时', sqUnusable:'不可用', sqCumulative:'累计',
     sqReasonBlocked:'已屏蔽', sqReasonNotInFinal:'未进入最终列表', sqReasonNotSearchable:'不可搜索',
     sqKey:'源标识', sqName:'源名称', sqSource:'源类型', sqReason:'未入选原因', sqGrade:'质量等级 / 分数', sqSpeedStatus:'响应速度 / 可信度', sqRank:'总排名 / 分类排名', sqAction:'操作',
-    sqPin:'置顶', sqUnpin:'取消置顶',
-    sqBlock:'屏蔽', sqUnblock:'取消屏蔽', sqBlocked:'已屏蔽', sqBlockedDesc:'屏蔽源不会下发到任何客户端，但仍保留在管理列表中，可随时恢复。可按名称或源标识搜索，并按质量等级或“已屏蔽”筛选。', sqSourceFilterPh:'搜索源名称或源标识...', sqFilterAll:'全部等级', sqFilterMatched:'匹配', sqFilterNoMatch:'没有匹配的源',
-    sqPinned:'置顶源', sqPinnedDesc:'上下移动排序，排在前面的源在 TVBox 搜索时优先执行；置顶仍属于原类型并占用该类型配额。', sqOtherSources:'质量池源', sqQualityPoolDesc:'已进入统一质量排序、可参与下发选择的源。置顶源优先搜索；屏蔽后仍保留在此列表，但不会下发到任何客户端。', sqExcludedSources:'质量池外源', sqExcludedDesc:'已经评估但未进入质量池的可搜索源，例如超时或不可用，不会下发到客户端。', sqReasonJsUrlExcluded:'JS URL 已排除', sqReasonTimeout:'超时', sqReasonUnusable:'不可用', sqReasonNotInPool:'不在质量池', sqReasonOutsideQualityPool:'质量池外',
+    sqPin:'置顶', sqUnpin:'取消置顶', sqPinGlobal:'总榜置顶', sqPinCategory:'分类置顶', sqPinnedGlobal:'总榜置顶', sqPinnedCategory:'分类置顶',
+    sqBlock:'屏蔽', sqUnblock:'取消屏蔽', sqBlocked:'已屏蔽', sqBlockedDesc:'屏蔽源不会下发到任何客户端，但仍保留在管理列表中，可随时恢复。可按名称或源标识搜索，并按质量等级或“已屏蔽”筛选。', sqSourceFilterPh:'搜索源名称或源标识...', sqFilterAll:'全部等级', sqFilterPinned:'仅置顶源', sqFilterMatched:'匹配', sqFilterNoMatch:'没有匹配的源',
+    sqPinned:'置顶源', sqPinnedDesc:'置顶会优先占用对应下发名额：总榜置顶在简单模式和分类模式均生效，分类置顶仅在分类模式生效。使用“仅置顶源”筛选后，点击对应行的“取消置顶”即可移除。', sqOtherSources:'质量池源', sqQualityPoolDesc:'已进入统一质量排序、可参与下发选择的源。置顶源优先占用对应下发名额；屏蔽后仍保留在此列表，但不会下发到任何客户端。', sqExcludedSources:'质量池外源', sqExcludedDesc:'已经评估但未进入质量池的可搜索源，例如超时或不可用，不会下发到客户端。', sqReasonJsUrlExcluded:'JS URL 已排除', sqReasonTimeout:'超时', sqReasonUnusable:'不可用', sqReasonNotInPool:'不在质量池', sqReasonOutsideQualityPool:'质量池外',
     sqXmlSources:'XML 源', sqXmlDesc:'TVBox 0 类 XML 接口源；质量等级决定其在统一排序和 XML 分类中的位置。', sqJsonSources:'JSON / MacCMS 源', sqJsonDesc:'TVBox 1 类 JSON 或 MacCMS 接口源。', sqJarSources:'JAR / 扩展源', sqJarDesc:'TVBox 3 类本地 JAR 或远程扩展源，不包含 API 为 HTTP(S) 的 JS 地址源。', sqJsSources:'JS 地址源', sqJsDesc:'TVBox 3 类且 API 为 HTTP(S) 地址的 JS 接口源。', sqRemoteSources:'远程站点源', sqRemoteDesc:'TVBox 4 类远程站点源。', sqUncategorizedSources:'其他类型源', sqUncategorizedDesc:'无法按接口机制归入上述类型的源，单独列出，不与质量等级混在一起。', sqUnavailableSources:'不可用 / 未入选源', sqUnavailableDesc:'可搜索但已屏蔽、超时、不可用或不在当前质量池中的源，不会下发到客户端。', sqBlockedSources:'屏蔽源', sqBlockedDescLong:'屏蔽源不会下发到任何客户端，但仍保留在管理列表中，可随时恢复。', sqXml:'XML', sqJson:'JSON / MacCMS', sqJar:'JAR / 扩展', sqJs:'JS 地址', sqRemote:'远程', sqOther:'其他',
     sqLeanRemoved:'轻量剔除',
     channelProbeTitle:'频道级测速（仅 Node/Docker）',
@@ -1154,12 +1156,12 @@ const translations = {
     liveAttachLinkHint:'附带后应用端只需配置点播链接即可解析直播源；不附带时点播链接不含直播，可单独配置直播链接 /live。',
     liveAttachPerAuth:'点播链接附带直播源', liveAttachPerAuthHint:'每个鉴权码可独立设置是否附带直播，保存后即时生效。',
     liveCopyLive:'复制 /live 链接', liveCopyLives:'复制 /lives 链接', liveCopyLiveJson:'复制 /live.json 链接',
-    livePoolTitle:'直播源质量池', livePoolHint:'按统一质量排名排列：当前健康优先，其次是有成功历史的可用后备，最后才是从未验证的源；明确失效不进入下发。屏蔽或置顶仅影响本表与下发选择。',
-    liveDistNoData:'暂无直播源数据，请先执行一次聚合。', liveMergeReportTitle:'合并报告', liveMergeReportEmpty:'暂无合并报告。',
+    livePoolTitle:'直播源质量池', livePoolHint:'按统一质量排名排列：当前健康优先，其次是有成功历史的可用后备，最后才是从未验证的源；明确失效不进入下发。总榜置顶在简单和分类模式下占位，分类置顶仅在分类模式下生效。可通过“仅置顶”筛选后逐行取消置顶。',
+    liveDistNoData:'暂无直播源数据，请先执行一次聚合。', liveDistSelectedPinned:'仅置顶', liveMergeReportTitle:'合并报告', liveMergeReportEmpty:'暂无合并报告。',
     liveCatCctv:'央视', liveCatSatellite:'卫视', liveCatLocal:'地方', liveCatVariety:'轮播/娱乐', liveCatSpecial:'4K/特色', liveCatIpv6:'IPv6', liveCatOther:'其他',
     liveDistBucketPh:'数量', liveTableRank:'排名', liveTableSource:'源名', liveTableKind:'来源', liveTableFormat:'格式', liveTableCategory:'分类', liveTableQuality:'质量分', liveTableHealth:'健康', liveTableChannels:'频道数', liveTablePlayable:'可播率', liveTableAd:'广告率', liveTableSpeed:'下载耗时', liveTableChecked:'最近验证', liveTableAction:'操作',
-    liveKindAggregated:'上游配置', liveKindManual:'手动添加', liveHealthHealthy:'健康', liveHealthUnhealthy:'后备', liveStateInvalid:'明确失效', liveStateSelected:'已下发', liveStateExcluded:'未下发', liveStateBlocked:'已屏蔽', liveStatePinned:'已置顶',
-    liveActionPin:'置顶', liveActionUnpin:'取消置顶', liveActionBlock:'屏蔽', liveActionUnblock:'取消屏蔽', liveActionVerify:'立即验证', liveVerifyRunning:'验证中...', liveVerifyFailed:'验证失败', liveDistSaved:'已保存', liveDistCandidates:'候选池', liveDistDelivered:'下发池', liveMergeSources:'源', liveMergeAccepted:'接受', liveMergeQualityPool:'质量池', liveMergeGroups:'分组', liveMergeChannels:'频道', liveMergeUrls:'线路', liveMergeCacheHits:'缓存命中', liveMergeCacheMisses:'缓存未命中', liveMergeFailed:'失败', liveMergeUpdated:'更新时间',
+    liveKindAggregated:'上游配置', liveKindManual:'手动添加', liveHealthHealthy:'健康', liveHealthUnhealthy:'后备', liveStateInvalid:'明确失效', liveStateSelected:'已下发', liveStateExcluded:'未下发', liveStateBlocked:'已屏蔽', liveStatePinned:'已置顶', liveStatePinnedGlobal:'总榜置顶', liveStatePinnedCategory:'分类置顶',
+    liveActionPin:'置顶', liveActionPinGlobal:'总榜置顶', liveActionPinCategory:'分类置顶', liveActionUnpin:'取消置顶', liveActionBlock:'屏蔽', liveActionUnblock:'取消屏蔽', liveActionVerify:'立即验证', liveVerifyRunning:'验证中...', liveVerifyFailed:'验证失败', liveDistSaved:'已保存', liveDistCandidates:'候选池', liveDistDelivered:'下发池', liveMergeSources:'源', liveMergeAccepted:'接受', liveMergeQualityPool:'质量池', liveMergeGroups:'分组', liveMergeChannels:'频道', liveMergeUrls:'线路', liveMergeCacheHits:'缓存命中', liveMergeCacheMisses:'缓存未命中', liveMergeFailed:'失败', liveMergeUpdated:'更新时间',
     liveAttachSaved:'已保存', liveDistRecommendedApplied:'已填入推荐值',
     smartBaseUrlTitle:'智能地址响应', smartBaseUrlLabel:'根据客户端访问地址自动生成资源链接（仅局域网，设置 DMZ=0 允许公网）',
     siteProbeTitle:'站点内容验活与自动清理', probeDepthLabel:'验活深度：',
@@ -2414,6 +2416,7 @@ async function saveEdgeProxies() {
 
 // --- Search Quota ---
 let sqPinnedKeys = new Set();
+let sqCategoryPinnedKeys = new Set();
 let sqBlockedKeys = new Set();
 let rootSourceSelection = { selectionMode: 'simple', maxSites: -1, bucketLimits: undefined };
 
@@ -2583,6 +2586,7 @@ function toggleRootSourceSelection() {
   if (count) count.style.display = category ? 'none' : ''; if (countInput) countInput.style.display = category ? 'none' : '';
   const box = $('rootSourceBuckets'); if (box) box.style.display = category ? '' : 'none'; if (category) renderRootSourceBuckets();
   refreshRootSourcePolicySummary();
+  renderSearchSources();
 }
 
 function syncRootSourceCountInput() {
@@ -2625,6 +2629,7 @@ async function loadSearchQuota() {
     $('startupModeInput').value = 'lean';
     $('pruneDeadParsesInput').checked = true;
     sqPinnedKeys = new Set(d.pinnedKeys || []);
+    sqCategoryPinnedKeys = new Set(d.categoryPinnedKeys || []);
     sqBlockedKeys = new Set(d.blockedKeys || []);
     loadSearchQuotaReport();
   } catch {}
@@ -2659,6 +2664,7 @@ async function saveSearchQuota(scope) {
     startupMode: 'lean',
     pruneDeadParses: true,
     pinnedKeys: [...sqPinnedKeys],
+    categoryPinnedKeys: [...sqCategoryPinnedKeys],
     blockedKeys: [...sqBlockedKeys],
     selectionMode: rootSourceSelection.selectionMode,
     maxSites: rootSourceSelection.selectionMode === 'simple' ? rootSourceSelection.maxSites : -1,
@@ -3230,7 +3236,8 @@ function compareByQualityPoolOrder(a, b, qualityMap, rankMaps) {
 function renderSearchSources() {
   if (sqSearchRenderPending) return;
   captureSearchTableScroll();
-  const pinnedOrder = new Map([...sqPinnedKeys].map((key, index) => [key, index]));
+  const pinnedKeys = new Set([...sqPinnedKeys, ...sqCategoryPinnedKeys]);
+  const pinnedOrder = new Map([...pinnedKeys].map((key, index) => [key, index]));
   const qualityMap = qualityEntryByKey();
   const input = $('sqSourceFilter');
   const select = $('sqGradeFilter');
@@ -3240,7 +3247,9 @@ function renderSearchSources() {
   const matches = function(s) {
     const entry = qualityMap.get(s.key);
     const isBlocked = sqBlockedKeys.has(s.key) || s.blocked === true;
-    if (gradeFilter === 'blocked') {
+    if (gradeFilter === 'pinned') {
+      if (!pinnedOrder.has(s.key)) return false;
+    } else if (gradeFilter === 'blocked') {
       if (!isBlocked) return false;
     } else if (gradeFilter !== 'all') {
       if (!entry || entry.grade !== gradeFilter) return false;
@@ -3286,7 +3295,7 @@ function renderSearchSources() {
 
   const visibleLimit = 1000;
   const tableHeader = function() {
-    return '<thead><tr><th style="width:30px">#</th><th>' + t('sqKey') + '</th><th>' + t('sqName') + '</th><th>' + t('sqSource') + '</th><th>' + t('sqGrade') + '</th><th>' + t('sqRank') + '</th><th>' + t('sqSpeedStatus') + '</th><th style="width:190px;text-align:right">' + t('sqAction') + '</th></tr></thead><tbody>';
+    return '<thead><tr><th style="width:30px">#</th><th>' + t('sqKey') + '</th><th>' + t('sqName') + '</th><th>' + t('sqSource') + '</th><th>' + t('sqGrade') + '</th><th>' + t('sqRank') + '</th><th>' + t('sqSpeedStatus') + '</th><th style="width:280px;text-align:right">' + t('sqAction') + '</th></tr></thead><tbody>';
   };
   const tableHeaderWithReason = function() {
     return '<thead><tr><th style="width:30px">#</th><th>' + t('sqKey') + '</th><th>' + t('sqName') + '</th><th>' + t('sqSource') + '</th><th>' + t('sqReason') + '</th><th>' + t('sqRank') + '</th><th>' + t('sqSpeedStatus') + '</th><th style="width:190px;text-align:right">' + t('sqAction') + '</th></tr></thead><tbody>';
@@ -3295,11 +3304,13 @@ function renderSearchSources() {
     const isBlocked = sqBlockedKeys.has(s.key) || s.blocked === true;
     const entry = qualityMap.get(s.key);
     const grade = entry ? entry.grade : null;
-    const isPinned = pinnedOrder.has(s.key);
+    const isGlobalPinned = sqPinnedKeys.has(s.key);
+    const isCategoryPinned = sqCategoryPinnedKeys.has(s.key);
+    const isPinned = isGlobalPinned || isCategoryPinned;
     let rowHtml = '<tr style="border-bottom:1px solid var(--border)' + (isBlocked ? ';opacity:0.55;text-decoration:line-through' : isPinned ? ';background:var(--bg-hover)' : '') + '">';
     rowHtml += '<td style="padding:4px;width:30px;color:var(--text-secondary)">' + (typeof index === 'number' ? index + 1 : '') + '</td>';
     rowHtml += '<td style="padding:4px;font-family:var(--mono);font-size:0.75rem">' + escHtml(s.key) + '</td>';
-    rowHtml += '<td style="padding:4px">' + escHtml(s.name || s.key) + (isPinned ? ' <span style="color:var(--primary);font-size:0.7rem">' + t('sqPinned') + '</span>' : '') + (isBlocked ? ' <span style="color:var(--red);font-size:0.7rem">' + t('sqBlocked') + '</span>' : '') + '</td>';
+    rowHtml += '<td style="padding:4px">' + escHtml(s.name || s.key) + (isGlobalPinned ? ' <span style="color:var(--primary);font-size:0.7rem">' + t('sqPinnedGlobal') + '</span>' : '') + (isCategoryPinned ? ' <span style="color:var(--primary);font-size:0.7rem">' + t('sqPinnedCategory') + '</span>' : '') + (isBlocked ? ' <span style="color:var(--red);font-size:0.7rem">' + t('sqBlocked') + '</span>' : '') + '</td>';
     rowHtml += '<td style="padding:4px;white-space:nowrap">' + escHtml(sourceCategoryLabel(sourceCategoryOf(s))) + '</td>';
     if (withReason) {
       rowHtml += '<td style="padding:4px;white-space:nowrap;color:var(--text-secondary)">' + escHtml(qualityReasonLabel(s.qualityReason)) + '</td>';
@@ -3310,8 +3321,15 @@ function renderSearchSources() {
     const categoryRank = rankMaps.category.get(s.key);
     rowHtml += '<td style="padding:4px;white-space:nowrap;font-family:var(--mono);font-size:0.75rem">总第 ' + (globalRank || '-') + ' / 类别第 ' + (categoryRank || '-') + '</td>';
     rowHtml += '<td style="padding:4px;white-space:nowrap;font-family:var(--mono);font-size:0.75rem">' + qualitySpeedLabel(entry) + ' · ' + qualityConfidenceLabel(entry) + '</td>';
-    rowHtml += '<td style="padding:4px;width:190px;text-align:right;white-space:nowrap">';
-    if (!isBlocked) rowHtml += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem" onclick="togglePin(&quot;' + escHtml(s.key) + '&quot;)">' + (isPinned ? t('sqUnpin') : t('sqPin')) + '</button> ';
+    rowHtml += '<td style="padding:4px;width:280px;text-align:right;white-space:nowrap">';
+    if (!isBlocked) {
+      if (isPinned) {
+        rowHtml += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem" onclick="togglePin(&quot;' + escHtml(s.key) + '&quot;)">' + t('sqUnpin') + '</button> ';
+      } else {
+        rowHtml += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem" onclick="togglePin(&quot;' + escHtml(s.key) + '&quot;, &quot;global&quot;)">' + t('sqPinGlobal') + '</button> ';
+        if (rootSourceSelection.selectionMode === 'category') rowHtml += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem" onclick="togglePin(&quot;' + escHtml(s.key) + '&quot;, &quot;category&quot;)">' + t('sqPinCategory') + '</button> ';
+      }
+    }
     rowHtml += '<button class="btn btn-sm" style="padding:1px 6px;font-size:0.7rem;color:var(--red)" onclick="toggleBlocked(&quot;' + escHtml(s.key) + '&quot;)">' + (isBlocked ? t('sqUnblock') : t('sqBlock')) + '</button>';
     rowHtml += '</td></tr>';
     return rowHtml;
@@ -3382,7 +3400,8 @@ async function movePinned(index, direction) {
     });
     if (res.ok) {
       const d = await res.json();
-      sqPinnedKeys = new Set(d.pinnedKeys);
+      sqPinnedKeys = new Set(d.pinnedKeys || []);
+      sqCategoryPinnedKeys = new Set(d.categoryPinnedKeys || []);
       renderSearchSources();
     }
   } catch {}
@@ -3390,18 +3409,19 @@ async function movePinned(index, direction) {
 
 function escHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
-async function togglePin(key) {
+async function togglePin(key, scope) {
   if (sqBlockedKeys.has(key)) return;
-  const isPinned = sqPinnedKeys.has(key);
+  const isPinned = sqPinnedKeys.has(key) || sqCategoryPinnedKeys.has(key);
   try {
     const res = await auth.authFetch('/admin/search-quota/pinned', {
       method: isPinned ? 'DELETE' : 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ keys: [key] }),
+      body: JSON.stringify({ keys: [key], scope: scope === 'category' ? 'category' : 'global' }),
     });
     if (res.ok) {
       const d = await res.json();
-      sqPinnedKeys = new Set(d.pinnedKeys);
+      sqPinnedKeys = new Set(d.pinnedKeys || []);
+      sqCategoryPinnedKeys = new Set(d.categoryPinnedKeys || []);
       renderSearchSources();
     }
   } catch {}
@@ -3421,6 +3441,7 @@ async function toggleBlocked(key) {
       const d = await res.json();
       sqBlockedKeys = new Set(d.blockedKeys || []);
       sqPinnedKeys = new Set(d.pinnedKeys || []);
+      sqCategoryPinnedKeys = new Set(d.categoryPinnedKeys || []);
       renderSearchSources();
     }
   } catch {}
@@ -3636,6 +3657,9 @@ function normalizeClientAuthCode(item, index) {
     pinnedKeys: Array.isArray(item && item.pinnedKeys)
       ? [...new Set(item.pinnedKeys.filter((key) => typeof key === 'string' && key.trim()).map((key) => key.trim()))]
       : [],
+    categoryPinnedKeys: Array.isArray(item && item.categoryPinnedKeys)
+      ? [...new Set(item.categoryPinnedKeys.filter((key) => typeof key === 'string' && key.trim()).map((key) => key.trim()))]
+      : [],
     attachLives: item && typeof item.attachLives === 'boolean' ? item.attachLives : undefined,
     createdAt: (item && item.createdAt) || now,
     updatedAt: (item && item.updatedAt) || now,
@@ -3658,6 +3682,7 @@ function newCredentialAuthCode() {
     sourceMode: 'all',
     selectedKeys: [],
     pinnedKeys: [],
+    categoryPinnedKeys: [],
     attachLives: liveDistPolicy.attachToAuth !== false,
     createdAt: now,
     updatedAt: now,
@@ -4350,7 +4375,7 @@ async function setLiveMergeMode(mode) {
 
 // ─── 直播源下发（候选池/质量池/下发池）──────────
 let liveDistData = null;
-let liveDistPolicy = { selectionMode: 'simple', maxSources: -1, bucketLimits: {}, pinnedKeys: [], blockedKeys: [], attachToRoot: true, attachToAuth: true };
+let liveDistPolicy = { selectionMode: 'simple', maxSources: -1, bucketLimits: {}, pinnedKeys: [], categoryPinnedKeys: [], blockedKeys: [], attachToRoot: true, attachToAuth: true };
 
 function liveDistCountsText(counts) {
   return t('liveDistCandidates') + ': ' + (counts.candidates ?? '-')
@@ -4369,6 +4394,7 @@ async function loadLiveDistribution() {
       maxSources: typeof dist.maxSources === 'number' ? dist.maxSources : -1,
       bucketLimits: dist.bucketLimits || {},
       pinnedKeys: Array.isArray(dist.pinnedKeys) ? dist.pinnedKeys.slice() : [],
+      categoryPinnedKeys: Array.isArray(dist.categoryPinnedKeys) ? dist.categoryPinnedKeys.slice() : [],
       blockedKeys: Array.isArray(dist.blockedKeys) ? dist.blockedKeys.slice() : [],
       attachToRoot: dist.attachToRoot !== false,
       attachToAuth: dist.attachToAuth !== false,
@@ -4388,11 +4414,13 @@ async function loadLiveDistribution() {
 
 function toggleLiveDistMode() {
   const mode = $('liveDistMode'); const isCategory = mode && mode.value === 'category';
+  liveDistPolicy.selectionMode = isCategory ? 'category' : 'simple';
   const simpleWrap = $('liveDistSimpleWrap'); const catWrap = $('liveDistCategoryWrap');
   if (simpleWrap) simpleWrap.style.display = isCategory ? 'none' : 'contents';
   if ($('liveDistSimpleHint')) $('liveDistSimpleHint').style.display = isCategory ? 'none' : '';
   if (catWrap) catWrap.style.display = isCategory ? '' : 'none';
   if (isCategory) renderLiveDistBuckets();
+  if (liveDistData) renderLiveDistribution();
 }
 
 function toggleLiveDistCount() {
@@ -4488,6 +4516,7 @@ async function saveLiveDistributionPolicy() {
     maxSources,
     bucketLimits,
     pinnedKeys: liveDistPolicy.pinnedKeys || [],
+    categoryPinnedKeys: liveDistPolicy.categoryPinnedKeys || [],
     blockedKeys: liveDistPolicy.blockedKeys || [],
     attachToRoot: $('rootAttachLivesCheck') ? !!$('rootAttachLivesCheck').checked : (liveDistPolicy.attachToRoot !== false),
     attachToAuth: liveDistPolicy.attachToAuth !== false,
@@ -4502,6 +4531,7 @@ async function saveLiveDistributionPolicy() {
       maxSources: typeof dist.maxSources === 'number' ? dist.maxSources : -1,
       bucketLimits: dist.bucketLimits || {},
       pinnedKeys: Array.isArray(dist.pinnedKeys) ? dist.pinnedKeys.slice() : [],
+      categoryPinnedKeys: Array.isArray(dist.categoryPinnedKeys) ? dist.categoryPinnedKeys.slice() : [],
       blockedKeys: Array.isArray(dist.blockedKeys) ? dist.blockedKeys.slice() : [],
     };
     const counts = liveDistData.counts || {};
@@ -4528,13 +4558,19 @@ function renderLiveDistribution() {
   const input = $('liveDistFilter'); const query = input ? String(input.value || '').trim().toLowerCase() : '';
   const catSel = $('liveDistCategoryFilter'); const catFilter = catSel ? catSel.value : 'all';
   const selSel = $('liveDistSelectedFilter'); const selFilter = selSel ? selSel.value : 'all';
-  const pinnedOrder = new Map((liveDistPolicy.pinnedKeys || []).map(function(k, i){ return [k, i]; }));
+  const globalPinned = new Set(liveDistPolicy.pinnedKeys || []);
+  const categoryPinned = new Set(liveDistPolicy.categoryPinnedKeys || []);
+  const pinnedOrder = new Map();
+  [...globalPinned, ...categoryPinned].forEach(function(key) {
+    if (!pinnedOrder.has(key)) pinnedOrder.set(key, pinnedOrder.size);
+  });
   const blocked = new Set(liveDistPolicy.blockedKeys || []);
   const matched = entries.filter(function(e) {
     if (catFilter !== 'all' && (e.category || 'other') !== catFilter) return false;
     if (selFilter === 'selected' && !e.selected) return false;
     if (selFilter === 'excluded' && (e.selected || e.distributable === false)) return false;
     if (selFilter === 'invalid' && e.distributable !== false) return false;
+    if (selFilter === 'pinned' && !pinnedOrder.has(e.key || e.url || '')) return false;
     if (!query) return true;
     return String(e.name || '').toLowerCase().includes(query) || String(e.url || '').toLowerCase().includes(query);
   });
@@ -4559,16 +4595,28 @@ function renderLiveDistribution() {
     + '</tr></thead><tbody>';
   matched.forEach(function(e) {
     const isBlocked = blocked.has(e.key);
-    const isPinned = pinnedOrder.has(e.key);
+    const isGlobalPinned = globalPinned.has(e.key);
+    const isCategoryPinned = categoryPinned.has(e.key);
+    const isPinned = isGlobalPinned || isCategoryPinned;
     const invalid = e.distributable === false;
     const badges = [];
-    if (isPinned) badges.push('<span style="color:var(--primary)">' + t('liveStatePinned') + '</span>');
+    if (isGlobalPinned) badges.push('<span style="color:var(--primary)">' + t('liveStatePinnedGlobal') + '</span>');
+    else if (isCategoryPinned) badges.push('<span style="color:var(--primary)">' + t('liveStatePinnedCategory') + '</span>');
     if (isBlocked) badges.push('<span style="color:var(--red)">' + t('liveStateBlocked') + '</span>');
     if (invalid) badges.push('<span style="color:var(--red)">' + t('liveStateInvalid') + '</span>');
     else if (e.selected) badges.push('<span style="color:var(--green)">' + t('liveStateSelected') + '</span>');
     else badges.push('<span style="color:var(--yellow)">' + t('liveStateExcluded') + '</span>');
     const health = e.health === 'healthy' ? t('liveHealthHealthy') : t('liveHealthUnhealthy');
     const checked = e.checkedAt ? String(e.checkedAt).replace('T',' ').slice(0,16) : '-';
+    let pinActions = '';
+    if (isPinned) {
+      pinActions = '<button class="btn btn-sm" onclick="liveDistTogglePin(&quot;' + escHtml(e.key) + '&quot;)">' + t('liveActionUnpin') + '</button> ';
+    } else {
+      pinActions = '<button class="btn btn-sm" onclick="liveDistTogglePin(&quot;' + escHtml(e.key) + '&quot;, &quot;global&quot;)">' + t('liveActionPinGlobal') + '</button> ';
+      if (liveDistPolicy.selectionMode === 'category') {
+        pinActions += '<button class="btn btn-sm" onclick="liveDistTogglePin(&quot;' + escHtml(e.key) + '&quot;, &quot;category&quot;)">' + t('liveActionPinCategory') + '</button> ';
+      }
+    }
     html += '<tr style="border-bottom:1px solid var(--border)' + (invalid||isBlocked ? ';opacity:0.55' : '') + '">'
       + '<td style="padding:4px">' + (e.rank || '') + '</td>'
       + '<td style="padding:4px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escHtml(e.url) + '">' + escHtml(e.name || e.url) + ' ' + badges.join(' ') + '</td>'
@@ -4583,7 +4631,7 @@ function renderLiveDistribution() {
       + '<td style="padding:4px;text-align:right">' + ms(e.downloadMs) + '</td>'
       + '<td style="padding:4px">' + checked + '</td>'
       + '<td style="padding:4px;text-align:right;white-space:nowrap">'
-      + '<button class="btn btn-sm" onclick="liveDistTogglePin(&quot;' + escHtml(e.key) + '&quot;)">' + (isPinned ? t('liveActionUnpin') : t('liveActionPin')) + '</button> '
+      + pinActions
       + '<button class="btn btn-sm" onclick="liveDistToggleBlock(&quot;' + escHtml(e.key) + '&quot;)">' + (isBlocked ? t('liveActionUnblock') : t('liveActionBlock')) + '</button> '
       + '<button class="btn btn-sm" onclick="liveDistVerify(&quot;' + escHtml(e.key) + '&quot;, this)">' + t('liveActionVerify') + '</button>'
       + '</td>'
@@ -4593,11 +4641,22 @@ function renderLiveDistribution() {
   box.innerHTML = html;
 }
 
-async function liveDistTogglePin(key) {
-  const pinned = (liveDistPolicy.pinnedKeys || []).slice();
-  const idx = pinned.indexOf(key);
-  if (idx >= 0) pinned.splice(idx, 1); else pinned.push(key);
+async function liveDistTogglePin(key, scope) {
+  let pinned = (liveDistPolicy.pinnedKeys || []).slice();
+  let categoryPinned = (liveDistPolicy.categoryPinnedKeys || []).slice();
+  const isPinned = pinned.includes(key) || categoryPinned.includes(key);
+  if (isPinned) {
+    pinned = pinned.filter(function(k){ return k !== key; });
+    categoryPinned = categoryPinned.filter(function(k){ return k !== key; });
+  } else if (scope === 'category' && liveDistPolicy.selectionMode === 'category') {
+    pinned = pinned.filter(function(k){ return k !== key; });
+    categoryPinned.push(key);
+  } else {
+    categoryPinned = categoryPinned.filter(function(k){ return k !== key; });
+    pinned.push(key);
+  }
   liveDistPolicy.pinnedKeys = pinned;
+  liveDistPolicy.categoryPinnedKeys = categoryPinned;
   await saveLiveDistributionPolicy();
 }
 
