@@ -1122,10 +1122,98 @@ async function readSites(response) {
     assert(globalPinSites.length === 1 && globalPinSites[0].key === 'source-good',
       'simple mode global pin must occupy a Top-N slot, got ' + globalPinSites.map((site) => site.key).join(','));
 
-    const categoryIgnoredApp = makeApp({ quota: { ...baseQuota, categoryPinnedKeys: ['source-good'] } });
-    const categoryIgnoredSites = await readSites(await categoryIgnoredApp.app.request('https://box.example/'));
-    assert(categoryIgnoredSites.length === 1 && categoryIgnoredSites[0].key === 'source-excellent',
-      'simple mode must ignore category pins, got ' + categoryIgnoredSites.map((site) => site.key).join(','));
+    const categorySimpleApp = makeApp({ quota: { ...baseQuota, categoryPinnedKeys: ['source-good'] } });
+    const categorySimpleSites = await readSites(await categorySimpleApp.app.request('https://box.example/'));
+    assert(categorySimpleSites.length === 1 && categorySimpleSites[0].key === 'source-good',
+      'simple mode must apply category pins to source ordering, got ' + categorySimpleSites.map((site) => site.key).join(','));
+
+    const inheritedPinDistribution = {
+      requireAuth: false,
+      authCodes: [{
+        id: 'auth-inherited-pin',
+        label: '继承根置顶',
+        code: 'inherited-pin',
+        enabled: true,
+        sourceMode: 'all',
+        selectionMode: 'simple',
+        maxSites: 1,
+        selectedKeys: [],
+        pinnedKeys: [],
+        categoryPinnedKeys: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }],
+    };
+    const inheritedPinApp = makeApp({
+      quota: { ...baseQuota, maxSites: -1, pinnedKeys: ['source-good'] },
+      distribution: inheritedPinDistribution,
+    });
+    const inheritedPinSites = await readSites(await inheritedPinApp.app.request('https://box.example/auth/inherited-pin/'));
+    assert(inheritedPinSites.length === 1 && inheritedPinSites[0].key === 'source-good',
+      'auth links must inherit and obey root global pin ordering, got ' + inheritedPinSites.map((site) => site.key).join(','));
+
+    const mergedPinDistribution = {
+      ...inheritedPinDistribution,
+      authCodes: [{
+        ...inheritedPinDistribution.authCodes[0],
+        id: 'auth-merged-pin',
+        code: 'merged-pin',
+        maxSites: 2,
+        pinnedKeys: ['source-client-fallback'],
+      }],
+    };
+    const mergedPinApp = makeApp({
+      quota: { ...baseQuota, maxSites: -1, pinnedKeys: ['source-good'] },
+      distribution: mergedPinDistribution,
+    });
+    const mergedPinSites = await readSites(await mergedPinApp.app.request('https://box.example/auth/merged-pin/'));
+    assert(mergedPinSites.map((site) => site.key).join(',') === 'source-good,source-client-fallback',
+      'auth global pins must append to root global pin order in simple selection, got ' + mergedPinSites.map((site) => site.key).join(','));
+
+    const categorySelectionPinDistribution = {
+      ...inheritedPinDistribution,
+      authCodes: [{
+        ...inheritedPinDistribution.authCodes[0],
+        id: 'auth-category-selection-pin',
+        code: 'category-selection-pin',
+        selectionMode: 'category',
+        maxSites: -1,
+        categoryPinnedKeys: ['source-client-fallback', 'source-good'],
+        bucketLimits: { type: { xml: -1, json: -1, jar: -1, other: -1 } },
+      }],
+    };
+    const categorySelectionPinApp = makeApp({
+      quota: {
+        ...baseQuota,
+        maxSites: -1,
+        pinnedKeys: ['source-good'],
+        categoryPinnedKeys: ['source-xml-good', 'source-good'],
+      },
+      distribution: categorySelectionPinDistribution,
+    });
+    const categorySelectionPinSites = await readSites(await categorySelectionPinApp.app.request('https://box.example/auth/category-selection-pin/'));
+    const categorySelectionPinKeys = categorySelectionPinSites
+      .filter((site) => site.searchable === 1)
+      .map((site) => site.key);
+    assert(categorySelectionPinKeys.slice(0, 3).join(',') === 'source-good,source-xml-good,source-client-fallback',
+      'auth category selection must merge root and auth pin order with global pins first, got ' + categorySelectionPinKeys.join(','));
+    const mergedCategoryPinDistribution = {
+      ...inheritedPinDistribution,
+      authCodes: [{
+        ...inheritedPinDistribution.authCodes[0],
+        id: 'auth-merged-category-pin',
+        code: 'merged-category-pin',
+        maxSites: 2,
+        categoryPinnedKeys: ['source-good'],
+      }],
+    };
+    const mergedCategoryPinApp = makeApp({
+      quota: { ...baseQuota, maxSites: -1, categoryPinnedKeys: ['source-xml-good'] },
+      distribution: mergedCategoryPinDistribution,
+    });
+    const mergedCategoryPinSites = await readSites(await mergedCategoryPinApp.app.request('https://box.example/auth/merged-category-pin/'));
+    assert(mergedCategoryPinSites.map((site) => site.key).join(',') === 'source-xml-good,source-good',
+      'root and auth category pins must merge in saved order for simple selection, got ' + mergedCategoryPinSites.map((site) => site.key).join(','));
 
     const categoryPinApp = makeApp({
       quota: {

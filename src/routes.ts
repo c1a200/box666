@@ -84,6 +84,28 @@ const ALIST_PROXY_MAX_BYTES = 2 * 1024 * 1024;
 const ALIST_PROXY_TIMEOUT_MS = 8000;
 const ALIST_PROXY_MAX_REDIRECTS = 5;
 
+type PinnedScopes = {
+  pinnedKeys?: readonly string[];
+  categoryPinnedKeys?: readonly string[];
+};
+
+function mergePinnedScopes(base: PinnedScopes, extra: PinnedScopes): {
+  pinnedKeys: string[];
+  categoryPinnedKeys: string[];
+} {
+  const mergeKeys = (...groups: Array<readonly string[] | undefined>): string[] => [
+    ...new Set(groups.flatMap((keys) => keys || [])),
+  ];
+  // 根链接置顶先行，鉴权码置顶只追加自己的项；同一 key 的总榜置顶优先。
+  const pinnedKeys = mergeKeys(base.pinnedKeys, extra.pinnedKeys);
+  const globalKeys = new Set(pinnedKeys);
+  return {
+    pinnedKeys,
+    categoryPinnedKeys: mergeKeys(base.categoryPinnedKeys, extra.categoryPinnedKeys)
+      .filter((key) => !globalKeys.has(key)),
+  };
+}
+
 function isPrivateOrLocalHostname(hostname: string): boolean {
   const host = hostname.trim().toLowerCase().replace(/^\[|\]$/g, '');
   if (!host) return true;
@@ -559,17 +581,20 @@ export function createApp(deps: AppDeps): Hono {
     // 根链接与鉴权码使用同一套质量池和分发规则。
     // “全部”表示质量池中所有符合条件的去重源，不是隐式只取少量后备源。
     const quota = await loadSearchQuota(storage);
-    const rootQuota = context.authCode ? null : quota;
     const blockedKeys = new Set(quota.blockedKeys || []);
-    const policy = context.authCode || {
-      sourceMode: 'all' as SourceDistributionMode,
-      selectionMode: (rootQuota?.selectionMode || 'simple') as SourceSelectionMode,
-      maxSites: rootQuota?.maxSites ?? -1,
-      bucketLimits: rootQuota?.bucketLimits,
-      selectedKeys: [] as string[],
-      pinnedKeys: rootQuota?.pinnedKeys || [],
-      categoryPinnedKeys: rootQuota?.categoryPinnedKeys || [],
-    };
+    const effectivePins = mergePinnedScopes(quota, context.authCode || {});
+    // 根链接置顶对所有鉴权码生效，鉴权码自己的置顶继续追加；
+    // 其余鉴权策略仍独立覆盖根策略。
+    const policy = context.authCode
+      ? { ...context.authCode, ...effectivePins }
+      : {
+          sourceMode: 'all' as SourceDistributionMode,
+          selectionMode: (quota.selectionMode || 'simple') as SourceSelectionMode,
+          maxSites: quota.maxSites ?? -1,
+          bucketLimits: quota.bucketLimits,
+          selectedKeys: [] as string[],
+          ...effectivePins,
+        };
     const mode: SourceDistributionMode = policy.sourceMode || 'all';
     const selectionMode: SourceSelectionMode = policy.selectionMode === 'category' ? 'category' : 'simple';
     // 简单选择独立于历史分类限制，避免旧配置与总数量策略叠加。
@@ -704,8 +729,8 @@ export function createApp(deps: AppDeps): Hono {
       });
     }
 
-    // 所有硬门禁完成后统一按置顶占位规则选择：总榜置顶优先占用简单模式
-    // 的总名额或分类模式下所属分类的名额；分类置顶只在分类模式生效。
+    // 所有硬门禁完成后统一按置顶顺序选择：总榜置顶优先，其次分类置顶，
+    // 随后按质量池排序；简单和分类选择模式使用同一套排序。
     // 类型分桶覆盖可搜索源和不可搜索 JAR/扩展，置顶不能绕过屏蔽、
     // 质量池、sourceMode 或数量限制。
     sites = selectSiteDistribution(
@@ -1036,8 +1061,7 @@ export function createApp(deps: AppDeps): Hono {
       ? (authCode?.bucketLimits ?? quota.bucketLimits)
       : undefined;
     const distributionMaxSites = authCode?.maxSites ?? quota.maxSites ?? -1;
-    const distributionPinnedKeys = authCode?.pinnedKeys ?? quota.pinnedKeys;
-    const distributionCategoryPinnedKeys = authCode?.categoryPinnedKeys ?? quota.categoryPinnedKeys;
+    const distributionPins = mergePinnedScopes(quota, authCode || {});
     const blockedKeys = new Set(
       (quota.blockedKeys || []).filter((key): key is string => typeof key === 'string')
     );
@@ -1148,8 +1172,8 @@ export function createApp(deps: AppDeps): Hono {
         selectionMode: distributionSelectionMode,
         maxSites: distributionMaxSites,
         bucketLimits: distributionSelectionMode === 'category' ? distributionBucketLimits : undefined,
-        pinnedKeys: distributionPinnedKeys || [],
-        categoryPinnedKeys: distributionCategoryPinnedKeys || [],
+        pinnedKeys: distributionPins.pinnedKeys,
+        categoryPinnedKeys: distributionPins.categoryPinnedKeys,
         enforceTypeOnNonSearchable: true,
       },
       (site) => qualityGradeByKey.get(site.key) || 'untestable',

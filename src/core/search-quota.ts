@@ -1,5 +1,5 @@
 // 搜索配额控制（复用站点测速结果）。
-// 总榜置顶优先占名额；分类置顶仅在分类模式优先占用所属分类名额。
+// 点播源排序：总榜置顶优先，其次分类置顶，最后按普通质量顺序；简单与分类模式一致。
 
 import type { ClientAuthCode, SiteBucketLimits, SourceCategory, SourceSelectionMode, TVBoxParse, TVBoxSite, SearchQuotaConfig, SearchQuotaReport, SiteHealthMap, SiteQualityGrade, SiteQualityGrades, SearchQualitySnapshot } from './types';
 import { SOURCE_CATEGORIES } from './types';
@@ -325,7 +325,7 @@ export function applySiteBucketLimits(
   });
 }
 
-/** 按总榜置顶、分类置顶、普通质量顺序选择最终点播源。调用前必须完成可用性、屏蔽和 sourceMode 等硬门禁。 */
+/** 按总榜置顶、分类置顶、普通质量顺序选择最终点播源；简单和分类模式使用同一排序。调用前必须完成可用性、屏蔽和 sourceMode 等硬门禁。 */
 export function selectSiteDistribution(
   sites: TVBoxSite[],
   policy: {
@@ -351,16 +351,6 @@ export function selectSiteDistribution(
     .sort((a, b) => (order.get(a.key) as number) - (order.get(b.key) as number));
   const globallyPinned = bySavedOrder(globalOrder);
   const globalKeys = new Set(globallyPinned.map((site) => site.key));
-
-  const maxSites = typeof policy.maxSites === 'number' && Number.isFinite(policy.maxSites)
-    ? Math.floor(policy.maxSites)
-    : -1;
-  if ((policy.selectionMode || 'simple') === 'simple') {
-    // 分类置顶只在分类模式获得额外优先级；简单模式按普通质量顺序参与。
-    const selected = [...globallyPinned, ...deduped.filter((site) => !globalKeys.has(site.key))];
-    return maxSites >= 0 ? selected.slice(0, maxSites) : selected;
-  }
-
   const categoryPinned = bySavedOrder(categoryOrder).filter((site) => !globalKeys.has(site.key));
   const categoryKeys = new Set(categoryPinned.map((site) => site.key));
   const ordered = [
@@ -368,6 +358,14 @@ export function selectSiteDistribution(
     ...categoryPinned,
     ...deduped.filter((site) => !globalKeys.has(site.key) && !categoryKeys.has(site.key)),
   ];
+
+  const maxSites = typeof policy.maxSites === 'number' && Number.isFinite(policy.maxSites)
+    ? Math.floor(policy.maxSites)
+    : -1;
+  if ((policy.selectionMode || 'simple') === 'simple') {
+    return maxSites >= 0 ? ordered.slice(0, maxSites) : ordered;
+  }
+
   return policy.bucketLimits
     ? applySiteBucketLimits(
         ordered,
