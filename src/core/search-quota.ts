@@ -1,12 +1,14 @@
 // 搜索配额控制（复用站点测速结果）。
-// 点播源排序：总榜置顶优先，其次分类置顶，最后按普通质量顺序；简单与分类模式一致。
+// 点播源排序：总榜置顶可跨分类优先；分类置顶只在所属分类内优先，
+// 分类之间仍严格按 XML → JSON → JAR → JS → Remote → Other 的优先级下发。
 
 import type { ClientAuthCode, SiteBucketLimits, SourceCategory, SourceSelectionMode, TVBoxParse, TVBoxSite, SearchQuotaConfig, SearchQuotaReport, SiteHealthMap, SiteQualityGrade, SiteQualityGrades, SearchQualitySnapshot } from './types';
 import { SOURCE_CATEGORIES } from './types';
 import { isSiteProbeable, type SiteProbeResult } from './speedtest';
 import type { Storage } from '../storage/interface';
 import { KV_SEARCH_QUOTA } from './config';
-const QUOTA_SCHEMA_VERSION = 9;
+import { normalizeSourcePins } from './source-pins';
+const QUOTA_SCHEMA_VERSION = 10;
 
 export type SearchSourceCategory = SourceCategory;
 
@@ -67,6 +69,7 @@ function createDefaultSearchQuota(): SearchQuotaConfig {
     autoLimit: false,
     pinnedKeys: [],
     categoryPinnedKeys: [],
+    pinSelectedAt: {},
     blockedKeys: [],
     sortBySpeed: true,
     leanStartup: true,
@@ -103,18 +106,6 @@ function normalizeKeyList(value: unknown, max = 2000): string[] {
       .map((key) => key.trim())
       .filter(Boolean),
   )].slice(0, max);
-}
-
-function normalizePinnedKeyScopes(pinnedRaw: unknown, categoryRaw: unknown): {
-  pinnedKeys: string[];
-  categoryPinnedKeys: string[];
-} {
-  const pinnedKeys = normalizeKeyList(pinnedRaw);
-  const pinnedSet = new Set(pinnedKeys);
-  return {
-    pinnedKeys,
-    categoryPinnedKeys: normalizeKeyList(categoryRaw).filter((key) => !pinnedSet.has(key)),
-  };
 }
 
 export function normalizeSiteBucketLimits(value: unknown): SiteBucketLimits | undefined {
@@ -173,7 +164,11 @@ export async function loadSearchQuota(storage: Storage): Promise<SearchQuotaConf
 
       // Only the parser cap is a global runtime guard now. The legacy
       // searchable-source cap is ignored so old KV values cannot truncate the pool.
-      const pinned = normalizePinnedKeyScopes(parsed.pinnedKeys, parsed.categoryPinnedKeys);
+      const pinned = normalizeSourcePins({
+        pinnedKeys: parsed.pinnedKeys,
+        categoryPinnedKeys: parsed.categoryPinnedKeys,
+        pinSelectedAt: parsed.pinSelectedAt,
+      });
       return {
         maxQuickSearch: fallback.maxQuickSearch,
         maxStartupQuickSearch: fallback.maxStartupQuickSearch,
@@ -189,6 +184,7 @@ export async function loadSearchQuota(storage: Storage): Promise<SearchQuotaConf
         autoLimit: false,
         pinnedKeys: pinned.pinnedKeys,
         categoryPinnedKeys: pinned.categoryPinnedKeys,
+        pinSelectedAt: pinned.pinSelectedAt,
         blockedKeys: normalizeKeyList(parsed.blockedKeys),
         sortBySpeed: parsed.sortBySpeed !== false,
         leanStartup: parsed.leanStartup !== false,
@@ -204,7 +200,7 @@ export async function loadSearchQuota(storage: Storage): Promise<SearchQuotaConf
 /** 保存搜索配额配置。 */
 export async function saveSearchQuota(storage: Storage, config: SearchQuotaConfig): Promise<void> {
   const fallback = createDefaultSearchQuota();
-  const pinned = normalizePinnedKeyScopes(config.pinnedKeys, config.categoryPinnedKeys);
+  const pinned = normalizeSourcePins(config);
   await storage.put(KV_SEARCH_QUOTA, JSON.stringify({
     // Automatic startup/quick-search guards are deployment-specific and are
     // never taken from stale form values.
@@ -218,6 +214,7 @@ export async function saveSearchQuota(storage: Storage, config: SearchQuotaConfi
     autoLimit: false,
     pinnedKeys: pinned.pinnedKeys,
     categoryPinnedKeys: pinned.categoryPinnedKeys,
+    pinSelectedAt: pinned.pinSelectedAt,
     blockedKeys: normalizeKeyList(config.blockedKeys),
     sortBySpeed: config.sortBySpeed === true,
     leanStartup: config.leanStartup !== false,
@@ -325,7 +322,15 @@ export function applySiteBucketLimits(
   });
 }
 
-/** 按总榜置顶、分类置顶、普通质量顺序选择最终点播源；简单和分类模式使用同一排序。调用前必须完成可用性、屏蔽和 sourceMode 等硬门禁。 */
+/**
+ * 选择最终点播源。
+ *
+ * - 总榜置顶按选择时间排在最前，可跨分类占用下发名额；
+ * - 分类置顶只在本分类内排到普通源之前，不改变分类之间的下发优先级；
+ * - 分类之间按 SEARCH_SOURCE_CATEGORIES 顺序选择，分类内保持传入的质量顺序。
+ *
+ * 调用前必须完成可用性、屏蔽、质量池和 sourceMode 等硬门禁。
+ */
 export function selectSiteDistribution(
   sites: TVBoxSite[],
   policy: {
@@ -346,18 +351,29 @@ export function selectSiteDistribution(
     seenKeys.add(site.key);
     return true;
   });
-  const bySavedOrder = (order: Map<string, number>) => deduped
-    .filter((site) => order.has(site.key))
-    .sort((a, b) => (order.get(a.key) as number) - (order.get(b.key) as number));
-  const globallyPinned = bySavedOrder(globalOrder);
-  const globalKeys = new Set(globallyPinned.map((site) => site.key));
-  const categoryPinned = bySavedOrder(categoryOrder).filter((site) => !globalKeys.has(site.key));
-  const categoryKeys = new Set(categoryPinned.map((site) => site.key));
-  const ordered = [
-    ...globallyPinned,
-    ...categoryPinned,
-    ...deduped.filter((site) => !globalKeys.has(site.key) && !categoryKeys.has(site.key)),
-  ];
+
+  const globalKeys = new Set(globalOrder.keys());
+  const globallyPinned = deduped
+    .filter((site) => globalOrder.has(site.key))
+    .sort((a, b) => (globalOrder.get(a.key) as number) - (globalOrder.get(b.key) as number));
+  const byCategory = new Map<SearchSourceCategory, TVBoxSite[]>();
+  for (const category of SEARCH_SOURCE_CATEGORIES) byCategory.set(category, []);
+  for (const site of deduped) {
+    if (globalKeys.has(site.key)) continue;
+    const category = classifySearchSource(site);
+    const bucket = byCategory.get(category) || byCategory.get('other');
+    if (bucket) bucket.push(site);
+  }
+
+  const ordered: TVBoxSite[] = [...globallyPinned];
+  for (const category of SEARCH_SOURCE_CATEGORIES) {
+    const bucket = byCategory.get(category) || [];
+    const categoryPinned = bucket
+      .filter((site) => categoryOrder.has(site.key))
+      .sort((a, b) => (categoryOrder.get(a.key) as number) - (categoryOrder.get(b.key) as number));
+    const pinnedSet = new Set(categoryPinned.map((site) => site.key));
+    ordered.push(...categoryPinned, ...bucket.filter((site) => !pinnedSet.has(site.key)));
+  }
 
   const maxSites = typeof policy.maxSites === 'number' && Number.isFinite(policy.maxSites)
     ? Math.floor(policy.maxSites)

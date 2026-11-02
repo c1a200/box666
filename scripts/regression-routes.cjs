@@ -1124,8 +1124,51 @@ async function readSites(response) {
 
     const categorySimpleApp = makeApp({ quota: { ...baseQuota, categoryPinnedKeys: ['source-good'] } });
     const categorySimpleSites = await readSites(await categorySimpleApp.app.request('https://box.example/'));
-    assert(categorySimpleSites.length === 1 && categorySimpleSites[0].key === 'source-good',
-      'simple mode must apply category pins to source ordering, got ' + categorySimpleSites.map((site) => site.key).join(','));
+    assert(categorySimpleSites.length === 1 && categorySimpleSites[0].key === 'source-excellent',
+      'simple mode category pins must not cross category priority, got ' + categorySimpleSites.map((site) => site.key).join(','));
+
+    const timedCategoryPinsApp = makeApp({
+      quota: {
+        ...baseQuota,
+        maxSites: 2,
+        categoryPinnedKeys: ['source-excellent', 'source-xml-good'],
+        pinSelectedAt: {
+          'source-excellent': '2026-01-02T00:00:00.000Z',
+          'source-xml-good': '2026-01-01T00:00:00.000Z',
+        },
+      },
+    });
+    const timedCategoryPinSites = await readSites(await timedCategoryPinsApp.app.request('https://box.example/'));
+    const timedCategoryPinKeys = timedCategoryPinSites.filter((site) => site.searchable === 1).map((site) => site.key);
+    assert(timedCategoryPinKeys.slice(0, 2).join(',') === 'source-xml-good,source-excellent',
+      'category pins in one category must follow selection time rather than array order, got ' + timedCategoryPinKeys.join(','));
+
+    const jsonCategorySlotApp = makeApp({
+      quota: {
+        ...baseQuota,
+        selectionMode: 'category',
+        maxSites: -1,
+        categoryPinnedKeys: ['source-good'],
+        bucketLimits: { type: { json: 1 } },
+      },
+    });
+    const jsonCategorySlotSites = await readSites(await jsonCategorySlotApp.app.request('https://box.example/'));
+    const jsonCategorySlotKeys = jsonCategorySlotSites.filter((site) => site.searchable === 1).map((site) => site.key);
+    assert(jsonCategorySlotKeys.includes('source-good'),
+      'a category pin must occupy its category slot when that category is enabled, got ' + jsonCategorySlotKeys.join(','));
+
+    const jsonCategoryClosedApp = makeApp({
+      quota: {
+        ...baseQuota,
+        selectionMode: 'category',
+        maxSites: -1,
+        categoryPinnedKeys: ['source-good'],
+        bucketLimits: { type: { json: 0 } },
+      },
+    });
+    const jsonCategoryClosedSites = await readSites(await jsonCategoryClosedApp.app.request('https://box.example/'));
+    assert(!jsonCategoryClosedSites.some((site) => site.key === 'source-good'),
+      'a category pin must not restore a category whose delivery limit is zero');
 
     const inheritedPinDistribution = {
       requireAuth: false,
@@ -1195,8 +1238,8 @@ async function readSites(response) {
     const categorySelectionPinKeys = categorySelectionPinSites
       .filter((site) => site.searchable === 1)
       .map((site) => site.key);
-    assert(categorySelectionPinKeys.slice(0, 3).join(',') === 'source-good,source-xml-good,source-client-fallback',
-      'auth category selection must merge root and auth pin order with global pins first, got ' + categorySelectionPinKeys.join(','));
+    assert(categorySelectionPinKeys.slice(0, 4).join(',') === 'source-good,source-xml-good,source-excellent,source-client-fallback',
+      'auth category selection must keep global pins first and category pins inside their category priority, got ' + categorySelectionPinKeys.join(','));
     const mergedCategoryPinDistribution = {
       ...inheritedPinDistribution,
       authCodes: [{
@@ -1204,16 +1247,70 @@ async function readSites(response) {
         id: 'auth-merged-category-pin',
         code: 'merged-category-pin',
         maxSites: 2,
-        categoryPinnedKeys: ['source-good'],
+        categoryPinnedKeys: ['source-xml-good'],
+        pinSelectedAt: { 'source-xml-good': '2026-01-01T00:00:00.000Z' },
       }],
     };
     const mergedCategoryPinApp = makeApp({
-      quota: { ...baseQuota, maxSites: -1, categoryPinnedKeys: ['source-xml-good'] },
+      quota: {
+        ...baseQuota,
+        maxSites: -1,
+        categoryPinnedKeys: ['source-excellent'],
+        pinSelectedAt: { 'source-excellent': '2026-01-02T00:00:00.000Z' },
+      },
       distribution: mergedCategoryPinDistribution,
     });
     const mergedCategoryPinSites = await readSites(await mergedCategoryPinApp.app.request('https://box.example/auth/merged-category-pin/'));
-    assert(mergedCategoryPinSites.map((site) => site.key).join(',') === 'source-xml-good,source-good',
-      'root and auth category pins must merge in saved order for simple selection, got ' + mergedCategoryPinSites.map((site) => site.key).join(','));
+    assert(mergedCategoryPinSites.map((site) => site.key).join(',') === 'source-xml-good,source-excellent',
+      'root and auth category pins in the same category must merge in selection-time order, got ' + mergedCategoryPinSites.map((site) => site.key).join(','));
+
+    const selectionTimeDistribution = {
+      requireAuth: false,
+      authCodes: [{
+        ...inheritedPinDistribution.authCodes[0],
+        id: 'auth-selection-time',
+        code: 'selection-time',
+        maxSites: 2,
+        pinnedKeys: ['source-client-fallback'],
+        pinSelectedAt: { 'source-client-fallback': '2026-01-01T00:00:00.000Z' },
+      }],
+    };
+    const selectionTimeApp = makeApp({
+      quota: {
+        ...baseQuota,
+        maxSites: -1,
+        pinnedKeys: ['source-good'],
+        pinSelectedAt: { 'source-good': '2026-01-02T00:00:00.000Z' },
+      },
+      distribution: selectionTimeDistribution,
+    });
+    const selectionTimeSites = await readSites(await selectionTimeApp.app.request('https://box.example/auth/selection-time/'));
+    assert(selectionTimeSites.map((site) => site.key).join(',') === 'source-client-fallback,source-good',
+      'root and auth global pins must merge by actual selection time, got ' + selectionTimeSites.map((site) => site.key).join(','));
+
+    const globalScopeWinsDistribution = {
+      requireAuth: false,
+      authCodes: [{
+        ...inheritedPinDistribution.authCodes[0],
+        id: 'auth-global-scope-wins',
+        code: 'global-scope-wins',
+        maxSites: 1,
+        pinnedKeys: ['source-good'],
+        pinSelectedAt: { 'source-good': '2026-01-02T00:00:00.000Z' },
+      }],
+    };
+    const globalScopeWinsApp = makeApp({
+      quota: {
+        ...baseQuota,
+        maxSites: -1,
+        categoryPinnedKeys: ['source-good'],
+        pinSelectedAt: { 'source-good': '2026-01-01T00:00:00.000Z' },
+      },
+      distribution: globalScopeWinsDistribution,
+    });
+    const globalScopeWinsSites = await readSites(await globalScopeWinsApp.app.request('https://box.example/auth/global-scope-wins/'));
+    assert(globalScopeWinsSites.length === 1 && globalScopeWinsSites[0].key === 'source-good',
+      'the global pin scope must win when root and auth links pin the same key differently, got ' + globalScopeWinsSites.map((site) => site.key).join(','));
 
     const categoryPinApp = makeApp({
       quota: {
@@ -1364,6 +1461,68 @@ async function readSites(response) {
   }
 
   {
+    const headers = {
+      Authorization: 'Bearer test-token',
+      'Content-Type': 'application/json',
+    };
+    const { app } = makeApp();
+    const unauthorized = await app.request('https://box.example/admin/client-distribution/auth-codes/auth-a', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: 'unauthorized' }),
+    });
+    assert(unauthorized.status === 401, 'single auth-code save must require admin authentication');
+
+    const initialResponse = await app.request('https://box.example/admin/client-distribution', { headers });
+    assert(initialResponse.status === 200, 'initial client distribution should load');
+    const initial = await initialResponse.json();
+    const originalA = initial.authCodes.find((entry) => entry.id === 'auth-a');
+    const originalB = initial.authCodes.find((entry) => entry.id === 'auth-b');
+    assert(originalA && originalB, 'test distribution should contain auth-a and auth-b');
+
+    const updateResponse = await app.request('https://box.example/admin/client-distribution/auth-codes/auth-a', {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({ ...originalA, label: '单项保存', code: 'code-a-updated' }),
+    });
+    assert(updateResponse.status === 200, 'single auth-code save should succeed, got ' + updateResponse.status);
+    const updated = await updateResponse.json();
+    const updatedA = updated.authCodes.find((entry) => entry.id === 'auth-a');
+    const unchangedB = updated.authCodes.find((entry) => entry.id === 'auth-b');
+    assert(updatedA && updatedA.label === '单项保存' && updatedA.code === 'code-a-updated',
+      'single auth-code save must update the requested auth code');
+    assert(unchangedB && unchangedB.label === originalB.label && unchangedB.code === originalB.code,
+      'single auth-code save must preserve other persisted auth codes');
+
+    const invalidCodeResponse = await app.request('https://box.example/admin/client-distribution/auth-codes/auth-a', {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({ ...updatedA, code: 'invalid code' }),
+    });
+    assert(invalidCodeResponse.status === 400, 'single auth-code save must reject an invalid auth code');
+
+    const duplicateCodeResponse = await app.request('https://box.example/admin/client-distribution/auth-codes/auth-a', {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({ ...updatedA, code: originalB.code }),
+    });
+    assert(duplicateCodeResponse.status === 400, 'single auth-code save must reject a duplicate auth code');
+
+    const customEmptyResponse = await app.request('https://box.example/admin/client-distribution/auth-codes/auth-a', {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({ ...updatedA, sourceMode: 'custom', selectedKeys: [] }),
+    });
+    assert(customEmptyResponse.status === 400, 'single auth-code save must reject empty custom selections');
+
+    const persistedResponse = await app.request('https://box.example/admin/client-distribution', { headers });
+    const persisted = await persistedResponse.json();
+    const persistedA = persisted.authCodes.find((entry) => entry.id === 'auth-a');
+    assert(persistedA && persistedA.code === 'code-a-updated',
+      'failed single auth-code saves must not overwrite the last valid value');
+  }
+
+  {
     const pinnedPolicyDistribution = {
       requireAuth: false,
       authCodes: [{
@@ -1405,7 +1564,7 @@ async function readSites(response) {
     };
     const limited = makeApp({ distribution: pinnedLimitDistribution });
     const limitedSites = await readSites(await limited.app.request('https://box.example/auth/pinned-limit/'));
-    assert(limitedSites.filter((site) => site.searchable === 1).length === 1 && limitedSites.find((site) => site.searchable === 1).key === 'source-good', 'pinned keys must occupy maxSites slots in saved order without exceeding the cap, got ' + limitedSites.map((site) => site.key).join(','));
+    assert(limitedSites.filter((site) => site.searchable === 1).length === 1 && limitedSites.find((site) => site.searchable === 1).key === 'source-good', 'pinned keys must occupy maxSites slots in selection-time order without exceeding the cap, got ' + limitedSites.map((site) => site.key).join(','));
   }
 
   {

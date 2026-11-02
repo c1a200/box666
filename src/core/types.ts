@@ -256,10 +256,12 @@ export interface ClientAuthCode {
   // 新配置使用 xml/json/jar/js/remote/other；旧数字类型仍会在读取时迁移。
   siteTypes: SourceCategory[];
   selectedKeys: string[];
-  /** 总榜置顶：在简单和分类选择模式中优先排序。 */
+  /** 总榜置顶：可跨分类优先占用下发名额。 */
   pinnedKeys: string[];
-  /** 分类置顶：在简单和分类选择模式中排在总榜置顶之后、普通源之前。 */
+  /** 分类置顶：只在本分类内优先，不突破分类下发顺序。 */
   categoryPinnedKeys: string[];
+  /** 置顶 key 的实际选择时间；数组顺序始终由此派生。 */
+  pinSelectedAt?: Record<string, string>;
   /** 该鉴权码主配置是否附带直播源；未设置时继承全局配置。 */
   attachLives?: boolean;
   createdAt: string;
@@ -297,8 +299,9 @@ export interface SearchQuotaConfig {
   maxStartupQuickSearch?: number; // 根配置启动阶段快速搜索源上限，0 = 不额外裁剪
   startupSiteLimit?: number;      // 根配置启动源数量；0 = 使用启动快速源上限
   autoLimit?: boolean;          // 是否使用按部署形态自动选择的默认上限
-  pinnedKeys: string[];         // 总榜置顶 key：在简单和分类选择模式中优先排序
-  categoryPinnedKeys: string[]; // 分类置顶 key：排在总榜置顶之后、普通源之前
+  pinnedKeys: string[];         // 总榜置顶 key：可跨分类优先占用下发名额
+  categoryPinnedKeys: string[]; // 分类置顶 key：只在本分类内优先，不突破分类下发顺序
+  pinSelectedAt?: Record<string, string>; // 置顶 key 的实际选择时间；数组顺序由此派生
   sortBySpeed: boolean;         // 是否复用站点测速结果，将较快的可搜索源排在前面
   leanStartup?: boolean;        // 轻量启动：剔除不参与搜索的远程 JAR/扩展站点
   startupMode?: 'lean' | 'full';// 客户端根配置模式：lean=快速启动，full=完整功能

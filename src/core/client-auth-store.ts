@@ -12,6 +12,7 @@ import type {
   SourceSelectionMode,
 } from './types';
 import { SOURCE_CATEGORIES } from './types';
+import { normalizeSourcePins } from './source-pins';
 import {
   KV_CLIENT_AUTH_DISTRIBUTION,
   KV_CREDENTIAL_DISTRIBUTION,
@@ -69,16 +70,6 @@ function normalizeStringArray(value: unknown, max = 500): string[] {
       .map((item) => item.trim())
       .filter(Boolean),
   )].slice(0, max);
-}
-
-function normalizePinnedKeyScopes(record: Record<string, unknown>): { pinnedKeys: string[]; categoryPinnedKeys: string[] } {
-  const pinnedKeys = normalizeStringArray(record.pinnedKeys, 2000);
-  const globalKeys = new Set(pinnedKeys);
-  return {
-    pinnedKeys,
-    categoryPinnedKeys: normalizeStringArray(record.categoryPinnedKeys, 2000)
-      .filter((key) => !globalKeys.has(key)),
-  };
 }
 
 function normalizeGrades(value: unknown): SiteQualityGrade[] {
@@ -217,7 +208,7 @@ function normalizeAuthCode(raw: unknown, usedCodes: Set<string>, usedIds: Set<st
   const maxSites = hasMaxSites
     ? parseThreeStateInteger(entry.maxSites, -1)
     : parseThreeStateInteger(entry.maxSearchable, -1);
-  const pinned = normalizePinnedKeyScopes(entry);
+  const pinned = normalizeSourcePins(entry);
 
   return {
     id,
@@ -234,6 +225,7 @@ function normalizeAuthCode(raw: unknown, usedCodes: Set<string>, usedIds: Set<st
     selectedKeys: normalizeStringArray(entry.selectedKeys, 2000),
     pinnedKeys: pinned.pinnedKeys,
     categoryPinnedKeys: pinned.categoryPinnedKeys,
+    pinSelectedAt: pinned.pinSelectedAt,
     ...(typeof entry.attachLives === 'boolean' ? { attachLives: entry.attachLives } : {}),
     createdAt,
     updatedAt,
@@ -268,7 +260,20 @@ export function createClientAuthCode(raw: Partial<ClientAuthCode> = {}): ClientA
   const maxSites = hasMaxSites
     ? parseThreeStateInteger(rawRecord.maxSites, -1)
     : parseThreeStateInteger(rawRecord.maxSearchable, -1);
-  const pinned = normalizePinnedKeyScopes(rawRecord);
+  const normalizedPins = normalizeSourcePins(rawRecord);
+  const requestedPinTimes = rawRecord.pinSelectedAt
+    && typeof rawRecord.pinSelectedAt === 'object'
+    && !Array.isArray(rawRecord.pinSelectedAt)
+    ? rawRecord.pinSelectedAt as Record<string, unknown>
+    : {};
+  const pinSelectedAt = { ...normalizedPins.pinSelectedAt };
+  for (const key of [...normalizedPins.pinnedKeys, ...normalizedPins.categoryPinnedKeys]) {
+    const requested = requestedPinTimes[key];
+    if (typeof requested !== 'string' || !Number.isFinite(Date.parse(requested))) {
+      pinSelectedAt[key] = now;
+    }
+  }
+  const pinned = normalizeSourcePins({ ...normalizedPins, pinSelectedAt });
   return {
     id: typeof raw.id === 'string' && raw.id.trim() ? raw.id.trim() : randomAuthId(),
     label: typeof raw.label === 'string' && raw.label.trim() ? raw.label.trim().slice(0, 80) : 'Auth code',
@@ -283,6 +288,7 @@ export function createClientAuthCode(raw: Partial<ClientAuthCode> = {}): ClientA
     selectedKeys: normalizeStringArray(raw.selectedKeys, 2000),
     pinnedKeys: pinned.pinnedKeys,
     categoryPinnedKeys: pinned.categoryPinnedKeys,
+    pinSelectedAt: pinned.pinSelectedAt,
     ...(typeof raw.attachLives === 'boolean' ? { attachLives: raw.attachLives } : {}),
     createdAt: typeof raw.createdAt === 'string' && raw.createdAt ? raw.createdAt : now,
     updatedAt: typeof raw.updatedAt === 'string' && raw.updatedAt ? raw.updatedAt : now,

@@ -539,7 +539,7 @@ ${sharedStyles}
     <div class="section">
       <div class="section-title" data-i18n="sqSelected">质量池</div>
       <div id="sqSelectedInfo" style="margin-bottom:8px;font-size:0.8rem;color:var(--text-secondary)"></div>
-      <div style="margin-bottom:8px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="sqRankingHint">所有列表按质量池总排名排列；每个分类表同时显示该分类内排名。置顶源按已保存的置顶顺序显示。</div>
+      <div style="margin-bottom:8px;font-size:0.8rem;color:var(--text-secondary)" data-i18n="sqRankingHint">所有列表按质量池总排名排列；每个分类表同时显示该分类内排名。置顶源按实际选择置顶的时间排序；分类置顶只在本分类内优先，不突破分类下发优先级。</div>
       <div id="sqQualityGrades" style="margin-bottom:8px;font-size:0.8rem;color:var(--text-secondary)"></div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
         <input id="sqSourceFilter" class="nt-input" style="width:220px" placeholder="搜索源名称或源标识..." data-i18n-placeholder="sqSourceFilterPh" oninput="renderSearchSources()">
@@ -945,9 +945,9 @@ const translations = {
     tabSearchQuota:'Quality Grades',
     sqStatsCurrent:'Current actual counts', sqStatsSearchable:'searchable sources', sqStatsQuick:'quick search', sqStatsQuickLimit:'automatic limit', sqStatsPool:'quality pool', sqStatsServerVerified:'server verified', sqStatsClientFallback:'client fallback', sqStatsParsers:'Parsers', sqStatsKept:'kept', sqStatsProbed:'probed', sqStatsRemoved:'removed', sqStatsLimit:'limit', sqStatsUnlimited:'unlimited', sqStatsQuality:'Quality grades', sqStatsNoData:'Run aggregation to show quality grades and parser counts.', sqPoolTotal:'Total quality-pool sources', sqStatsDistributable:'actual distributable', sqStatsBlocked:'blacklist blocked', sqQuality:'graded',
     sqKey:'Source identifier', sqName:'Source name', sqSource:'Source type', sqReason:'Exclusion reason', sqGrade:'Quality grade / score', sqSpeedStatus:'Response speed / confidence', sqRank:'Overall / category rank', sqAction:'Action',
-    sqPin:'Pin', sqUnpin:'Unpin', sqPinGlobal:'Pin globally', sqPinCategory:'Pin in category', sqPinnedGlobal:'Global pin', sqPinnedCategory:'Category pin',
+    sqRankingHint:'Lists follow the overall quality-pool rank; each category table also shows its category rank. Pins are ordered by when they were selected. Global pins may cross categories; category pins only lead within their own category and never break category delivery priority.', sqPin:'Pin', sqUnpin:'Unpin', sqPinGlobal:'Pin globally', sqPinCategory:'Pin in category', sqPinnedGlobal:'Global pin', sqPinnedCategory:'Category pin',
     sqBlock:'Block', sqUnblock:'Unblock', sqBlocked:'Blocked', sqBlockedDesc:'Blocked sources are excluded from all client outputs but remain here so they can be restored.', sqSourceFilterPh:'Search source name or key...', sqFilterAll:'All grades', sqFilterPinned:'Pinned only', sqFilterMatched:'Matched', sqFilterNoMatch:'No matching sources',
-    sqPinned:'Pinned', sqPinnedDesc:'Pinned sources are ranked first after existing filters: global pins first, then category pins, then the normal quality order in both simple and category modes. Use the Pinned only filter, then click Unpin on a row to remove one.', sqOtherSources:'Quality Pool Sources', sqQualityPoolDesc:'Sources in the ordered quality pool and eligible for distribution. Pins only reorder eligible candidates and never bypass quality-pool, blocking, or count limits; blocked sources stay in this list but are excluded from every client output.', sqExcludedSources:'Sources Outside Quality Pool', sqExcludedDesc:'Searchable sources that were assessed but are outside the quality pool, for example timeout or unusable sources. They are not distributed to clients.', sqReasonJsUrlExcluded:'JS URL excluded', sqReasonTimeout:'Timeout', sqReasonUnusable:'Unusable', sqReasonNotInPool:'Not in quality pool', sqReasonOutsideQualityPool:'Outside quality pool',
+    sqPinned:'Pinned', sqPinnedDesc:'Global pins may take delivery slots across categories. Category pins only move ahead of normal sources inside their own category, so a later category cannot bypass an earlier category. Both root and auth-link pins are merged and ordered by selection time. Use Pinned only, then click Unpin on a row to remove one.', sqOtherSources:'Quality Pool Sources', sqQualityPoolDesc:'Sources in the ordered quality pool and eligible for distribution. Pins only reorder eligible candidates and never bypass quality-pool, blocking, or count limits; blocked sources stay in this list but are excluded from every client output.', sqExcludedSources:'Sources Outside Quality Pool', sqExcludedDesc:'Searchable sources that were assessed but are outside the quality pool, for example timeout or unusable sources. They are not distributed to clients.', sqReasonJsUrlExcluded:'JS URL excluded', sqReasonTimeout:'Timeout', sqReasonUnusable:'Unusable', sqReasonNotInPool:'Not in quality pool', sqReasonOutsideQualityPool:'Outside quality pool',
     sqXmlSources:'XML Sources', sqXmlDesc:'TVBox type 0 XML interface sources. Quality grades only affect their order within this list.', sqJsonSources:'JSON / MacCMS Sources', sqJsonDesc:'TVBox type 1 JSON or MacCMS interface sources.', sqJarSources:'JAR / Extension Sources', sqJarDesc:'TVBox type 3 local JAR or remote extension sources, excluding JS URL entries.', sqJsSources:'JS URL Sources', sqJsDesc:'TVBox type 3 sources whose API is an HTTP(S) URL.', sqRemoteSources:'Remote Sources', sqRemoteDesc:'TVBox type 4 remote site sources.', sqUncategorizedSources:'Other Sources', sqUncategorizedDesc:'Sources whose interface type could not be classified. They are listed separately instead of being mixed into a quality grade.', sqXml:'XML', sqJson:'JSON / MacCMS', sqJar:'JAR / Extension', sqJs:'JS URL', sqRemote:'Remote', sqOther:'Other', sqUnavailableSources:'Unavailable Sources', sqUnavailableDesc:'Searchable sources that are blocked, timed out, unusable, or outside the current quality pool. They are not distributed to clients.', sqBlockedSources:'Blocked Sources', sqBlockedDescLong:'Blocked sources are excluded from all client outputs but remain here so they can be restored.',
     sqLeanRemoved:'lean-removed',
     channelProbeTitle:'Channel Speed Probe (Node/Docker)',
@@ -1120,9 +1120,9 @@ const translations = {
     sqExcellent:'优', sqGood:'良', sqUsable:'可用', sqUntestable:'待客户端最终验证', sqTimeout:'超时', sqUnusable:'不可用', sqCumulative:'累计',
     sqReasonBlocked:'已屏蔽', sqReasonNotInFinal:'未进入最终列表', sqReasonNotSearchable:'不可搜索',
     sqKey:'源标识', sqName:'源名称', sqSource:'源类型', sqReason:'未入选原因', sqGrade:'质量等级 / 分数', sqSpeedStatus:'响应速度 / 可信度', sqRank:'总排名 / 分类排名', sqAction:'操作',
-    sqPin:'置顶', sqUnpin:'取消置顶', sqPinGlobal:'总榜置顶', sqPinCategory:'分类置顶', sqPinnedGlobal:'总榜置顶', sqPinnedCategory:'分类置顶',
+    sqRankingHint:'所有列表按质量池总排名排列；每个分类表同时显示该分类内排名。置顶源按实际选择置顶的时间排序；分类置顶只在本分类内优先，不突破分类下发优先级。', sqPin:'置顶', sqUnpin:'取消置顶', sqPinGlobal:'总榜置顶', sqPinCategory:'分类置顶', sqPinnedGlobal:'总榜置顶', sqPinnedCategory:'分类置顶',
     sqBlock:'屏蔽', sqUnblock:'取消屏蔽', sqBlocked:'已屏蔽', sqBlockedDesc:'屏蔽源不会下发到任何客户端，但仍保留在管理列表中，可随时恢复。可按名称或源标识搜索，并按质量等级或“已屏蔽”筛选。', sqSourceFilterPh:'搜索源名称或源标识...', sqFilterAll:'全部等级', sqFilterPinned:'仅置顶源', sqFilterMatched:'匹配', sqFilterNoMatch:'没有匹配的源',
-    sqPinned:'置顶源', sqPinnedDesc:'置顶只调整通过现有筛选后的源排序：总榜置顶优先，其次分类置顶，最后按普通质量顺序；简单模式和分类模式一致。使用“仅置顶源”筛选后，点击对应行的“取消置顶”即可移除。', sqOtherSources:'质量池源', sqQualityPoolDesc:'已进入统一质量排序、可参与下发选择的源。置顶只调整候选源顺序，不会绕过质量池、屏蔽或数量限制；屏蔽后仍保留在此列表，但不会下发到任何客户端。', sqExcludedSources:'质量池外源', sqExcludedDesc:'已经评估但未进入质量池的可搜索源，例如超时或不可用，不会下发到客户端。', sqReasonJsUrlExcluded:'JS URL 已排除', sqReasonTimeout:'超时', sqReasonUnusable:'不可用', sqReasonNotInPool:'不在质量池', sqReasonOutsideQualityPool:'质量池外',
+    sqPinned:'置顶源', sqPinnedDesc:'总榜置顶可跨分类优先占用下发名额；分类置顶只在本分类内排到普通源之前，不能突破分类之间的下发优先级。根链接和鉴权链接的置顶合并后，按实际选择置顶的时间排序。使用“仅置顶源”筛选后，点击对应行的“取消置顶”即可移除。', sqOtherSources:'质量池源', sqQualityPoolDesc:'已进入统一质量排序、可参与下发选择的源。置顶只调整候选源顺序，不会绕过质量池、屏蔽或数量限制；屏蔽后仍保留在此列表，但不会下发到任何客户端。', sqExcludedSources:'质量池外源', sqExcludedDesc:'已经评估但未进入质量池的可搜索源，例如超时或不可用，不会下发到客户端。', sqReasonJsUrlExcluded:'JS URL 已排除', sqReasonTimeout:'超时', sqReasonUnusable:'不可用', sqReasonNotInPool:'不在质量池', sqReasonOutsideQualityPool:'质量池外',
     sqXmlSources:'XML 源', sqXmlDesc:'TVBox 0 类 XML 接口源；质量等级决定其在统一排序和 XML 分类中的位置。', sqJsonSources:'JSON / MacCMS 源', sqJsonDesc:'TVBox 1 类 JSON 或 MacCMS 接口源。', sqJarSources:'JAR / 扩展源', sqJarDesc:'TVBox 3 类本地 JAR 或远程扩展源，不包含 API 为 HTTP(S) 的 JS 地址源。', sqJsSources:'JS 地址源', sqJsDesc:'TVBox 3 类且 API 为 HTTP(S) 地址的 JS 接口源。', sqRemoteSources:'远程站点源', sqRemoteDesc:'TVBox 4 类远程站点源。', sqUncategorizedSources:'其他类型源', sqUncategorizedDesc:'无法按接口机制归入上述类型的源，单独列出，不与质量等级混在一起。', sqUnavailableSources:'不可用 / 未入选源', sqUnavailableDesc:'可搜索但已屏蔽、超时、不可用或不在当前质量池中的源，不会下发到客户端。', sqBlockedSources:'屏蔽源', sqBlockedDescLong:'屏蔽源不会下发到任何客户端，但仍保留在管理列表中，可随时恢复。', sqXml:'XML', sqJson:'JSON / MacCMS', sqJar:'JAR / 扩展', sqJs:'JS 地址', sqRemote:'远程', sqOther:'其他',
     sqLeanRemoved:'轻量剔除',
     channelProbeTitle:'频道级测速（仅 Node/Docker）',
@@ -2417,6 +2417,7 @@ async function saveEdgeProxies() {
 // --- Search Quota ---
 let sqPinnedKeys = new Set();
 let sqCategoryPinnedKeys = new Set();
+let sqPinSelectedAt = {};
 let sqBlockedKeys = new Set();
 let rootSourceSelection = { selectionMode: 'simple', maxSites: -1, bucketLimits: undefined };
 
@@ -2630,6 +2631,7 @@ async function loadSearchQuota() {
     $('pruneDeadParsesInput').checked = true;
     sqPinnedKeys = new Set(d.pinnedKeys || []);
     sqCategoryPinnedKeys = new Set(d.categoryPinnedKeys || []);
+    sqPinSelectedAt = d.pinSelectedAt && typeof d.pinSelectedAt === 'object' ? d.pinSelectedAt : {};
     sqBlockedKeys = new Set(d.blockedKeys || []);
     loadSearchQuotaReport();
   } catch {}
@@ -2665,6 +2667,7 @@ async function saveSearchQuota(scope) {
     pruneDeadParses: true,
     pinnedKeys: [...sqPinnedKeys],
     categoryPinnedKeys: [...sqCategoryPinnedKeys],
+    pinSelectedAt: sqPinSelectedAt,
     blockedKeys: [...sqBlockedKeys],
     selectionMode: rootSourceSelection.selectionMode,
     maxSites: rootSourceSelection.selectionMode === 'simple' ? rootSourceSelection.maxSites : -1,
@@ -3236,8 +3239,19 @@ function compareByQualityPoolOrder(a, b, qualityMap, rankMaps) {
 function renderSearchSources() {
   if (sqSearchRenderPending) return;
   captureSearchTableScroll();
-  const pinnedKeys = new Set([...sqPinnedKeys, ...sqCategoryPinnedKeys]);
-  const pinnedOrder = new Map([...pinnedKeys].map((key, index) => [key, index]));
+  const pinnedKeyList = [...new Set([...sqPinnedKeys, ...sqCategoryPinnedKeys])];
+  const pinnedFallbackOrder = new Map(pinnedKeyList.map((key, index) => [key, index]));
+  pinnedKeyList.sort(function(a, b) {
+    const aTime = Date.parse(sqPinSelectedAt[a]);
+    const bTime = Date.parse(sqPinSelectedAt[b]);
+    const aValid = Number.isFinite(aTime);
+    const bValid = Number.isFinite(bTime);
+    if (aValid && bValid && aTime !== bTime) return aTime - bTime;
+    if (aValid !== bValid) return aValid ? -1 : 1;
+    return (pinnedFallbackOrder.get(a) || 0) - (pinnedFallbackOrder.get(b) || 0);
+  });
+  const pinnedKeys = new Set(pinnedKeyList);
+  const pinnedOrder = new Map(pinnedKeyList.map((key, index) => [key, index]));
   const qualityMap = qualityEntryByKey();
   const input = $('sqSourceFilter');
   const select = $('sqGradeFilter');
@@ -3387,25 +3401,6 @@ function sourceCategoryLabel(category) {
   if (category === 'remote') return t('sqRemote');
   return t('sqOther');
 }
-async function movePinned(index, direction) {
-  const arr = [...sqPinnedKeys];
-  const target = index + direction;
-  if (target < 0 || target >= arr.length) return;
-  [arr[index], arr[target]] = [arr[target], arr[index]];
-  try {
-    const res = await auth.authFetch('/admin/search-quota/pinned', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ keys: arr }),
-    });
-    if (res.ok) {
-      const d = await res.json();
-      sqPinnedKeys = new Set(d.pinnedKeys || []);
-      sqCategoryPinnedKeys = new Set(d.categoryPinnedKeys || []);
-      renderSearchSources();
-    }
-  } catch {}
-}
 
 function escHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
@@ -3422,6 +3417,7 @@ async function togglePin(key, scope) {
       const d = await res.json();
       sqPinnedKeys = new Set(d.pinnedKeys || []);
       sqCategoryPinnedKeys = new Set(d.categoryPinnedKeys || []);
+      sqPinSelectedAt = d.pinSelectedAt && typeof d.pinSelectedAt === 'object' ? d.pinSelectedAt : {};
       renderSearchSources();
     }
   } catch {}
@@ -3442,6 +3438,7 @@ async function toggleBlocked(key) {
       sqBlockedKeys = new Set(d.blockedKeys || []);
       sqPinnedKeys = new Set(d.pinnedKeys || []);
       sqCategoryPinnedKeys = new Set(d.categoryPinnedKeys || []);
+      sqPinSelectedAt = d.pinSelectedAt && typeof d.pinSelectedAt === 'object' ? d.pinSelectedAt : {};
       renderSearchSources();
     }
   } catch {}
@@ -3636,6 +3633,25 @@ function clientLimitLabel(value) {
 
 function normalizeClientAuthCode(item, index) {
   const now = new Date().toISOString();
+  const pinnedKeys = Array.isArray(item && item.pinnedKeys)
+    ? [...new Set(item.pinnedKeys.filter((key) => typeof key === 'string' && key.trim()).map((key) => key.trim()))]
+    : [];
+  const globalPinned = new Set(pinnedKeys);
+  const categoryPinnedKeys = Array.isArray(item && item.categoryPinnedKeys)
+    ? [...new Set(item.categoryPinnedKeys.filter((key) => typeof key === 'string' && key.trim()).map((key) => key.trim()))]
+      .filter((key) => !globalPinned.has(key))
+    : [];
+  const pinnedSet = new Set([...pinnedKeys, ...categoryPinnedKeys]);
+  const rawPinSelectedAt = item && item.pinSelectedAt && typeof item.pinSelectedAt === 'object' && !Array.isArray(item.pinSelectedAt)
+    ? item.pinSelectedAt
+    : {};
+  const pinSelectedAt = {};
+  Object.keys(rawPinSelectedAt).forEach(function(key) {
+    const value = rawPinSelectedAt[key];
+    if (pinnedSet.has(key) && typeof value === 'string' && Number.isFinite(Date.parse(value))) {
+      pinSelectedAt[key] = new Date(Date.parse(value)).toISOString();
+    }
+  });
   return {
     id: (item && item.id) || ('auth_' + Date.now().toString(36) + '_' + index),
     label: (item && item.label) || (t('credentialDefaultLabel') + ' ' + (index + 1)),
@@ -3654,12 +3670,9 @@ function normalizeClientAuthCode(item, index) {
     selectedKeys: Array.isArray(item && item.selectedKeys)
       ? [...new Set(item.selectedKeys.filter((key) => typeof key === 'string' && key.trim()).map((key) => key.trim()))]
       : [],
-    pinnedKeys: Array.isArray(item && item.pinnedKeys)
-      ? [...new Set(item.pinnedKeys.filter((key) => typeof key === 'string' && key.trim()).map((key) => key.trim()))]
-      : [],
-    categoryPinnedKeys: Array.isArray(item && item.categoryPinnedKeys)
-      ? [...new Set(item.categoryPinnedKeys.filter((key) => typeof key === 'string' && key.trim()).map((key) => key.trim()))]
-      : [],
+    pinnedKeys,
+    categoryPinnedKeys,
+    pinSelectedAt,
     attachLives: item && typeof item.attachLives === 'boolean' ? item.attachLives : undefined,
     createdAt: (item && item.createdAt) || now,
     updatedAt: (item && item.updatedAt) || now,
@@ -3683,6 +3696,7 @@ function newCredentialAuthCode() {
     selectedKeys: [],
     pinnedKeys: [],
     categoryPinnedKeys: [],
+    pinSelectedAt: {},
     attachLives: liveDistPolicy.attachToAuth !== false,
     createdAt: now,
     updatedAt: now,
@@ -3795,6 +3809,40 @@ function renderCredentialBucketControls(container, item) {
   });
 }
 
+async function saveCredentialAuthCode(item, index, button) {
+  if (item.selectionMode === 'category') {
+    item.bucketLimits = normalizeClientBucketLimitsForAvailable(item.bucketLimits);
+  }
+  item.updatedAt = new Date().toISOString();
+  button.disabled = true;
+  button.textContent = t('saving');
+  try {
+    const res = await auth.authFetch('/admin/client-distribution/auth-codes/' + encodeURIComponent(item.id), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(item),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || t('saveFailed'));
+    const savedItem = Array.isArray(data.authCodes)
+      ? data.authCodes.find((entry) => entry && entry.id === item.id)
+      : null;
+    if (!savedItem) throw new Error(t('saveFailed'));
+    Object.assign(item, normalizeClientAuthCode(savedItem, index));
+    button.textContent = t('saved');
+    toast(t('saved'), 'success');
+    setTimeout(() => {
+      if (!button.isConnected) return;
+      button.textContent = t('save');
+      button.disabled = false;
+    }, 1600);
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = t('save');
+    toast(error && error.message ? error.message : error, 'error');
+  }
+}
+
 function renderCredentialDistribution() {
   const requireEl = $('credentialRequireAuth');
   if (requireEl) credentialDistribution.requireAuth = requireEl.checked;
@@ -3853,10 +3901,15 @@ function renderCredentialDistribution() {
     remove.className = 'btn btn-sm btn-danger';
     remove.textContent = t('credentialDelete');
     remove.onclick = () => { credentialDistribution.authCodes.splice(index, 1); credentialDetailsExpanded.delete(item.id); renderCredentialDistribution(); };
+    const save = document.createElement('button');
+    save.className = 'btn btn-sm';
+    save.textContent = t('save');
+    save.onclick = () => saveCredentialAuthCode(item, index, save);
     summaryActions.appendChild(toggleDetails);
     summaryActions.appendChild(copyAuth);
     summaryActions.appendChild(copyLive);
     summaryActions.appendChild(remove);
+    summaryActions.appendChild(save);
     top.appendChild(title);
     top.appendChild(summaryActions);
     card.appendChild(top);

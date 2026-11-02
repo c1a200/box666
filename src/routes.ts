@@ -36,6 +36,7 @@ import {
   getQualityPoolHealth,
 } from './core/quality';
 import { loadClientDistribution, saveClientDistribution, findClientAuthCode, normalizeClientDistributionConfig, createClientAuthCode } from './core/client-auth-store';
+import { mergeSourcePins, reconcileSourcePins, type SourcePinScopes } from './core/source-pins';
 import { formatAggregatedLiveGroupsAsTxt, formatLiveGroupsAsTxt, filterLivesBySourceDetailed, parseLiveCandidatePool } from './core/live-merger';
 import { containsBlockedLiveUrl, isBlockedLiveSource, isBlockedLiveUrl } from './core/live-policy';
 import { autoNameFromUrl, backupTypeMismatch, createSourceBackup, extractBackupItems, parseSourceList } from './core/source-list-parser';
@@ -84,27 +85,7 @@ const ALIST_PROXY_MAX_BYTES = 2 * 1024 * 1024;
 const ALIST_PROXY_TIMEOUT_MS = 8000;
 const ALIST_PROXY_MAX_REDIRECTS = 5;
 
-type PinnedScopes = {
-  pinnedKeys?: readonly string[];
-  categoryPinnedKeys?: readonly string[];
-};
-
-function mergePinnedScopes(base: PinnedScopes, extra: PinnedScopes): {
-  pinnedKeys: string[];
-  categoryPinnedKeys: string[];
-} {
-  const mergeKeys = (...groups: Array<readonly string[] | undefined>): string[] => [
-    ...new Set(groups.flatMap((keys) => keys || [])),
-  ];
-  // 根链接置顶先行，鉴权码置顶只追加自己的项；同一 key 的总榜置顶优先。
-  const pinnedKeys = mergeKeys(base.pinnedKeys, extra.pinnedKeys);
-  const globalKeys = new Set(pinnedKeys);
-  return {
-    pinnedKeys,
-    categoryPinnedKeys: mergeKeys(base.categoryPinnedKeys, extra.categoryPinnedKeys)
-      .filter((key) => !globalKeys.has(key)),
-  };
-}
+type PinnedScopes = SourcePinScopes;
 
 function isPrivateOrLocalHostname(hostname: string): boolean {
   const host = hostname.trim().toLowerCase().replace(/^\[|\]$/g, '');
@@ -582,7 +563,7 @@ export function createApp(deps: AppDeps): Hono {
     // “全部”表示质量池中所有符合条件的去重源，不是隐式只取少量后备源。
     const quota = await loadSearchQuota(storage);
     const blockedKeys = new Set(quota.blockedKeys || []);
-    const effectivePins = mergePinnedScopes(quota, context.authCode || {});
+    const effectivePins = mergeSourcePins(quota, context.authCode || {});
     // 根链接置顶对所有鉴权码生效，鉴权码自己的置顶继续追加；
     // 其余鉴权策略仍独立覆盖根策略。
     const policy = context.authCode
@@ -1061,7 +1042,7 @@ export function createApp(deps: AppDeps): Hono {
       ? (authCode?.bucketLimits ?? quota.bucketLimits)
       : undefined;
     const distributionMaxSites = authCode?.maxSites ?? quota.maxSites ?? -1;
-    const distributionPins = mergePinnedScopes(quota, authCode || {});
+    const distributionPins = mergeSourcePins(quota, authCode || {});
     const blockedKeys = new Set(
       (quota.blockedKeys || []).filter((key): key is string => typeof key === 'string')
     );
@@ -1846,10 +1827,14 @@ export function createApp(deps: AppDeps): Hono {
       const normalize = (keys: unknown): string[] => Array.isArray(keys)
         ? [...new Set(keys.filter((key): key is string => typeof key === 'string').map((key) => key.trim()).filter(Boolean))]
         : [];
-      current.pinnedKeys = normalize(current.pinnedKeys).filter((key) => !blocked.has(key));
-      const globalPinned = new Set(current.pinnedKeys);
-      current.categoryPinnedKeys = normalize(current.categoryPinnedKeys)
-        .filter((key) => !blocked.has(key) && !globalPinned.has(key));
+      const desired = {
+        pinnedKeys: normalize(current.pinnedKeys).filter((key) => !blocked.has(key)),
+        categoryPinnedKeys: normalize(current.categoryPinnedKeys).filter((key) => !blocked.has(key)),
+      };
+      const pinned = reconcileSourcePins(current, desired);
+      current.pinnedKeys = pinned.pinnedKeys;
+      current.categoryPinnedKeys = pinned.categoryPinnedKeys;
+      current.pinSelectedAt = pinned.pinSelectedAt;
     }
 
     await saveSearchQuota(storage, current);
@@ -1879,29 +1864,21 @@ export function createApp(deps: AppDeps): Hono {
         globalPinned.add(normalizedKey);
       }
     }
-    current.pinnedKeys = [...globalPinned];
-    current.categoryPinnedKeys = [...categoryPinned].filter((key) => !globalPinned.has(key));
+    const pinned = reconcileSourcePins(current, {
+      pinnedKeys: [...globalPinned],
+      categoryPinnedKeys: [...categoryPinned],
+    });
+    current.pinnedKeys = pinned.pinnedKeys;
+    current.categoryPinnedKeys = pinned.categoryPinnedKeys;
+    current.pinSelectedAt = pinned.pinSelectedAt;
     await saveSearchQuota(storage, current);
     await markOutputDirty();
-    return c.json({ success: true, pinnedKeys: current.pinnedKeys, categoryPinnedKeys: current.categoryPinnedKeys });
-  });
-
-  // 重排 pinned 顺序（整体替换）
-  app.put('/admin/search-quota/pinned', async (c) => {
-    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
-    let body: { keys?: string[] };
-    try { body = await c.req.json(); } catch { return c.json({ error: 'Invalid JSON' }, 400); }
-    if (!Array.isArray(body.keys)) return c.json({ error: 'keys must be an array' }, 400);
-
-    const current = await loadSearchQuota(storage);
-    const blocked = new Set(current.blockedKeys || []);
-    current.pinnedKeys = [...new Set(body.keys.filter((key): key is string => typeof key === 'string'))]
-      .filter((key) => !blocked.has(key));
-    const globalPinned = new Set(current.pinnedKeys);
-    current.categoryPinnedKeys = (current.categoryPinnedKeys || []).filter((key) => !globalPinned.has(key));
-    await saveSearchQuota(storage, current);
-    await markOutputDirty();
-    return c.json({ success: true, pinnedKeys: current.pinnedKeys, categoryPinnedKeys: current.categoryPinnedKeys });
+    return c.json({
+      success: true,
+      pinnedKeys: current.pinnedKeys,
+      categoryPinnedKeys: current.categoryPinnedKeys,
+      pinSelectedAt: current.pinSelectedAt,
+    });
   });
 
   app.delete('/admin/search-quota/pinned', async (c) => {
@@ -1912,11 +1889,21 @@ export function createApp(deps: AppDeps): Hono {
 
     const current = await loadSearchQuota(storage);
     const removeSet = new Set(body.keys.filter((key): key is string => typeof key === 'string'));
-    current.pinnedKeys = current.pinnedKeys.filter(k => !removeSet.has(k));
-    current.categoryPinnedKeys = (current.categoryPinnedKeys || []).filter(k => !removeSet.has(k));
+    const pinned = reconcileSourcePins(current, {
+      pinnedKeys: current.pinnedKeys.filter((key) => !removeSet.has(key)),
+      categoryPinnedKeys: (current.categoryPinnedKeys || []).filter((key) => !removeSet.has(key)),
+    });
+    current.pinnedKeys = pinned.pinnedKeys;
+    current.categoryPinnedKeys = pinned.categoryPinnedKeys;
+    current.pinSelectedAt = pinned.pinSelectedAt;
     await saveSearchQuota(storage, current);
     await markOutputDirty();
-    return c.json({ success: true, pinnedKeys: current.pinnedKeys, categoryPinnedKeys: current.categoryPinnedKeys });
+    return c.json({
+      success: true,
+      pinnedKeys: current.pinnedKeys,
+      categoryPinnedKeys: current.categoryPinnedKeys,
+      pinSelectedAt: current.pinSelectedAt,
+    });
   });
 
   // 报告（admin 需鉴权）
@@ -2303,6 +2290,42 @@ export function createApp(deps: AppDeps): Hono {
 
   app.get('/admin/client-distribution', handleGetClientDistribution);
   app.put('/admin/client-distribution', handlePutClientDistribution);
+
+  app.put('/admin/client-distribution/auth-codes/:id', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
+    const targetId = c.req.param('id').trim();
+    if (!targetId) return c.json({ error: 'Auth code id is required' }, 400);
+    let raw: Record<string, unknown>;
+    try {
+      const body = await c.req.json();
+      if (!body || typeof body !== 'object' || Array.isArray(body)) return c.json({ error: 'Auth code must be an object' }, 400);
+      raw = body as Record<string, unknown>;
+    } catch { return c.json({ error: 'Invalid JSON' }, 400); }
+    const requestedCode = typeof raw.code === 'string' ? raw.code.trim() : '';
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(requestedCode)) {
+      return c.json({ error: 'Each auth code must be 1-64 letters, numbers, underscores or hyphens' }, 400);
+    }
+    const current = await loadClientDistribution(storage);
+    const item = createClientAuthCode({ ...(raw as Partial<ClientAuthCode>), id: targetId, code: requestedCode });
+    if (item.sourceMode === 'custom' && item.selectedKeys.length === 0) return c.json({ error: 'Custom source mode requires at least one selected key' }, 400);
+    if (current.authCodes.some((entry) => entry.id !== targetId && entry.code === item.code)) return c.json({ error: 'Auth codes must be unique' }, 400);
+    const existingIndex = current.authCodes.findIndex((entry) => entry.id === targetId);
+    const authCodes = current.authCodes.slice();
+    if (existingIndex >= 0) authCodes[existingIndex] = item;
+    else authCodes.push(item);
+    const candidate = normalizeClientDistributionConfig({ requireAuth: current.requireAuth, authCodes });
+    if (candidate.requireAuth && !candidate.authCodes.some((entry) => entry.enabled)) return c.json({ error: 'At least one enabled auth code is required when requireAuth is enabled' }, 400);
+    let saved: ClientDistributionConfig;
+    try {
+      saved = await saveClientDistribution(storage, candidate);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn('routes', `Client auth code save failed: ${message}`);
+      return c.json({ error: 'Failed to persist auth code.', code: 'client_auth_code_save_failed' }, 500);
+    }
+    await markOutputDirty();
+    return c.json({ success: true, ...saved });
+  });
   // ─── 背景设置公共接口（必须放在 /api/:key 之前以避免路由拦截） ────────
   app.get('/api/bg-settings', async (c) => {
     const raw = await storage.get(KV_BG_SETTINGS);
