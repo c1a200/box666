@@ -3,7 +3,10 @@ import type { ChannelSpeedMap } from './types';
 import { KV_CHANNEL_SPEED_MAP, CHANNEL_SPEED_TTL_MS } from './config';
 
 export const CHANNEL_FAILURE_RETRY_MS = 6 * 60 * 60 * 1000;
-export const CHANNEL_PROBE_RESULT_VERSION = 3;
+// Increment whenever the probe evidence rules change. A version bump makes
+// every line earn fresh playback proof instead of inheriting a false-negative
+// from an older, shallower detector.
+export const CHANNEL_PROBE_RESULT_VERSION = 4;
 
 export async function loadSpeedMap(storage: Storage): Promise<ChannelSpeedMap> {
   const raw = await storage.get(KV_CHANNEL_SPEED_MAP);

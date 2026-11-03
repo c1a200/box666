@@ -184,7 +184,7 @@ const AD_KEYWORDS = /广告|购物|福利|加微|微\s*信|群|客\s*服|优惠|
 const SEPARATED_MAX_URLS_PER_CHANNEL = 6;
 export const AGGREGATED_MAX_URLS_PER_CHANNEL = DEFAULT_LIVE_MAX_URLS_PER_CHANNEL;
 const SEPARATED_MAX_CHANNELS = 12000;
-const LIVE_KNOWN_MAX_SPEED_MS = 5000;
+export const LIVE_KNOWN_MAX_SPEED_MS = 5000;
 const SEPARATED_MIN_CHANNELS_PER_SOURCE = 5;
 const SEPARATED_MAX_AD_RATIO = 0.5;
 const SEPARATED_MIN_PLAYABLE_RATIO = 0.2;
@@ -2356,7 +2356,7 @@ export function extractPreferredLiveUrls(
 ): string[] {
   const maxPerChannel = Math.max(1, limitPerChannel);
   const seen = new Set<string>();
-  const result: string[] = [];
+  const perChannel: string[][] = [];
   for (const group of groups) {
     for (const channel of group.channels || []) {
       const ranked: Array<{ bare: string; speed?: number; rank: number; index: number }> = [];
@@ -2383,11 +2383,131 @@ export function extractPreferredLiveUrls(
         if (a.speed == null && b.speed != null) return 1;
         return a.index - b.index;
       });
-      for (const item of ranked.slice(0, maxPerChannel)) {
-        if (seen.has(item.bare)) continue;
-        seen.add(item.bare);
-        result.push(item.bare);
+      perChannel.push(ranked.slice(0, maxPerChannel).map((item) => item.bare));
+    }
+  }
+
+  // Probe by depth across channels instead of exhausting one channel before
+  // touching the next. A single hot channel can no longer delay every other
+  // channel's first playable result for an entire priority pass.
+  const maxDepth = perChannel.reduce((max, urls) => Math.max(max, urls.length), 0);
+  const result: string[] = [];
+  for (let depth = 0; depth < maxDepth; depth++) {
+    for (const urls of perChannel) {
+      const url = urls[depth];
+      if (!url || seen.has(url)) continue;
+      seen.add(url);
+      result.push(url);
+    }
+  }
+  return result;
+}
+
+
+/**
+ * 返回仍需补测的线路，用于优先阶段动态覆盖“前几条恰好全坏”的频道。
+ *
+ * 初轮只测每频道最可能下发的一小批；若当前已验真线路仍不足目标值，本函数
+ * 从尚未得到新版结果的候选中继续取短批次。这样既不会因为原始顺序靠后的
+ * 可播源把整台误判成 0 条，也不会在已经凑够目标时继续浪费探测预算。
+ * maxCandidatesPerChannel 可把返回量限制为每台一批，供调度器轮转覆盖。
+ */
+export function extractCoverageTopUpLiveUrls(
+  groups: readonly TVBoxLiveGroup[],
+  speedMap: ChannelSpeedMap = {},
+  targetPerChannel = SEPARATED_MAX_URLS_PER_CHANNEL,
+  excludedUrls: ReadonlySet<string> = new Set<string>(),
+  deferredUrls: ReadonlySet<string> = new Set<string>(),
+  maxCandidatesPerChannel = Number.MAX_SAFE_INTEGER,
+): string[] {
+  const target = Number.isFinite(targetPerChannel)
+    ? Math.max(1, Math.floor(targetPerChannel))
+    : Number.MAX_SAFE_INTEGER;
+  const perChannelCap = Number.isFinite(maxCandidatesPerChannel)
+    ? Math.max(0, Math.floor(maxCandidatesPerChannel))
+    : Number.MAX_SAFE_INTEGER;
+  const normalizedUrls = (urls: ReadonlySet<string>): Set<string> => new Set(
+    Array.from(urls, (url) => splitLiveUrlLabel(url).bare.trim()).filter(Boolean),
+  );
+  const excluded = normalizedUrls(excludedUrls);
+  const deferred = normalizedUrls(deferredUrls);
+  const perChannel: string[][] = [];
+
+  for (const group of groups) {
+    for (const channel of group.channels || []) {
+      const ranked: Array<{
+        bare: string;
+        entry?: ChannelSpeedMap[string];
+        rank: number;
+        speed?: number;
+        index: number;
+      }> = [];
+      const channelSeen = new Set<string>();
+      let verified = 0;
+
+      for (const [index, raw] of (channel.urls || []).entries()) {
+        const bare = splitLiveUrlLabel(raw).bare.trim();
+        if (!bare || channelSeen.has(bare)) continue;
+        channelSeen.add(bare);
+        const entry = speedMap[raw] ?? speedMap[bare];
+        if (isPlaybackVerifiedProbe(entry) && entry.speedMs <= LIVE_KNOWN_MAX_SPEED_MS) {
+          verified++;
+        }
+        ranked.push({
+          bare,
+          entry,
+          rank: entry?.verification === 'media'
+            ? 2
+            : entry?.verification === 'manifest'
+              ? 1
+              : entry?.kind && entry.kind !== 'fail'
+                ? 0
+                : -1,
+          speed: Number.isFinite(entry?.speedMs) ? entry?.speedMs : undefined,
+          index,
+        });
       }
+
+      const need = target - verified;
+      if (need <= 0) continue;
+      // A channel still has queued first-pass candidates: do not jump over them
+      // into its tail merely because those queued URLs are not in the speed map
+      // yet. Once its first pass finishes, the next scheduler pass can top it up.
+      if (ranked.some((item) => deferred.has(item.bare))) continue;
+      const due = ranked
+        // 当前版本的任何结果都已有明确结论：成功项计入目标，失败/TCP/未知
+        // 不在优先阶段重复重测。没有当前版本结果且未排队的线路才是补测对象。
+        .filter((item) => item.entry?.probeVersion !== CHANNEL_PROBE_RESULT_VERSION)
+        .filter((item) => !excluded.has(item.bare))
+        .filter((item) => !deferred.has(item.bare))
+        .sort((a, b) => {
+          if (a.rank !== b.rank) return b.rank - a.rank;
+          if (a.speed != null && b.speed != null && a.speed !== b.speed) return a.speed - b.speed;
+          if (a.speed != null && b.speed == null) return -1;
+          if (a.speed == null && b.speed != null) return 1;
+          return a.index - b.index;
+        });
+      if (perChannelCap === 0) continue;
+      const take = Math.min(
+        due.length,
+        Number.isFinite(need) ? need : due.length,
+        perChannelCap,
+      );
+      perChannel.push(due.slice(0, take).map((item) => item.bare));
+    }
+  }
+
+  // Like the first pass, top-ups advance by depth across channels. Rechecking
+  // lines 10-18 for a handful of channels must not starve every other channel.
+  const seen = new Set<string>();
+  const result: string[] = [];
+  const maxDepth = perChannel.reduce((max, urls) => Math.max(max, urls.length), 0);
+  for (let depth = 0; depth < maxDepth; depth++) {
+    for (const urls of perChannel) {
+      const url = urls[depth];
+      if (!url || seen.has(url)) continue;
+      seen.add(url);
+      result.push(url);
     }
   }
   return result;

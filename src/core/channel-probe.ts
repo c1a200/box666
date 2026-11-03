@@ -32,8 +32,9 @@ import {
 import {
   bareLiveSourceUrl,
   extractAllUrls,
-  extractPreferredLiveUrls,
+  extractCoverageTopUpLiveUrls,
   extractUrlsForSourceLabels,
+  LIVE_KNOWN_MAX_SPEED_MS,
   normalizeSourceLabelKey,
   parseLiveCandidatePool,
   parseLiveGroupsFromTxt,
@@ -137,6 +138,32 @@ interface ProbeResult {
   kind: 'm3u8' | 'ts' | 'tcp' | 'fail';
   verification?: 'manifest' | 'media';
   failureReason?: 'timeout' | 'http' | 'invalid' | 'network';
+}
+
+function playbackVerificationRank(
+  entry: Pick<ChannelSpeedMap[string], 'kind' | 'verification' | 'probeVersion' | 'speedMs' | 'consecutiveFailures'> | undefined,
+): number {
+  if (!entry
+    || entry.kind === 'fail'
+    || entry.kind === 'tcp'
+    || entry.probeVersion !== CHANNEL_PROBE_RESULT_VERSION
+    || (entry.consecutiveFailures ?? 0) > 0
+    || !Number.isFinite(entry.speedMs)
+    || entry.speedMs > LIVE_KNOWN_MAX_SPEED_MS) {
+    return 0;
+  }
+  if (entry.verification === 'media') return 2;
+  if (entry.verification === 'manifest') return 1;
+  return 0;
+}
+
+function isPlaybackVerifiedProbeResult(result: ProbeResult): boolean {
+  return playbackVerificationRank({
+    kind: result.kind,
+    verification: result.verification,
+    probeVersion: CHANNEL_PROBE_RESULT_VERSION,
+    speedMs: result.speedMs,
+  }) > 0;
 }
 
 const HLS_MEDIA_CANDIDATE_LIMIT = 16;
@@ -660,6 +687,14 @@ export async function probeLiveUrlsBounded(
 }
 // ─── 主入口 ────────────────────────────────────────────
 
+// Priority probes publish status/output every few concurrency waves. A full
+// 180-URL batch can take many minutes when several HLS retries time out, which
+// makes a channel appear stuck at zero even though later candidates are healthy.
+const PRIORITY_COVERAGE_BATCH_SIZE = Math.max(
+  CHANNEL_PROBE_CONCURRENCY,
+  Math.min(CHANNEL_PROBE_BATCH_SIZE, CHANNEL_PROBE_CONCURRENCY * 3),
+);
+
 let running = false;
 
 export async function runChannelProbe(
@@ -725,16 +760,17 @@ export async function runChannelProbe(
     if (label) selectedLabels.add(normalizeSourceLabelKey(label));
   }
 
-  // Cover enough of each multi-line channel that bad/duplicate entries cannot
-  // consume every priority slot before a genuinely playable line is tested.
+  // Start with the most likely lines for every multi-line channel. If those
+  // fail, the adaptive top-up loop below keeps testing the remaining candidates
+  // for that channel until it reaches the configured target or runs out.
   const speedMap = pruneExpired(await loadSpeedMap(storage));
   const configuredLimit = config.maxUrlsPerChannel;
-  const priorityLimit = configuredLimit > 0 ? Math.max(2, configuredLimit * 2) : 18;
+  const coverageTarget = configuredLimit > 0 ? configuredLimit : Number.MAX_SAFE_INTEGER;
   const runtimeTxt = await storage.get(KV_LIVE_MERGED_TXT);
   const currentFrontier = runtimeTxt
     ? mergeAggregatedLiveGroups(parseLiveGroupsFromTxt(runtimeTxt))
     : [];
-  const priority = new Set<string>();
+  const prioritySet = new Set<string>();
   const multiLineOnly = (sourceGroups: readonly TVBoxLiveGroup[]): TVBoxLiveGroup[] =>
     sourceGroups
       .map((group) => ({
@@ -742,27 +778,25 @@ export async function runChannelProbe(
         channels: (group.channels || []).filter((channel) => (channel.urls || []).length > 1),
       }))
       .filter((group) => group.channels.length > 0);
-  for (const url of extractPreferredLiveUrls(multiLineOnly(currentFrontier), speedMap, priorityLimit)) {
-    priority.add(url);
-  }
 
   const selectedBareUrls = selectedLabels.size > 0
     ? new Set(extractUrlsForSourceLabels(groups, selectedLabels))
     : new Set<string>();
-  if (selectedBareUrls.size > 0) {
-    const selectedCandidateGroups: TVBoxLiveGroup[] = groups.map((group) => ({
+  const selectedCandidateGroups: TVBoxLiveGroup[] = selectedBareUrls.size > 0
+    ? groups.map((group) => ({
       group: group.group,
       channels: (group.channels || []).map((channel) => ({
         name: channel.name,
         urls: (channel.urls || []).filter((url) => selectedBareUrls.has(bareLiveSourceUrl(url))),
       })),
-    }));
-    for (const url of extractPreferredLiveUrls(multiLineOnly(selectedCandidateGroups), speedMap, priorityLimit)) {
-      priority.add(url);
-    }
-  }
-  const priorityUrls = Array.from(priority);
-  const prioritySet = new Set(priorityUrls);
+    }))
+    : [];
+  // The structured selected-source tree is complete after restarts; only fall
+  // back to the prior runtime frontier when source-label mapping cannot produce
+  // one, otherwise stale unselected sources could consume probe priority.
+  const priorityGroups = multiLineOnly(
+    selectedCandidateGroups.length > 0 ? selectedCandidateGroups : currentFrontier,
+  );
 
   running = true;
   const startedAt = new Date().toISOString();
@@ -776,7 +810,7 @@ export async function runChannelProbe(
     lastProgressAt: startedAt,
     totalUrls: urls.length,
     probed: 0,
-    priorityUrls: priorityUrls.length,
+    priorityUrls: 0,
     priorityProbed: 0,
     backgroundProbed: 0,
     success: 0,
@@ -788,14 +822,6 @@ export async function runChannelProbe(
 
   try {
     Object.assign(fresh, pruneExpired(await loadSpeedMap(storage)));
-    const probeNow = Date.now();
-    const priorityCandidates = selectProbeCandidates(priorityUrls, fresh, probeNow);
-    const backgroundCandidates = selectProbeCandidates(
-      urls.filter((url) => !prioritySet.has(url)),
-      fresh,
-      probeNow,
-    );
-
     const recalculate = (): void => {
       let successCount = 0;
       let failedCount = 0;
@@ -824,20 +850,22 @@ export async function runChannelProbe(
 
     console.log(
       '[channel-probe] Started: ' + urls.length + ' total URLs, ' +
-      priorityUrls.length + ' priority URLs, ' + totalChannels + ' channels, concurrency=' +
-      CHANNEL_PROBE_CONCURRENCY + ', batch=' + CHANNEL_PROBE_BATCH_SIZE + ', trigger=' + trigger,
+      totalChannels + ' channels, adaptive priority batch=' + PRIORITY_COVERAGE_BATCH_SIZE +
+      ', background batch=' + CHANNEL_PROBE_BATCH_SIZE + ', concurrency=' +
+      CHANNEL_PROBE_CONCURRENCY + ', trigger=' + trigger,
     );
 
     const persistBatch = async (
       phase: 'priority' | 'background',
       batch: readonly string[],
       results: readonly ProbeResult[],
-    ): Promise<void> => {
+    ): Promise<number> => {
       const probedAt = new Date().toISOString();
+      let playbackGained = 0;
       for (const result of results) {
         const previous = fresh[result.url];
         const failed = result.kind === 'fail';
-        fresh[result.url] = {
+        const next = {
           speedMs: result.speedMs,
           probedAt,
           kind: result.kind,
@@ -846,6 +874,11 @@ export async function runChannelProbe(
           ...(result.failureReason ? { failureReason: result.failureReason } : {}),
           ...(failed ? { consecutiveFailures: (previous?.consecutiveFailures || 0) + 1 } : {}),
         };
+        if (isPlaybackVerifiedProbeResult(result)
+          && playbackVerificationRank(next) > playbackVerificationRank(previous)) {
+          playbackGained++;
+        }
+        fresh[result.url] = next;
       }
       await saveSpeedMap(storage, fresh);
       status.phase = phase;
@@ -854,18 +887,21 @@ export async function runChannelProbe(
       await saveStatus(storage, { ...status });
       console.log(
         `[channel-probe] ${phase} progress: ${status.probed}/${urls.length}; ` +
-        `${batch.length} URLs in the last saved batch`,
+        `${batch.length} URLs in the last saved batch, ${playbackGained} playback-verified gains`,
       );
+      return playbackGained;
     };
 
     const runPhase = async (
       phase: 'priority' | 'background',
       candidates: readonly { url: string }[],
-    ): Promise<void> => {
+      options: { publishPlaybackGains?: boolean } = {},
+    ): Promise<number> => {
       status.phase = phase;
       status.lastProgressAt = new Date().toISOString();
       await saveStatus(storage, { ...status });
       console.log(`[channel-probe] ${phase} probe: ${candidates.length} due URLs`);
+      let playbackGained = 0;
       for (let offset = 0; offset < candidates.length; offset += CHANNEL_PROBE_BATCH_SIZE) {
         const batch = candidates
           .slice(offset, offset + CHANNEL_PROBE_BATCH_SIZE)
@@ -878,8 +914,18 @@ export async function runChannelProbe(
           // candidates stay single-attempt to keep the full scan bounded.
           (url) => probeSingle(url, CHANNEL_PROBE_TIMEOUT_MS, { retryTransient: phase === 'priority' }),
         );
-        await persistBatch(phase, batch, results);
+        const gained = await persistBatch(phase, batch, results);
+        playbackGained += gained;
+        if (options.publishPlaybackGains && gained > 0) {
+          // Publish after the batch, not after all 2,000+ priority URLs. This is
+          // what keeps a channel from staying at zero while later channels are
+          // still waiting to be probed.
+          await rebuildLiveOutput(storage, { reason: `${phase}-playback-gain` });
+          status.lastProgressAt = new Date().toISOString();
+          await saveStatus(storage, { ...status });
+        }
       }
+      return playbackGained;
     };
 
     const persistOutput = async (reason: string): Promise<void> => {
@@ -891,8 +937,70 @@ export async function runChannelProbe(
       await saveStatus(storage, { ...status });
     };
 
-    await runPhase('priority', priorityCandidates);
+    // Adaptive priority pass: keep a FIFO one-candidate frontier per channel.
+    // Every completed channel is immediately reconsidered: if it still has fewer
+    // than the configured number of playback-verified lines, its next untested
+    // candidate is appended behind channels that have not had a turn yet. This
+    // reaches deep fallback lines without letting a hot channel monopolize a batch.
+    const priorityQueue: Array<{ url: string; priority: number; probedAt: number }> = [];
+    const pendingPriority = new Set<string>();
+    let priorityCursor = 0;
+    let topUpWave = 0;
+    const enqueueTopUps = (): void => {
+      const topUpUrls = extractCoverageTopUpLiveUrls(
+        priorityGroups,
+        fresh,
+        coverageTarget,
+        prioritySet,
+        pendingPriority,
+        1,
+      );
+      const topUpCandidates = selectProbeCandidates(topUpUrls, fresh, Date.now());
+      if (topUpCandidates.length === 0) return;
+
+      const added: Array<{ url: string; priority: number; probedAt: number }> = [];
+      for (const candidate of topUpCandidates) {
+        if (prioritySet.has(candidate.url) || pendingPriority.has(candidate.url)) continue;
+        prioritySet.add(candidate.url);
+        pendingPriority.add(candidate.url);
+        added.push(candidate);
+      }
+      if (added.length === 0) return;
+      // FIFO matters: newly selected lines go behind every channel already
+      // waiting, so each channel receives one probe turn per coverage round.
+      priorityQueue.push(...added);
+      status.priorityUrls = prioritySet.size;
+      topUpWave++;
+      console.log(
+        `[channel-probe] Priority coverage wave ${topUpWave}: ${added.length} URLs, ` +
+        `${topUpCandidates.length} channels currently due`,
+      );
+    };
+
+    // A version bump or an all-failed cache may leave no prepared candidates.
+    // Build the first one-line-per-channel coverage round from the real cache.
+    enqueueTopUps();
+    while (priorityCursor < priorityQueue.length) {
+      const batch = priorityQueue
+        .slice(priorityCursor, priorityCursor + PRIORITY_COVERAGE_BATCH_SIZE)
+        .map((item) => item.url);
+      priorityCursor += batch.length;
+      for (const url of batch) pendingPriority.delete(url);
+
+      await runPhase(
+        'priority',
+        batch.map((url) => ({ url })),
+        { publishPlaybackGains: true },
+      );
+      enqueueTopUps();
+    }
     await persistOutput('channel-probe-priority');
+
+    const backgroundCandidates = selectProbeCandidates(
+      urls.filter((url) => !prioritySet.has(url)),
+      fresh,
+      Date.now(),
+    );
     await runPhase('background', backgroundCandidates);
     await persistOutput('channel-probe-background');
 
