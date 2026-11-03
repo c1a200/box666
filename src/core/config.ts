@@ -170,8 +170,10 @@ export const CHANNEL_PROBE_CRON = '0 */12 * * *';
 export const DEFAULT_CHANNEL_PROBE_INTERVAL = 720;
 export const CHANNEL_PROBE_INTERVALS = [360, 720, 1440] as const;
 // 并发与超时
-export const CHANNEL_PROBE_CONCURRENCY = 18;
-export const CHANNEL_PROBE_TIMEOUT_MS = 5000;
+export const CHANNEL_PROBE_CONCURRENCY = 10;
+// Base network deadline. HLS chains get a larger multiplier because a remote
+// endpoint may first redirect and then serve a media segment from another host.
+export const CHANNEL_PROBE_TIMEOUT_MS = 6000;
 // Persist probe results in short batches so a process restart can resume without
 // losing the whole priority/background phase.
 export const CHANNEL_PROBE_BATCH_SIZE = 180;

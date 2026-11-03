@@ -139,6 +139,11 @@ interface ProbeResult {
   failureReason?: 'timeout' | 'http' | 'invalid' | 'network';
 }
 
+const HLS_MEDIA_CANDIDATE_LIMIT = 16;
+const HLS_TIMEOUT_MULTIPLIER = 4;
+const UNKNOWN_TIMEOUT_MULTIPLIER = 3;
+const PROBE_RETRY_DELAY_MS = 350;
+
 function resolvePlaylistUrl(raw: string, base: string): string {
   try {
     return new URL(raw, base).toString();
@@ -157,7 +162,7 @@ function hlsMediaCandidates(playlist: string, base: string): string[] {
     if (!resolved || seen.has(resolved)) continue;
     seen.add(resolved);
     candidates.push(resolved);
-    if (candidates.length >= 4) break;
+    if (candidates.length >= HLS_MEDIA_CANDIDATE_LIMIT) break;
   }
   return candidates;
 }
@@ -205,6 +210,7 @@ async function readResponseHead(resp: Response, maxBytes: number): Promise<Uint8
 }
 
 interface FetchHeadResult {
+  url: string;
   bytes: Uint8Array;
   text: string;
   contentType: string;
@@ -223,6 +229,9 @@ async function fetchHead(
   if (!resp.ok) throw Object.assign(new Error('http'), { failureReason: 'http' });
   const bytes = await readResponseHead(resp, maxBytes);
   return {
+    // Relative segment URIs must be resolved against the final redirect target,
+    // not the original URL that redirected to another CDN host.
+    url: resp.url || url,
     bytes,
     text: new TextDecoder().decode(bytes),
     contentType: resp.headers.get('content-type') || '',
@@ -274,34 +283,17 @@ function looksLikePlayableMedia(bytes: Uint8Array, contentType: string): boolean
   return /^audio\//i.test(contentType);
 }
 
-async function hasAnotherPlayableSegment(
-  candidates: readonly string[],
-  current: string,
-  signal: AbortSignal,
-  referer: string,
-): Promise<boolean> {
-  const currentIndex = candidates.indexOf(current);
-  const ordered = [
-    ...candidates.slice(currentIndex + 1),
-    ...candidates.slice(0, Math.max(0, currentIndex)),
-  ].filter((candidate) => candidate !== current);
-  for (const candidate of ordered) {
-    if (await mediaHeadIsPlayable(candidate, signal, referer)) return true;
-  }
-  return false;
-}
+type ProbeFailureReason = NonNullable<ProbeResult['failureReason']>;
 
-async function mediaHeadIsPlayable(
-  url: string,
-  signal: AbortSignal,
-  referer: string,
-): Promise<boolean> {
-  try {
-    const head = await fetchHead(url, 512 * 1024, signal, referer);
-    return !isHlsPlaylist(head.text) && looksLikePlayableMedia(head.bytes, head.contentType);
-  } catch {
-    return false;
+function failureReasonFromError(err: unknown, signal: AbortSignal): ProbeFailureReason {
+  if (signal.aborted || (err instanceof Error && err.name === 'AbortError')) return 'timeout';
+  if (err && typeof err === 'object' && 'failureReason' in err) {
+    const reason = (err as { failureReason?: unknown }).failureReason;
+    if (reason === 'timeout' || reason === 'http' || reason === 'invalid' || reason === 'network') {
+      return reason;
+    }
   }
+  return 'network';
 }
 
 async function verifyHlsPlaylist(
@@ -311,21 +303,28 @@ async function verifyHlsPlaylist(
   depth = 0,
   referer?: string,
 ): Promise<ProbeResult> {
-  const playlistUrl = resolvePlaylistUrl(url, referer || url) || url;
-  const playlist = await fetchHead(playlistUrl, 512 * 1024, signal, referer);
+  const requestedUrl = resolvePlaylistUrl(url, referer || url) || url;
+  const playlist = await fetchHead(requestedUrl, 512 * 1024, signal, referer);
   if (!isHlsPlaylist(playlist.text)) {
-    return { url: playlistUrl, speedMs: 0, kind: 'fail', failureReason: 'invalid' };
+    return { url: requestedUrl, speedMs: 0, kind: 'fail', failureReason: 'invalid' };
   }
+
+  // A redirected master/media playlist resolves its relative URIs from the
+  // final response URL, which can be a different host and path.
+  const playlistUrl = playlist.url || requestedUrl;
   const candidates = hlsMediaCandidates(playlist.text, playlistUrl);
   if (candidates.length === 0) {
-    // A playlist with no variant/segment URI cannot provide a playable stream.
     return { url: playlistUrl, speedMs: 0, kind: 'fail', failureReason: 'invalid' };
   }
 
   let validChildManifest = false;
+  let sawHttpFailure = false;
+  let sawNetworkFailure = false;
   for (const candidate of candidates) {
     try {
-      const head = await fetchHead(candidate, 512 * 1024, signal, playlistUrl);
+      // Segments only need a few TS packets to prove this is real media. Reading
+      // 512 KiB from every candidate is slow and can itself cause false timeouts.
+      const head = await fetchHead(candidate, 64 * 1024, signal, playlistUrl);
       if (isHlsPlaylist(head.text)) {
         validChildManifest = true;
         if (depth < 2) {
@@ -336,22 +335,28 @@ async function verifyHlsPlaylist(
       }
       if (!looksLikePlayableMedia(head.bytes, head.contentType)) continue;
 
-      // A live playlist normally exposes several media segments. Require the
-      // next distinct segment too when available so stale/error payloads cannot
-      // mark the whole line playable after one successful response.
-      if (candidates.length > 1) {
-        if (!(await hasAnotherPlayableSegment(candidates, candidate, signal, playlistUrl))) continue;
-      }
+      // One verified media segment is sufficient evidence. Requiring a second
+      // segment doubled the critical-path deadline and rejected healthy live
+      // playlists while their CDN was temporarily slow.
       return { url: playlistUrl, speedMs: Date.now() - startedAt, kind: 'm3u8', verification: 'media' };
     } catch (err) {
-      if (signal.aborted) {
+      const reason = failureReasonFromError(err, signal);
+      if (reason === 'timeout') {
         return { url: playlistUrl, speedMs: 0, kind: 'fail', failureReason: 'timeout' };
       }
+      if (reason === 'http') sawHttpFailure = true;
+      if (reason === 'network') sawNetworkFailure = true;
     }
   }
-  return validChildManifest
-    ? { url: playlistUrl, speedMs: Date.now() - startedAt, kind: 'm3u8', verification: 'manifest' }
-    : { url: playlistUrl, speedMs: 0, kind: 'fail', failureReason: 'invalid' };
+  if (validChildManifest) {
+    return { url: playlistUrl, speedMs: Date.now() - startedAt, kind: 'm3u8', verification: 'manifest' };
+  }
+  return {
+    url: playlistUrl,
+    speedMs: 0,
+    kind: 'fail',
+    failureReason: sawNetworkFailure ? 'network' : sawHttpFailure ? 'http' : 'invalid',
+  };
 }
 
 async function verifyHlsPlayback(url: string, startedAt: number, signal: AbortSignal): Promise<ProbeResult> {
@@ -359,15 +364,20 @@ async function verifyHlsPlayback(url: string, startedAt: number, signal: AbortSi
   return result.url === url ? result : { ...result, url };
 }
 
-async function probeSingle(url: string, timeoutMs = CHANNEL_PROBE_TIMEOUT_MS): Promise<ProbeResult> {
+async function probeOnce(url: string, timeoutMs = CHANNEL_PROBE_TIMEOUT_MS): Promise<ProbeResult> {
   const isM3U8 = /\.m3u8(?:\?|$)/i.test(url);
   const isDeclaredMedia = /\.(?:ts|flv|mp4)(?:\?|$)/i.test(url);
 
   const controller = new AbortController();
   const requestedTimeoutMs = Math.max(500, timeoutMs);
-  // A playlist -> child -> media check has multiple network hops. Give unknown
-  // and HLS endpoints a larger deadline instead of killing a healthy slow chain.
-  const effectiveTimeoutMs = isDeclaredMedia ? requestedTimeoutMs : requestedTimeoutMs * 2;
+  // A playlist may redirect and then expose segments on another host. Give HLS
+  // chains enough time to complete instead of treating normal CDN latency as a
+  // dead line; unknown URLs may still turn out to be HLS after the first fetch.
+  const effectiveTimeoutMs = isDeclaredMedia
+    ? requestedTimeoutMs
+    : isM3U8
+      ? requestedTimeoutMs * HLS_TIMEOUT_MULTIPLIER
+      : requestedTimeoutMs * UNKNOWN_TIMEOUT_MULTIPLIER;
   const start = Date.now();
   let timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -416,11 +426,31 @@ async function probeSingle(url: string, timeoutMs = CHANNEL_PROBE_TIMEOUT_MS): P
     });
     return await Promise.race([attempt(), deadline]);
   } catch (err) {
-    const aborted = controller.signal.aborted || (err instanceof Error && err.name === 'AbortError');
-    return { url, speedMs: 0, kind: 'fail', failureReason: aborted ? 'timeout' : 'network' };
+    return { url, speedMs: 0, kind: 'fail', failureReason: failureReasonFromError(err, controller.signal) };
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+function isRetryableProbeFailure(result: ProbeResult): boolean {
+  return result.kind === 'fail'
+    && (result.failureReason === 'timeout' || result.failureReason === 'network');
+}
+
+async function probeSingle(
+  url: string,
+  timeoutMs = CHANNEL_PROBE_TIMEOUT_MS,
+  options: { retryTransient?: boolean } = {},
+): Promise<ProbeResult> {
+  const first = await probeOnce(url, timeoutMs);
+  if (!options.retryTransient || !isRetryableProbeFailure(first)) return first;
+
+  await new Promise((resolve) => setTimeout(resolve, PROBE_RETRY_DELAY_MS));
+  const retried = await probeOnce(url, timeoutMs);
+  if (retried.kind !== 'fail') return retried;
+  // Preserve a timeout/network cause even when the second attempt classifies a
+  // malformed response as invalid; diagnostics should identify the real issue.
+  return first.failureReason === 'timeout' || first.failureReason === 'network' ? first : retried;
 }
 
 // ─── 并发池 ────────────────────────────────────────────
@@ -843,7 +873,10 @@ export async function runChannelProbe(
         const results = await runWithConcurrency(
           batch,
           CHANNEL_PROBE_CONCURRENCY,
-          (url) => probeSingle(url),
+          // Priority URLs are the lines most likely to be distributed. Give
+          // transient timeouts/network errors one second chance; background
+          // candidates stay single-attempt to keep the full scan bounded.
+          (url) => probeSingle(url, CHANNEL_PROBE_TIMEOUT_MS, { retryTransient: phase === 'priority' }),
         );
         await persistBatch(phase, batch, results);
       }

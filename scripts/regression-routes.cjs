@@ -687,8 +687,8 @@ async function readSites(response) {
       ],
     };
     const modeChannelSpeedMap = {
-      'https://live.example/cctv.m3u': { speedMs: 120, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 2 },
-      'https://live.example/hunan.m3u': { speedMs: 180, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 2 },
+      'https://live.example/cctv.m3u': { speedMs: 120, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 3 },
+      'https://live.example/hunan.m3u': { speedMs: 180, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 3 },
     };
     const separated = makeApp({ mergedConfig: modeConfig, liveMergeMode: 'separated', liveProxyManifest: manifest });
     const separatedRoot = await (await separated.app.request('https://box.example/')).json();
@@ -733,9 +733,9 @@ async function readSites(response) {
       },
       channelSpeedMap: {
         ...modeChannelSpeedMap,
-        'https://live.example/cctv-unknown.m3u': { speedMs: 10, probedAt: '2026-11-03T00:00:00.000Z', kind: 'unknown', probeVersion: 2 },
-        'https://live.example/cctv-tcp.m3u': { speedMs: 20, probedAt: '2026-11-03T00:00:00.000Z', kind: 'tcp', probeVersion: 2 },
-        'https://live.example/cctv-backup.m3u': { speedMs: 60, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'manifest', probeVersion: 2 },
+        'https://live.example/cctv-unknown.m3u': { speedMs: 10, probedAt: '2026-11-03T00:00:00.000Z', kind: 'unknown', probeVersion: 3 },
+        'https://live.example/cctv-tcp.m3u': { speedMs: 20, probedAt: '2026-11-03T00:00:00.000Z', kind: 'tcp', probeVersion: 3 },
+        'https://live.example/cctv-backup.m3u': { speedMs: 60, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'manifest', probeVersion: 3 },
       },
       config: { workerBaseUrl: '', localBaseUrl: 'https://render.example' },
     });
@@ -833,8 +833,8 @@ async function readSites(response) {
       ],
     };
     const coldStartSpeedMap = {
-      'https://live.example/cctv.m3u': { speedMs: 120, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 2 },
-      'https://live.example/hunan.m3u': { speedMs: 180, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 2 },
+      'https://live.example/cctv.m3u': { speedMs: 120, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 3 },
+      'https://live.example/hunan.m3u': { speedMs: 180, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 3 },
     };
     const coldStart = makeApp({
       mergedConfig: { sites: mergedConfig.sites, lives: [] },
@@ -879,7 +879,7 @@ async function readSites(response) {
       }],
     };
     const duplicateChannelSpeedMap = Object.fromEntries(
-      duplicateUrls.map((url, index) => [url, { speedMs: 100 + index, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 2 }]),
+      duplicateUrls.map((url, index) => [url, { speedMs: 100 + index, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 3 }]),
     );
     const duplicateChannelLive = makeApp({
       mergedConfig: { sites: mergedConfig.sites, lives: [] },

@@ -532,9 +532,9 @@ const speedGroups = [{
   }],
 }];
 const speedMap = {
-  'http://slow.example/live': { speedMs: 1800, probedAt: '2026-10-13T00:00:00.000Z', kind: 'm3u8', verification: 'manifest', probeVersion: 2 },
-  'http://failed.example/live': { speedMs: 0, probedAt: '2026-10-13T00:00:00.000Z', kind: 'fail', probeVersion: 2, consecutiveFailures: 2 },
-  'http://fast.example/live': { speedMs: 120, probedAt: '2026-10-13T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 2 },
+  'http://slow.example/live': { speedMs: 1800, probedAt: '2026-10-13T00:00:00.000Z', kind: 'm3u8', verification: 'manifest', probeVersion: 3 },
+  'http://failed.example/live': { speedMs: 0, probedAt: '2026-10-13T00:00:00.000Z', kind: 'fail', probeVersion: 3, consecutiveFailures: 2 },
+  'http://fast.example/live': { speedMs: 120, probedAt: '2026-10-13T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 3 },
 };
 const speedApplied = applyChannelSpeedToGroups(speedGroups, speedMap, 5000, AGGREGATED_MAX_URLS_PER_CHANNEL);
 assert(speedApplied[0].channels[0].urls.length === 2, 'final output must not fill quota with unknown or failed lines');
@@ -554,11 +554,11 @@ assert(candidateFallback[0].channels[0].urls.some((url) => url.includes('unknown
 assert(candidateFallback[0].channels[0].urls.some((url) => url.includes('failed.example')), 'candidate mode may retain transient failures only for probing');
 
 const hardFailed = applyChannelSpeedToGroups(speedGroups, {
-  'http://failed.example/live': { speedMs: 0, probedAt: '2026-10-13T00:00:00.000Z', kind: 'fail', probeVersion: 2, consecutiveFailures: 3 },
+  'http://failed.example/live': { speedMs: 0, probedAt: '2026-10-13T00:00:00.000Z', kind: 'fail', probeVersion: 3, consecutiveFailures: 3 },
 }, 5000, AGGREGATED_MAX_URLS_PER_CHANNEL);
 assert(hardFailed.length === 0, 'failed-only channel must not produce a distributable group');
 const recovered = applyChannelSpeedToGroups(speedGroups, {
-  'http://failed.example/live': { speedMs: 80, probedAt: '2026-10-13T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 2 },
+  'http://failed.example/live': { speedMs: 80, probedAt: '2026-10-13T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 3 },
 }, 5000, AGGREGATED_MAX_URLS_PER_CHANNEL);
 assert(recovered[0].channels[0].urls.length === 1 && recovered[0].channels[0].urls[0].includes('failed.example'), 'a media-verified probe must immediately restore only that line');
 
@@ -566,7 +566,7 @@ const manyLineUrls = Array.from({ length: AGGREGATED_MAX_URLS_PER_CHANNEL + 4 },
 const manyLines = [{ group: '测试', channels: [{ name: '限量', urls: manyLineUrls }] }];
 const manyLineSpeedMap = Object.fromEntries(manyLineUrls.map((url, i) => [
   url,
-  { speedMs: 100 + i, probedAt: '2026-10-13T00:00:00.000Z', kind: 'm3u8', verification: 'manifest', probeVersion: 2 },
+  { speedMs: 100 + i, probedAt: '2026-10-13T00:00:00.000Z', kind: 'm3u8', verification: 'manifest', probeVersion: 3 },
 ]));
 const limitedLines = applyChannelSpeedToGroups(manyLines, manyLineSpeedMap, 5000, AGGREGATED_MAX_URLS_PER_CHANNEL);
 assert(limitedLines[0].channels[0].urls.length === AGGREGATED_MAX_URLS_PER_CHANNEL, 'merged output must cap each channel at AGGREGATED_MAX_URLS_PER_CHANNEL');
@@ -579,7 +579,7 @@ const perChannelLines = [{
   ],
 }];
 const perChannelSpeedMap = Object.fromEntries(perChannelLines[0].channels.flatMap((channel) =>
-  channel.urls.map((url, i) => [url, { speedMs: 100 + i, probedAt: '2026-10-13T00:00:00.000Z', kind: 'm3u8', verification: 'manifest', probeVersion: 2 }]),
+  channel.urls.map((url, i) => [url, { speedMs: 100 + i, probedAt: '2026-10-13T00:00:00.000Z', kind: 'm3u8', verification: 'manifest', probeVersion: 3 }]),
 ));
 const twoLinesPerChannel = applyChannelSpeedToGroups(perChannelLines, perChannelSpeedMap, 5000, 2);
 assert(twoLinesPerChannel[0].channels.every((channel) => channel.urls.length === 2), 'per-channel limits must be counted independently for every channel');
@@ -600,7 +600,7 @@ const mixedCoverageGroups = [{
 }];
 const mixedCoverageMap = Object.fromEntries(Array.from({ length: 3 }, (_, i) => {
   const url = 'http://verified-' + i + '.example/live';
-  return [url, { speedMs: 500 + i, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 2 }];
+  return [url, { speedMs: 500 + i, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 3 }];
 }));
 const mixedCoverage = applyChannelSpeedToGroups(mixedCoverageGroups, mixedCoverageMap, 5000, 9);
 assert(mixedCoverage[0].channels[0].urls.length === 3, 'a nine-line cap must emit only three lines when only three are verified');
@@ -610,8 +610,8 @@ const manifestPool = Array.from({ length: 9 }, (_, i) => 'http://manifest-' + i 
 const tcpPool = Array.from({ length: 9 }, (_, i) => 'http://tcp-' + i + '.example/live');
 const tcpFallbackGroups = [{ group: '测试', channels: [{ name: 'TCP排除', urls: [...tcpPool, ...manifestPool] }] }];
 const tcpFallbackMap = Object.fromEntries([
-  ...tcpPool.map((url) => [url, { speedMs: 1, probedAt: '2026-11-03T00:00:00.000Z', kind: 'tcp', probeVersion: 2 }]),
-  ...manifestPool.map((url, i) => [url, { speedMs: 1000 + i, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'manifest', probeVersion: 2 }]),
+  ...tcpPool.map((url) => [url, { speedMs: 1, probedAt: '2026-11-03T00:00:00.000Z', kind: 'tcp', probeVersion: 3 }]),
+  ...manifestPool.map((url, i) => [url, { speedMs: 1000 + i, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'manifest', probeVersion: 3 }]),
 ]);
 const tcpFallbackApplied = applyChannelSpeedToGroups(tcpFallbackGroups, tcpFallbackMap, 5000, 9);
 assert(tcpFallbackApplied[0].channels[0].urls.length === 9, 'zero TCP-only lines may enter a nine-line final output');
@@ -625,8 +625,8 @@ const verifiedOnlyGroups = [{
   }],
 }];
 const verifiedOnlyMap = {
-  'http://v1.example/live': { speedMs: 100, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 2 },
-  'http://v2.example/live': { speedMs: 200, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'manifest', probeVersion: 2 },
+  'http://v1.example/live': { speedMs: 100, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 3 },
+  'http://v2.example/live': { speedMs: 200, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'manifest', probeVersion: 3 },
 };
 const verifiedOnly = applyChannelSpeedToGroups(verifiedOnlyGroups, verifiedOnlyMap, 5000, -1);
 assert(verifiedOnly[0].channels[0].urls.length === 2, 'All must emit every verified line and no unknown candidates');
@@ -644,7 +644,7 @@ const preferenceGroups = [{
 }];
 const preferenceMap = Object.fromEntries(preferenceGroups[0].channels[0].urls.map((url) => [
   url,
-  { speedMs: 100, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 2 },
+  { speedMs: 100, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 3 },
 ]));
 const preferenceApplied = applyChannelSpeedToGroups(preferenceGroups, preferenceMap, 5000, -1);
 assert(preferenceApplied[0].channels[0].urls[0].includes('public.example'), 'same-rank public no-auth line must rank first');
@@ -663,9 +663,9 @@ const evidenceGroups = [{
   }],
 }];
 const evidenceMap = {
-  'http://connect-only.example/live': { speedMs: 20, probedAt: '2026-10-13T00:00:00.000Z', kind: 'tcp', probeVersion: 2 },
-  'http://manifest-only.example/live': { speedMs: 10, probedAt: '2026-10-13T00:00:00.000Z', kind: 'm3u8', verification: 'manifest', probeVersion: 2 },
-  'http://media-verified.example/live': { speedMs: 4500, probedAt: '2026-10-13T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 2 },
+  'http://connect-only.example/live': { speedMs: 20, probedAt: '2026-10-13T00:00:00.000Z', kind: 'tcp', probeVersion: 3 },
+  'http://manifest-only.example/live': { speedMs: 10, probedAt: '2026-10-13T00:00:00.000Z', kind: 'm3u8', verification: 'manifest', probeVersion: 3 },
+  'http://media-verified.example/live': { speedMs: 4500, probedAt: '2026-10-13T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 3 },
 };
 const evidenceApplied = applyChannelSpeedToGroups(evidenceGroups, evidenceMap, 5000, 3);
 assert(evidenceApplied[0].channels[0].urls.length === 2, 'connectivity-only response must not be distributed');
@@ -685,7 +685,7 @@ const legacyProbeGroups = [{
 }];
 const legacyProbeMap = {
   'http://legacy-tcp.example/live': { speedMs: 1, probedAt: '2026-10-13T00:00:00.000Z', kind: 'tcp' },
-  'http://current-media.example/live': { speedMs: 4800, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 2 },
+  'http://current-media.example/live': { speedMs: 4800, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 3 },
 };
 const legacyProbeApplied = applyChannelSpeedToGroups(legacyProbeGroups, legacyProbeMap, 5000, 1);
 assert(legacyProbeApplied[0].channels[0].urls.length === 1 && legacyProbeApplied[0].channels[0].urls[0].includes('current-media.example'), 'legacy TCP cache must be excluded from final output');
@@ -1091,7 +1091,7 @@ async function testRuntimeCacheIsUnified() {
   }));
   memory.set('live_txt:1234567890abcdef', '央视,#genre#\nCCTV-1,http://runtime.example/live$源R#12345678');
   memory.set('channel_merged_tree', JSON.stringify([{ group: '央视', channels: [{ name: 'CCTV-1', urls: ['http://runtime.example/live$源R#12345678'] }] }]));
-  memory.set('channel_speed_map', JSON.stringify({ 'http://runtime.example/live': { speedMs: 100, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 2 } }));
+  memory.set('channel_speed_map', JSON.stringify({ 'http://runtime.example/live': { speedMs: 100, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 3 } }));
   const storage = {
     async get(key) { return memory.has(key) ? memory.get(key) : null; },
     async put(key, value) { memory.set(key, String(value)); },
@@ -1126,7 +1126,7 @@ async function testBareUrlCandidateMapping() {
     { group: '央视', channels: [{ name: 'CCTV-1', urls: ['http://runtime.example/live'] }] },
     { group: '地方', channels: [{ name: '上海', urls: ['http://other.example/live'] }] },
   ]));
-  memory.set('channel_speed_map', JSON.stringify({ 'http://runtime.example/live': { speedMs: 100, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 2 } }));
+  memory.set('channel_speed_map', JSON.stringify({ 'http://runtime.example/live': { speedMs: 100, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 3 } }));
   const storage = {
     async get(k) { return memory.has(k) ? memory.get(k) : null; },
     async put(k, value) { memory.set(k, String(value)); },
@@ -1180,7 +1180,7 @@ async function testMergedLiveOutputLimitsEachChannel() {
   memory.set('channel_speed_map', JSON.stringify(Object.fromEntries(
     channelTree
       .flatMap((group) => group.channels.flatMap((channel) => channel.urls))
-      .map((url, i) => [url, { speedMs: 100 + i, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 2 }]),
+      .map((url, i) => [url, { speedMs: 100 + i, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 3 }]),
   )));
   const storage = {
     async get(k) { return memory.has(k) ? memory.get(k) : null; },
@@ -1279,7 +1279,7 @@ async function testCanonicalChannelLimitAfterPlaybackRanking() {
     probedAt: '2026-11-03T00:00:00.000Z',
     kind: 'm3u8',
     verification: 'media',
-    probeVersion: 2,
+    probeVersion: 3,
   }]));
   memory.set('live_merge_mode', 'merged');
   memory.set('channel_merged_tree', JSON.stringify(candidateGroups));

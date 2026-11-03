@@ -3,7 +3,7 @@ import type { ChannelSpeedMap } from './types';
 import { KV_CHANNEL_SPEED_MAP, CHANNEL_SPEED_TTL_MS } from './config';
 
 export const CHANNEL_FAILURE_RETRY_MS = 6 * 60 * 60 * 1000;
-export const CHANNEL_PROBE_RESULT_VERSION = 2;
+export const CHANNEL_PROBE_RESULT_VERSION = 3;
 
 export async function loadSpeedMap(storage: Storage): Promise<ChannelSpeedMap> {
   const raw = await storage.get(KV_CHANNEL_SPEED_MAP);
