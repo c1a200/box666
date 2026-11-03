@@ -40,7 +40,7 @@ import { loadSpeedMap } from './channel-probe';
  * 分类、目录分页、频道名归一等纯展示逻辑发生变化时必须递增，
  * 否则持久化指纹不变，线上会继续命中旧 runtime TXT。
  */
-const LIVE_OUTPUT_FORMAT_VERSION = 3;
+const LIVE_OUTPUT_FORMAT_VERSION = 4;
 
 export interface RebuildLiveOutputOptions {
   reason?: string;
@@ -285,12 +285,17 @@ async function buildSnapshot(
   const selected = selection.selected;
   const labels = selection.labels;
   const liveMergeMode = (await storage.get(KV_LIVE_MERGE_MODE)) || 'separated';
-  const maxUrlsPerChannel = liveMergeMode === 'merged' ? normalizedPolicy.maxUrlsPerChannel : 6;
+  const mergedChannelLimit = liveMergeMode === 'merged' ? normalizedPolicy.maxUrlsPerChannel : -1;
+  // 分离模式仍按单源最多 6 条保留原有行为；合并模式的用户配置只作用于
+  // 最终聚合结果。最终格式化还会在同名频道跨分组合并后再次执行统一限额。
+  const runtimeChannelLimit = liveMergeMode === 'merged' ? mergedChannelLimit : 6;
   const speedMap = await loadSpeedMap(storage);
   const runtimeGroups = selection.groups.length > 0
-    ? applyChannelSpeedToGroups(selection.groups, speedMap, undefined, maxUrlsPerChannel)
+    ? applyChannelSpeedToGroups(selection.groups, speedMap, undefined, runtimeChannelLimit)
     : [];
-  const txt = runtimeGroups.length > 0 ? formatAggregatedLiveGroupsAsTxt(runtimeGroups) : '';
+  const txt = runtimeGroups.length > 0
+    ? formatAggregatedLiveGroupsAsTxt(runtimeGroups, mergedChannelLimit)
+    : '';
 
   // 选中了源却无法生成任何频道，说明候选树映射或正文恢复失败。此时必须
   // 保留上一份有效缓存，不能把空结果和空指纹写回去。

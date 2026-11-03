@@ -92,6 +92,18 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+function countTxtChannelUrls(txt, channelName) {
+  let total = 0;
+  for (const rawLine of txt.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    const comma = line.indexOf(',');
+    if (comma <= 0 || line.slice(comma + 1).trim() === '#genre#') continue;
+    if (line.slice(0, comma).trim() !== channelName) continue;
+    total += line.slice(comma + 1).split('#').filter(Boolean).length;
+  }
+  return total;
+}
+
 function entry(index, overrides = {}) {
   return {
     key: 'key-' + index,
@@ -1039,6 +1051,13 @@ async function testMergedLiveOutputLimitsEachChannel() {
       { name: 'CCTV-1', urls: ['http://cctv1.example/1', 'http://cctv1.example/2', 'http://cctv1.example/3', 'http://cctv1.example/4'] },
       { name: 'CCTV-2', urls: ['http://cctv2.example/1', 'http://cctv2.example/2', 'http://cctv2.example/3', 'http://cctv2.example/4'] },
     ],
+  }, {
+    // 上游常把同一频道拆在多个分组对象里。最终配额必须跨分组合并后共享，
+    // 不能每个对象各保留 N 条后在 TXT 中再次叠回 2N 条。
+    group: 'CCTV',
+    channels: [
+      { name: 'CCTV1', urls: ['http://cctv1.example/5', 'http://cctv1.example/6', 'http://cctv1.example/7', 'http://cctv1.example/8'] },
+    ],
   }];
   memory.set('live_merge_mode', 'merged');
   memory.set('live_proxy_manifest', JSON.stringify({
@@ -1067,13 +1086,27 @@ async function testMergedLiveOutputLimitsEachChannel() {
   });
   assert(limited.groups.every((group) => group.channels.every((channel) => channel.urls.length === 2)), 'merged rebuild must apply the configured per-channel URL limit independently');
   assert(limited.groups[0].channels[0].urls.join(',') === 'http://cctv1.example/1,http://cctv1.example/2', 'merged rebuild must keep the top lines in existing quality order');
+  assert(countTxtChannelUrls(limited.txt, 'CCTV-1') === 2, 'merged output must enforce one canonical-channel quota across source groups');
   assert(memory.get('channel_runtime_tree') === JSON.stringify(limited.groups), 'merged rebuild must persist the limited channel tree');
 
   const all = await rebuildLiveOutput(storage, {
     policy: { selectionMode: 'simple', maxSources: -1, maxUrlsPerChannel: -1 },
   });
   assert(all.groups.every((group) => group.channels.every((channel) => channel.urls.length === 4)), 'merged rebuild with -1 must persist every preferred line');
+  assert(countTxtChannelUrls(all.txt, 'CCTV-1') === 8, 'merged rebuild with -1 must keep every unique preferred line after channel merge');
   assert(memory.get('channel_runtime_tree') === JSON.stringify(all.groups), 'merged rebuild must replace the limited tree when All is selected');
+
+  const duplicateSingleGroup = [{
+    group: '央视',
+    channels: [
+      { name: 'CCTV-1', urls: ['http://dup.example/1', 'http://dup.example/2'] },
+      { name: '[HD]CCTV1', urls: ['http://dup.example/3', 'http://dup.example/4'] },
+    ],
+  }];
+  const duplicateLimitedTxt = formatAggregatedLiveGroupsAsTxt(duplicateSingleGroup, 3);
+  assert(countTxtChannelUrls(duplicateLimitedTxt, 'CCTV-1') === 3, 'duplicate channel objects in one group must also share the final quota');
+  const duplicateAllTxt = formatAggregatedLiveGroupsAsTxt(duplicateSingleGroup, -1);
+  assert(countTxtChannelUrls(duplicateAllTxt, 'CCTV-1') === 4, 'aggregate formatter with -1 must keep all merged unique lines');
 }
 
 async function testEmptyRebuildKeepsPreviousCache() {

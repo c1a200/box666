@@ -14,7 +14,7 @@ import { BASE_URL_PLACEHOLDER } from './core/config';
 import { lookupLiveSource, listLiveProxyEntries, listAllLiveProxyEntries, isLiveProxyEntryDistributable, recordLiveProxyValidation, removeLiveProxyEntry, updateLiveProxyManifest, parseLiveProxyManifest, KV_LIVE_PROXY_MANIFEST } from './core/live-source';
 import { loadLiveDistribution, saveLiveDistribution, toLiveDistributionPolicy } from './core/live-distribution-store';
 import { selectLiveDistribution } from './core/live-quality';
-import { computeLiveOutputFingerprint, rebuildLiveOutput, selectLiveGroupsForPolicy } from './core/live-output';
+import { computeLiveOutputFingerprint, rebuildLiveOutput } from './core/live-output';
 import { adminHtml } from './core/admin';
 import { dashboardHtml } from './core/dashboard';
 import { configEditorHtml } from './core/config-editor';
@@ -37,10 +37,10 @@ import {
 } from './core/quality';
 import { loadClientDistribution, saveClientDistribution, findClientAuthCode, normalizeClientDistributionConfig, createClientAuthCode } from './core/client-auth-store';
 import { mergeSourcePins, reconcileSourcePins, type SourcePinScopes } from './core/source-pins';
-import { formatAggregatedLiveGroupsAsTxt, formatLiveGroupsAsTxt, filterLivesBySourceDetailed, parseLiveCandidatePool } from './core/live-merger';
+import { formatLiveGroupsAsTxt, filterLivesBySourceDetailed } from './core/live-merger';
 import { containsBlockedLiveUrl, isBlockedLiveSource, isBlockedLiveUrl } from './core/live-policy';
 import { autoNameFromUrl, backupTypeMismatch, createSourceBackup, extractBackupItems, parseSourceList } from './core/source-list-parser';
-import type { TVBoxConfig, TVBoxSite, SearchQuotaConfig, SiteQualityGrade, TVBoxLive, TVBoxLiveGroup, ClientAuthCode, ClientDistributionConfig, LiveDistributionConfig, SourceDistributionMode, SourceSelectionMode, ChannelProbeTrigger } from './core/types';
+import type { TVBoxConfig, TVBoxSite, SearchQuotaConfig, SiteQualityGrade, TVBoxLive, ClientAuthCode, ClientDistributionConfig, LiveDistributionConfig, SourceDistributionMode, SourceSelectionMode, ChannelProbeTrigger } from './core/types';
 import { mountChannelProbeRoutes } from './routes/channel-probe-admin';
 import { loadSpeedMap as loadChannelSpeedMap } from './core/channel-probe';
 import { createLogViewerRouter } from './routes/log-viewer';
@@ -277,27 +277,6 @@ function filterBlockedLiveEntries(lives: TVBoxLive[]): TVBoxLive[] {
     if (!isBlockedLiveSource({ name: live.name, url })) result.push(live);
   }
   return result;
-}
-
-function isNativeLiveGroups(lives: unknown): lives is TVBoxLiveGroup[] {
-  if (!Array.isArray(lives)) return false;
-
-  return lives.every((live) => {
-    if (!live || typeof live !== 'object') return false;
-
-    const group = (live as { group?: unknown }).group;
-    const channels = (live as { channels?: unknown }).channels;
-    if (typeof group !== 'string' || !Array.isArray(channels)) return false;
-
-    return channels.every((channel) => {
-      if (!channel || typeof channel !== 'object') return false;
-      const name = (channel as { name?: unknown }).name;
-      const urls = (channel as { urls?: unknown }).urls;
-      return typeof name === 'string'
-        && Array.isArray(urls)
-        && urls.every((url) => typeof url === 'string');
-    });
-  });
 }
 
 export function createApp(deps: AppDeps): Hono {
@@ -851,69 +830,6 @@ export function createApp(deps: AppDeps): Hono {
     return distribution.attachToAuth;
   }
 
-  async function selectMergedLiveGroups(
-    groups: TVBoxLiveGroup[],
-    distribution: LiveDistributionConfig,
-  ): Promise<TVBoxLiveGroup[]> {
-    // 即使是“全选(-1)”，也必须经过质量池门禁与统一排序，
-    // 不能再直接返回候选 groups，否则 invalid/blocked 会绕过筛选。
-    // 与统一重建器共用选择逻辑，兼容标签树和 Cloudflare 裸 URL 文本。
-    const selection = await selectLiveGroupsForPolicy(
-      storage,
-      groups,
-      toLiveDistributionPolicy(distribution),
-    );
-    return selection.groups;
-  }
-
-  async function buildFilteredLiveTxt(distribution: LiveDistributionConfig): Promise<string | null> {
-    let groups = await loadMergedLiveGroups();
-    if (groups.length === 0) {
-      // 冷启动或 KV 恢复链短暂缺失时，先让统一重建器从持久化候选快照
-      // 恢复完整频道树。重建结果仅用于补齐候选池，最终仍按当前请求的
-      // 鉴权码策略重新筛选，不能直接复用全局 runtime TXT，否则会把根
-      // 链接的“全选”结果泄漏给数量或分类受限的鉴权码。
-      const rebuilt = await rebuildLiveOutputSafe('live-request-recovery');
-      if (!rebuilt.ok) return null;
-      groups = await loadMergedLiveGroups();
-      if (groups.length === 0) return null;
-    }
-    const selected = await selectMergedLiveGroups(groups, distribution);
-    return formatAggregatedLiveGroupsAsTxt(selected);
-  }
-  async function loadMergedLiveGroups(): Promise<TVBoxLiveGroup[]> {
-    // 完整合并树优先。Render 进程重启后本地 runtime tree 可能只是上次
-    // 下发策略派生的子集，不能早于 durable 候选快照被采用，否则恢复全量
-    // 或切换精细策略时会永久漏源。
-    const mergedRaw = await storage.get(KV_CHANNEL_MERGED_TREE);
-    if (mergedRaw) {
-      try {
-        const parsed = JSON.parse(mergedRaw);
-        if (isNativeLiveGroups(parsed) && parsed.length > 0) return parsed;
-      } catch { /* try next snapshot */ }
-    }
-    // 持久化结构化候选池是跨进程重启最可靠的完整频道树。
-    try {
-      const persisted = parseLiveCandidatePool(await storage.get(KV_CHANNEL_CANDIDATE_URLS));
-      if (persisted.source == 'structured' && persisted.groups.length > 0) return persisted.groups;
-    } catch { /* try next snapshot */ }
-
-    const runtimeRaw = await storage.get(KV_CHANNEL_RUNTIME_TREE);
-    if (runtimeRaw) {
-      try {
-        const parsed = JSON.parse(runtimeRaw);
-        if (isNativeLiveGroups(parsed) && parsed.length > 0) return parsed;
-      } catch { /* try next snapshot */ }
-    }
-    const liveRaw = await storage.get(KV_LIVE_MERGED_DATA);
-    if (liveRaw) {
-      try {
-        const parsed = JSON.parse(liveRaw);
-        if (isNativeLiveGroups(parsed) && parsed.length > 0) return parsed;
-      } catch { /* ignore */ }
-    }
-    return [];
-  }
   function isSeparatedLivePointer(url: string): boolean {
     return /^\/lives?\/[^/?#]+/.test(url);
   }
@@ -1377,14 +1293,16 @@ export function createApp(deps: AppDeps): Hono {
       });
     }
 
-    // 缓存缺失或指纹不一致时只允许从已持久化的候选树按当前下发策略重建。
-    // 这是纯内存/KV组合操作，不回源下载；失败则返回 200 空文本。
+    // 缓存缺失或指纹不一致时必须走统一重建器。它会同时刷新 runtime tree、
+    // merged/runtime TXT、版本号和指纹；只补版本号而不写 TXT 会让下一次请求
+    // 把旧的超额缓存误判为最新。
     try {
-      const unifiedTxt = await buildFilteredLiveTxt(liveDistribution);
+      const rebuilt = await rebuildLiveOutputSafe('live-request-recovery');
+      if (!rebuilt.ok) {
+        throw new Error(rebuilt.error || 'unknown live output rebuild error');
+      }
+      const unifiedTxt = await storage.get(KV_LIVE_MERGED_TXT);
       if (unifiedTxt && unifiedTxt.trim() && unifiedTxt.includes('#genre#')) {
-        await storage.put(KV_LIVE_OUTPUT_FINGERPRINT, expectedFingerprint);
-        await storage.put(KV_LIVE_MERGED_TXT_VERSION, expectedVersion);
-        await storage.put(KV_LIVE_RUNTIME_TXT_VERSION, expectedVersion);
         return c.body(renderLiveText(unifiedTxt), 200, {
           'Content-Type': 'text/plain; charset=utf-8',
           'Cache-Control': 'no-store',

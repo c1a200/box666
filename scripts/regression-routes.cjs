@@ -35,6 +35,18 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+function countTxtChannelUrls(txt, channelName) {
+  let total = 0;
+  for (const rawLine of txt.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    const comma = line.indexOf(',');
+    if (comma <= 0 || line.slice(comma + 1).trim() === '#genre#') continue;
+    if (line.slice(0, comma).trim() !== channelName) continue;
+    total += line.slice(comma + 1).split('#').filter(Boolean).length;
+  }
+  return total;
+}
+
 function siteFingerprint(site) {
   const ext = typeof site.ext === 'string' ? site.ext : JSON.stringify(site.ext || '');
   const raw = `${site.api}|${ext}|${site.jar || ''}`;
@@ -815,6 +827,73 @@ async function readSites(response) {
     assert(coldText.includes('#genre#'), 'cold-start render /live must contain channel groups');
     assert(!coldText.trim().startsWith('{'), 'cold-start render /live must not return an error JSON body');
     assert(coldText.includes('测试直播A') && coldText.includes('测试直播B'), 'cold-start render /live must recover both structured candidate entries');
+
+    const duplicateUrls = Array.from({ length: 24 }, (_, index) => 'https://merge-limit.example/cctv1/' + index + '.m3u');
+    const duplicateChannelPool = {
+      version: 1,
+      groups: [
+        { group: '央视', channels: [{ name: 'CCTV-1', urls: duplicateUrls.slice(0, 12) }] },
+        { group: 'CCTV', channels: [{ name: 'CCTV1', urls: duplicateUrls.slice(12) }] },
+      ],
+    };
+    const duplicateChannelManifest = {
+      version: 4,
+      signature: 'duplicate-channel-limit',
+      entries: [{
+        key: 'merge-limit-source',
+        name: '同名频道聚合源',
+        url: 'https://merge-limit.example/source.txt',
+        health: 'healthy',
+        consecutiveFailures: 0,
+        checkedAt: new Date().toISOString(),
+        successfulAt: new Date().toISOString(),
+        everSucceeded: true,
+        textReady: true,
+        format: 'm3u',
+        category: 'cctv',
+      }],
+    };
+    const duplicateChannelLive = makeApp({
+      mergedConfig: { sites: mergedConfig.sites, lives: [] },
+      liveMergeMode: 'merged',
+      liveProxyManifest: duplicateChannelManifest,
+      channelCandidateUrls: duplicateChannelPool,
+      liveTextByKey: {
+        'merge-limit-source': '央视,#genre#\nCCTV-1,' + duplicateUrls.join('#'),
+      },
+      liveDistribution: {
+        selectionMode: 'simple',
+        maxSources: -1,
+        maxUrlsPerChannel: 9,
+        bucketLimits: {},
+        pinnedKeys: [],
+        categoryPinnedKeys: [],
+        blockedKeys: [],
+        attachToRoot: true,
+        attachToAuth: true,
+      },
+      config: { workerBaseUrl: '', localBaseUrl: 'https://render.example' },
+    });
+    const staleTxt = '央视,#genre#\nCCTV-1,' + duplicateUrls.join('#');
+    await duplicateChannelLive.storage.put('live_merged_txt', staleTxt);
+    await duplicateChannelLive.storage.put('live_runtime_txt', staleTxt);
+    await duplicateChannelLive.storage.put('live_merged_txt_version', 'merged:stale');
+    await duplicateChannelLive.storage.put('live_runtime_txt_version', 'merged:stale');
+    await duplicateChannelLive.storage.put('live_output_fingerprint', 'stale-fingerprint');
+
+    const limitedResponse = await duplicateChannelLive.app.request('https://render.example/live');
+    const limitedText = await limitedResponse.text();
+    assert(limitedResponse.status === 200, 'merged /live recovery must return 200');
+    assert(limitedResponse.headers.get('x-live-source-state') === 'rebuilt', 'stale merged cache must trigger a full rebuild');
+    assert(countTxtChannelUrls(limitedText, 'CCTV-1') === 9, 'merged /live must enforce the per-channel limit after same-name groups merge');
+    const persistedLimitedTxt = await duplicateChannelLive.storage.get('live_merged_txt');
+    assert(countTxtChannelUrls(persistedLimitedTxt, 'CCTV-1') === 9, 'full fallback rebuild must persist the corrected merged TXT');
+    assert((await duplicateChannelLive.storage.get('live_output_fingerprint')) !== 'stale-fingerprint', 'full fallback rebuild must refresh the output fingerprint');
+
+    const readyResponse = await duplicateChannelLive.app.request('https://render.example/live');
+    const readyText = await readyResponse.text();
+    assert(readyResponse.headers.get('x-live-source-state') === 'ready', 'corrected merged TXT must be reusable on the next request');
+    assert(countTxtChannelUrls(readyText, 'CCTV-1') === 9, 'next request must not return the stale over-limit cache');
 
     const noTextManifest = {
       version: 4,

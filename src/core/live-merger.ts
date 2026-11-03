@@ -376,6 +376,7 @@ function formatLiveGroupsAsTxtInternal(
   groups: TVBoxLiveGroup[],
   canonicalizeChannels: boolean,
   maxChannelsPerGroup?: number,
+  maxUrlsPerChannel = -1,
 ): string {
   interface OutputChannel {
     name: string;
@@ -383,7 +384,18 @@ function formatLiveGroupsAsTxtInternal(
     seenUrls: Set<string>;
   }
 
+  interface ChannelQuota {
+    seenUrls: Set<string>;
+    urlCount: number;
+  }
+
   const groupChannels = new Map<string, Map<string, OutputChannel>>();
+  // 频道名归一后，同名频道可能来自不同上游分组。线路配额必须跨分组共享，
+  // 否则每个分组各自保留 N 条，最终合并时仍会放大成 N × 分组数。
+  const channelQuotas = new Map<string, ChannelQuota>();
+  const perChannelLimit = Number.isFinite(maxUrlsPerChannel) && maxUrlsPerChannel >= 0
+    ? Math.max(1, Math.floor(maxUrlsPerChannel))
+    : -1;
 
   for (const group of sortLiveGroupsForOutput(groups)) {
     const groupName = sanitizeTxtLabel(group.group || '', '其他');
@@ -407,10 +419,18 @@ function formatLiveGroupsAsTxtInternal(
         output = { name: channelName, urls: [], seenUrls: new Set<string>() };
         channels.set(channelKey, output);
       }
+      let quota = channelQuotas.get(channelKey);
+      if (!quota) {
+        quota = { seenUrls: new Set<string>(), urlCount: 0 };
+        channelQuotas.set(channelKey, quota);
+      }
 
       for (const url of urls) {
         const dedupeKey = bareLiveUrl(url) || url;
-        if (output.seenUrls.has(dedupeKey)) continue;
+        if (quota.seenUrls.has(dedupeKey)) continue;
+        if (perChannelLimit >= 0 && quota.urlCount >= perChannelLimit) break;
+        quota.seenUrls.add(dedupeKey);
+        quota.urlCount += 1;
         output.seenUrls.add(dedupeKey);
         output.urls.push(url);
       }
@@ -1208,7 +1228,10 @@ function isAggregateNoiseChannel(name: string): boolean {
  * 将聚合直播分组转成 TVBox TXT。分类归一和频道线路去重只用于全局
  * /live；单源 /live/<key> 继续调用 formatLiveGroupsAsTxt。
  */
-export function formatAggregatedLiveGroupsAsTxt(groups: TVBoxLiveGroup[]): string {
+export function formatAggregatedLiveGroupsAsTxt(
+  groups: TVBoxLiveGroup[],
+  maxUrlsPerChannel = -1,
+): string {
   const normalized: TVBoxLiveGroup[] = [];
   for (const group of groups) {
     const byGroup = new Map<string, TVBoxLiveChannel[]>();
@@ -1224,7 +1247,12 @@ export function formatAggregatedLiveGroupsAsTxt(groups: TVBoxLiveGroup[]): strin
     }
   }
   normalized.sort((a, b) => aggregateGroupRank(a.group) - aggregateGroupRank(b.group));
-  return formatLiveGroupsAsTxtInternal(normalized, true, MAX_AGGREGATE_CHANNELS_PER_GROUP);
+  return formatLiveGroupsAsTxtInternal(
+    normalized,
+    true,
+    MAX_AGGREGATE_CHANNELS_PER_GROUP,
+    maxUrlsPerChannel,
+  );
 }
 
 /**
