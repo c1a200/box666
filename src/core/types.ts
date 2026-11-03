@@ -515,6 +515,14 @@ export type ChannelProbeState = 'idle' | 'running' | 'done' | 'error';
 export type ChannelProbeTrigger = 'startup' | 'post-aggregation' | 'manual' | 'cron' | 'bounded';
 export type ChannelProbeEvaluationMode = 'full' | 'incremental';
 
+export interface ChannelProbeSchedule {
+  times: string[];
+  repeatDays: number;
+  timezone: string;
+  lastRunAt?: string;
+  nextRunAt?: string;
+}
+
 export interface ChannelProbeStatus {
   state: ChannelProbeState;
   phase?: 'priority' | 'background' | 'finalizing';

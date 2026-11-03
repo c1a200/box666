@@ -405,16 +405,19 @@ ${sharedStyles}
       <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px">
         <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
           <input type="checkbox" id="channelProbeCheck" onchange="toggleChannelProbe()">
-          <span data-i18n="channelProbeEnable">启用定时频道测速</span>
+          <span data-i18n="channelProbeEnable">启用全量频道评估</span>
         </label>
-        <label class="form-label" style="margin:0" data-i18n="channelProbeIntervalLabel">评估周期</label>
-        <select id="channelProbeIntervalSelect" class="nt-input" style="width:auto;min-width:180px" onchange="saveChannelProbeInterval()" disabled>
-          <option value="1440" data-i18n-text="channelProbeDailyFull">每日一次全量评估</option>
-        </select>
+        <label class="form-label" style="margin:0" data-i18n="channelProbeRepeatDaysLabel">重复间隔</label>
+        <span data-i18n="channelProbeEvery">每</span>
+        <input type="number" id="channelProbeRepeatDaysInput" class="nt-input" style="width:72px" min="1" max="30" value="1">
+        <span data-i18n="channelProbeDays">天</span>
+        <label class="form-label" style="margin:0" data-i18n="channelProbeTimesLabel">执行时间</label>
+        <input type="text" id="channelProbeTimesInput" class="nt-input" style="width:220px" value="05:00" data-i18n-placeholder="channelProbeTimesPlaceholder" placeholder="例如 05:00, 17:00">
+        <button class="btn btn-sm" id="channelProbeScheduleSaveBtn" onclick="saveChannelProbeSchedule()" data-i18n="channelProbeSaveSchedule">保存评估计划</button>
         <button class="btn btn-sm" id="channelProbeTriggerBtn" onclick="triggerChannelProbe()" data-i18n="channelProbeTrigger">立即增量补检</button>
         <button class="btn btn-sm" onclick="loadChannelProbe()" data-i18n="channelProbeRefresh">刷新测速状态</button>
       </div>
-      <div class="source-help" data-i18n="channelProbeScheduleHint">每天在主聚合时刻执行一次全量评估；启动、聚合完成与定时任务自动去重。手动按钮只补检到期线路；修改每频道线路数量只重新切片已发布榜单，不触发测速。</div>
+      <div class="source-help" data-i18n="channelProbeScheduleHint">重复间隔为 1 即每天；执行时间可填写多个 HH:MM。若到点时正在聚合，会排队到聚合结束后执行。启动恢复和聚合完成只补跑已经到期的计划，不重复执行。手动按钮只补检到期线路；修改每频道线路数量只重新切片已发布榜单，不触发测速。</div>
       <div id="channelProbeStatus" style="font-size:0.85rem;color:var(--text-secondary);line-height:1.6"></div>
     </div>
 
@@ -959,10 +962,13 @@ const translations = {
     sqXmlSources:'XML Sources', sqXmlDesc:'TVBox type 0 XML interface sources. Quality grades only affect their order within this list.', sqJsonSources:'JSON / MacCMS Sources', sqJsonDesc:'TVBox type 1 JSON or MacCMS interface sources.', sqJarSources:'JAR / Extension Sources', sqJarDesc:'TVBox type 3 local JAR or remote extension sources, excluding JS URL entries.', sqJsSources:'JS URL Sources', sqJsDesc:'TVBox type 3 sources whose API is an HTTP(S) URL.', sqRemoteSources:'Remote Sources', sqRemoteDesc:'TVBox type 4 remote site sources.', sqUncategorizedSources:'Other Sources', sqUncategorizedDesc:'Sources whose interface type could not be classified. They are listed separately instead of being mixed into a quality grade.', sqXml:'XML', sqJson:'JSON / MacCMS', sqJar:'JAR / Extension', sqJs:'JS URL', sqRemote:'Remote', sqOther:'Other', sqUnavailableSources:'Unavailable Sources', sqUnavailableDesc:'Searchable sources that are blocked, timed out, unusable, or outside the current quality pool. They are not distributed to clients.', sqBlockedSources:'Blocked Sources', sqBlockedDescLong:'Blocked sources are excluded from all client outputs but remain here so they can be restored.',
     sqLeanRemoved:'lean-removed',
     channelProbeTitle:'Channel Speed Probe (Node/Docker)',
-    channelProbeIntervalLabel:'Evaluation schedule',
-    channelProbeEnable:'Enable daily full channel evaluation',
-    channelProbeDailyFull:'Daily full evaluation',
-    channelProbeScheduleHint:'Runs one full evaluation per day at the main aggregation time. Startup, post-aggregation, and cron triggers are deduplicated when a full ranking has already completed today. The manual button only rechecks due lines. Changing lines per channel re-slices the published ranking without probing.',
+    channelProbeRepeatDaysLabel:'Repeat interval',
+    channelProbeEvery:'Every', channelProbeDays:'days',
+    channelProbeTimesLabel:'Run times',
+    channelProbeTimesPlaceholder:'e.g. 05:00, 17:00',
+    channelProbeSaveSchedule:'Save evaluation schedule',
+    channelProbeEnable:'Enable full channel evaluation',
+    channelProbeScheduleHint:'Use a repeat interval of 1 for daily evaluation; add multiple HH:MM values for multiple daily runs. A due evaluation waits for an in-progress aggregation to finish. Startup and post-aggregation checks only catch up overdue runs and never duplicate one. The manual button only rechecks due lines. Changing lines per channel re-slices the published ranking without probing.',
     channelProbeTrigger:'Run incremental check now', channelProbeRefresh:'Refresh probe status',
     channelProbeIdle:'Idle', channelProbeRunning:'Running', channelProbeDone:'Completed', channelProbeError:'Error',
     channelProbeState:'State', channelProbeProgress:'Progress', channelProbeCoverage:'Coverage',
@@ -974,6 +980,8 @@ const translations = {
     channelProbeChannels:'Channels', channelProbeDuration:'Duration', channelProbeFinished:'Finished at',
     channelProbeEvaluationMode:'Evaluation mode', channelProbeModeFull:'Full evaluation', channelProbeModeIncremental:'Incremental check',
     channelProbePublishedAt:'Published snapshot', channelProbeLastFullPublishedAt:'Last full evaluation', channelProbeSnapshotUrls:'Ranked URLs', channelProbeSnapshotVersion:'Snapshot version', channelProbePublishedInThisRun:'Published in this run', channelProbeYes:'Yes', channelProbeNo:'No',
+    channelProbeLastRun:'Last scheduled run', channelProbeNextRun:'Next scheduled run', channelProbeRepeatSummary:'Schedule',
+    channelProbeInvalidSchedule:'Enter 1-12 valid HH:MM times and a repeat interval from 1 to 30 days.',
     channelProbeStarted:'Probe started', channelProbeQueued:'Queued (another probe is running)', channelProbeDisabledFirst:'Enable probe first', channelProbeAlreadyRunning:'Already running',
     channelProbeCfOnly:'Only Node/Docker supports channel probing',
     liveStrategyTitle:'Live Output Strategy', liveToggleTitle:'Live Feature Toggle', liveToggleLabel:'Disable live aggregation (skip live merge, output empty lives)',
@@ -1140,10 +1148,13 @@ const translations = {
     sqXmlSources:'XML 源', sqXmlDesc:'TVBox 0 类 XML 接口源；质量等级决定其在统一排序和 XML 分类中的位置。', sqJsonSources:'JSON / MacCMS 源', sqJsonDesc:'TVBox 1 类 JSON 或 MacCMS 接口源。', sqJarSources:'JAR / 扩展源', sqJarDesc:'TVBox 3 类本地 JAR 或远程扩展源，不包含 API 为 HTTP(S) 的 JS 地址源。', sqJsSources:'JS 地址源', sqJsDesc:'TVBox 3 类且 API 为 HTTP(S) 地址的 JS 接口源。', sqRemoteSources:'远程站点源', sqRemoteDesc:'TVBox 4 类远程站点源。', sqUncategorizedSources:'其他类型源', sqUncategorizedDesc:'无法按接口机制归入上述类型的源，单独列出，不与质量等级混在一起。', sqUnavailableSources:'不可用 / 未入选源', sqUnavailableDesc:'可搜索但已屏蔽、超时、不可用或不在当前质量池中的源，不会下发到客户端。', sqBlockedSources:'屏蔽源', sqBlockedDescLong:'屏蔽源不会下发到任何客户端，但仍保留在管理列表中，可随时恢复。', sqXml:'XML', sqJson:'JSON / MacCMS', sqJar:'JAR / 扩展', sqJs:'JS 地址', sqRemote:'远程', sqOther:'其他',
     sqLeanRemoved:'轻量剔除',
     channelProbeTitle:'频道级测速（仅 Node/Docker）',
-    channelProbeIntervalLabel:'评估周期',
-    channelProbeEnable:'启用每日全量频道评估',
-    channelProbeDailyFull:'每日一次全量评估',
-    channelProbeScheduleHint:'每天在主聚合时刻执行一次全量评估；启动、聚合完成与定时任务会自动去重。手动按钮只补检到期线路；修改每频道线路数量只重新切片已发布榜单，不触发测速。',
+    channelProbeRepeatDaysLabel:'重复间隔',
+    channelProbeEvery:'每', channelProbeDays:'天',
+    channelProbeTimesLabel:'执行时间',
+    channelProbeTimesPlaceholder:'例如 05:00, 17:00',
+    channelProbeSaveSchedule:'保存评估计划',
+    channelProbeEnable:'启用全量频道评估',
+    channelProbeScheduleHint:'重复间隔为 1 即每天；执行时间可填写多个 HH:MM。若到点时正在聚合，会排队到聚合结束后执行。启动恢复和聚合完成只补跑已经到期的计划，不重复执行。手动按钮只补检到期线路；修改每频道线路数量只重新切片已发布榜单，不触发测速。',
     channelProbeTrigger:'立即增量补检', channelProbeRefresh:'刷新测速状态',
     channelProbeIdle:'空闲', channelProbeRunning:'运行中', channelProbeDone:'已完成', channelProbeError:'失败',
     channelProbeState:'状态', channelProbeProgress:'进度', channelProbeCoverage:'覆盖率',
@@ -1155,6 +1166,8 @@ const translations = {
     channelProbeChannels:'频道数', channelProbeDuration:'耗时', channelProbeFinished:'完成时间',
     channelProbeEvaluationMode:'评估类型', channelProbeModeFull:'全量评估', channelProbeModeIncremental:'增量补检',
     channelProbePublishedAt:'发布榜单时间', channelProbeLastFullPublishedAt:'最近全量评估', channelProbeSnapshotUrls:'榜单线路数', channelProbeSnapshotVersion:'榜单版本', channelProbePublishedInThisRun:'本轮是否发布', channelProbeYes:'是', channelProbeNo:'否',
+    channelProbeLastRun:'上次计划执行', channelProbeNextRun:'下次计划执行', channelProbeRepeatSummary:'评估计划',
+    channelProbeInvalidSchedule:'请填写 1-12 个有效的 HH:MM 时间，并将重复间隔设为 1-30 天。',
     channelProbeStarted:'测速已启动', channelProbeQueued:'已排队（当前有其他测速任务）', channelProbeDisabledFirst:'请先启用测速', channelProbeAlreadyRunning:'已在运行',
     channelProbeCfOnly:'仅 Node/Docker 支持频道级测速',
     liveStrategyTitle:'直播输出策略', liveToggleTitle:'直播功能', liveToggleLabel:'禁用直播聚合（跳过直播合并，输出空 lives）',
@@ -2312,7 +2325,11 @@ async function loadChannelProbe() {
     }
     const d = await res.json();
     $('channelProbeCheck').checked = !!d.enabled;
-    $('channelProbeIntervalSelect').value = String(d.intervalMinutes || 1440);
+    const schedule = d.schedule || {};
+    $('channelProbeRepeatDaysInput').value = String(schedule.repeatDays || 1);
+    $('channelProbeTimesInput').value = Array.isArray(schedule.times) && schedule.times.length
+      ? schedule.times.join(', ')
+      : '05:00';
     const s = d.status || {};
     const formatTime = (value) => {
       const ms = Date.parse(value || '');
@@ -2323,6 +2340,11 @@ async function loadChannelProbe() {
     const lines = [];
     lines.push(t('channelProbeState') + ': ' + stateLabel + (d.running ? ' ⏳' : ''));
     lines.push(t('channelProbeTriggerSource') + ': ' + triggerLabel);
+    if (Array.isArray(schedule.times) && schedule.times.length) {
+      lines.push(t('channelProbeRepeatSummary') + ': ' + t('channelProbeEvery') + ' ' + (schedule.repeatDays || 1) + ' ' + t('channelProbeDays') + ' · ' + schedule.times.join(', '));
+    }
+    if (schedule.lastRunAt) lines.push(t('channelProbeLastRun') + ': ' + formatTime(schedule.lastRunAt));
+    if (schedule.nextRunAt) lines.push(t('channelProbeNextRun') + ': ' + formatTime(schedule.nextRunAt));
     const mode = d.evaluationMode || s.evaluationMode || '';
     const modeLabel = { full: t('channelProbeModeFull'), incremental: t('channelProbeModeIncremental') }[mode];
     if (modeLabel) lines.push(t('channelProbeEvaluationMode') + ': ' + modeLabel);
@@ -2377,22 +2399,46 @@ async function toggleChannelProbe() {
   }
 }
 
-async function saveChannelProbeInterval() {
-  const select = $('channelProbeIntervalSelect');
+async function saveChannelProbeSchedule() {
+  const btn = $('channelProbeScheduleSaveBtn');
+  const rawTimes = $('channelProbeTimesInput').value.split(/[,，\\s]+/).filter(Boolean);
+  const times = rawTimes.map(function (value) {
+    const match = value.match(/^(\d{1,2}):(\d{2})$/);
+    if (!match) return null;
+    const hour = Number(match[1]);
+    const minute = Number(match[2]);
+    if (hour > 23 || minute > 59) return null;
+    return String(hour).padStart(2, '0') + ':' + String(minute).padStart(2, '0');
+  });
+  const repeatDays = parseInt($('channelProbeRepeatDaysInput').value) || 0;
+  if (rawTimes.length < 1 || rawTimes.length > 12 || times.some(function (value) { return value === null; })
+    || repeatDays < 1 || repeatDays > 30) {
+    toast(t('channelProbeInvalidSchedule'), 'error');
+    return;
+  }
+  const uniqueTimes = Array.from(new Set(times)).sort();
+  btn.disabled = true;
   try {
-    const res = await auth.authFetch('/admin/channel-probe/interval', {
+    const res = await auth.authFetch('/admin/channel-probe/schedule', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ intervalMinutes: parseInt(select.value) })
+      body: JSON.stringify({ times: uniqueTimes, repeatDays })
     });
     if (!res.ok) {
       const d = await res.json().catch(() => ({}));
       toast(d.error || t('saveFailed'), 'error');
       return;
     }
+    const d = await res.json();
+    const schedule = d.schedule || {};
+    $('channelProbeRepeatDaysInput').value = String(schedule.repeatDays || repeatDays);
+    $('channelProbeTimesInput').value = Array.isArray(schedule.times) ? schedule.times.join(', ') : uniqueTimes.join(', ');
     toast(t('saved'));
+    loadChannelProbe();
   } catch {
     toast(t('networkError'), 'error');
+  } finally {
+    btn.disabled = false;
   }
 }
 

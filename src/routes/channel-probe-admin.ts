@@ -2,17 +2,25 @@
 
 import type { Hono } from 'hono';
 import type { Storage } from '../storage/interface';
-import type { AppConfig, ChannelProbeTrigger } from '../core/types';
+import type { AppConfig, ChannelProbeSchedule, ChannelProbeTrigger } from '../core/types';
 import {
   isProbeEnabled,
   setProbeEnabled,
   loadStatus,
   runChannelProbe,
   isRunning,
-  loadProbeInterval,
-  setProbeInterval,
-  normalizeProbeInterval,
 } from '../core/channel-probe';
+import {
+  MAX_CHANNEL_PROBE_REPEAT_DAYS,
+  MAX_CHANNEL_PROBE_TIMES,
+} from '../core/config';
+import {
+  loadChannelProbeSchedule,
+  normalizeChannelProbeRepeatDays,
+  normalizeChannelProbeTime,
+  normalizeChannelProbeTimes,
+  saveChannelProbeSchedule,
+} from '../core/channel-probe-schedule';
 import { loadPublishedSpeedSnapshotSummary } from '../core/live-speed-store';
 
 function verifyAdmin(request: Request, config: AppConfig): boolean {
@@ -28,25 +36,36 @@ export interface ChannelProbeRouteDeps {
   triggerChannelProbe?: (
     trigger?: ChannelProbeTrigger,
   ) => Promise<void>;
-  onChannelProbeIntervalChange?: (intervalMinutes: number) => void;
+  onChannelProbeScheduleChange?: (schedule: ChannelProbeSchedule) => void;
+  getChannelProbeInitialTime?: () => string;
 }
 
 export function mountChannelProbeRoutes(app: Hono, deps: ChannelProbeRouteDeps): void {
-  const { storage, config, triggerChannelProbe, onChannelProbeIntervalChange } = deps;
+  const {
+    storage,
+    config,
+    triggerChannelProbe,
+    onChannelProbeScheduleChange,
+    getChannelProbeInitialTime,
+  } = deps;
+  const timezone = config.qualityTimezone || 'Asia/Shanghai';
+  const initialTime = () => getChannelProbeInitialTime?.() || '05:00';
 
   // GET /admin/channel-probe/status — 查询状态 + 开关
   app.get('/admin/channel-probe/status', async (c) => {
     if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
-    const [enabled, status, intervalMinutes, snapshot] = await Promise.all([
+    const [enabled, status, schedule, snapshot] = await Promise.all([
       isProbeEnabled(storage),
       loadStatus(storage),
-      loadProbeInterval(storage),
+      loadChannelProbeSchedule(storage, timezone, initialTime()),
       loadPublishedSpeedSnapshotSummary(storage),
     ]);
     return c.json({
       enabled,
       running: isRunning(),
-      intervalMinutes,
+      // Kept for clients that still understand the previous daily-only API.
+      intervalMinutes: 1440,
+      schedule,
       evaluationMode: status.evaluationMode ?? null,
       publishedAt: snapshot?.publishedAt ?? status.publishedAt ?? null,
       lastFullPublishedAt: snapshot?.lastFullPublishedAt ?? status.lastFullPublishedAt ?? null,
@@ -74,7 +93,45 @@ export function mountChannelProbeRoutes(app: Hono, deps: ChannelProbeRouteDeps):
     return c.json({ success: true, enabled: body.enabled });
   });
 
-  // PUT /admin/channel-probe/interval — 定时测速周期（仅 Node/Docker）
+  // PUT /admin/channel-probe/schedule — 全量评估周期与多个执行时刻
+  app.put('/admin/channel-probe/schedule', async (c) => {
+    if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
+    let body: { times?: unknown; repeatDays?: unknown };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'Invalid JSON' }, 400);
+    }
+
+    if (!Array.isArray(body.times)
+      || body.times.length === 0
+      || body.times.length > MAX_CHANNEL_PROBE_TIMES
+      || body.times.some((time) => normalizeChannelProbeTime(time) === null)) {
+      return c.json({
+        error: `times must contain 1-${MAX_CHANNEL_PROBE_TIMES} valid HH:MM values`,
+      }, 400);
+    }
+    const repeatDays = typeof body.repeatDays === 'number'
+      ? body.repeatDays
+      : parseInt(String(body.repeatDays ?? ''), 10);
+    if (!Number.isFinite(repeatDays)
+      || repeatDays < 1
+      || repeatDays > MAX_CHANNEL_PROBE_REPEAT_DAYS
+      || normalizeChannelProbeRepeatDays(repeatDays) !== repeatDays) {
+      return c.json({
+        error: `repeatDays must be an integer from 1 to ${MAX_CHANNEL_PROBE_REPEAT_DAYS}`,
+      }, 400);
+    }
+
+    const schedule = await saveChannelProbeSchedule(storage, {
+      times: normalizeChannelProbeTimes(body.times, []),
+      repeatDays,
+    }, timezone, initialTime());
+    if (onChannelProbeScheduleChange) onChannelProbeScheduleChange(schedule);
+    return c.json({ success: true, schedule });
+  });
+
+  // Compatibility for an admin page cached from the daily-only version.
   app.put('/admin/channel-probe/interval', async (c) => {
     if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
     let body: { intervalMinutes?: number };
@@ -83,13 +140,16 @@ export function mountChannelProbeRoutes(app: Hono, deps: ChannelProbeRouteDeps):
     } catch {
       return c.json({ error: 'Invalid JSON' }, 400);
     }
-    const requested = Number(body.intervalMinutes);
-    if (!Number.isFinite(requested) || normalizeProbeInterval(requested) !== requested) {
-      return c.json({ error: 'intervalMinutes must be: 1440' }, 400);
+    if (Number(body.intervalMinutes) !== 1440) {
+      return c.json({ error: 'intervalMinutes must be: 1440; use /admin/channel-probe/schedule' }, 400);
     }
-    const intervalMinutes = await setProbeInterval(storage, requested);
-    if (onChannelProbeIntervalChange) onChannelProbeIntervalChange(intervalMinutes);
-    return c.json({ success: true, intervalMinutes });
+    const current = await loadChannelProbeSchedule(storage, timezone, initialTime());
+    const schedule = await saveChannelProbeSchedule(storage, {
+      times: current.times,
+      repeatDays: 1,
+    }, timezone, initialTime());
+    if (onChannelProbeScheduleChange) onChannelProbeScheduleChange(schedule);
+    return c.json({ success: true, intervalMinutes: 1440, schedule });
   });
 
   // POST /admin/channel-probe/trigger — 手动增量补检（异步启动，不阻塞响应）

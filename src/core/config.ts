@@ -115,7 +115,8 @@ export const KV_CHANNEL_SPEED_MAP = 'channel_speed_map';
 export const KV_CHANNEL_PROBE_WORKING_MAP = 'channel_probe_working_map'; // 全量轮次中的未发布工作缓存（local-only）
 export const KV_CHANNEL_QUALITY_SNAPSHOT = 'channel_quality_snapshot'; // 最近一次完整评估后原子发布的排行榜
 export const KV_CHANNEL_PROBE_ENABLED = 'channel_probe_enabled';
-export const KV_CHANNEL_PROBE_INTERVAL = 'channel_probe_interval'; // 定时频道测速周期（分钟）
+export const KV_CHANNEL_PROBE_INTERVAL = 'channel_probe_interval'; // 旧版定时频道测速周期（仅迁移读取）
+export const KV_CHANNEL_PROBE_SCHEDULE = 'channel_probe_schedule'; // 全量频道评估周期、执行时刻与下次运行时间
 export const KV_CHANNEL_PROBE_STATUS = 'channel_probe_status';
 export const KV_CHANNEL_MERGED_TREE = 'channel_merged_tree'; // 主聚合产出的完整源树（probe 只能读，不能被过滤结果覆盖）
 export const KV_CHANNEL_RUNTIME_TREE = 'channel_runtime_tree'; // 应用测速/过滤后的运行时频道树（/live 输出与版本使用）
@@ -167,10 +168,11 @@ export const KV_SITE_AUTO_CLEAN = 'site_auto_clean';   // 'true' | 'false'
 export const KV_SOURCE_MAP = 'builder_source_map'; // { sites: Record, parses: Record, lives: Record }
 export const KV_SITE_UPSTREAM_MAP = 'site_upstream_map';
 
-// 频道测速 cron：每日执行一次全量评估。旧版 6/12 小时配置会在读取时归一为每日。
-export const CHANNEL_PROBE_CRON = '0 5 * * *';
-export const DEFAULT_CHANNEL_PROBE_INTERVAL = 1440;
-export const CHANNEL_PROBE_INTERVALS = [1440] as const;
+// 频道测速计划默认值；实际周期和多个执行时刻存放在 KV_CHANNEL_PROBE_SCHEDULE。
+export const DEFAULT_CHANNEL_PROBE_TIME = '05:00';
+export const DEFAULT_CHANNEL_PROBE_REPEAT_DAYS = 1;
+export const MAX_CHANNEL_PROBE_REPEAT_DAYS = 30;
+export const MAX_CHANNEL_PROBE_TIMES = 12;
 // 并发与超时
 export const CHANNEL_PROBE_CONCURRENCY = 10;
 // Base network deadline. HLS chains get a larger multiplier because a remote

@@ -26,8 +26,12 @@ const {
   CHANNEL_PROBE_RESULT_VERSION,
 } = bundle('src/core/live-speed-store.ts', 'channel-quality-store');
 const {
-  hasCompletedFullProbeForCalendarDay,
+  computeNextChannelProbeRun,
+  isChannelProbeScheduleDue,
   isResumableFullProbeWorkingState,
+  loadChannelProbeSchedule,
+  markChannelProbeRun,
+  saveChannelProbeSchedule,
 } = bundle('src/core/channel-probe-schedule.ts', 'channel-probe-schedule');
 const {
   applyChannelSpeedToGroups,
@@ -167,19 +171,159 @@ async function testCandidatePoolKeepsMoreThan64Lines() {
   }
 }
 
-function testDailyScheduleBoundaryAndResume() {
+function testChannelProbeScheduleCalculation() {
   const timeZone = 'Asia/Shanghai';
-  assert(hasCompletedFullProbeForCalendarDay(
-    '2026-11-02T20:59:00.000Z',
-    new Date('2026-11-02T21:00:00.000Z'),
-    timeZone,
-  ), 'a Beijing-calendar-day run must suppress duplicate full probes even at 23h55m age');
-  assert(!hasCompletedFullProbeForCalendarDay(
-    '2026-11-01T21:05:00.000Z',
-    new Date('2026-11-02T21:00:00.000Z'),
-    timeZone,
-  ), 'yesterday\'s full run must not suppress today\'s cron');
+  const dailySchedule = {
+    times: ['09:00', '13:00', '18:00'],
+    repeatDays: 1,
+    timezone: timeZone,
+  };
+  assert(computeNextChannelProbeRun(
+    dailySchedule,
+    new Date('2026-11-03T04:00:00.000Z'),
+  ) === '2026-11-03T05:00:00.000Z',
+  'a daily multi-slot schedule must select the next slot today');
+  assert(computeNextChannelProbeRun(
+    dailySchedule,
+    new Date('2026-11-03T10:00:00.000Z'),
+  ) === '2026-11-04T01:00:00.000Z',
+  'a daily multi-slot schedule must roll over to the first slot tomorrow');
 
+  const everyThreeDays = {
+    ...dailySchedule,
+    repeatDays: 3,
+    lastRunAt: '2026-11-01T01:00:00.000Z',
+  };
+  assert(computeNextChannelProbeRun(
+    everyThreeDays,
+    new Date('2026-11-03T04:00:00.000Z'),
+  ) === '2026-11-04T01:00:00.000Z',
+  'an inactive day in a multi-day schedule must wait for the next active day');
+  assert(computeNextChannelProbeRun(
+    everyThreeDays,
+    new Date('2026-11-04T04:00:00.000Z'),
+  ) === '2026-11-04T05:00:00.000Z',
+  'an active day in a multi-day schedule must still run later configured slots');
+  assert(computeNextChannelProbeRun(
+    everyThreeDays,
+    new Date('2026-11-04T10:00:00.000Z'),
+  ) === '2026-11-07T01:00:00.000Z',
+  'after an active day finishes, a multi-day schedule must wait a full repeat interval');
+}
+
+async function testChannelProbeSchedulePersistenceAndDueChecks() {
+  const timeZone = 'Asia/Shanghai';
+  const initialTime = '06:30';
+  const migrationStorage = memoryStorage({ channel_probe_interval: '1440' });
+  const migrated = await loadChannelProbeSchedule(
+    migrationStorage,
+    timeZone,
+    initialTime,
+    new Date('2026-11-03T00:00:00.000Z'),
+  );
+  assert(migrated.times.join(',') === initialTime,
+    'legacy 1440-minute configuration must migrate to the current aggregation time');
+  assert(migrated.nextRunAt === '2026-11-03T22:30:00.000Z',
+    'legacy schedule migration must preserve the configured timezone');
+
+  const storage = memoryStorage();
+  const saved = await saveChannelProbeSchedule(
+    storage,
+    {
+      times: ['17:00', '05:00', '5:00', '17:00', '25:00'],
+      repeatDays: 3,
+    },
+    timeZone,
+    '05:00',
+    new Date('2026-11-03T04:00:00.000Z'),
+  );
+  assert(saved.times.join(',') === '05:00,17:00',
+    'saved schedule times must be normalized, deduplicated, and sorted');
+  assert(saved.nextRunAt === '2026-11-03T09:00:00.000Z',
+    'saving a schedule must calculate the next slot in the configured timezone');
+  assert(!(await isChannelProbeScheduleDue(
+    storage,
+    new Date('2026-11-03T04:00:00.000Z'),
+    timeZone,
+    initialTime,
+  )), 'a configured slot must not run before nextRunAt');
+  assert(await isChannelProbeScheduleDue(
+    storage,
+    new Date('2026-11-03T09:00:00.000Z'),
+    timeZone,
+    initialTime,
+  ), 'a configured slot must run at nextRunAt');
+
+  const marked = await markChannelProbeRun(
+    storage,
+    new Date('2026-11-03T09:00:00.000Z'),
+    timeZone,
+    initialTime,
+  );
+  assert(marked.nextRunAt === '2026-11-05T21:00:00.000Z',
+    'a completed run must advance a multi-day schedule by its repeat interval');
+}
+
+async function testChannelProbeSlotCannotRepeat() {
+  const timeZone = 'Asia/Shanghai';
+  const storage = memoryStorage();
+  const initialTime = '05:00';
+  await saveChannelProbeSchedule(
+    storage,
+    { times: ['09:00', '13:00', '18:00'], repeatDays: 1 },
+    timeZone,
+    initialTime,
+    new Date('2026-11-03T00:00:00.000Z'),
+  );
+  assert(await isChannelProbeScheduleDue(
+    storage,
+    new Date('2026-11-03T01:00:00.000Z'),
+    timeZone,
+    initialTime,
+  ), 'the first configured slot must become due');
+  const marked = await markChannelProbeRun(
+    storage,
+    new Date('2026-11-03T01:00:00.000Z'),
+    timeZone,
+    initialTime,
+  );
+  assert(marked.nextRunAt === '2026-11-03T05:00:00.000Z',
+    'marking a run must advance to the next slot on the same day');
+  assert(!(await isChannelProbeScheduleDue(
+    storage,
+    new Date('2026-11-03T01:01:00.000Z'),
+    timeZone,
+    initialTime,
+  )), 'a completed slot must not become due again on the next minute');
+  assert(await isChannelProbeScheduleDue(
+    storage,
+    new Date('2026-11-03T05:00:00.000Z'),
+    timeZone,
+    initialTime,
+  ), 'the next configured slot must still become due');
+
+  storage.memory.set('channel_probe_schedule', JSON.stringify({
+    times: ['09:00', '18:00'],
+    repeatDays: 3,
+    timezone: timeZone,
+    lastRunAt: '2026-11-01T01:00:00.000Z',
+    nextRunAt: '2026-11-04T01:00:00.000Z',
+  }));
+  assert(!(await isChannelProbeScheduleDue(
+    storage,
+    new Date('2026-11-03T09:00:00.000Z'),
+    timeZone,
+    initialTime,
+  )), 'a multi-day schedule must not run early on an inactive day');
+  assert(await isChannelProbeScheduleDue(
+    storage,
+    new Date('2026-11-04T01:00:00.000Z'),
+    timeZone,
+    initialTime,
+  ), 'a multi-day schedule must become due on its active day');
+}
+
+function testChannelProbeResume() {
   const now = Date.parse('2026-11-03T12:00:00.000Z');
   const working = {
     version: 1,
@@ -203,7 +347,10 @@ async function main() {
   testFullAndIncrementalProbeFreshness();
   testLineLimitsAreSlicesOfOneRanking();
   await testCandidatePoolKeepsMoreThan64Lines();
-  testDailyScheduleBoundaryAndResume();
+  testChannelProbeScheduleCalculation();
+  await testChannelProbeSchedulePersistenceAndDueChecks();
+  await testChannelProbeSlotCannotRepeat();
+  testChannelProbeResume();
   console.log('regression: channel quality snapshot, scheduling, and line slicing passed');
 }
 

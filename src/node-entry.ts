@@ -20,11 +20,13 @@ import * as dns from 'dns';
 import { createApp } from './routes';
 import { runAggregation } from './aggregator';
 import { collectJarEntriesForSites, prefetchJarBinaries } from './core/jar-proxy';
-import { runChannelProbe, isProbeEnabled, loadProbeInterval, intervalToChannelProbeCron } from './core/channel-probe';
+import { runChannelProbe, isProbeEnabled } from './core/channel-probe';
 import { loadPublishedSpeedSnapshotSummary, loadWorkingSpeedState } from './core/live-speed-store';
 import {
-  hasCompletedFullProbeForCalendarDay,
+  isChannelProbeScheduleDue,
   isResumableFullProbeWorkingState,
+  loadChannelProbeSchedule,
+  markChannelProbeRun,
 } from './core/channel-probe-schedule';
 import { currentAggregationPhase } from './core/logger';
 import { repairLiveProxyTextReadiness } from './core/live-source';
@@ -480,21 +482,23 @@ async function main() {
     }
   }
 
-  async function hasCompletedFullChannelProbeToday(): Promise<boolean> {
+  async function shouldRunScheduledFullChannelProbe(trigger: ChannelProbeTrigger): Promise<boolean> {
     const [snapshot, working] = await Promise.all([
       loadPublishedSpeedSnapshotSummary(storage),
       loadWorkingSpeedState(storage),
     ]);
     if (isResumableFullProbeWorkingState(working)) {
       console.log("[channel-probe] Interrupted full evaluation found; scheduling resume");
-      return false;
+      return true;
     }
-    const fullPublishedAt = snapshot?.lastFullPublishedAt
-      || (snapshot?.stats.evaluationMode === "full" ? snapshot.publishedAt : undefined);
-    return hasCompletedFullProbeForCalendarDay(
-      fullPublishedAt,
+    // A fresh installation has no published ranking yet; bootstrap it even
+    // when the first configured daily slot is still in the future.
+    if (trigger === "startup" && !snapshot) return true;
+    return isChannelProbeScheduleDue(
+      storage,
       new Date(),
       config.qualityTimezone || "Asia/Shanghai",
+      currentCronTime,
     );
   }
 
@@ -504,13 +508,13 @@ async function main() {
   ): Promise<void> {
     if (trigger === "startup" && !startupChannelProbeEnabled) return;
     try {
-      if (await hasCompletedFullChannelProbeToday()) {
-        console.log("[channel-probe] " + trigger + " full evaluation skipped: today's full snapshot is already complete");
+      if (!(await shouldRunScheduledFullChannelProbe(trigger))) {
+        console.log("[channel-probe] " + trigger + " full evaluation skipped: no scheduled slot is due");
         return;
       }
     } catch (err) {
       // A failed freshness check must not permanently suppress the catch-up.
-      console.warn("[channel-probe] Failed to read snapshot freshness; scheduling full evaluation:", err);
+      console.warn("[channel-probe] Failed to read schedule freshness; scheduling full evaluation:", err);
     }
     await scheduleChannelProbe(trigger, delayMs, "full");
   }
@@ -552,6 +556,14 @@ async function main() {
           await new Promise((resolve) => setTimeout(resolve, 30_000));
           effective = takeHigherPriorityPending(effective);
           channelProbeScheduledMode = effective.evaluationMode;
+        }
+        if (effective.evaluationMode === "full") {
+          await markChannelProbeRun(
+            storage,
+            new Date(),
+            config.qualityTimezone || "Asia/Shanghai",
+            currentCronTime,
+          );
         }
         channelProbeRunning = true;
         channelProbeCurrent = effective;
@@ -685,13 +697,11 @@ async function main() {
   }
 
   // 读取 KV 中的间隔与每日时刻设置，否则沿用环境变量/默认值。
-  const [storedInterval, storedCronTime, channelProbeInterval] = await Promise.all([
+  const [storedInterval, storedCronTime] = await Promise.all([
     storage.get(KV_CRON_INTERVAL),
     storage.get(KV_CRON_TIME),
-    loadProbeInterval(storage),
   ]);
   let currentCronTime = normalizeCronTime(storedCronTime || cronTimeFromSchedule(config.cronSchedule));
-  let currentChannelProbeInterval = channelProbeInterval;
   let intervalMin: number;
   let initialSchedule: string;
 
@@ -709,22 +719,26 @@ async function main() {
 
   scheduleCron(initialSchedule);
 
-  // 频道测速独立 cron：每日一次全量评估，并使用配置的每日时刻。
+  // 频道测速使用独立持久化计划；每分钟检查一次 nextRunAt，支持每天多时段
+  // 与每 N 天执行。到点时统一调度器会等待主聚合结束后再运行。
+  await loadChannelProbeSchedule(
+    storage,
+    config.qualityTimezone || 'Asia/Shanghai',
+    currentCronTime,
+  );
   let channelProbeTask: cron.ScheduledTask | null = null;
-  function scheduleChannelProbeCron(probeMinutes: number) {
+  function scheduleChannelProbeCron() {
     if (channelProbeTask) channelProbeTask.stop();
-    const effectiveExpression = intervalToChannelProbeCron(probeMinutes, currentCronTime);
-    channelProbeTask = cron.schedule(effectiveExpression, () => {
+    channelProbeTask = cron.schedule('* * * * *', () => {
       try {
-        console.log(`[channel-probe-cron] Triggered at ${new Date().toISOString()}`);
         void scheduleFullChannelProbeIfDue('cron', 0);
       } catch (err) {
         console.error('[channel-probe-cron] Error:', err);
       }
-    }, { timezone: config.qualityTimezone || 'Asia/Shanghai' });
-    console.log(`[channel-probe-cron] Scheduled: ${effectiveExpression} (runs when enabled)`);
+    });
+    console.log('[channel-probe-cron] Scheduled: every minute (runs when a configured slot is due)');
   }
-  scheduleChannelProbeCron(channelProbeInterval);
+  scheduleChannelProbeCron();
 
   // 搜索源质量分级独立 cron（每分钟检查计划；到期后异步执行）
   // 候选池重排与全量分级分别按各自周期判断，互不阻塞 HTTP 请求。
@@ -813,15 +827,11 @@ async function main() {
       const newCron = intervalToCron(intervalMinutes, currentCronTime);
       console.log(`[cron] Interval changed to ${intervalLabel(intervalMinutes)} (${newCron})`);
       scheduleCron(newCron);
-      // 每日频道测速复用同一个执行时刻；改时刻时必须重建其 cron。
-      if (currentChannelProbeInterval === 1440) {
-        scheduleChannelProbeCron(currentChannelProbeInterval);
-      }
     },
-    onChannelProbeIntervalChange: (probeMinutes: number) => {
-      currentChannelProbeInterval = probeMinutes;
-      scheduleChannelProbeCron(probeMinutes);
+    onChannelProbeScheduleChange: () => {
+      scheduleChannelProbeCron();
     },
+    getChannelProbeInitialTime: () => currentCronTime,
   });
 
   let displayHost = 'localhost';
