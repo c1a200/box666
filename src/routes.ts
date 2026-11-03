@@ -42,7 +42,7 @@ import { containsBlockedLiveUrl, isBlockedLiveSource, isBlockedLiveUrl } from '.
 import { autoNameFromUrl, backupTypeMismatch, createSourceBackup, extractBackupItems, parseSourceList } from './core/source-list-parser';
 import type { TVBoxConfig, TVBoxSite, SearchQuotaConfig, SiteQualityGrade, TVBoxLive, ClientAuthCode, ClientDistributionConfig, LiveDistributionConfig, SourceDistributionMode, SourceSelectionMode, ChannelProbeTrigger } from './core/types';
 import { mountChannelProbeRoutes } from './routes/channel-probe-admin';
-import { loadSpeedMap as loadChannelSpeedMap } from './core/channel-probe';
+import { loadPublishedSpeedMap as loadChannelSpeedMap } from './core/live-speed-store';
 import { createLogViewerRouter } from './routes/log-viewer';
 import { createStaticAssetsRouter } from './routes/static-assets';
 import { clearDirtyMarker, getDirtyMarker, setDirtyMarker } from './core/dirty-marker';

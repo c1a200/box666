@@ -5,11 +5,11 @@ import type { Storage } from '../storage/interface';
 import type {
   TVBoxLiveGroup,
   ChannelSpeedMap,
+  ChannelProbeEvaluationMode,
   ChannelProbeStatus,
   ChannelProbeTrigger,
 } from './types';
 import {
-  KV_CHANNEL_SPEED_MAP,
   KV_CHANNEL_PROBE_STATUS,
   KV_CHANNEL_PROBE_ENABLED,
   KV_CHANNEL_PROBE_INTERVAL,
@@ -25,7 +25,6 @@ import {
   CHANNEL_PROBE_BATCH_SIZE,
   DEFAULT_CHANNEL_PROBE_INTERVAL,
   CHANNEL_PROBE_INTERVALS,
-  CHANNEL_SPEED_TTL_MS,
   TVBOX_UA,
   dailyCronFromTime,
 } from './config';
@@ -44,9 +43,13 @@ import { rebuildLiveOutput } from './live-output';
 import { isLiveProxyEntryDistributable, listAllLiveProxyEntries, liveProxyEntryLabel } from './live-source';
 import { loadLiveDistribution, toLiveDistributionPolicy } from './live-distribution-store';
 import { selectLiveDistribution } from './live-quality';
+import { isResumableFullProbeWorkingState } from './channel-probe-schedule';
 import {
   loadSpeedMap,
-  saveSpeedMap,
+  loadPublishedSpeedSnapshot,
+  loadWorkingSpeedState,
+  saveWorkingSpeedState,
+  publishSpeedSnapshot,
   pruneExpired,
   selectProbeCandidates,
   CHANNEL_FAILURE_RETRY_MS,
@@ -128,7 +131,7 @@ async function saveStatus(storage: Storage, status: ChannelProbeStatus): Promise
   await storage.put(KV_CHANNEL_PROBE_STATUS, JSON.stringify(status));
 }
 
-export { loadSpeedMap, saveSpeedMap, pruneExpired, selectProbeCandidates, CHANNEL_FAILURE_RETRY_MS };
+export { loadSpeedMap, pruneExpired, selectProbeCandidates, CHANNEL_FAILURE_RETRY_MS };
 
 // ─── 单 URL 测试 ───────────────────────────────────────
 
@@ -577,7 +580,7 @@ async function loadCandidateTree(storage: Storage): Promise<TVBoxLiveGroup[]> {
 
 /**
  * 免费 Worker 专用：每次只测一小批直播 URL，避免子请求数、CPU 和时长超限。
- * 优先测未知、过期或上次失败的 URL；结果合并进现有测速表，不覆盖完整状态。
+ * 优先测未知、过期或上次失败的 URL；结果合并后原子发布完整排行榜。
  */
 export async function probeLiveUrlsBounded(
   storage: Storage,
@@ -592,15 +595,18 @@ export async function probeLiveUrlsBounded(
   const timeoutMs = Math.max(500, Math.min(8000, options.timeoutMs ?? 3000));
   const concurrency = Math.max(1, Math.min(8, options.concurrency ?? 5));
   const budgetMs = Math.max(1000, Math.min(60000, options.budgetMs ?? 25000));
-  const startedAt = Date.now();
+  const startedAtMs = Date.now();
+  const startedAt = new Date(startedAtMs).toISOString();
 
   const groups = mergeAggregatedLiveGroups(await loadCandidateTree(storage));
   const allUrls = extractAllUrls(groups);
+  const totalChannels = groups.reduce((n, group) => n + group.channels.length, 0);
   if (allUrls.length === 0) {
     return { candidates: 0, probed: 0, success: 0, failed: 0, skipped: true };
   }
 
-  const speedMap = pruneExpired(await loadSpeedMap(storage));
+  const publishedSnapshot = await loadPublishedSpeedSnapshot(storage);
+  const speedMap = pruneExpired(publishedSnapshot?.map ?? await loadSpeedMap(storage));
   // 优先探测真正进入下发前沿的线路，避免把有限的 CF 子请求预算
   // 消耗在大量永远排不上的后台候选上。
   const allEntries = await listAllLiveProxyEntries(storage);
@@ -635,7 +641,7 @@ export async function probeLiveUrlsBounded(
   const results: ProbeResult[] = [];
   let index = 0;
   const workers = Array.from({ length: Math.min(concurrency, candidates.length) }, async () => {
-    while (index < candidates.length && Date.now() - startedAt < budgetMs) {
+    while (index < candidates.length && Date.now() - startedAtMs < budgetMs) {
       const candidate = candidates[index++];
       results.push(await probeSingle(candidate.url, timeoutMs));
     }
@@ -669,9 +675,20 @@ export async function probeLiveUrlsBounded(
   }
 
   if (results.length > 0) {
-    await saveSpeedMap(storage, speedMap);
+    const finishedAt = new Date().toISOString();
+    await publishSpeedSnapshot(storage, speedMap, {
+      trigger: 'bounded',
+      evaluationMode: 'incremental',
+      startedAt,
+      finishedAt,
+      durationMs: Date.now() - startedAtMs,
+      probed: results.length,
+      success,
+      failed,
+      totalChannels,
+    });
 
-    // 测速只更新中立缓存；只有成功↔失败状态变化才会改变可下发线路。
+    // 测速只更新中立快照；只有成功↔失败状态变化才会改变可下发线路。
     // 纯速度抖动不应重复重建 runtime TXT/版本键，否则每次 cron 都会
     // 写多份 KV，免费额度会在几个小时内被打满。
     if (stateChanged) {
@@ -685,6 +702,7 @@ export async function probeLiveUrlsBounded(
   );
   return { candidates: candidates.length, probed: results.length, success, failed, skipped: false };
 }
+
 // ─── 主入口 ────────────────────────────────────────────
 
 // Priority probes publish status/output every few concurrency waves. A full
@@ -696,12 +714,18 @@ const PRIORITY_COVERAGE_BATCH_SIZE = Math.max(
 );
 
 let running = false;
+let lastAutomaticRunAt = 0;
 
 export async function runChannelProbe(
   storage: Storage,
-  options: { trigger?: ChannelProbeTrigger } = {},
+  options: {
+    trigger?: ChannelProbeTrigger;
+    evaluationMode?: ChannelProbeEvaluationMode;
+  } = {},
 ): Promise<ChannelProbeStatus> {
   const trigger = options.trigger ?? 'manual';
+  const evaluationMode: ChannelProbeEvaluationMode = options.evaluationMode
+    ?? (trigger === 'cron' ? 'full' : 'incremental');
   if (running) {
     console.log('[channel-probe] Already running, skipping');
     return loadStatus(storage);
@@ -712,11 +736,30 @@ export async function runChannelProbe(
     return loadStatus(storage);
   }
 
+  const requestMs = Date.now();
+  if (trigger !== 'manual' && trigger !== 'bounded' && requestMs - lastAutomaticRunAt < 60_000) {
+    console.log('[channel-probe] Automatic trigger already handled in the last minute, skipping');
+    return loadStatus(storage);
+  }
+  if (trigger !== 'manual' && trigger !== 'bounded') lastAutomaticRunAt = requestMs;
+
   const groups = mergeAggregatedLiveGroups(await loadCandidateTree(storage));
+  const publishedSnapshot = await loadPublishedSpeedSnapshot(storage);
+  const snapshotFields = publishedSnapshot
+    ? {
+      publishedAt: publishedSnapshot.publishedAt,
+      snapshotVersion: publishedSnapshot.version,
+      snapshotUrls: Object.keys(publishedSnapshot.map).length,
+      ...(publishedSnapshot.lastFullPublishedAt ? { lastFullPublishedAt: publishedSnapshot.lastFullPublishedAt } : {}),
+    }
+    : {};
   if (groups.length === 0) {
     const status: ChannelProbeStatus = {
       state: 'error',
       trigger,
+      evaluationMode,
+      ...snapshotFields,
+      publishedInThisRun: false,
       totalUrls: 0,
       probed: 0,
       success: 0,
@@ -732,16 +775,20 @@ export async function runChannelProbe(
   const urls = extractAllUrls(groups);
   const totalChannels = groups.reduce((n, g) => n + g.channels.length, 0);
   if (urls.length === 0) {
+    const finishedAt = new Date().toISOString();
     const status: ChannelProbeStatus = {
       state: 'done',
       trigger,
+      evaluationMode,
+      ...snapshotFields,
+      publishedInThisRun: false,
       totalUrls: 0,
       probed: 0,
       success: 0,
       failed: 0,
       totalChannels,
       coverage: 0,
-      finishedAt: new Date().toISOString(),
+      finishedAt,
       durationMs: 0,
     };
     await saveStatus(storage, status);
@@ -760,10 +807,49 @@ export async function runChannelProbe(
     if (label) selectedLabels.add(normalizeSourceLabelKey(label));
   }
 
-  // Start with the most likely lines for every multi-line channel. If those
-  // fail, the adaptive top-up loop below keeps testing the remaining candidates
-  // for that channel until it reaches the configured target or runs out.
-  const speedMap = pruneExpired(await loadSpeedMap(storage));
+  const startedAt = new Date(requestMs).toISOString();
+  const existingWorking = await loadWorkingSpeedState(storage);
+  const activeFullWorking = isResumableFullProbeWorkingState(existingWorking, requestMs);
+  const canResumeFull = evaluationMode === 'full' && activeFullWorking;
+  // Incremental runs never read or overwrite an interrupted full working map.
+  // They publish a normal incremental snapshot from the last durable ranking,
+  // while the next full run resumes its own all-candidate checkpoint.
+  const preserveActiveFullWorking = evaluationMode === 'incremental' && activeFullWorking;
+  const publishedMap = publishedSnapshot?.map ?? await loadSpeedMap(storage);
+  const baseMap = canResumeFull ? existingWorking!.map : publishedMap;
+  const fresh: ChannelSpeedMap = pruneExpired(baseMap, requestMs);
+  const workingRunStartedAt = canResumeFull ? existingWorking!.runStartedAt : startedAt;
+  const workingStartedMs = Date.parse(workingRunStartedAt);
+  const statusStartedMs = canResumeFull ? workingStartedMs : requestMs;
+  const workingMetadata = canResumeFull
+    ? {
+      runStartedAt: existingWorking!.runStartedAt,
+      trigger: existingWorking!.trigger,
+      evaluationMode: existingWorking!.evaluationMode,
+      completed: false as const,
+    }
+    : {
+      runStartedAt: startedAt,
+      trigger,
+      evaluationMode,
+      completed: false as const,
+    };
+  const saveCurrentWorkingState = async (map: ChannelSpeedMap): Promise<void> => {
+    if (preserveActiveFullWorking) return;
+    await saveWorkingSpeedState(storage, { ...workingMetadata, map });
+  };
+
+  const candidateOptions = evaluationMode === 'full'
+    ? { force: true, forceBefore: workingStartedMs }
+    : {};
+  const initialDue = selectProbeCandidates(
+    urls,
+    fresh,
+    requestMs,
+    Number.POSITIVE_INFINITY,
+    candidateOptions,
+  );
+
   const configuredLimit = config.maxUrlsPerChannel;
   const coverageTarget = configuredLimit > 0 ? configuredLimit : Number.MAX_SAFE_INTEGER;
   const runtimeTxt = await storage.get(KV_LIVE_MERGED_TXT);
@@ -791,24 +877,23 @@ export async function runChannelProbe(
       })),
     }))
     : [];
-  // The structured selected-source tree is complete after restarts; only fall
-  // back to the prior runtime frontier when source-label mapping cannot produce
-  // one, otherwise stale unselected sources could consume probe priority.
   const priorityGroups = multiLineOnly(
     selectedCandidateGroups.length > 0 ? selectedCandidateGroups : currentFrontier,
   );
 
   running = true;
-  const startedAt = new Date().toISOString();
   const startMs = Date.now();
-  const fresh: ChannelSpeedMap = {};
+  const totalTargetUrls = evaluationMode === 'full' ? urls.length : initialDue.length;
   const status: ChannelProbeStatus = {
     state: 'running',
     trigger,
+    evaluationMode,
     phase: 'priority',
     startedAt,
     lastProgressAt: startedAt,
-    totalUrls: urls.length,
+    ...snapshotFields,
+    publishedInThisRun: false,
+    totalUrls: totalTargetUrls,
     probed: 0,
     priorityUrls: 0,
     priorityProbed: 0,
@@ -817,11 +902,10 @@ export async function runChannelProbe(
     failed: 0,
     totalChannels,
     coverage: 0,
-    remaining: urls.length,
+    remaining: totalTargetUrls,
   };
 
   try {
-    Object.assign(fresh, pruneExpired(await loadSpeedMap(storage)));
     const recalculate = (): void => {
       let successCount = 0;
       let failedCount = 0;
@@ -831,6 +915,8 @@ export async function runChannelProbe(
       for (const url of urls) {
         const entry = fresh[url];
         if (!entry) continue;
+        const probedAt = Date.parse(entry.probedAt);
+        if (!Number.isFinite(probedAt) || probedAt < statusStartedMs) continue;
         probedCount++;
         if (prioritySet.has(url)) priorityCount++;
         else backgroundCount++;
@@ -842,17 +928,21 @@ export async function runChannelProbe(
       status.backgroundProbed = backgroundCount;
       status.success = successCount;
       status.failed = failedCount;
-      status.coverage = urls.length > 0 ? Math.round((successCount / urls.length) * 100) : 0;
-      status.remaining = Math.max(0, urls.length - probedCount);
+      status.coverage = status.totalUrls > 0
+        ? Math.min(100, Math.round((successCount / status.totalUrls) * 100))
+        : 0;
+      status.remaining = Math.max(0, status.totalUrls - probedCount);
     };
     recalculate();
+    await saveCurrentWorkingState(fresh);
     await saveStatus(storage, { ...status });
 
     console.log(
-      '[channel-probe] Started: ' + urls.length + ' total URLs, ' +
-      totalChannels + ' channels, adaptive priority batch=' + PRIORITY_COVERAGE_BATCH_SIZE +
-      ', background batch=' + CHANNEL_PROBE_BATCH_SIZE + ', concurrency=' +
-      CHANNEL_PROBE_CONCURRENCY + ', trigger=' + trigger,
+      '[channel-probe] Started: mode=' + evaluationMode + ', due=' + initialDue.length + '/' +
+      urls.length + ' URLs, ' + totalChannels + ' channels, priority batch=' +
+      PRIORITY_COVERAGE_BATCH_SIZE + ', background batch=' + CHANNEL_PROBE_BATCH_SIZE +
+      ', concurrency=' + CHANNEL_PROBE_CONCURRENCY + ', trigger=' + trigger +
+      (canResumeFull ? ', resumed from ' + workingRunStartedAt : ''),
     );
 
     const persistBatch = async (
@@ -880,13 +970,13 @@ export async function runChannelProbe(
         }
         fresh[result.url] = next;
       }
-      await saveSpeedMap(storage, fresh);
+      await saveCurrentWorkingState(fresh);
       status.phase = phase;
       status.lastProgressAt = new Date().toISOString();
       recalculate();
       await saveStatus(storage, { ...status });
       console.log(
-        `[channel-probe] ${phase} progress: ${status.probed}/${urls.length}; ` +
+        `[channel-probe] ${phase} progress: ${status.probed}/${status.totalUrls}; ` +
         `${batch.length} URLs in the last saved batch, ${playbackGained} playback-verified gains`,
       );
       return playbackGained;
@@ -895,13 +985,11 @@ export async function runChannelProbe(
     const runPhase = async (
       phase: 'priority' | 'background',
       candidates: readonly { url: string }[],
-      options: { publishPlaybackGains?: boolean } = {},
-    ): Promise<number> => {
+    ): Promise<void> => {
       status.phase = phase;
       status.lastProgressAt = new Date().toISOString();
       await saveStatus(storage, { ...status });
       console.log(`[channel-probe] ${phase} probe: ${candidates.length} due URLs`);
-      let playbackGained = 0;
       for (let offset = 0; offset < candidates.length; offset += CHANNEL_PROBE_BATCH_SIZE) {
         const batch = candidates
           .slice(offset, offset + CHANNEL_PROBE_BATCH_SIZE)
@@ -909,39 +997,15 @@ export async function runChannelProbe(
         const results = await runWithConcurrency(
           batch,
           CHANNEL_PROBE_CONCURRENCY,
-          // Priority URLs are the lines most likely to be distributed. Give
-          // transient timeouts/network errors one second chance; background
-          // candidates stay single-attempt to keep the full scan bounded.
           (url) => probeSingle(url, CHANNEL_PROBE_TIMEOUT_MS, { retryTransient: phase === 'priority' }),
         );
-        const gained = await persistBatch(phase, batch, results);
-        playbackGained += gained;
-        if (options.publishPlaybackGains && gained > 0) {
-          // Publish after the batch, not after all 2,000+ priority URLs. This is
-          // what keeps a channel from staying at zero while later channels are
-          // still waiting to be probed.
-          await rebuildLiveOutput(storage, { reason: `${phase}-playback-gain` });
-          status.lastProgressAt = new Date().toISOString();
-          await saveStatus(storage, { ...status });
-        }
+        await persistBatch(phase, batch, results);
       }
-      return playbackGained;
     };
 
-    const persistOutput = async (reason: string): Promise<void> => {
-      recalculate();
-      await saveSpeedMap(storage, fresh);
-      await rebuildLiveOutput(storage, { reason });
-      status.phase = 'finalizing';
-      status.lastProgressAt = new Date().toISOString();
-      await saveStatus(storage, { ...status });
-    };
-
-    // Adaptive priority pass: keep a FIFO one-candidate frontier per channel.
-    // Every completed channel is immediately reconsidered: if it still has fewer
-    // than the configured number of playback-verified lines, its next untested
-    // candidate is appended behind channels that have not had a turn yet. This
-    // reaches deep fallback lines without letting a hot channel monopolize a batch.
+    // Incremental runs keep the adaptive FIFO coverage pass. A full run still
+    // executes it first for the current distribution frontier, but every other
+    // candidate is then forced through the background pass regardless of TTL.
     const priorityQueue: Array<{ url: string; priority: number; probedAt: number }> = [];
     const pendingPriority = new Set<string>();
     let priorityCursor = 0;
@@ -955,7 +1019,13 @@ export async function runChannelProbe(
         pendingPriority,
         1,
       );
-      const topUpCandidates = selectProbeCandidates(topUpUrls, fresh, Date.now());
+      const topUpCandidates = selectProbeCandidates(
+        topUpUrls,
+        fresh,
+        Date.now(),
+        Number.POSITIVE_INFINITY,
+        candidateOptions,
+      );
       if (topUpCandidates.length === 0) return;
 
       const added: Array<{ url: string; priority: number; probedAt: number }> = [];
@@ -966,8 +1036,6 @@ export async function runChannelProbe(
         added.push(candidate);
       }
       if (added.length === 0) return;
-      // FIFO matters: newly selected lines go behind every channel already
-      // waiting, so each channel receives one probe turn per coverage round.
       priorityQueue.push(...added);
       status.priorityUrls = prioritySet.size;
       topUpWave++;
@@ -977,8 +1045,6 @@ export async function runChannelProbe(
       );
     };
 
-    // A version bump or an all-failed cache may leave no prepared candidates.
-    // Build the first one-line-per-channel coverage round from the real cache.
     enqueueTopUps();
     while (priorityCursor < priorityQueue.length) {
       const batch = priorityQueue
@@ -986,27 +1052,66 @@ export async function runChannelProbe(
         .map((item) => item.url);
       priorityCursor += batch.length;
       for (const url of batch) pendingPriority.delete(url);
-
-      await runPhase(
-        'priority',
-        batch.map((url) => ({ url })),
-        { publishPlaybackGains: true },
-      );
+      await runPhase('priority', batch.map((url) => ({ url })));
       enqueueTopUps();
     }
-    await persistOutput('channel-probe-priority');
 
     const backgroundCandidates = selectProbeCandidates(
       urls.filter((url) => !prioritySet.has(url)),
       fresh,
       Date.now(),
+      Number.POSITIVE_INFINITY,
+      candidateOptions,
     );
     await runPhase('background', backgroundCandidates);
-    await persistOutput('channel-probe-background');
 
+    if (evaluationMode === 'full') {
+      const incomplete = urls.filter((url) => {
+        const probedAt = Date.parse(fresh[url]?.probedAt || '');
+        return !Number.isFinite(probedAt) || probedAt < workingStartedMs;
+      });
+      if (incomplete.length > 0) {
+        throw new Error(`Full evaluation incomplete: ${incomplete.length}/${urls.length} URLs were not rechecked`);
+      }
+    }
+
+    status.phase = 'finalizing';
+    status.lastProgressAt = new Date().toISOString();
     recalculate();
+    await saveStatus(storage, { ...status });
+
+    const finalMap = pruneExpired(fresh, Date.now());
     const finishedAt = new Date().toISOString();
     const durationMs = Date.now() - startMs;
+    const snapshot = await publishSpeedSnapshot(storage, finalMap, {
+      trigger,
+      evaluationMode,
+      startedAt,
+      finishedAt,
+      durationMs,
+      probed: status.probed,
+      success: status.success,
+      failed: status.failed,
+      totalChannels,
+    });
+    status.publishedAt = snapshot.publishedAt;
+    status.snapshotVersion = snapshot.version;
+    status.snapshotUrls = Object.keys(finalMap).length;
+    status.lastFullPublishedAt = snapshot.lastFullPublishedAt;
+    status.publishedInThisRun = true;
+    if (!preserveActiveFullWorking) {
+      await saveWorkingSpeedState(storage, {
+        ...workingMetadata,
+        completed: true,
+        map: finalMap,
+      });
+    }
+    await saveStatus(storage, { ...status });
+
+    // Output is rebuilt exactly once, after the complete ranking is atomically
+    // published. A failed or interrupted run therefore keeps the previous TXT.
+    await rebuildLiveOutput(storage, { reason: `${trigger}-${evaluationMode}-probe` });
+
     const finalStatus: ChannelProbeStatus = {
       ...status,
       state: 'done',
@@ -1014,14 +1119,15 @@ export async function runChannelProbe(
       finishedAt,
       lastProgressAt: finishedAt,
       durationMs,
-      totalUrls: urls.length,
+      totalUrls: totalTargetUrls,
       totalChannels,
     };
     await saveStatus(storage, finalStatus);
     console.log(
-      '[channel-probe] Done in ' + (durationMs / 1000).toFixed(1) + 's: ' +
-      status.priorityProbed + ' priority + ' + status.backgroundProbed + ' background covered; ' +
-      status.success + ' success, ' + status.failed + ' failed, ' + status.remaining + ' remaining',
+      '[channel-probe] Done in ' + (durationMs / 1000).toFixed(1) + 's: mode=' + evaluationMode +
+      ', ' + status.priorityProbed + ' priority + ' + status.backgroundProbed +
+      ' background covered; ' + status.success + ' success, ' + status.failed +
+      ' failed, snapshot=' + status.snapshotUrls + ' URLs',
     );
     return finalStatus;
   } catch (err: unknown) {
@@ -1034,12 +1140,12 @@ export async function runChannelProbe(
       finishedAt,
       lastProgressAt: finishedAt,
       durationMs: Date.now() - startMs,
-      totalUrls: urls.length,
+      totalUrls: totalTargetUrls,
       totalChannels,
       error: msg,
     };
     try {
-      await saveSpeedMap(storage, fresh);
+      await saveCurrentWorkingState(fresh);
       await saveStatus(storage, errStatus);
     } catch (persistError) {
       console.error('[channel-probe] Failed to persist interrupted status:', persistError);

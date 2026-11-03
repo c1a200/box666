@@ -513,6 +513,7 @@ export interface RegexRule {
 export type ChannelProbeState = 'idle' | 'running' | 'done' | 'error';
 
 export type ChannelProbeTrigger = 'startup' | 'post-aggregation' | 'manual' | 'cron' | 'bounded';
+export type ChannelProbeEvaluationMode = 'full' | 'incremental';
 
 export interface ChannelProbeStatus {
   state: ChannelProbeState;
@@ -527,6 +528,13 @@ export interface ChannelProbeStatus {
   priorityProbed?: number;   // 已测完的优先线路数
   backgroundProbed?: number; // 已测完的后台补测线路数
   trigger?: ChannelProbeTrigger;
+  evaluationMode?: ChannelProbeEvaluationMode;
+  /** 当前已发布排行榜的时间、版本和线路数；全量运行期间保持不变。 */
+  publishedAt?: string;
+  snapshotVersion?: number;
+  snapshotUrls?: number;
+  lastFullPublishedAt?: string;
+  publishedInThisRun?: boolean;
   success: number;           // 成功
   failed: number;            // 超时/失败
   totalChannels: number;     // 合并后频道数

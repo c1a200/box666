@@ -13,6 +13,7 @@ import {
   setProbeInterval,
   normalizeProbeInterval,
 } from '../core/channel-probe';
+import { loadPublishedSpeedSnapshotSummary } from '../core/live-speed-store';
 
 function verifyAdmin(request: Request, config: AppConfig): boolean {
   const token = config.adminToken;
@@ -36,15 +37,23 @@ export function mountChannelProbeRoutes(app: Hono, deps: ChannelProbeRouteDeps):
   // GET /admin/channel-probe/status — 查询状态 + 开关
   app.get('/admin/channel-probe/status', async (c) => {
     if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
-    const [enabled, status, intervalMinutes] = await Promise.all([
+    const [enabled, status, intervalMinutes, snapshot] = await Promise.all([
       isProbeEnabled(storage),
       loadStatus(storage),
       loadProbeInterval(storage),
+      loadPublishedSpeedSnapshotSummary(storage),
     ]);
     return c.json({
       enabled,
       running: isRunning(),
       intervalMinutes,
+      evaluationMode: status.evaluationMode ?? null,
+      publishedAt: snapshot?.publishedAt ?? status.publishedAt ?? null,
+      lastFullPublishedAt: snapshot?.lastFullPublishedAt ?? status.lastFullPublishedAt ?? null,
+      snapshotUrls: snapshot?.urls ?? status.snapshotUrls ?? 0,
+      snapshotVersion: snapshot?.version ?? status.snapshotVersion ?? null,
+      publishedInThisRun: status.publishedInThisRun === true,
+      snapshot,
       status,
     });
   });
@@ -76,21 +85,21 @@ export function mountChannelProbeRoutes(app: Hono, deps: ChannelProbeRouteDeps):
     }
     const requested = Number(body.intervalMinutes);
     if (!Number.isFinite(requested) || normalizeProbeInterval(requested) !== requested) {
-      return c.json({ error: 'intervalMinutes must be one of: 360, 720, 1440' }, 400);
+      return c.json({ error: 'intervalMinutes must be: 1440' }, 400);
     }
     const intervalMinutes = await setProbeInterval(storage, requested);
     if (onChannelProbeIntervalChange) onChannelProbeIntervalChange(intervalMinutes);
     return c.json({ success: true, intervalMinutes });
   });
 
-  // POST /admin/channel-probe/trigger — 手动触发（异步启动，不阻塞响应）
+  // POST /admin/channel-probe/trigger — 手动增量补检（异步启动，不阻塞响应）
   app.post('/admin/channel-probe/trigger', async (c) => {
     if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
     if (!(await isProbeEnabled(storage))) {
       return c.json({ success: false, error: 'Probe is disabled, enable it first' }, 400);
     }
-    // Avoid queuing a duplicate full-pool run behind a long probe. The shared
-    // scheduler still lets manual requests overtake startup waiters.
+    // A full evaluation already covers every candidate. Do not queue an
+    // incremental pass behind it; the shared scheduler also absorbs duplicates.
     if (isRunning()) {
       return c.json({ success: false, running: true, error: 'Probe is already running' }, 409);
     }

@@ -21,6 +21,11 @@ import { createApp } from './routes';
 import { runAggregation } from './aggregator';
 import { collectJarEntriesForSites, prefetchJarBinaries } from './core/jar-proxy';
 import { runChannelProbe, isProbeEnabled, loadProbeInterval, intervalToChannelProbeCron } from './core/channel-probe';
+import { loadPublishedSpeedSnapshotSummary, loadWorkingSpeedState } from './core/live-speed-store';
+import {
+  hasCompletedFullProbeForCalendarDay,
+  isResumableFullProbeWorkingState,
+} from './core/channel-probe-schedule';
 import { currentAggregationPhase } from './core/logger';
 import { repairLiveProxyTextReadiness } from './core/live-source';
 import { rebuildLiveOutput } from './core/live-output';
@@ -55,7 +60,7 @@ import {
   dailyCronFromTime,
 } from './core/config';
 import type { Storage } from './storage/interface';
-import type { AppConfig, SearchQualityRunMode, ChannelProbeTrigger } from './core/types';
+import type { AppConfig, SearchQualityRunMode, ChannelProbeTrigger, ChannelProbeEvaluationMode } from './core/types';
 
 // 加载 .env（嵌入式/无文件系统环境下容错：nodejs-mobile 无 .env，依赖注入的环境变量）
 try {
@@ -336,7 +341,7 @@ async function main() {
         message: 'Refresh completed',
       };
       console.log(`[aggregation] Completed in ${Date.now() - startedAt}ms`);
-      void scheduleChannelProbe("post-aggregation", 0);
+      void scheduleFullChannelProbeIfDue("post-aggregation", 0);
     }).catch((error: unknown) => {
       if (refreshRunId !== runId) return;
       refreshRunning = false;
@@ -386,16 +391,30 @@ async function main() {
     };
   };
 
-  const startupChannelProbeDelayMs = Math.max(
-    0,
-    parseInt(process.env.STARTUP_CHANNEL_PROBE_DELAY_MS || "") || 120_000,
-  );
+  const parsedStartupChannelProbeDelayMs = parseInt(process.env.STARTUP_CHANNEL_PROBE_DELAY_MS || "");
+  const startupChannelProbeDelayMs = Number.isFinite(parsedStartupChannelProbeDelayMs)
+    ? Math.max(0, parsedStartupChannelProbeDelayMs)
+    : 120_000;
   const startupChannelProbeEnabled = process.env.STARTUP_CHANNEL_PROBE_ENABLED !== "false";
+  type ScheduledChannelProbe = {
+    trigger: ChannelProbeTrigger;
+    evaluationMode: ChannelProbeEvaluationMode;
+  };
+
+  function channelProbeRequestPriority(request: ScheduledChannelProbe): number {
+    if (request.evaluationMode === "incremental") return 50;
+    if (request.trigger === "cron") return 130;
+    if (request.trigger === "post-aggregation") return 120;
+    return 110;
+  }
 
   // 统一串行调度：所有触发共用一道门禁，避免与主聚合争抢上游带宽。
-  // 启动测速可等待；聚合完成/手动触发会覆盖等待中的低优先级启动任务，立即测当前下发线路。
+  // 全量请求优先于启动/手动增量；同一轮只执行一次，绝不把 cron 全量降级。
   let channelProbeScheduled = false;
-  let channelProbePendingTrigger: ChannelProbeTrigger | null = null;
+  let channelProbeScheduledMode: ChannelProbeEvaluationMode | null = null;
+  let channelProbeRunning = false;
+  let channelProbeCurrent: ScheduledChannelProbe | null = null;
+  let channelProbePending: ScheduledChannelProbe | null = null;
   let channelProbeWake: (() => void) | null = null;
 
   function wakeChannelProbeScheduler(): void {
@@ -406,7 +425,36 @@ async function main() {
     }
   }
 
-  async function waitBeforeChannelProbe(delayMs: number, trigger: ChannelProbeTrigger): Promise<void> {
+  function currentScheduledChannelProbeMode(): ChannelProbeEvaluationMode | null {
+    return channelProbeRunning
+      ? channelProbeCurrent?.evaluationMode ?? channelProbeScheduledMode
+      : channelProbeScheduledMode;
+  }
+
+  function hasQueuedFullChannelProbe(): boolean {
+    return currentScheduledChannelProbeMode() === "full"
+      || channelProbePending?.evaluationMode === "full";
+  }
+
+  function offerPendingChannelProbe(request: ScheduledChannelProbe): void {
+    if (!channelProbePending
+      || channelProbeRequestPriority(request) > channelProbeRequestPriority(channelProbePending)) {
+      channelProbePending = request;
+      wakeChannelProbeScheduler();
+    }
+  }
+
+  function takeHigherPriorityPending(request: ScheduledChannelProbe): ScheduledChannelProbe {
+    if (channelProbePending
+      && channelProbeRequestPriority(channelProbePending) > channelProbeRequestPriority(request)) {
+      const next = channelProbePending;
+      channelProbePending = null;
+      return next;
+    }
+    return request;
+  }
+
+  async function waitBeforeChannelProbe(delayMs: number, request: ScheduledChannelProbe): Promise<void> {
     const deadline = Date.now() + Math.max(0, delayMs);
     while (Date.now() < deadline) {
       const remaining = deadline - Date.now();
@@ -425,49 +473,103 @@ async function main() {
           resolve();
         };
       });
-      if (channelProbePendingTrigger === "post-aggregation" || channelProbePendingTrigger === "manual") {
+      if (channelProbePending
+        && channelProbeRequestPriority(channelProbePending) > channelProbeRequestPriority(request)) {
         return;
       }
     }
   }
 
-  async function scheduleChannelProbe(
+  async function hasCompletedFullChannelProbeToday(): Promise<boolean> {
+    const [snapshot, working] = await Promise.all([
+      loadPublishedSpeedSnapshotSummary(storage),
+      loadWorkingSpeedState(storage),
+    ]);
+    if (isResumableFullProbeWorkingState(working)) {
+      console.log("[channel-probe] Interrupted full evaluation found; scheduling resume");
+      return false;
+    }
+    const fullPublishedAt = snapshot?.lastFullPublishedAt
+      || (snapshot?.stats.evaluationMode === "full" ? snapshot.publishedAt : undefined);
+    return hasCompletedFullProbeForCalendarDay(
+      fullPublishedAt,
+      new Date(),
+      config.qualityTimezone || "Asia/Shanghai",
+    );
+  }
+
+  async function scheduleFullChannelProbeIfDue(
     trigger: ChannelProbeTrigger,
     delayMs = 0,
   ): Promise<void> {
     if (trigger === "startup" && !startupChannelProbeEnabled) return;
-    if (channelProbeScheduled) {
-      // 手动和聚合完成触发优先级高于等待中的启动触发。
-      if (trigger === "post-aggregation" || trigger === "manual") {
-        channelProbePendingTrigger = trigger;
-        wakeChannelProbeScheduler();
+    try {
+      if (await hasCompletedFullChannelProbeToday()) {
+        console.log("[channel-probe] " + trigger + " full evaluation skipped: today's full snapshot is already complete");
+        return;
       }
+    } catch (err) {
+      // A failed freshness check must not permanently suppress the catch-up.
+      console.warn("[channel-probe] Failed to read snapshot freshness; scheduling full evaluation:", err);
+    }
+    await scheduleChannelProbe(trigger, delayMs, "full");
+  }
+
+  async function scheduleChannelProbe(
+    trigger: ChannelProbeTrigger,
+    delayMs = 0,
+    evaluationMode: ChannelProbeEvaluationMode = trigger === "cron" ? "full" : "incremental",
+  ): Promise<void> {
+    if (trigger === "startup" && !startupChannelProbeEnabled) return;
+    const request: ScheduledChannelProbe = { trigger, evaluationMode };
+
+    if (channelProbeScheduled) {
+      // A queued/running full evaluation already covers every candidate and
+      // absorbs both duplicate full requests and manual incremental checks.
+      if (hasQueuedFullChannelProbe()) return;
+      // Repeating an incremental request while one is already queued/running
+      // adds no value; only a later full request may upgrade it.
+      if (evaluationMode === "incremental"
+        && currentScheduledChannelProbeMode() === "incremental") return;
+      offerPendingChannelProbe(request);
       return;
     }
+
     channelProbeScheduled = true;
+    channelProbeScheduledMode = evaluationMode;
+    let effective = request;
     const runScheduled = async (): Promise<void> => {
       try {
         if (!(await isProbeEnabled(storage))) {
           console.log("[channel-probe] " + trigger + " probe skipped: disabled by user");
           return;
         }
-        await waitBeforeChannelProbe(delayMs, trigger);
+        await waitBeforeChannelProbe(delayMs, effective);
+        effective = takeHigherPriorityPending(effective);
+        channelProbeScheduledMode = effective.evaluationMode;
         while (refreshRunning) {
-          console.log("[channel-probe] " + trigger + " probe waiting for aggregation to finish");
+          console.log("[channel-probe] " + effective.trigger + " probe waiting for aggregation to finish");
           await new Promise((resolve) => setTimeout(resolve, 30_000));
+          effective = takeHigherPriorityPending(effective);
+          channelProbeScheduledMode = effective.evaluationMode;
         }
-        let effectiveTrigger = channelProbePendingTrigger || trigger;
-        if (channelProbePendingTrigger === "manual") effectiveTrigger = "manual";
-        channelProbePendingTrigger = null;
-        console.log("[channel-probe] Running probe via " + effectiveTrigger);
-        await runChannelProbe(storage, { trigger: effectiveTrigger });
+        channelProbeRunning = true;
+        channelProbeCurrent = effective;
+        console.log("[channel-probe] Running " + effective.evaluationMode + " probe via " + effective.trigger);
+        await runChannelProbe(storage, {
+          trigger: effective.trigger,
+          evaluationMode: effective.evaluationMode,
+        });
       } catch (err) {
         console.error("[channel-probe] " + trigger + " probe failed:", err);
       } finally {
+        channelProbeRunning = false;
+        channelProbeCurrent = null;
+        channelProbeScheduledMode = null;
         channelProbeScheduled = false;
-        const next = channelProbePendingTrigger;
-        channelProbePendingTrigger = null;
-        if (next) void scheduleChannelProbe(next, 0);
+        const next = channelProbePending;
+        channelProbePending = null;
+        if (next) void scheduleChannelProbe(next.trigger, 0, next.evaluationMode);
       }
     };
     void runScheduled();
@@ -607,7 +709,7 @@ async function main() {
 
   scheduleCron(initialSchedule);
 
-  // 频道测速独立 cron：周期可选 6/12/24 小时；24 小时使用配置的每日时刻。
+  // 频道测速独立 cron：每日一次全量评估，并使用配置的每日时刻。
   let channelProbeTask: cron.ScheduledTask | null = null;
   function scheduleChannelProbeCron(probeMinutes: number) {
     if (channelProbeTask) channelProbeTask.stop();
@@ -615,7 +717,7 @@ async function main() {
     channelProbeTask = cron.schedule(effectiveExpression, () => {
       try {
         console.log(`[channel-probe-cron] Triggered at ${new Date().toISOString()}`);
-        void scheduleChannelProbe('cron', 0);
+        void scheduleFullChannelProbeIfDue('cron', 0);
       } catch (err) {
         console.error('[channel-probe-cron] Error:', err);
       }
@@ -655,7 +757,7 @@ async function main() {
   async function scheduleStartupAggregation(): Promise<void> {
     if (!startupAggregationEnabled) {
       console.log('[aggregation] Automatic startup aggregation disabled');
-      void scheduleChannelProbe("startup", startupChannelProbeDelayMs);
+      void scheduleFullChannelProbeIfDue("startup", startupChannelProbeDelayMs);
       return;
     }
 
@@ -676,7 +778,7 @@ async function main() {
 
     if (hasFreshCache && startupAggregationWarmDelayMs === 0) {
       console.log('[aggregation] Fresh cached config found; skipping automatic startup aggregation');
-      void scheduleChannelProbe("startup", startupChannelProbeDelayMs);
+      void scheduleFullChannelProbeIfDue("startup", startupChannelProbeDelayMs);
       return;
     }
 
@@ -692,7 +794,7 @@ async function main() {
       console.log('[aggregation] Triggering automatic startup aggregation...');
       void runWithGuard()
         .catch((err: unknown) => { console.error('[aggregation] Startup run failed:', err); })
-        .finally(() => { void scheduleChannelProbe("startup", startupChannelProbeDelayMs); });
+        .finally(() => { void scheduleFullChannelProbeIfDue("startup", startupChannelProbeDelayMs); });
     }, delayMs);
   }
 
@@ -702,7 +804,7 @@ async function main() {
     triggerRefresh: runWithGuard,
     triggerQuality: runQualityWithGuard,
     enableChannelProbe: true,
-    triggerChannelProbe: (trigger = "manual") => scheduleChannelProbe(trigger, 0),
+    triggerChannelProbe: (trigger = "manual") => scheduleChannelProbe(trigger, 0, "incremental"),
     enableBuilder: true,
     isSyncing: () => refreshRunning,
     aggregationStatus,

@@ -112,6 +112,8 @@ export const KV_PARSE_HEALTH_REPORT = 'parse_health_report';
 
 // ═══ 直播频道级测速（方案 D+）══════════════════════════
 export const KV_CHANNEL_SPEED_MAP = 'channel_speed_map';
+export const KV_CHANNEL_PROBE_WORKING_MAP = 'channel_probe_working_map'; // 全量轮次中的未发布工作缓存（local-only）
+export const KV_CHANNEL_QUALITY_SNAPSHOT = 'channel_quality_snapshot'; // 最近一次完整评估后原子发布的排行榜
 export const KV_CHANNEL_PROBE_ENABLED = 'channel_probe_enabled';
 export const KV_CHANNEL_PROBE_INTERVAL = 'channel_probe_interval'; // 定时频道测速周期（分钟）
 export const KV_CHANNEL_PROBE_STATUS = 'channel_probe_status';
@@ -165,10 +167,10 @@ export const KV_SITE_AUTO_CLEAN = 'site_auto_clean';   // 'true' | 'false'
 export const KV_SOURCE_MAP = 'builder_source_map'; // { sites: Record, parses: Record, lives: Record }
 export const KV_SITE_UPSTREAM_MAP = 'site_upstream_map';
 
-// 频道测速 cron：兼容旧配置，默认 12 小时；新配置从 KV 读取。
-export const CHANNEL_PROBE_CRON = '0 */12 * * *';
-export const DEFAULT_CHANNEL_PROBE_INTERVAL = 720;
-export const CHANNEL_PROBE_INTERVALS = [360, 720, 1440] as const;
+// 频道测速 cron：每日执行一次全量评估。旧版 6/12 小时配置会在读取时归一为每日。
+export const CHANNEL_PROBE_CRON = '0 5 * * *';
+export const DEFAULT_CHANNEL_PROBE_INTERVAL = 1440;
+export const CHANNEL_PROBE_INTERVALS = [1440] as const;
 // 并发与超时
 export const CHANNEL_PROBE_CONCURRENCY = 10;
 // Base network deadline. HLS chains get a larger multiplier because a remote

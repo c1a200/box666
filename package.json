@@ -18,7 +18,8 @@
     "check:quality": "node scripts/regression-quality-pool.cjs",
     "check:routes": "node scripts/regression-routes.cjs",
     "check:live": "node scripts/regression-live-manifest.cjs",
-    "check:dirty": "node scripts/regression-dirty-marker.cjs"
+    "check:dirty": "node scripts/regression-dirty-marker.cjs",
+    "check:channel-quality": "node scripts/regression-channel-quality.cjs"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.0",

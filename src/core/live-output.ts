@@ -5,6 +5,7 @@ import {
   KV_CHANNEL_RUNTIME_TREE,
   KV_CHANNEL_CANDIDATE_URLS,
   KV_CHANNEL_SPEED_MAP,
+  KV_CHANNEL_QUALITY_SNAPSHOT,
   KV_LIVE_MERGED_TXT,
   KV_LIVE_MERGED_TXT_VERSION,
   KV_LIVE_RUNTIME_TXT_VERSION,
@@ -34,7 +35,7 @@ import {
   parseLiveCandidatePool,
   parseLiveGroupsFromTxt,
 } from './live-merger';
-import { loadSpeedMap } from './channel-probe';
+import { loadPublishedSpeedMap } from './live-speed-store';
 
 /**
  * 直播 TXT 展示格式版本。
@@ -132,7 +133,8 @@ async function fingerprint(storage: Storage, policy: LiveDistributionPolicy): Pr
     manifestRaw,
     mergedTreeRaw,
     candidatePoolRaw,
-    speedRaw,
+    snapshotRaw,
+    legacySpeedRaw,
     modeRaw,
     disabledRaw,
     ignoreAggregatedRaw,
@@ -140,12 +142,16 @@ async function fingerprint(storage: Storage, policy: LiveDistributionPolicy): Pr
     storage.get('live_proxy_manifest'),
     storage.get(KV_CHANNEL_MERGED_TREE),
     storage.get(KV_CHANNEL_CANDIDATE_URLS),
+    storage.get(KV_CHANNEL_QUALITY_SNAPSHOT),
     storage.get(KV_CHANNEL_SPEED_MAP),
     storage.get(KV_LIVE_MERGE_MODE),
     storage.get(KV_LIVE_DISABLED),
     storage.get(KV_IGNORE_AGGREGATED_LIVES),
   ]);
   const mode = modeRaw || 'separated';
+  // During a full evaluation the working cache changes repeatedly, while the
+  // published snapshot remains stable. Fingerprints must follow only the latter.
+  const speedRaw = snapshotRaw || legacySpeedRaw || '';
   // 指纹必须覆盖一切会改变最终 runtime TXT 的输入：
   // 候选树、质量清单、测速表、模式、开关与策略。
   const text = [
@@ -156,7 +162,7 @@ async function fingerprint(storage: Storage, policy: LiveDistributionPolicy): Pr
     stablePolicyKey(policy),
     parseLiveProxyManifest(manifestRaw)?.signature || manifestRaw || '',
     [mergedTreeRaw || '', candidatePoolRaw || ''].join('\n'),
-    speedRaw || '',
+    speedRaw,
   ].join('\n');
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
   return Array.from(new Uint8Array(digest).slice(0, 16))
@@ -293,7 +299,7 @@ async function buildSnapshot(
   const canonicalGroups = liveMergeMode === 'merged'
     ? mergeAggregatedLiveGroups(selection.groups)
     : selection.groups;
-  const speedMap = await loadSpeedMap(storage);
+  const speedMap = await loadPublishedSpeedMap(storage);
   const runtimeGroups = canonicalGroups.length > 0
     ? applyChannelSpeedToGroups(
       canonicalGroups,

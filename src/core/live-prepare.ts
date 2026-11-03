@@ -4,7 +4,7 @@ import type { LiveSourceInput } from './live-merger';
 import { applyChannelSpeedToGroups, filterLiveSourcesDetailed, formatLiveGroupsAsTxt } from './live-merger';
 import { listLiveProxyEntries, pruneLiveProxyManifestToUrls, updateLiveProxyManifest, type LiveProxyEntryHint, type LiveProxyManifestEntry } from './live-source';
 import { loadLivePrepareInputs, livePrepareInputSignature } from './live-inputs';
-import { loadSpeedMap } from './channel-probe';
+import { loadPublishedSpeedMap } from './live-speed-store';
 import { rebuildLiveOutput } from './live-output';
 import type { TVBoxLiveGroup } from './types';
 import { parseLiveGroupsFromTxt, serializeLiveCandidatePool } from './live-merger';
@@ -88,7 +88,7 @@ export async function prepareLiveSourcesChunk(
         minChannelsPerSource: 5,
         maxAdRatio: 0.5,
         minPlayableRatio: 0.2,
-        maxUrlsPerChannel: 64,
+        maxUrlsPerChannel: -1,
         maxChannels: 12000,
         useCache: true,
       },
@@ -264,7 +264,7 @@ export async function runLivePrepareChunk(
       await storage.put(KV_LIVE_PREPARE_STATE, JSON.stringify({ ...state, complete: true }));
     }
   }
-  const channelSpeedMap = await loadSpeedMap(storage);
+  const channelSpeedMap = await loadPublishedSpeedMap(storage);
   const state = await prepareLiveSourcesChunk(sources, storage, {
     batchSize: options.batchSize,
     timeoutMs: options.timeoutMs,

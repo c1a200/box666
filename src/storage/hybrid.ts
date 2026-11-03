@@ -68,6 +68,7 @@ export const DURABLE_STORAGE_KEYS = new Set<string>([
   'search_quality_pool',
   'search_quality_snapshot',
   'search_quality_candidates',
+  'channel_quality_snapshot',
 ]);
 
 // 这些前缀属于最终结果/派生内容，而不是任务进度。
@@ -89,6 +90,7 @@ export const LOCAL_ONLY_STORAGE_KEYS = new Set<string>([
   'search_quota_report',
   'channel_probe_status',
   'channel_speed_map',
+  'channel_probe_working_map',
   'channel_merged_tree',
   'channel_runtime_tree',
   'live_merge_report',

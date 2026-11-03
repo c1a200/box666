@@ -373,6 +373,10 @@ export function sortLiveGroupsForOutput(groups: TVBoxLiveGroup[]): TVBoxLiveGrou
  */
 const MAX_AGGREGATE_CHANNELS_PER_GROUP = 180;
 
+function normalizeChannelLimit(value: number): number {
+  return value === -1 ? -1 : Math.max(1, Math.floor(value));
+}
+
 function formatLiveGroupsAsTxtInternal(
   groups: TVBoxLiveGroup[],
   canonicalizeChannels: boolean,
@@ -1732,7 +1736,7 @@ export async function mergeLivesToNative(
       const sourceName = await uniqueSourceLabel(input.name || 'source', input.url, usedSourceLabels);
       const entries = parseLiveContent(outcome.content, sourceName, input.speedMs);
       const prepared = prepareSourceChannels(entries, channelSpeedMap, {
-        maxUrlsPerChannel: options.preserveAllUrls ? Math.max(1, options.candidatePoolMaxUrlsPerChannel ?? 64) : SEPARATED_MAX_URLS_PER_CHANNEL,
+        maxUrlsPerChannel: options.preserveAllUrls ? normalizeChannelLimit(options.candidatePoolMaxUrlsPerChannel ?? -1) : SEPARATED_MAX_URLS_PER_CHANNEL,
         maxSpeedMs: options.preserveAllUrls ? 0 : LIVE_KNOWN_MAX_SPEED_MS,
       });
       const quality = evaluateSourceQuality(prepared, {
@@ -1819,9 +1823,10 @@ export async function mergeLivesToNative(
     if (urlList.length === 0) continue;
     urlList.sort((a, b) => compareLiveEntries(a, b, channelSpeedMap));
 
-    const limitedUrlList = options.preserveAllUrls
-      ? urlList.slice(0, Math.max(1, options.candidatePoolMaxUrlsPerChannel ?? 64))
-      : urlList.slice(0, AGGREGATED_MAX_URLS_PER_CHANNEL);
+    const candidateLimit = options.preserveAllUrls
+      ? normalizeChannelLimit(options.candidatePoolMaxUrlsPerChannel ?? -1)
+      : AGGREGATED_MAX_URLS_PER_CHANNEL;
+    const limitedUrlList = candidateLimit === -1 ? urlList : urlList.slice(0, candidateLimit);
 
     const urlStrs = limitedUrlList.map((e) => `${scrubUrlType(e.url)}$${scrubTypeLiteral(e.source)}`);
     totalUrls += urlStrs.length;
@@ -1946,7 +1951,7 @@ export async function separatedMergeLives(
       const sourceName = await uniqueSourceLabel(input.name || 'source', input.url, usedSourceLabels);
       const entries = parseLiveContent(outcome.content, sourceName, input.speedMs);
       const prepared = prepareSourceChannels(entries, channelSpeedMap, {
-        maxUrlsPerChannel: options.preserveAllUrls ? Math.max(1, options.candidatePoolMaxUrlsPerChannel ?? 64) : SEPARATED_MAX_URLS_PER_CHANNEL,
+        maxUrlsPerChannel: options.preserveAllUrls ? normalizeChannelLimit(options.candidatePoolMaxUrlsPerChannel ?? -1) : SEPARATED_MAX_URLS_PER_CHANNEL,
         maxSpeedMs: options.preserveAllUrls ? 0 : LIVE_KNOWN_MAX_SPEED_MS,
       });
       const quality = evaluateSourceQuality(prepared, {});
@@ -2872,7 +2877,7 @@ function prepareSourceChannels(
   channelSpeedMap: ChannelSpeedMap | undefined,
   options: FilteredLiveOptions,
 ): PreparedSourceChannels {
-  const maxUrlsPerChannel = Math.max(1, options.maxUrlsPerChannel ?? SEPARATED_MAX_URLS_PER_CHANNEL);
+  const maxUrlsPerChannel = normalizeChannelLimit(options.maxUrlsPerChannel ?? SEPARATED_MAX_URLS_PER_CHANNEL);
   const maxSpeedMs = Math.max(0, options.maxSpeedMs ?? LIVE_KNOWN_MAX_SPEED_MS);
   let adEntries = 0;
   let statusEntries = 0;
@@ -2928,7 +2933,7 @@ function prepareSourceChannels(
     if (!channels.has(name)) channels.set(name, []);
     const channelUrls = channels.get(name)!;
     seenUrls.add(url);
-    if (channelUrls.length >= maxUrlsPerChannel) continue;
+    if (maxUrlsPerChannel !== -1 && channelUrls.length >= maxUrlsPerChannel) continue;
 
     channelUrls.push(scrubUrlType(url));
     totalUrls++;
@@ -3092,7 +3097,7 @@ export async function filterLivesBySourceDetailed(
     return { groups: [], failure: 'invalid', reason: 'blocked source' };
   }
 
-  const maxUrlsPerChannel = Math.max(1, options.maxUrlsPerChannel ?? SEPARATED_MAX_URLS_PER_CHANNEL);
+  const maxUrlsPerChannel = normalizeChannelLimit(options.maxUrlsPerChannel ?? SEPARATED_MAX_URLS_PER_CHANNEL);
   const maxChannels = Math.max(0, options.maxChannels ?? 0);
   const preserveSourceGroups = options.preserveSourceGroups !== false;
   const maxSpeedMs = Math.max(0, options.maxSpeedMs ?? LIVE_KNOWN_MAX_SPEED_MS);

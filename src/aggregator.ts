@@ -538,7 +538,7 @@ async function _runAggregation(storage: Storage, config: AppConfig, startTime: n
 
       // 第一步：不带测速过滤生成完整候选池。失败/超慢线路也必须进入池中，
       // 否则 probe 下一轮只能看到“当前可用”的子集，无法重试和恢复线路。
-      const candidateOptions = { preserveAllUrls: true, candidatePoolMaxUrlsPerChannel: 64 };
+      const candidateOptions = { preserveAllUrls: true, candidatePoolMaxUrlsPerChannel: -1 };
       let mergeResult;
       if (liveMergeMode === 'separated') {
         mergeResult = await separatedMergeLives(uniqueInputs, config.fetchTimeoutMs, undefined, storage, candidateOptions);
