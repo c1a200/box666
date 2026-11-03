@@ -118,6 +118,7 @@ export async function prepareLiveSourcesChunk(
         options.channelSpeedMap || {},
         undefined,
         64,
+        { requirePlaybackVerification: false },
       );
       const gatedText = gatedGroups.length > 0 ? formatLiveGroupsAsTxt(gatedGroups) : '';
       if (gatedText.includes('#genre#')) {

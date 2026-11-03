@@ -2189,12 +2189,79 @@ function channelProbeRank(entry: ChannelSpeedMap[string] | undefined): number {
   return 0;
 }
 
+export interface ChannelSpeedApplyOptions {
+  /** 为 true 时只保留当前探测版本中已确认可播放的线路；默认 strict。 */
+  requirePlaybackVerification?: boolean;
+}
+
+const LIVE_AUTH_QUERY_KEY = /^(?:auth|authid|authorization|token|access_token|livekey|live_key|streamid|stream_id|sign|signature|expires?|exp|key|pass|passwd|password|pwd|username|user|account)$/i;
+const LIVE_AUTH_PATH_SEGMENT = /^(?:auth|authid|authorization|token|access_token|livekey|live_key|sign|signature|expires?|exp|key|pass|passwd|password|pwd|username|user|account)$/i;
+
+function hasLiveAuthHint(url: string, sourceLabel: string): boolean {
+  const label = sourceLabel.trim();
+  if (/^(?:auth|token|livekey|live_key|signature|password|passwd|pwd)(?:[#_\-\s]|$)/i.test(label)) return true;
+  try {
+    const parsed = new URL(url);
+    if (parsed.username || parsed.password) return true;
+    for (const key of parsed.searchParams.keys()) {
+      if (LIVE_AUTH_QUERY_KEY.test(key)) return true;
+    }
+    return parsed.pathname
+      .split('/')
+      .filter(Boolean)
+      .some((segment) => LIVE_AUTH_PATH_SEGMENT.test(decodeURIComponent(segment)));
+  } catch {
+    return false;
+  }
+}
+
+/** 同等级线路的偏好分越低越好；只在已通过验真的线路之间使用。 */
+function liveProbePreference(url: string, sourceLabel: string): number {
+  let preference = 0;
+  try {
+    const parsed = new URL(url);
+    const hostname = parsed.hostname.trim().toLowerCase().replace(/^\[|\]$/g, '');
+    if (hostname.includes(':') || isPrivateOrLocalHostname(hostname)) preference += 2;
+  } catch {
+    preference += 2;
+  }
+  if (hasLiveAuthHint(url, sourceLabel)) preference += 4;
+  return preference;
+}
+
+function isPlaybackVerifiedProbe(
+  entry: ChannelSpeedMap[string] | undefined,
+): entry is ChannelSpeedMap[string] {
+  return Boolean(
+    entry
+    && entry.kind !== 'fail'
+    && entry.kind !== 'tcp'
+    && entry.probeVersion === CHANNEL_PROBE_RESULT_VERSION
+    && (entry.verification === 'media' || entry.verification === 'manifest')
+    && (entry.consecutiveFailures ?? 0) < 1
+    && Number.isFinite(entry.speedMs),
+  );
+}
+
+/**
+ * 将频道级验真结果应用到已合并的频道树。
+ *
+ * 默认下发语义：
+ * - 只保留当前探测版本中 verification=media/manifest 且未失败、未超速的线路；
+ * - media 优先于 manifest，同等级再按普通公网/无鉴权偏好和速度排序；
+ * - 未知、TCP-only、旧版本和任意失败结果都不允许凑数；
+ * - 每频道条数只是上限。-1 表示保留全部“已验真”线路。
+ *
+ * requirePlaybackVerification=false 仅供探测候选预构建使用，不能用于最终下发。
+ */
 export function applyChannelSpeedToGroups(
   groups: TVBoxLiveGroup[],
   speedMap: ChannelSpeedMap,
   maxSpeedMs = LIVE_KNOWN_MAX_SPEED_MS,
   maxUrlsPerChannel = SEPARATED_MAX_URLS_PER_CHANNEL,
+  options: ChannelSpeedApplyOptions = {},
 ): TVBoxLiveGroup[] {
+  const requirePlaybackVerification = options.requirePlaybackVerification !== false;
   const speedLimit = Math.max(0, maxSpeedMs);
   const perChannelLimit = maxUrlsPerChannel === -1 ? -1 : Math.max(1, maxUrlsPerChannel);
   const output: TVBoxLiveGroup[] = [];
@@ -2203,7 +2270,7 @@ export function applyChannelSpeedToGroups(
     const channels: TVBoxLiveChannel[] = [];
     for (const channel of group.channels || []) {
       const seen = new Set<string>();
-      const verified: Array<{ url: string; speed: number; rank: number; index: number }> = [];
+      const verified: Array<{ url: string; speed: number; rank: number; preference: number; index: number }> = [];
       const unknown: Array<{ url: string; index: number }> = [];
       const transient: Array<{ url: string; failures: number; index: number }> = [];
 
@@ -2215,15 +2282,26 @@ export function applyChannelSpeedToGroups(
         seen.add(bare);
 
         const speed = speedMap[url] ?? speedMap[bare];
+        if (requirePlaybackVerification) {
+          if (!isPlaybackVerifiedProbe(speed)) continue;
+          if (speedLimit > 0 && speed.speedMs > speedLimit) continue;
+          verified.push({
+            url,
+            speed: speed.speedMs,
+            rank: channelProbeRank(speed),
+            preference: liveProbePreference(bare, splitLiveUrlLabel(url).label),
+            index,
+          });
+          continue;
+        }
+
         if (speed?.kind === 'fail') {
-          // Keep one or two transient failures as a last-resort fallback, but
-          // never let them displace a line that has not failed verification.
           const failures = speed.consecutiveFailures ?? 1;
           if (failures < 3) transient.push({ url, failures, index });
           continue;
         }
-        // Version-1 results could mark a TCP handshake as playable. Treat them
-        // as unknown until the upgraded probe replaces the cache entry.
+        // 候选保留模式仍需把旧版/TCP/未知结果放在已验真线路之后，
+        // 让它们有机会进入下一轮探测，但绝不会因此冒充最终可播线路。
         const currentProbe = speed?.probeVersion === CHANNEL_PROBE_RESULT_VERSION;
         const knownSpeed = currentProbe && Number.isFinite(speed?.speedMs)
           ? speed.speedMs
@@ -2237,17 +2315,21 @@ export function applyChannelSpeedToGroups(
           url,
           speed: knownSpeed,
           rank: channelProbeRank(speed),
+          preference: liveProbePreference(bare, splitLiveUrlLabel(url).label),
           index,
         });
       }
 
-      // Prefer playback evidence over a merely fast TCP connect. Manifest-only
-      // HLS is ranked below an actual media-segment probe; legacy connectivity
-      // probes remain in one tier and are ordered by speed.
-      verified.sort((a, b) => b.rank - a.rank || a.speed - b.speed || a.index - b.index);
+      verified.sort((a, b) =>
+        b.rank - a.rank
+        || a.preference - b.preference
+        || a.speed - b.speed
+        || a.index - b.index);
       unknown.sort((a, b) => a.index - b.index);
       transient.sort((a, b) => a.failures - b.failures || a.index - b.index);
-      const selected = [...verified, ...unknown, ...transient];
+      const selected = requirePlaybackVerification
+        ? verified
+        : [...verified, ...unknown, ...transient];
       const limited = perChannelLimit < 0 ? selected : selected.slice(0, perChannelLimit);
       const urls = limited.map((item) => item.url);
       if (urls.length > 0) channels.push({ ...channel, urls });

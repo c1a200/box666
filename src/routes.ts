@@ -37,7 +37,7 @@ import {
 } from './core/quality';
 import { loadClientDistribution, saveClientDistribution, findClientAuthCode, normalizeClientDistributionConfig, createClientAuthCode } from './core/client-auth-store';
 import { mergeSourcePins, reconcileSourcePins, type SourcePinScopes } from './core/source-pins';
-import { formatLiveGroupsAsTxt, filterLivesBySourceDetailed } from './core/live-merger';
+import { applyChannelSpeedToGroups, formatLiveGroupsAsTxt, filterLivesBySourceDetailed, parseLiveGroupsFromTxt } from './core/live-merger';
 import { containsBlockedLiveUrl, isBlockedLiveSource, isBlockedLiveUrl } from './core/live-policy';
 import { autoNameFromUrl, backupTypeMismatch, createSourceBackup, extractBackupItems, parseSourceList } from './core/source-list-parser';
 import type { TVBoxConfig, TVBoxSite, SearchQuotaConfig, SiteQualityGrade, TVBoxLive, ClientAuthCode, ClientDistributionConfig, LiveDistributionConfig, SourceDistributionMode, SourceSelectionMode, ChannelProbeTrigger } from './core/types';
@@ -2533,6 +2533,7 @@ export function createApp(deps: AppDeps): Hono {
         ...headers,
       },
     });
+    const LIVE_SOURCE_FILTER_VERSION = 1;
 
     /**
      * 分离模式下发的 /live/<key> 只读聚合阶段预构建文本。
@@ -2557,8 +2558,12 @@ export function createApp(deps: AppDeps): Hono {
       const manifestRevision = manifest
         ? `${manifest.version}:${manifestEntry?.checkedAt || manifest.signature || 'none'}`
         : 'none';
+      // 测速表变化会推动统一输出重建并更新 runtime 版本；把它与清单修订号一起
+      // 放入缓存键，确保成功/失败状态变化后不会继续命中旧的已筛文本。
+      const runtimeRevision = (await storage.get(KV_LIVE_RUNTIME_TXT_VERSION)) || 'none';
+      const cacheRevision = `filter-${LIVE_SOURCE_FILTER_VERSION}:${runtimeRevision}:${manifestRevision}`;
       const cacheKey = cache
-        ? new Request(`https://live-cache.internal/live/${encodeURIComponent(key)}?v=${encodeURIComponent(manifestRevision)}`)
+        ? new Request(`https://live-cache.internal/live/${encodeURIComponent(key)}?v=${encodeURIComponent(cacheRevision)}`)
         : null;
       if (!canDistributeManifestEntry) {
         // Manifest 是唯一资格来源：即使 KV 中残留旧 live:<key>/live_txt:<key>，
@@ -2569,17 +2574,13 @@ export function createApp(deps: AppDeps): Hono {
       const cached = cacheKey ? await cache!.match(cacheKey) : undefined;
       if (cached) {
         const cachedText = await cached.clone().text();
-        if (cachedText.trim() && cachedText.includes('#genre#')) {
-          const rewritten = applyAuthPrefixToProxyUrls(cachedText, authContext);
-          const headers = new Headers(cached.headers);
-          headers.delete('content-length');
-          headers.delete('content-encoding');
-          headers.set('X-Live-Source-State', 'ready');
-          headers.set('X-Live-Source-Cache', 'hit');
-          headers.set('X-Live-Source-Prebuild', '1');
-          return new Response(rewritten, { status: 200, headers });
-        }
-        if (cacheKey) await cache!.delete(cacheKey);
+        const headers = new Headers(cached.headers);
+        headers.delete('content-length');
+        headers.delete('content-encoding');
+        headers.set('Cache-Control', 'no-store');
+        headers.set('X-Live-Source-Cache', 'hit');
+        // 缓存内容始终是已筛选文本；鉴权前缀只在返回客户端的最后一步添加。
+        return new Response(applyAuthPrefixToProxyUrls(cachedText, authContext), { status: 200, headers });
       }
 
       const source = await lookupLiveSource(key, storage);
@@ -2598,12 +2599,43 @@ export function createApp(deps: AppDeps): Hono {
         return emptyLiveSourceResponse('unavailable');
       }
 
-      const response = new Response(prebuilt, {
+      // 单源预构建文本只是候选池，不能直接下发。它与 /live 使用同一套
+      // 当前 probeVersion、播放验真、失败剔除、质量排序和严格条数上限。
+      const verifiedGroups = applyChannelSpeedToGroups(
+        parseLiveGroupsFromTxt(prebuilt),
+        await loadChannelSpeedMap(storage),
+        undefined,
+        6,
+        { requirePlaybackVerification: true },
+      );
+      const verifiedText = verifiedGroups.length > 0 ? formatLiveGroupsAsTxt(verifiedGroups) : '';
+      if (!verifiedText.trim() || !verifiedText.includes('#genre#')) {
+        if (cache && cacheKey) {
+          const cacheableEmpty = new Response('', {
+            status: 200,
+            headers: {
+              'Content-Type': 'text/plain; charset=utf-8',
+              'Cache-Control': 'public, max-age=60',
+              'Access-Control-Allow-Origin': '*',
+              'X-Live-Source-Filtered': '1',
+              'X-Live-Source-Prebuild': '1',
+              'X-Live-Source-State': 'unverified',
+            },
+          });
+          c.executionCtx.waitUntil(cache.put(cacheKey, cacheableEmpty));
+        }
+        return emptyLiveSourceResponse('unverified', {
+          'X-Live-Source-Filtered': '1',
+          'X-Live-Source-Prebuild': '1',
+        });
+      }
+
+      const cacheable = new Response(verifiedText, {
         status: 200,
         headers: {
           'Content-Type': 'text/plain; charset=utf-8',
-          // Prebuilt text can change when aggregation updates the source; avoid stale client cache.
-          'Cache-Control': 'no-store',
+          // 只缓存已筛选正文；版本化缓存键负责测速状态与清单变化时的失效。
+          'Cache-Control': 'public, max-age=300',
           'Access-Control-Allow-Origin': '*',
           'X-Live-Source-Filtered': '1',
           'X-Live-Source-Prebuild': '1',
@@ -2611,11 +2643,14 @@ export function createApp(deps: AppDeps): Hono {
         },
       });
       if (cache && cacheKey) {
-        c.executionCtx.waitUntil(cache.put(cacheKey, response.clone()));
+        c.executionCtx.waitUntil(cache.put(cacheKey, cacheable.clone()));
       }
-      return new Response(applyAuthPrefixToProxyUrls(prebuilt, authContext), {
+      const headers = new Headers(cacheable.headers);
+      headers.set('Cache-Control', 'no-store');
+      headers.set('X-Live-Source-Cache', 'miss');
+      return new Response(applyAuthPrefixToProxyUrls(verifiedText, authContext), {
         status: 200,
-        headers: response.headers,
+        headers,
       });
     };
     app.get('/live/:key', handleLiveSource);

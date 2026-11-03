@@ -183,6 +183,7 @@ function makeApp(overrides = {}) {
     ...(overrides.liveDistribution ? { live_distribution: JSON.stringify(overrides.liveDistribution) } : {}),
     ...(overrides.liveProxyManifest ? { live_proxy_manifest: JSON.stringify(overrides.liveProxyManifest) } : {}),
     ...(overrides.channelCandidateUrls ? { channel_candidate_urls: typeof overrides.channelCandidateUrls === 'string' ? overrides.channelCandidateUrls : JSON.stringify(overrides.channelCandidateUrls) } : {}),
+    ...(overrides.channelSpeedMap !== undefined ? { channel_speed_map: typeof overrides.channelSpeedMap === 'string' ? overrides.channelSpeedMap : JSON.stringify(overrides.channelSpeedMap) } : {}),
     ...(overrides.liveTextByKey
       ? Object.fromEntries(
           Object.entries(overrides.liveTextByKey).map(([key, text]) => [`live_txt:${key}`, text])
@@ -685,6 +686,10 @@ async function readSites(response) {
         { name: '旧分离入口', type: 0, url: 'https://box.example/live/abc12345' },
       ],
     };
+    const modeChannelSpeedMap = {
+      'https://live.example/cctv.m3u': { speedMs: 120, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 2 },
+      'https://live.example/hunan.m3u': { speedMs: 180, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 2 },
+    };
     const separated = makeApp({ mergedConfig: modeConfig, liveMergeMode: 'separated', liveProxyManifest: manifest });
     const separatedRoot = await (await separated.app.request('https://box.example/')).json();
     const separatedAuth = await (await separated.app.request('https://box.example/auth/code-a/')).json();
@@ -701,6 +706,7 @@ async function readSites(response) {
       liveMergeMode: 'merged',
       liveProxyManifest: manifest,
       channelCandidateUrls: modeCandidatePool,
+      channelSpeedMap: modeChannelSpeedMap,
     });
     const mergedRebuild = await merged.app.request('https://box.example/admin/live-distribution', {
       method: 'PUT',
@@ -722,8 +728,14 @@ async function readSites(response) {
       liveMergeMode: 'separated',
       liveProxyManifest: manifest,
       liveTextByKey: {
-        abc12345: '央视频道,#genre#\nCCTV1,https://live.example/cctv.m3u',
+        abc12345: '央视频道,#genre#\nCCTV1,https://live.example/cctv.m3u#https://live.example/cctv-unknown.m3u#https://live.example/cctv-tcp.m3u#https://live.example/cctv-backup.m3u',
         def67890: '卫视频道,#genre#\n湖南卫视,https://live.example/hunan.m3u',
+      },
+      channelSpeedMap: {
+        ...modeChannelSpeedMap,
+        'https://live.example/cctv-unknown.m3u': { speedMs: 10, probedAt: '2026-11-03T00:00:00.000Z', kind: 'unknown', probeVersion: 2 },
+        'https://live.example/cctv-tcp.m3u': { speedMs: 20, probedAt: '2026-11-03T00:00:00.000Z', kind: 'tcp', probeVersion: 2 },
+        'https://live.example/cctv-backup.m3u': { speedMs: 60, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'manifest', probeVersion: 2 },
       },
       config: { workerBaseUrl: '', localBaseUrl: 'https://render.example' },
     });
@@ -735,15 +747,23 @@ async function readSites(response) {
     assert(renderSeparatedJson.lives.length === 2, 'render separated /live.json must deliver every /live/<key> entry');
     assert(!JSON.stringify(renderSeparatedRoot).includes('{{BASE_URL}}'), 'render separated root must resolve BASE_URL placeholder');
     const renderLive = await renderSeparated.app.request('https://render.example/live/abc12345');
+    const renderLiveText = await renderLive.text();
     assert(renderLive.status === 200, 'render separated /live/<key> must be available, got ' + renderLive.status);
     assert((renderLive.headers.get('content-type') || '').includes('text/plain'), 'render separated /live/<key> must return text');
-    assert((await renderLive.text()).includes('#genre#'), 'render separated /live/<key> must return live text');
+    assert(renderLiveText.includes('#genre#'), 'render separated /live/<key> must return live text');
+    assert(renderLiveText.includes('https://live.example/cctv.m3u'), 'render separated /live/<key> must keep playback-verified lines');
+    assert(renderLiveText.includes('https://live.example/cctv-backup.m3u'), 'render separated /live/<key> must keep verified manifest fallbacks');
+    assert(!renderLiveText.includes('cctv-unknown') && !renderLiveText.includes('cctv-tcp'), 'render separated /live/<key> must omit unknown and TCP-only candidates');
+    const authRenderLive = await renderSeparated.app.request('https://render.example/auth/code-a/live/abc12345');
+    assert(authRenderLive.status === 200, 'auth separated /live/<key> must remain available');
+    assert((await authRenderLive.text()) === renderLiveText, 'root and auth separated links must use the same strict source text');
 
     const renderMerged = makeApp({
       mergedConfig: modeConfig,
       liveMergeMode: 'merged',
       liveProxyManifest: manifest,
       channelCandidateUrls: modeCandidatePool,
+      channelSpeedMap: modeChannelSpeedMap,
       config: { workerBaseUrl: '', localBaseUrl: 'https://render.example' },
     });
     const renderMergedRebuild = await renderMerged.app.request('https://render.example/admin/live-distribution', {
@@ -812,11 +832,16 @@ async function readSites(response) {
         },
       ],
     };
+    const coldStartSpeedMap = {
+      'https://live.example/cctv.m3u': { speedMs: 120, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 2 },
+      'https://live.example/hunan.m3u': { speedMs: 180, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 2 },
+    };
     const coldStart = makeApp({
       mergedConfig: { sites: mergedConfig.sites, lives: [] },
       liveMergeMode: 'merged',
       liveProxyManifest: coldStartManifest,
       channelCandidateUrls: coldStartCandidatePool,
+      channelSpeedMap: coldStartSpeedMap,
       config: { workerBaseUrl: '', localBaseUrl: 'https://render.example' },
     });
     const coldResponse = await coldStart.app.request('https://render.example/live');
@@ -853,11 +878,15 @@ async function readSites(response) {
         category: 'cctv',
       }],
     };
+    const duplicateChannelSpeedMap = Object.fromEntries(
+      duplicateUrls.map((url, index) => [url, { speedMs: 100 + index, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 2 }]),
+    );
     const duplicateChannelLive = makeApp({
       mergedConfig: { sites: mergedConfig.sites, lives: [] },
       liveMergeMode: 'merged',
       liveProxyManifest: duplicateChannelManifest,
       channelCandidateUrls: duplicateChannelPool,
+      channelSpeedMap: duplicateChannelSpeedMap,
       liveTextByKey: {
         'merge-limit-source': '央视,#genre#\nCCTV-1,' + duplicateUrls.join('#'),
       },
@@ -933,6 +962,7 @@ async function readSites(response) {
       liveMergeMode: 'merged',
       liveProxyManifest: coldStartManifest,
       channelCandidateUrls: coldStartCandidatePool,
+      channelSpeedMap: coldStartSpeedMap,
       liveDistribution: {
         selectionMode: 'category',
         maxSources: -1,

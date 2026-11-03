@@ -41,7 +41,7 @@ import { loadSpeedMap } from './channel-probe';
  * 分类、目录分页、频道名归一等纯展示逻辑发生变化时必须递增，
  * 否则持久化指纹不变，线上会继续命中旧 runtime TXT。
  */
-const LIVE_OUTPUT_FORMAT_VERSION = 5;
+const LIVE_OUTPUT_FORMAT_VERSION = 6;
 
 export interface RebuildLiveOutputOptions {
   reason?: string;
@@ -295,7 +295,13 @@ async function buildSnapshot(
     : selection.groups;
   const speedMap = await loadSpeedMap(storage);
   const runtimeGroups = canonicalGroups.length > 0
-    ? applyChannelSpeedToGroups(canonicalGroups, speedMap, undefined, runtimeChannelLimit)
+    ? applyChannelSpeedToGroups(
+      canonicalGroups,
+      speedMap,
+      undefined,
+      runtimeChannelLimit,
+      { requirePlaybackVerification: true },
+    )
     : [];
   const txt = runtimeGroups.length > 0
     ? formatAggregatedLiveGroupsAsTxt(runtimeGroups, mergedChannelLimit)
@@ -303,8 +309,8 @@ async function buildSnapshot(
 
   // 选中了源却无法生成任何频道，说明候选树映射或正文恢复失败。此时必须
   // 保留上一份有效缓存，不能把空结果和空指纹写回去。
-  if (selected.length > 0 && runtimeGroups.length === 0) {
-    throw new Error('Live output rebuild produced no groups for a non-empty selection');
+  if (selected.length > 0 && canonicalGroups.length === 0) {
+    throw new Error('Live output rebuild could not map a non-empty selection to candidate groups');
   }
   if (runtimeGroups.length > 0 && (!txt.trim() || !txt.includes('#genre#'))) {
     throw new Error('Live output rebuild produced invalid TXT');

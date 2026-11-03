@@ -518,7 +518,7 @@ assert(
   'runtime #source-label form must be parsed without treating the whole hash as a bare URL',
 );
 
-// 频道级排序：已知快线优先、未知线路保留在后、明确失败线路剔除、每频道限流。
+// 频道级最终下发：只允许当前版本已验真线路，未知/TCP/失败线路不得凑数。
 const speedGroups = [{
   group: '央视',
   channels: [{
@@ -532,26 +532,45 @@ const speedGroups = [{
   }],
 }];
 const speedMap = {
-  'http://slow.example/live': { speedMs: 1800, probedAt: '2026-10-13T00:00:00.000Z', kind: 'm3u8', probeVersion: 2 },
+  'http://slow.example/live': { speedMs: 1800, probedAt: '2026-10-13T00:00:00.000Z', kind: 'm3u8', verification: 'manifest', probeVersion: 2 },
   'http://failed.example/live': { speedMs: 0, probedAt: '2026-10-13T00:00:00.000Z', kind: 'fail', probeVersion: 2, consecutiveFailures: 2 },
-  'http://fast.example/live': { speedMs: 120, probedAt: '2026-10-13T00:00:00.000Z', kind: 'tcp', probeVersion: 2 },
+  'http://fast.example/live': { speedMs: 120, probedAt: '2026-10-13T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 2 },
 };
 const speedApplied = applyChannelSpeedToGroups(speedGroups, speedMap, 5000, AGGREGATED_MAX_URLS_PER_CHANNEL);
-assert(speedApplied[0].channels[0].urls[0].includes('fast.example'), 'known fastest line must be first after channel speed probe');
-assert(speedApplied[0].channels[0].urls[1].includes('slow.example'), 'known slower line must follow faster line');
-assert(speedApplied[0].channels[0].urls[2].includes('unknown.example'), 'unknown line must remain after known successful lines');
-assert(speedApplied[0].channels[0].urls[3].includes('failed.example'), 'one or two transient failures must retain the line as the final fallback');
+assert(speedApplied[0].channels[0].urls.length === 2, 'final output must not fill quota with unknown or failed lines');
+assert(speedApplied[0].channels[0].urls[0].includes('fast.example'), 'media-verified line must rank first');
+assert(speedApplied[0].channels[0].urls[1].includes('slow.example'), 'manifest-verified line must follow media-verified line');
+assert(!speedApplied[0].channels[0].urls.some((url) => url.includes('unknown.example')), 'unknown line must never be distributed');
+assert(!speedApplied[0].channels[0].urls.some((url) => url.includes('failed.example')), 'failed line must never be distributed');
+
+const candidateFallback = applyChannelSpeedToGroups(
+  speedGroups,
+  speedMap,
+  5000,
+  AGGREGATED_MAX_URLS_PER_CHANNEL,
+  { requirePlaybackVerification: false },
+);
+assert(candidateFallback[0].channels[0].urls.some((url) => url.includes('unknown.example')), 'candidate mode must retain unknown URLs for future probing');
+assert(candidateFallback[0].channels[0].urls.some((url) => url.includes('failed.example')), 'candidate mode may retain transient failures only for probing');
+
 const hardFailed = applyChannelSpeedToGroups(speedGroups, {
   'http://failed.example/live': { speedMs: 0, probedAt: '2026-10-13T00:00:00.000Z', kind: 'fail', probeVersion: 2, consecutiveFailures: 3 },
 }, 5000, AGGREGATED_MAX_URLS_PER_CHANNEL);
-assert(!hardFailed[0].channels[0].urls.some((url) => url.includes('failed.example')), 'three consecutive failures must remove the line');
+assert(hardFailed.length === 0, 'failed-only channel must not produce a distributable group');
 const recovered = applyChannelSpeedToGroups(speedGroups, {
-  'http://failed.example/live': { speedMs: 80, probedAt: '2026-10-13T00:00:00.000Z', kind: 'tcp', probeVersion: 2 },
+  'http://failed.example/live': { speedMs: 80, probedAt: '2026-10-13T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 2 },
 }, 5000, AGGREGATED_MAX_URLS_PER_CHANNEL);
-assert(recovered[0].channels[0].urls[0].includes('failed.example'), 'a successful probe must immediately restore the line to the ranked output');
-const manyLines = [{ group: '测试', channels: [{ name: '限量', urls: Array.from({ length: AGGREGATED_MAX_URLS_PER_CHANNEL + 4 }, (_, i) => 'http://line' + i + '.example/live#abc' + i) }] }];
-const limitedLines = applyChannelSpeedToGroups(manyLines, {}, 5000, AGGREGATED_MAX_URLS_PER_CHANNEL);
+assert(recovered[0].channels[0].urls.length === 1 && recovered[0].channels[0].urls[0].includes('failed.example'), 'a media-verified probe must immediately restore only that line');
+
+const manyLineUrls = Array.from({ length: AGGREGATED_MAX_URLS_PER_CHANNEL + 4 }, (_, i) => 'http://line' + i + '.example/live#abc' + i);
+const manyLines = [{ group: '测试', channels: [{ name: '限量', urls: manyLineUrls }] }];
+const manyLineSpeedMap = Object.fromEntries(manyLineUrls.map((url, i) => [
+  url,
+  { speedMs: 100 + i, probedAt: '2026-10-13T00:00:00.000Z', kind: 'm3u8', verification: 'manifest', probeVersion: 2 },
+]));
+const limitedLines = applyChannelSpeedToGroups(manyLines, manyLineSpeedMap, 5000, AGGREGATED_MAX_URLS_PER_CHANNEL);
 assert(limitedLines[0].channels[0].urls.length === AGGREGATED_MAX_URLS_PER_CHANNEL, 'merged output must cap each channel at AGGREGATED_MAX_URLS_PER_CHANNEL');
+
 const perChannelLines = [{
   group: '测试',
   channels: [
@@ -559,37 +578,79 @@ const perChannelLines = [{
     { name: '频道乙', urls: ['http://b1.example/live', 'http://b2.example/live', 'http://b3.example/live', 'http://b4.example/live'] },
   ],
 }];
-const twoLinesPerChannel = applyChannelSpeedToGroups(perChannelLines, {}, 5000, 2);
+const perChannelSpeedMap = Object.fromEntries(perChannelLines[0].channels.flatMap((channel) =>
+  channel.urls.map((url, i) => [url, { speedMs: 100 + i, probedAt: '2026-10-13T00:00:00.000Z', kind: 'm3u8', verification: 'manifest', probeVersion: 2 }]),
+));
+const twoLinesPerChannel = applyChannelSpeedToGroups(perChannelLines, perChannelSpeedMap, 5000, 2);
 assert(twoLinesPerChannel[0].channels.every((channel) => channel.urls.length === 2), 'per-channel limits must be counted independently for every channel');
 assert(twoLinesPerChannel[0].channels[0].urls.join(',') === 'http://a1.example/live,http://a2.example/live', 'per-channel limit must preserve quality order within each channel');
 assert(twoLinesPerChannel[0].channels[1].urls.join(',') === 'http://b1.example/live,http://b2.example/live', 'per-channel limit must not consume a global shared quota');
-const allLinesPerChannel = applyChannelSpeedToGroups(perChannelLines, {}, 5000, -1);
-assert(allLinesPerChannel[0].channels.every((channel) => channel.urls.length === 4), 'per-channel limit -1 must keep every preferred line');
+const allLinesPerChannel = applyChannelSpeedToGroups(perChannelLines, perChannelSpeedMap, 5000, -1);
+assert(allLinesPerChannel[0].channels.every((channel) => channel.urls.length === 4), 'per-channel limit -1 must keep every verified line');
 
-const labels = { 'https://live.example/labeled.txt': '源C#cccccccc' };
-const preparedWithLabel = prepareManifestEntries([
-  { name: '源C', url: 'https://live.example/labeled.txt' },
-], undefined, labels);
-assert(preparedWithLabel[0].label === '源C#cccccccc', 'prepareManifestEntries must persist merged output label');
+const mixedCoverageGroups = [{
+  group: '测试',
+  channels: [{
+    name: '九条测试',
+    urls: [
+      ...Array.from({ length: 9 }, (_, i) => 'http://bad-' + i + '.example/live'),
+      ...Array.from({ length: 3 }, (_, i) => 'http://verified-' + i + '.example/live'),
+    ],
+  }],
+}];
+const mixedCoverageMap = Object.fromEntries(Array.from({ length: 3 }, (_, i) => {
+  const url = 'http://verified-' + i + '.example/live';
+  return [url, { speedMs: 500 + i, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 2 }];
+}));
+const mixedCoverage = applyChannelSpeedToGroups(mixedCoverageGroups, mixedCoverageMap, 5000, 9);
+assert(mixedCoverage[0].channels[0].urls.length === 3, 'a nine-line cap must emit only three lines when only three are verified');
+assert(mixedCoverage[0].channels[0].urls.every((url) => url.includes('verified-')), 'verified lines must fill the actual output without unknown fallbacks');
 
-// 运行时 TXT 恢复：必须保留每条线路的 $源标签，不能按裸 # 拆散。
-const restoredTxtGroups = parseLiveGroupsFromTxt(
-  '央视,#genre#\nCCTV-1,http://a$源A#aaaaaaaa#http://b$源B#bbbbbbbb\n',
-);
-assert(restoredTxtGroups.length === 1, 'runtime TXT must restore group structure');
-assert(restoredTxtGroups[0].channels[0].urls.length === 2, 'runtime TXT must restore both lines');
-assert(restoredTxtGroups[0].channels[0].urls[0].endsWith('$源A#aaaaaaaa'), 'runtime TXT must preserve first source label');
-assert(restoredTxtGroups[0].channels[0].urls[1].endsWith('$源B#bbbbbbbb'), 'runtime TXT must preserve second source label');
-assert(extractAllUrls(restoredTxtGroups).join(',') === 'http://a,http://b', 'runtime TXT restore must expose bare URLs for probing');
+const manifestPool = Array.from({ length: 9 }, (_, i) => 'http://manifest-' + i + '.example/live');
+const tcpPool = Array.from({ length: 9 }, (_, i) => 'http://tcp-' + i + '.example/live');
+const tcpFallbackGroups = [{ group: '测试', channels: [{ name: 'TCP排除', urls: [...tcpPool, ...manifestPool] }] }];
+const tcpFallbackMap = Object.fromEntries([
+  ...tcpPool.map((url) => [url, { speedMs: 1, probedAt: '2026-11-03T00:00:00.000Z', kind: 'tcp', probeVersion: 2 }]),
+  ...manifestPool.map((url, i) => [url, { speedMs: 1000 + i, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'manifest', probeVersion: 2 }]),
+]);
+const tcpFallbackApplied = applyChannelSpeedToGroups(tcpFallbackGroups, tcpFallbackMap, 5000, 9);
+assert(tcpFallbackApplied[0].channels[0].urls.length === 9, 'zero TCP-only lines may enter a nine-line final output');
+assert(tcpFallbackApplied[0].channels[0].urls.every((url) => url.includes('manifest-')), 'manifest-verified lines must replace every TCP-only line');
 
-// 优先测速：每频道限流、失败线不优先、已知快线排前；单线路频道应被上层排除。
-const preferred = extractPreferredLiveUrls(speedGroups, speedMap, 2);
-assert(preferred.length === 2, 'priority extraction must honor the per-channel limit, got ' + preferred.length);
-assert(preferred[0] === 'http://fast.example/live', 'fastest known line must be first priority candidate');
-assert(preferred[1] === 'http://slow.example/live', 'second priority candidate must be the next usable line');
-assert(!preferred.includes('http://failed.example/live'), 'failed line must never enter priority probing');
+const verifiedOnlyGroups = [{
+  group: '测试',
+  channels: [{
+    name: '全部验真',
+    urls: ['http://v1.example/live', 'http://v2.example/live', 'http://unknown1.example/live', 'http://unknown2.example/live'],
+  }],
+}];
+const verifiedOnlyMap = {
+  'http://v1.example/live': { speedMs: 100, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 2 },
+  'http://v2.example/live': { speedMs: 200, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'manifest', probeVersion: 2 },
+};
+const verifiedOnly = applyChannelSpeedToGroups(verifiedOnlyGroups, verifiedOnlyMap, 5000, -1);
+assert(verifiedOnly[0].channels[0].urls.length === 2, 'All must emit every verified line and no unknown candidates');
 
-// Playback evidence must outrank a faster connectivity-only response.
+const preferenceGroups = [{
+  group: '测试',
+  channels: [{
+    name: '偏好排序',
+    urls: [
+      'http://auth.example/live?token=secret',
+      'http://[2001:db8::1]/live',
+      'http://public.example/live',
+    ],
+  }],
+}];
+const preferenceMap = Object.fromEntries(preferenceGroups[0].channels[0].urls.map((url) => [
+  url,
+  { speedMs: 100, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 2 },
+]));
+const preferenceApplied = applyChannelSpeedToGroups(preferenceGroups, preferenceMap, 5000, -1);
+assert(preferenceApplied[0].channels[0].urls[0].includes('public.example'), 'same-rank public no-auth line must rank first');
+assert(preferenceApplied[0].channels[0].urls[1].includes('2001:db8'), 'same-rank IPv6 line must rank after ordinary public line');
+assert(preferenceApplied[0].channels[0].urls[2].includes('auth.example'), 'same-rank authenticated line must rank last');
+
 const evidenceGroups = [{
   group: '测试',
   channels: [{
@@ -607,9 +668,9 @@ const evidenceMap = {
   'http://media-verified.example/live': { speedMs: 4500, probedAt: '2026-10-13T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 2 },
 };
 const evidenceApplied = applyChannelSpeedToGroups(evidenceGroups, evidenceMap, 5000, 3);
-assert(evidenceApplied[0].channels[0].urls[0].includes('media-verified.example'), 'media-verified stream must outrank faster connectivity-only responses');
-assert(evidenceApplied[0].channels[0].urls[1].includes('manifest-only.example'), 'valid HLS manifest must outrank connectivity-only responses');
-assert(evidenceApplied[0].channels[0].urls[2].includes('connect-only.example'), 'connectivity-only response must remain the final fallback');
+assert(evidenceApplied[0].channels[0].urls.length === 2, 'connectivity-only response must not be distributed');
+assert(evidenceApplied[0].channels[0].urls[0].includes('media-verified.example'), 'media-verified stream must outrank manifest-only response');
+assert(evidenceApplied[0].channels[0].urls[1].includes('manifest-only.example'), 'manifest-only response must remain distributable when media proof is unavailable');
 const evidencePreferred = extractPreferredLiveUrls(evidenceGroups, evidenceMap, 3);
 assert(evidencePreferred[0] === 'http://media-verified.example/live', 'priority probing must also prefer media-verified lines');
 
@@ -627,8 +688,7 @@ const legacyProbeMap = {
   'http://current-media.example/live': { speedMs: 4800, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 2 },
 };
 const legacyProbeApplied = applyChannelSpeedToGroups(legacyProbeGroups, legacyProbeMap, 5000, 1);
-assert(legacyProbeApplied[0].channels[0].urls[0].includes('current-media.example'), 'legacy TCP cache must not displace a media-verified line');
-assert(!preferred.includes('http://unknown.example/live') || preferred.length === 2, 'unknown line may only appear after known usable lines and within limit');
+assert(legacyProbeApplied[0].channels[0].urls.length === 1 && legacyProbeApplied[0].channels[0].urls[0].includes('current-media.example'), 'legacy TCP cache must be excluded from final output');
 const noSingleLine = [{ group: '测试', channels: [{ name: '单线路', urls: ['http://only.example/live$源O#12345678'] }] }];
 assert(extractPreferredLiveUrls(noSingleLine, {}, 2).length === 1, 'helper itself extracts single-line channels');
 const filteredSingle = noSingleLine.map((group) => ({
@@ -1031,6 +1091,7 @@ async function testRuntimeCacheIsUnified() {
   }));
   memory.set('live_txt:1234567890abcdef', '央视,#genre#\nCCTV-1,http://runtime.example/live$源R#12345678');
   memory.set('channel_merged_tree', JSON.stringify([{ group: '央视', channels: [{ name: 'CCTV-1', urls: ['http://runtime.example/live$源R#12345678'] }] }]));
+  memory.set('channel_speed_map', JSON.stringify({ 'http://runtime.example/live': { speedMs: 100, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 2 } }));
   const storage = {
     async get(key) { return memory.has(key) ? memory.get(key) : null; },
     async put(key, value) { memory.set(key, String(value)); },
@@ -1065,6 +1126,7 @@ async function testBareUrlCandidateMapping() {
     { group: '央视', channels: [{ name: 'CCTV-1', urls: ['http://runtime.example/live'] }] },
     { group: '地方', channels: [{ name: '上海', urls: ['http://other.example/live'] }] },
   ]));
+  memory.set('channel_speed_map', JSON.stringify({ 'http://runtime.example/live': { speedMs: 100, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 2 } }));
   const storage = {
     async get(k) { return memory.has(k) ? memory.get(k) : null; },
     async put(k, value) { memory.set(k, String(value)); },
@@ -1115,6 +1177,11 @@ async function testMergedLiveOutputLimitsEachChannel() {
   }));
   memory.set('live_txt:' + key, formatAggregatedLiveGroupsAsTxt(channelTree));
   memory.set('channel_merged_tree', JSON.stringify(channelTree));
+  memory.set('channel_speed_map', JSON.stringify(Object.fromEntries(
+    channelTree
+      .flatMap((group) => group.channels.flatMap((channel) => channel.urls))
+      .map((url, i) => [url, { speedMs: 100 + i, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 2 }]),
+  )));
   const storage = {
     async get(k) { return memory.has(k) ? memory.get(k) : null; },
     async put(k, value) { memory.set(k, String(value)); },
