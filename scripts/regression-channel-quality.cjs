@@ -33,6 +33,7 @@ const {
   markChannelProbeRun,
   saveChannelProbeSchedule,
 } = bundle('src/core/channel-probe-schedule.ts', 'channel-probe-schedule');
+const { shouldSyncToRemote } = bundle('src/storage/hybrid.ts', 'channel-probe-storage');
 const {
   applyChannelSpeedToGroups,
   mergeLivesToNative,
@@ -214,6 +215,8 @@ function testChannelProbeScheduleCalculation() {
 async function testChannelProbeSchedulePersistenceAndDueChecks() {
   const timeZone = 'Asia/Shanghai';
   const initialTime = '06:30';
+  assert(shouldSyncToRemote('channel_probe_schedule'),
+    'the channel probe schedule must be persisted to remote KV across deployments');
   const migrationStorage = memoryStorage({ channel_probe_interval: '1440' });
   const migrated = await loadChannelProbeSchedule(
     migrationStorage,

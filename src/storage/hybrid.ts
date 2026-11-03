@@ -48,6 +48,7 @@ export const CRITICAL_STORAGE_KEYS = new Set<string>([
   'bg_settings',
   'channel_probe_enabled',
   'channel_probe_interval',
+  'channel_probe_schedule',
   'search_quality_schedule',
 ]);
 
