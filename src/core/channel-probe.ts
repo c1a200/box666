@@ -37,6 +37,7 @@ import {
   normalizeSourceLabelKey,
   parseLiveCandidatePool,
   parseLiveGroupsFromTxt,
+  mergeAggregatedLiveGroups,
 } from './live-merger';
 import { rebuildLiveOutput } from './live-output';
 import { isLiveProxyEntryDistributable, listAllLiveProxyEntries, liveProxyEntryLabel } from './live-source';
@@ -48,6 +49,7 @@ import {
   pruneExpired,
   selectProbeCandidates,
   CHANNEL_FAILURE_RETRY_MS,
+  CHANNEL_PROBE_RESULT_VERSION,
 } from './live-speed-store';
 
 // ─── 开关/状态 ─────────────────────────────────────────
@@ -147,137 +149,261 @@ function resolvePlaylistUrl(raw: string, base: string): string {
 
 function hlsMediaCandidates(playlist: string, base: string): string[] {
   const candidates: string[] = [];
+  const seen = new Set<string>();
   for (const raw of playlist.split(/\r?\n/)) {
     const line = raw.trim();
-    if (!line || line.startsWith("#")) continue;
+    if (!line || line.startsWith('#')) continue;
     const resolved = resolvePlaylistUrl(line, base);
-    if (resolved) candidates.push(resolved);
+    if (!resolved || seen.has(resolved)) continue;
+    seen.add(resolved);
+    candidates.push(resolved);
     if (candidates.length >= 4) break;
   }
   return candidates;
 }
 
 function isHlsPlaylist(text: string): boolean {
-  return /#EXTM3U/i.test(text) && /#EXT-X-(?:STREAM-INF|MEDIA-SEQUENCE|TARGETDURATION)/i.test(text);
+  return /#EXTM3U/i.test(text)
+    && /#EXT-X-(?:STREAM-INF|MEDIA-SEQUENCE|TARGETDURATION|EXTINF)/i.test(text);
 }
 
-async function fetchTextHead(url: string, maxBytes: number, signal: AbortSignal): Promise<string> {
-  const resp = await fetch(url, { signal, headers: { 'User-Agent': TVBOX_UA } });
-  if (!resp.ok) throw Object.assign(new Error('http'), { failureReason: 'http' });
+function probeRequestHeaders(referer?: string): Record<string, string> {
+  const headers: Record<string, string> = {
+    'User-Agent': TVBOX_UA,
+    Accept: 'application/vnd.apple.mpegurl, application/x-mpegURL, video/mp2t, video/*, */*',
+    'Accept-Encoding': 'identity',
+  };
+  if (referer) headers.Referer = referer;
+  return headers;
+}
+
+async function readResponseHead(resp: Response, maxBytes: number): Promise<Uint8Array> {
   const reader = resp.body?.getReader();
-  if (!reader) return "";
+  if (!reader) return new Uint8Array();
   const chunks: Uint8Array[] = [];
   let total = 0;
   try {
     while (total < maxBytes) {
       const { done, value } = await reader.read();
       if (done) break;
-      if (!value) continue;
-      chunks.push(value);
-      total += value.length;
+      if (!value || value.length === 0) continue;
+      const take = Math.min(value.length, maxBytes - total);
+      chunks.push(value.subarray(0, take));
+      total += take;
+      if (take < value.length) break;
     }
   } finally {
     reader.cancel().catch(() => {});
   }
-  const merged = new Uint8Array(Math.min(total, maxBytes));
+  const merged = new Uint8Array(total);
   let offset = 0;
   for (const chunk of chunks) {
-    const take = Math.min(chunk.length, merged.length - offset);
-    merged.set(chunk.subarray(0, take), offset);
-    offset += take;
-    if (offset >= merged.length) break;
+    merged.set(chunk, offset);
+    offset += chunk.length;
   }
-  return new TextDecoder().decode(merged);
+  return merged;
 }
 
-async function verifyHlsPlayback(url: string, startedAt: number, controller: AbortController): Promise<ProbeResult> {
-  const playlist = await fetchTextHead(url, 512 * 1024, controller.signal);
-  if (!isHlsPlaylist(playlist)) {
-    return { url, speedMs: 0, kind: 'fail', failureReason: 'invalid' };
+interface FetchHeadResult {
+  bytes: Uint8Array;
+  text: string;
+  contentType: string;
+}
+
+async function fetchHead(
+  url: string,
+  maxBytes: number,
+  signal: AbortSignal,
+  referer?: string,
+): Promise<FetchHeadResult> {
+  const resp = await fetch(url, {
+    signal,
+    headers: probeRequestHeaders(referer),
+  });
+  if (!resp.ok) throw Object.assign(new Error('http'), { failureReason: 'http' });
+  const bytes = await readResponseHead(resp, maxBytes);
+  return {
+    bytes,
+    text: new TextDecoder().decode(bytes),
+    contentType: resp.headers.get('content-type') || '',
+  };
+}
+
+function looksLikeHtml(bytes: Uint8Array): boolean {
+  if (bytes.length === 0) return false;
+  const head = new TextDecoder().decode(bytes.slice(0, Math.min(bytes.length, 2048)));
+  return /<(?:!doctype\s+html|html|head|body)\b|cloudflare|attention required|error\s+5\d\d/i.test(head);
+}
+
+function isTsPacketHead(bytes: Uint8Array): boolean {
+  if (bytes.length < 188 * 3) return false;
+  // One 0x47 byte has a high random false-positive rate. Require three packet
+  // sync bytes at the MPEG-TS packet stride, allowing a short transport prefix.
+  const limit = Math.min(bytes.length - 188 * 3, 940);
+  for (let offset = 0; offset <= limit; offset += 1) {
+    if (bytes[offset] === 0x47
+      && bytes[offset + 188] === 0x47
+      && bytes[offset + 376] === 0x47) {
+      return true;
+    }
   }
-  const ttfb = Date.now() - startedAt;
-  const candidates = hlsMediaCandidates(playlist, url);
+  return false;
+}
+
+function looksLikePlayableMedia(bytes: Uint8Array, contentType: string): boolean {
+  if (bytes.length < 4 || looksLikeHtml(bytes)) return false;
+  if (isTsPacketHead(bytes)) return true;
+
+  // FLV, fragmented MP4, WebM and ADTS/MPEG audio are common live payloads.
+  if (bytes[0] === 0x46 && bytes[1] === 0x4c && bytes[2] === 0x56) return true;
+  for (let offset = 0; offset <= Math.min(28, bytes.length - 8); offset += 4) {
+    const box = String.fromCharCode(
+      bytes[offset + 4],
+      bytes[offset + 5],
+      bytes[offset + 6],
+      bytes[offset + 7],
+    );
+    if (box === 'ftyp' || box === 'styp' || box === 'moof') return true;
+  }
+  if (bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3) return true;
+  if (bytes[0] === 0xff && (bytes[1] & 0xf6) === 0xf0) return true;
+
+  // Content-Type alone is weak evidence, but useful for unusual container bytes
+  // after HTML/error and empty responses have already been rejected.
+  if (/^video\//i.test(contentType)) return bytes.length >= 188;
+  return /^audio\//i.test(contentType);
+}
+
+async function hasAnotherPlayableSegment(
+  candidates: readonly string[],
+  current: string,
+  signal: AbortSignal,
+  referer: string,
+): Promise<boolean> {
+  const currentIndex = candidates.indexOf(current);
+  const ordered = [
+    ...candidates.slice(currentIndex + 1),
+    ...candidates.slice(0, Math.max(0, currentIndex)),
+  ].filter((candidate) => candidate !== current);
+  for (const candidate of ordered) {
+    if (await mediaHeadIsPlayable(candidate, signal, referer)) return true;
+  }
+  return false;
+}
+
+async function mediaHeadIsPlayable(
+  url: string,
+  signal: AbortSignal,
+  referer: string,
+): Promise<boolean> {
+  try {
+    const head = await fetchHead(url, 512 * 1024, signal, referer);
+    return !isHlsPlaylist(head.text) && looksLikePlayableMedia(head.bytes, head.contentType);
+  } catch {
+    return false;
+  }
+}
+
+async function verifyHlsPlaylist(
+  url: string,
+  startedAt: number,
+  signal: AbortSignal,
+  depth = 0,
+  referer?: string,
+): Promise<ProbeResult> {
+  const playlistUrl = resolvePlaylistUrl(url, referer || url) || url;
+  const playlist = await fetchHead(playlistUrl, 512 * 1024, signal, referer);
+  if (!isHlsPlaylist(playlist.text)) {
+    return { url: playlistUrl, speedMs: 0, kind: 'fail', failureReason: 'invalid' };
+  }
+  const candidates = hlsMediaCandidates(playlist.text, playlistUrl);
   if (candidates.length === 0) {
-    return { url, speedMs: ttfb, kind: 'm3u8', verification: 'manifest' };
+    // A playlist with no variant/segment URI cannot provide a playable stream.
+    return { url: playlistUrl, speedMs: 0, kind: 'fail', failureReason: 'invalid' };
   }
+
+  let validChildManifest = false;
   for (const candidate of candidates) {
     try {
-      const isChildPlaylist = /\.m3u8(?:\?|$)/i.test(candidate);
-      if (isChildPlaylist) {
-        const child = await fetchTextHead(candidate, 512 * 1024, controller.signal);
-        if (!isHlsPlaylist(child)) continue;
-        const media = hlsMediaCandidates(child, candidate)[0];
-        if (!media) return { url, speedMs: Date.now() - startedAt, kind: 'm3u8', verification: 'manifest' };
-        const resp = await fetch(media, { signal: controller.signal, headers: { 'User-Agent': TVBOX_UA } });
-        if (resp.ok) {
-          const reader = resp.body?.getReader();
-          const first = reader ? await reader.read() : { value: undefined };
-          reader?.cancel().catch(() => {});
-          if (first.value && first.value.length > 0) {
-            return { url, speedMs: Date.now() - startedAt, kind: 'm3u8', verification: 'media' };
-          }
+      const head = await fetchHead(candidate, 512 * 1024, signal, playlistUrl);
+      if (isHlsPlaylist(head.text)) {
+        validChildManifest = true;
+        if (depth < 2) {
+          const nested = await verifyHlsPlaylist(candidate, startedAt, signal, depth + 1, playlistUrl);
+          if (nested.kind !== 'fail') return nested;
         }
-      } else {
-        const resp = await fetch(candidate, { signal: controller.signal, headers: { 'User-Agent': TVBOX_UA } });
-        if (!resp.ok) continue;
-        const reader = resp.body?.getReader();
-        const first = reader ? await reader.read() : { value: undefined };
-        reader?.cancel().catch(() => {});
-        if (first.value && first.value.length > 0) {
-          return { url, speedMs: Date.now() - startedAt, kind: 'm3u8', verification: 'media' };
-        }
+        continue;
       }
+      if (!looksLikePlayableMedia(head.bytes, head.contentType)) continue;
+
+      // A live playlist normally exposes several media segments. Require the
+      // next distinct segment too when available so stale/error payloads cannot
+      // mark the whole line playable after one successful response.
+      if (candidates.length > 1) {
+        if (!(await hasAnotherPlayableSegment(candidates, candidate, signal, playlistUrl))) continue;
+      }
+      return { url: playlistUrl, speedMs: Date.now() - startedAt, kind: 'm3u8', verification: 'media' };
     } catch (err) {
-      if (controller.signal.aborted) {
-        return { url, speedMs: 0, kind: 'fail', failureReason: 'timeout' };
+      if (signal.aborted) {
+        return { url: playlistUrl, speedMs: 0, kind: 'fail', failureReason: 'timeout' };
       }
     }
   }
-  return { url, speedMs: 0, kind: 'fail', failureReason: 'invalid' };
+  return validChildManifest
+    ? { url: playlistUrl, speedMs: Date.now() - startedAt, kind: 'm3u8', verification: 'manifest' }
+    : { url: playlistUrl, speedMs: 0, kind: 'fail', failureReason: 'invalid' };
+}
+
+async function verifyHlsPlayback(url: string, startedAt: number, signal: AbortSignal): Promise<ProbeResult> {
+  const result = await verifyHlsPlaylist(url, startedAt, signal);
+  return result.url === url ? result : { ...result, url };
 }
 
 async function probeSingle(url: string, timeoutMs = CHANNEL_PROBE_TIMEOUT_MS): Promise<ProbeResult> {
   const isM3U8 = /\.m3u8(?:\?|$)/i.test(url);
-  const isTs = /\.(?:ts|flv|mp4)(?:\?|$)/i.test(url);
+  const isDeclaredMedia = /\.(?:ts|flv|mp4)(?:\?|$)/i.test(url);
 
   const controller = new AbortController();
-  const effectiveTimeoutMs = Math.max(500, timeoutMs);
+  const requestedTimeoutMs = Math.max(500, timeoutMs);
+  // A playlist -> child -> media check has multiple network hops. Give unknown
+  // and HLS endpoints a larger deadline instead of killing a healthy slow chain.
+  const effectiveTimeoutMs = isDeclaredMedia ? requestedTimeoutMs : requestedTimeoutMs * 2;
   const start = Date.now();
   let timer: ReturnType<typeof setTimeout> | undefined;
 
   try {
     const attempt = async (): Promise<ProbeResult> => {
-      if (isM3U8) return verifyHlsPlayback(url, start, controller);
+      if (isM3U8) return verifyHlsPlayback(url, start, controller.signal);
 
       const resp = await fetch(url, {
         signal: controller.signal,
-        headers: { 'User-Agent': TVBOX_UA },
+        headers: probeRequestHeaders(),
       });
       const ttfb = Date.now() - start;
-
       if (!resp.ok) {
         return { url, speedMs: 0, kind: 'fail', failureReason: 'http' };
       }
 
-      const reader = resp.body?.getReader();
-      if (!reader) return { url, speedMs: ttfb, kind: 'tcp' };
-
-      try {
-        const { value } = await reader.read();
-        if (!value) return { url, speedMs: ttfb, kind: 'tcp' };
-
-        if (isTs) {
-          const end = Math.min(4096, value.length);
-          for (let i = 0; i < end; i += 188) {
-            if (value[i] === 0x47) return { url, speedMs: ttfb, kind: 'ts' };
-          }
-          return { url, speedMs: ttfb, kind: 'tcp' };
-        }
-
-        return { url, speedMs: ttfb, kind: 'tcp' };
-      } finally {
-        reader.cancel().catch(() => {});
+      const bytes = await readResponseHead(resp, 64 * 1024);
+      const contentType = resp.headers.get('content-type') || '';
+      if (bytes.length === 0) {
+        return { url, speedMs: 0, kind: 'fail', failureReason: 'invalid' };
       }
+
+      const text = new TextDecoder().decode(bytes);
+      if (isHlsPlaylist(text)) {
+        return verifyHlsPlayback(url, start, controller.signal);
+      }
+      if (looksLikeHtml(bytes) || /^text\//i.test(contentType)) {
+        return { url, speedMs: 0, kind: 'fail', failureReason: 'invalid' };
+      }
+      if (looksLikePlayableMedia(bytes, contentType)) {
+        return { url, speedMs: ttfb, kind: 'ts', verification: 'media' };
+      }
+      if (isDeclaredMedia) {
+        return { url, speedMs: 0, kind: 'fail', failureReason: 'invalid' };
+      }
+      return { url, speedMs: ttfb, kind: 'tcp' };
     };
 
     // AbortController normally stops fetch and stream reads. Promise.race is a
@@ -296,6 +422,7 @@ async function probeSingle(url: string, timeoutMs = CHANNEL_PROBE_TIMEOUT_MS): P
     if (timer) clearTimeout(timer);
   }
 }
+
 // ─── 并发池 ────────────────────────────────────────────
 
 async function runWithConcurrency<T, R>(
@@ -410,7 +537,7 @@ export async function probeLiveUrlsBounded(
   const budgetMs = Math.max(1000, Math.min(60000, options.budgetMs ?? 25000));
   const startedAt = Date.now();
 
-  const groups = await loadCandidateTree(storage);
+  const groups = mergeAggregatedLiveGroups(await loadCandidateTree(storage));
   const allUrls = extractAllUrls(groups);
   if (allUrls.length === 0) {
     return { candidates: 0, probed: 0, success: 0, failed: 0, skipped: true };
@@ -465,11 +592,17 @@ export async function probeLiveUrlsBounded(
   for (const result of results) {
     const previous = speedMap[result.url];
     const isFailed = result.kind === 'fail';
-    if (!previous || previous.kind !== result.kind) stateChanged = true;
+    if (!previous
+      || previous.kind !== result.kind
+      || previous.verification !== result.verification
+      || previous.probeVersion !== CHANNEL_PROBE_RESULT_VERSION) {
+      stateChanged = true;
+    }
     speedMap[result.url] = {
       speedMs: result.speedMs,
       probedAt,
       kind: result.kind,
+      probeVersion: CHANNEL_PROBE_RESULT_VERSION,
       ...(result.verification ? { verification: result.verification } : {}),
       ...(result.failureReason ? { failureReason: result.failureReason } : {}),
       ...(isFailed ? { consecutiveFailures: (previous?.consecutiveFailures || 0) + 1 } : {}),
@@ -514,7 +647,7 @@ export async function runChannelProbe(
     return loadStatus(storage);
   }
 
-  const groups = await loadCandidateTree(storage);
+  const groups = mergeAggregatedLiveGroups(await loadCandidateTree(storage));
   if (groups.length === 0) {
     const status: ChannelProbeStatus = {
       state: 'error',
@@ -562,21 +695,24 @@ export async function runChannelProbe(
     if (label) selectedLabels.add(normalizeSourceLabelKey(label));
   }
 
-  // 优先集合的用途是“尽快让真正进入下发的频道线路得到速度证据”，
-  // 不是“把所选源的全部线路先测一遍”。单线路频道没有线路选择价值，
-  // 因此优先阶段只覆盖多线路频道，每频道最多取前 2 条；其余线路均由后台补测。
+  // Cover enough of each multi-line channel that bad/duplicate entries cannot
+  // consume every priority slot before a genuinely playable line is tested.
   const speedMap = pruneExpired(await loadSpeedMap(storage));
+  const configuredLimit = config.maxUrlsPerChannel;
+  const priorityLimit = configuredLimit > 0 ? Math.max(2, configuredLimit * 2) : 18;
   const runtimeTxt = await storage.get(KV_LIVE_MERGED_TXT);
-  const currentFrontier = runtimeTxt ? parseLiveGroupsFromTxt(runtimeTxt) : [];
+  const currentFrontier = runtimeTxt
+    ? mergeAggregatedLiveGroups(parseLiveGroupsFromTxt(runtimeTxt))
+    : [];
   const priority = new Set<string>();
-  const multiLineOnly = (source: readonly TVBoxLiveGroup[]): TVBoxLiveGroup[] =>
-    source
+  const multiLineOnly = (sourceGroups: readonly TVBoxLiveGroup[]): TVBoxLiveGroup[] =>
+    sourceGroups
       .map((group) => ({
         group: group.group,
         channels: (group.channels || []).filter((channel) => (channel.urls || []).length > 1),
       }))
       .filter((group) => group.channels.length > 0);
-  for (const url of extractPreferredLiveUrls(multiLineOnly(currentFrontier), speedMap, 2)) {
+  for (const url of extractPreferredLiveUrls(multiLineOnly(currentFrontier), speedMap, priorityLimit)) {
     priority.add(url);
   }
 
@@ -591,7 +727,7 @@ export async function runChannelProbe(
         urls: (channel.urls || []).filter((url) => selectedBareUrls.has(bareLiveSourceUrl(url))),
       })),
     }));
-    for (const url of extractPreferredLiveUrls(multiLineOnly(selectedCandidateGroups), speedMap, 2)) {
+    for (const url of extractPreferredLiveUrls(multiLineOnly(selectedCandidateGroups), speedMap, priorityLimit)) {
       priority.add(url);
     }
   }
@@ -675,6 +811,7 @@ export async function runChannelProbe(
           speedMs: result.speedMs,
           probedAt,
           kind: result.kind,
+          probeVersion: CHANNEL_PROBE_RESULT_VERSION,
           ...(result.verification ? { verification: result.verification } : {}),
           ...(result.failureReason ? { failureReason: result.failureReason } : {}),
           ...(failed ? { consecutiveFailures: (previous?.consecutiveFailures || 0) + 1 } : {}),

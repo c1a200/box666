@@ -532,9 +532,9 @@ const speedGroups = [{
   }],
 }];
 const speedMap = {
-  'http://slow.example/live': { speedMs: 1800, probedAt: '2026-10-13T00:00:00.000Z', kind: 'm3u8' },
-  'http://failed.example/live': { speedMs: 0, probedAt: '2026-10-13T00:00:00.000Z', kind: 'fail', consecutiveFailures: 2 },
-  'http://fast.example/live': { speedMs: 120, probedAt: '2026-10-13T00:00:00.000Z', kind: 'tcp' },
+  'http://slow.example/live': { speedMs: 1800, probedAt: '2026-10-13T00:00:00.000Z', kind: 'm3u8', probeVersion: 2 },
+  'http://failed.example/live': { speedMs: 0, probedAt: '2026-10-13T00:00:00.000Z', kind: 'fail', probeVersion: 2, consecutiveFailures: 2 },
+  'http://fast.example/live': { speedMs: 120, probedAt: '2026-10-13T00:00:00.000Z', kind: 'tcp', probeVersion: 2 },
 };
 const speedApplied = applyChannelSpeedToGroups(speedGroups, speedMap, 5000, AGGREGATED_MAX_URLS_PER_CHANNEL);
 assert(speedApplied[0].channels[0].urls[0].includes('fast.example'), 'known fastest line must be first after channel speed probe');
@@ -542,11 +542,11 @@ assert(speedApplied[0].channels[0].urls[1].includes('slow.example'), 'known slow
 assert(speedApplied[0].channels[0].urls[2].includes('unknown.example'), 'unknown line must remain after known successful lines');
 assert(speedApplied[0].channels[0].urls[3].includes('failed.example'), 'one or two transient failures must retain the line as the final fallback');
 const hardFailed = applyChannelSpeedToGroups(speedGroups, {
-  'http://failed.example/live': { speedMs: 0, probedAt: '2026-10-13T00:00:00.000Z', kind: 'fail', consecutiveFailures: 3 },
+  'http://failed.example/live': { speedMs: 0, probedAt: '2026-10-13T00:00:00.000Z', kind: 'fail', probeVersion: 2, consecutiveFailures: 3 },
 }, 5000, AGGREGATED_MAX_URLS_PER_CHANNEL);
 assert(!hardFailed[0].channels[0].urls.some((url) => url.includes('failed.example')), 'three consecutive failures must remove the line');
 const recovered = applyChannelSpeedToGroups(speedGroups, {
-  'http://failed.example/live': { speedMs: 80, probedAt: '2026-10-13T00:00:00.000Z', kind: 'tcp' },
+  'http://failed.example/live': { speedMs: 80, probedAt: '2026-10-13T00:00:00.000Z', kind: 'tcp', probeVersion: 2 },
 }, 5000, AGGREGATED_MAX_URLS_PER_CHANNEL);
 assert(recovered[0].channels[0].urls[0].includes('failed.example'), 'a successful probe must immediately restore the line to the ranked output');
 const manyLines = [{ group: '测试', channels: [{ name: '限量', urls: Array.from({ length: AGGREGATED_MAX_URLS_PER_CHANNEL + 4 }, (_, i) => 'http://line' + i + '.example/live#abc' + i) }] }];
@@ -588,6 +588,46 @@ assert(preferred.length === 2, 'priority extraction must honor the per-channel l
 assert(preferred[0] === 'http://fast.example/live', 'fastest known line must be first priority candidate');
 assert(preferred[1] === 'http://slow.example/live', 'second priority candidate must be the next usable line');
 assert(!preferred.includes('http://failed.example/live'), 'failed line must never enter priority probing');
+
+// Playback evidence must outrank a faster connectivity-only response.
+const evidenceGroups = [{
+  group: '测试',
+  channels: [{
+    name: '验真排序',
+    urls: [
+      'http://connect-only.example/live#源C#30303030',
+      'http://manifest-only.example/live#源M#31313131',
+      'http://media-verified.example/live#源V#32323232',
+    ],
+  }],
+}];
+const evidenceMap = {
+  'http://connect-only.example/live': { speedMs: 20, probedAt: '2026-10-13T00:00:00.000Z', kind: 'tcp', probeVersion: 2 },
+  'http://manifest-only.example/live': { speedMs: 10, probedAt: '2026-10-13T00:00:00.000Z', kind: 'm3u8', verification: 'manifest', probeVersion: 2 },
+  'http://media-verified.example/live': { speedMs: 4500, probedAt: '2026-10-13T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 2 },
+};
+const evidenceApplied = applyChannelSpeedToGroups(evidenceGroups, evidenceMap, 5000, 3);
+assert(evidenceApplied[0].channels[0].urls[0].includes('media-verified.example'), 'media-verified stream must outrank faster connectivity-only responses');
+assert(evidenceApplied[0].channels[0].urls[1].includes('manifest-only.example'), 'valid HLS manifest must outrank connectivity-only responses');
+assert(evidenceApplied[0].channels[0].urls[2].includes('connect-only.example'), 'connectivity-only response must remain the final fallback');
+const evidencePreferred = extractPreferredLiveUrls(evidenceGroups, evidenceMap, 3);
+assert(evidencePreferred[0] === 'http://media-verified.example/live', 'priority probing must also prefer media-verified lines');
+
+// 旧版探测可能把一次 TCP 握手当成可播。升级后必须把这类缓存视为未知，
+// 不能让更快的历史结果挤掉新版已经验到媒体分片的线路。
+const legacyProbeGroups = [{
+  group: '测试',
+  channels: [{
+    name: '旧缓存',
+    urls: ['http://legacy-tcp.example/live', 'http://current-media.example/live'],
+  }],
+}];
+const legacyProbeMap = {
+  'http://legacy-tcp.example/live': { speedMs: 1, probedAt: '2026-10-13T00:00:00.000Z', kind: 'tcp' },
+  'http://current-media.example/live': { speedMs: 4800, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 2 },
+};
+const legacyProbeApplied = applyChannelSpeedToGroups(legacyProbeGroups, legacyProbeMap, 5000, 1);
+assert(legacyProbeApplied[0].channels[0].urls[0].includes('current-media.example'), 'legacy TCP cache must not displace a media-verified line');
 assert(!preferred.includes('http://unknown.example/live') || preferred.length === 2, 'unknown line may only appear after known usable lines and within limit');
 const noSingleLine = [{ group: '测试', channels: [{ name: '单线路', urls: ['http://only.example/live$源O#12345678'] }] }];
 assert(extractPreferredLiveUrls(noSingleLine, {}, 2).length === 1, 'helper itself extracts single-line channels');
@@ -1092,7 +1132,8 @@ async function testMergedLiveOutputLimitsEachChannel() {
   const all = await rebuildLiveOutput(storage, {
     policy: { selectionMode: 'simple', maxSources: -1, maxUrlsPerChannel: -1 },
   });
-  assert(all.groups.every((group) => group.channels.every((channel) => channel.urls.length === 4)), 'merged rebuild with -1 must persist every preferred line');
+  const allCctv1 = all.groups.flatMap((group) => group.channels).find((channel) => channel.name === 'CCTV-1');
+  assert(allCctv1 && allCctv1.urls.length === 8, 'merged rebuild with -1 must persist every canonical-channel preferred line');
   assert(countTxtChannelUrls(all.txt, 'CCTV-1') === 8, 'merged rebuild with -1 must keep every unique preferred line after channel merge');
   assert(memory.get('channel_runtime_tree') === JSON.stringify(all.groups), 'merged rebuild must replace the limited tree when All is selected');
 
@@ -1154,6 +1195,56 @@ async function testEmptyRebuildKeepsPreviousCache() {
   assert(memory.get('live_output_fingerprint') === 'old-fingerprint', 'failed rebuild must keep previous fingerprint');
 }
 
+async function testCanonicalChannelLimitAfterPlaybackRanking() {
+  const memory = new Map();
+  const key = 'canonical-nine-line-source';
+  const failedLines = Array.from({ length: 9 }, (_, i) => 'http://bad-' + i + '.example/live');
+  const playableLines = Array.from({ length: 9 }, (_, i) => 'http://good-' + i + '.example/live');
+  const candidateGroups = [{
+    group: '央视',
+    channels: [{ name: 'CCTV-1', urls: failedLines }],
+  }, {
+    group: 'CCTV',
+    channels: [{ name: 'CCTV1', urls: playableLines }],
+  }];
+  const speedMap = Object.fromEntries(playableLines.map((url, i) => [url, {
+    speedMs: 900 + i,
+    probedAt: '2026-11-03T00:00:00.000Z',
+    kind: 'm3u8',
+    verification: 'media',
+    probeVersion: 2,
+  }]));
+  memory.set('live_merge_mode', 'merged');
+  memory.set('channel_merged_tree', JSON.stringify(candidateGroups));
+  memory.set('channel_speed_map', JSON.stringify(speedMap));
+  memory.set('live_proxy_manifest', JSON.stringify({
+    version: 4,
+    signature: 'canonical-nine-line',
+    entries: [entry(84, {
+      key,
+      name: '九线路源',
+      url: 'https://live.example/canonical-nine.txt',
+      textReady: true,
+      health: 'healthy',
+      everSucceeded: true,
+      successfulAt: '2026-11-03T00:00:00.000Z',
+    })],
+  }));
+  memory.set('live_txt:' + key, formatAggregatedLiveGroupsAsTxt(candidateGroups));
+  const storage = {
+    async get(k) { return memory.has(k) ? memory.get(k) : null; },
+    async put(k, value) { memory.set(k, String(value)); },
+  };
+  const { rebuildLiveOutput } = require(outputOutfile);
+  const rebuilt = await rebuildLiveOutput(storage, {
+    policy: { selectionMode: 'simple', maxSources: -1, maxUrlsPerChannel: 9 },
+  });
+  const cctv1 = rebuilt.groups.flatMap((group) => group.channels).find((channel) => channel.name === 'CCTV-1');
+  assert(cctv1 && cctv1.urls.length === 9, 'canonical channel must contain exactly nine lines');
+  assert(cctv1.urls.every((url) => playableLines.some((playable) => url.includes(playable))), 'duplicate channel objects must not fill the quota before media-verified lines are ranked');
+  assert(countTxtChannelUrls(rebuilt.txt, 'CCTV-1') === 9, 'TXT output must keep exactly nine playable lines for the canonical channel');
+}
+
 async function testLiveFingerprintIncludesCategoryPins() {
   const storage = { async get() { return null; } };
   const basePolicy = {
@@ -1185,6 +1276,7 @@ async function testLiveFingerprintIncludesCategoryPins() {
 
 async function main() {
   await testMergedLiveOutputLimitsEachChannel();
+  await testCanonicalChannelLimitAfterPlaybackRanking();
   await testLiveFingerprintIncludesCategoryPins();
   await testSuccessWithoutUsableText();
   await testManualValidationFailure();

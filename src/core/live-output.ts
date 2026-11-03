@@ -28,6 +28,7 @@ import {
   applyChannelSpeedToGroups,
   bareLiveSourceUrl,
   liveUrlSourceLabel,
+  mergeAggregatedLiveGroups,
   formatAggregatedLiveGroupsAsTxt,
   normalizeSourceLabelKey,
   parseLiveCandidatePool,
@@ -40,7 +41,7 @@ import { loadSpeedMap } from './channel-probe';
  * 分类、目录分页、频道名归一等纯展示逻辑发生变化时必须递增，
  * 否则持久化指纹不变，线上会继续命中旧 runtime TXT。
  */
-const LIVE_OUTPUT_FORMAT_VERSION = 4;
+const LIVE_OUTPUT_FORMAT_VERSION = 5;
 
 export interface RebuildLiveOutputOptions {
   reason?: string;
@@ -286,12 +287,15 @@ async function buildSnapshot(
   const labels = selection.labels;
   const liveMergeMode = (await storage.get(KV_LIVE_MERGE_MODE)) || 'separated';
   const mergedChannelLimit = liveMergeMode === 'merged' ? normalizedPolicy.maxUrlsPerChannel : -1;
-  // 分离模式仍按单源最多 6 条保留原有行为；合并模式的用户配置只作用于
-  // 最终聚合结果。最终格式化还会在同名频道跨分组合并后再次执行统一限额。
+  // 分离模式仍按单源最多 6 条保留原有行为；合并模式必须先跨分组
+  // 归一频道名，再在完整候选池上测速择优，最后才执行每频道限额。
   const runtimeChannelLimit = liveMergeMode === 'merged' ? mergedChannelLimit : 6;
+  const canonicalGroups = liveMergeMode === 'merged'
+    ? mergeAggregatedLiveGroups(selection.groups)
+    : selection.groups;
   const speedMap = await loadSpeedMap(storage);
-  const runtimeGroups = selection.groups.length > 0
-    ? applyChannelSpeedToGroups(selection.groups, speedMap, undefined, runtimeChannelLimit)
+  const runtimeGroups = canonicalGroups.length > 0
+    ? applyChannelSpeedToGroups(canonicalGroups, speedMap, undefined, runtimeChannelLimit)
     : [];
   const txt = runtimeGroups.length > 0
     ? formatAggregatedLiveGroupsAsTxt(runtimeGroups, mergedChannelLimit)

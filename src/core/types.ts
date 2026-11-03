@@ -481,7 +481,9 @@ export interface ChannelSpeedEntry {
   kind: 'm3u8' | 'ts' | 'tcp' | 'fail';
   /** 连续失败次数；成功时归零。旧缓存缺省按 1 次失败处理。 */
   consecutiveFailures?: number;
-  /** 播放链验证等级：manifest=仅播放列表可用，media=已验证首个媒体分片。 */
+  /** Probe pipeline version; old records are rechecked once after upgrades. */
+  probeVersion?: number;
+  /** 播放链验证等级：manifest=仅播放列表可用，media=已验证媒体分片。 */
   verification?: 'manifest' | 'media';
   /** 失败原因，用于区分超时、HTTP 错误与内容无效。 */
   failureReason?: 'timeout' | 'http' | 'invalid' | 'network';

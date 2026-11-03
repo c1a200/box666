@@ -11,6 +11,7 @@ import type { Storage } from '../storage/interface';
 import { TVBOX_UA, BROWSER_UA, KV_LIVE_SOURCE_CACHE } from './config';
 import { isBlockedLiveSource, isBlockedLiveUrl } from './live-policy';
 import { classifyLiveCategory, compareLiveRank, computeLiveSourceQualityScore, DEFAULT_LIVE_MAX_URLS_PER_CHANNEL, type LiveCategory, type LiveSourceMetrics } from './live-quality';
+import { CHANNEL_PROBE_RESULT_VERSION } from './live-speed-store';
 
 // ─── 输入条目 ──────────────────────────────────────────
 
@@ -1232,27 +1233,73 @@ export function formatAggregatedLiveGroupsAsTxt(
   groups: TVBoxLiveGroup[],
   maxUrlsPerChannel = -1,
 ): string {
-  const normalized: TVBoxLiveGroup[] = [];
-  for (const group of groups) {
-    const byGroup = new Map<string, TVBoxLiveChannel[]>();
-    for (const channel of group.channels || []) {
-      if (isAggregateNoiseChannel(channel.name || '')) continue;
-      const targetGroup = normalizeAggregateChannelGroup(group.group || '', channel.name || '', channel);
-      const list = byGroup.get(targetGroup) || [];
-      list.push(channel);
-      byGroup.set(targetGroup, list);
-    }
-    for (const [targetGroup, channels] of byGroup) {
-      normalized.push({ group: targetGroup, channels });
-    }
-  }
-  normalized.sort((a, b) => aggregateGroupRank(a.group) - aggregateGroupRank(b.group));
+  const normalized = mergeAggregatedLiveGroups(groups);
   return formatLiveGroupsAsTxtInternal(
     normalized,
     true,
     MAX_AGGREGATE_CHANNELS_PER_GROUP,
     maxUrlsPerChannel,
   );
+}
+
+/**
+ * Build the canonical live-channel pool before any per-channel quota is applied.
+ *
+ * Upstreams commonly split one logical channel across multiple group objects and
+ * spelling variants. Applying a quota before this merge lets the first duplicate
+ * consume every slot, even when later duplicates contain probed, playable lines.
+ */
+export function mergeAggregatedLiveGroups(
+  groups: readonly TVBoxLiveGroup[],
+): TVBoxLiveGroup[] {
+  interface MergedChannel {
+    name: string;
+    urls: string[];
+    seenUrls: Set<string>;
+  }
+
+  const byGroup = new Map<string, Map<string, MergedChannel>>();
+  for (const group of groups) {
+    for (const channel of group.channels || []) {
+      if (isAggregateNoiseChannel(channel.name || '')) continue;
+      const targetGroup = normalizeAggregateChannelGroup(
+        group.group || '',
+        channel.name || '',
+        channel,
+      );
+      const channelName = canonicalAggregateChannelName(channel.name || '');
+      const channelKey = channelName.toLocaleLowerCase('zh-CN');
+      let channels = byGroup.get(targetGroup);
+      if (!channels) {
+        channels = new Map<string, MergedChannel>();
+        byGroup.set(targetGroup, channels);
+      }
+      let merged = channels.get(channelKey);
+      if (!merged) {
+        merged = { name: channelName, urls: [], seenUrls: new Set<string>() };
+        channels.set(channelKey, merged);
+      }
+      for (const rawUrl of channel.urls || []) {
+        const url = rawUrl.trim();
+        if (!url) continue;
+        const dedupeKey = bareLiveUrl(url) || url;
+        if (merged.seenUrls.has(dedupeKey)) continue;
+        merged.seenUrls.add(dedupeKey);
+        merged.urls.push(url);
+      }
+    }
+  }
+
+  const output: TVBoxLiveGroup[] = [];
+  for (const [groupName, channelMap] of byGroup) {
+    const channels = [...channelMap.values()]
+      .filter((channel) => channel.urls.length > 0)
+      .map((channel) => ({ name: channel.name, urls: channel.urls }))
+      .sort((a, b) => compareLiveChannelNames(a.name, b.name));
+    if (channels.length > 0) output.push({ group: groupName, channels });
+  }
+  output.sort((a, b) => aggregateGroupRank(a.group) - aggregateGroupRank(b.group));
+  return output;
 }
 
 /**
@@ -2132,6 +2179,16 @@ export function extractAllUrls(groups: TVBoxLiveGroup[]): string[] {
  * - 单次/两次失败保留为最后备选，连续三次失败才剔除；
  * - 每频道条数限制在分层之后执行，避免坏线路挤掉好线路；-1 表示保留全部。
  */
+function channelProbeRank(entry: ChannelSpeedMap[string] | undefined): number {
+  if (!entry || entry.kind === 'fail' || entry.probeVersion !== CHANNEL_PROBE_RESULT_VERSION) return -1;
+  if (entry.verification === 'media') return 2;
+  if (entry.verification === 'manifest') return 1;
+  // Legacy/connectivity-only results carry weaker evidence. Keep them in the
+  // same tier and order by measured speed instead of treating a suffix or a
+  // successful TCP handshake as proof that the stream is decodable.
+  return 0;
+}
+
 export function applyChannelSpeedToGroups(
   groups: TVBoxLiveGroup[],
   speedMap: ChannelSpeedMap,
@@ -2146,9 +2203,9 @@ export function applyChannelSpeedToGroups(
     const channels: TVBoxLiveChannel[] = [];
     for (const channel of group.channels || []) {
       const seen = new Set<string>();
-      const verified: Array<{ url: string; speed: number; index: number }> = [];
+      const verified: Array<{ url: string; speed: number; rank: number; index: number }> = [];
       const unknown: Array<{ url: string; index: number }> = [];
-      const transient: Array<{ url: string; index: number }> = [];
+      const transient: Array<{ url: string; failures: number; index: number }> = [];
 
       for (const [index, rawUrl] of (channel.urls || []).entries()) {
         const url = rawUrl.trim();
@@ -2159,24 +2216,37 @@ export function applyChannelSpeedToGroups(
 
         const speed = speedMap[url] ?? speedMap[bare];
         if (speed?.kind === 'fail') {
-          // 单次或两次失败仍保留为后备；连续三次失败才剔除，避免网络抖动
-          // 让频道直接空掉，同时不让失败线路排在已验证线路之前。
+          // Keep one or two transient failures as a last-resort fallback, but
+          // never let them displace a line that has not failed verification.
           const failures = speed.consecutiveFailures ?? 1;
-          if (failures < 3) transient.push({ url, index });
+          if (failures < 3) transient.push({ url, failures, index });
           continue;
         }
-        const knownSpeed = speed && Number.isFinite(speed.speedMs) ? speed.speedMs : undefined;
+        // Version-1 results could mark a TCP handshake as playable. Treat them
+        // as unknown until the upgraded probe replaces the cache entry.
+        const currentProbe = speed?.probeVersion === CHANNEL_PROBE_RESULT_VERSION;
+        const knownSpeed = currentProbe && Number.isFinite(speed?.speedMs)
+          ? speed.speedMs
+          : undefined;
         if (knownSpeed == null) {
           unknown.push({ url, index });
           continue;
         }
         if (speedLimit > 0 && knownSpeed > speedLimit) continue;
-        verified.push({ url, speed: knownSpeed, index });
+        verified.push({
+          url,
+          speed: knownSpeed,
+          rank: channelProbeRank(speed),
+          index,
+        });
       }
 
-      verified.sort((a, b) => a.speed - b.speed || a.index - b.index);
+      // Prefer playback evidence over a merely fast TCP connect. Manifest-only
+      // HLS is ranked below an actual media-segment probe; legacy connectivity
+      // probes remain in one tier and are ordered by speed.
+      verified.sort((a, b) => b.rank - a.rank || a.speed - b.speed || a.index - b.index);
       unknown.sort((a, b) => a.index - b.index);
-      transient.sort((a, b) => a.index - b.index);
+      transient.sort((a, b) => a.failures - b.failures || a.index - b.index);
       const selected = [...verified, ...unknown, ...transient];
       const limited = perChannelLimit < 0 ? selected : selected.slice(0, perChannelLimit);
       const urls = limited.map((item) => item.url);
@@ -2207,7 +2277,7 @@ export function extractPreferredLiveUrls(
   const result: string[] = [];
   for (const group of groups) {
     for (const channel of group.channels || []) {
-      const ranked: Array<{ bare: string; speed?: number; index: number }> = [];
+      const ranked: Array<{ bare: string; speed?: number; rank: number; index: number }> = [];
       const channelSeen = new Set<string>();
       for (const [index, raw] of (channel.urls || []).entries()) {
         const parsed = splitLiveUrlLabel(raw);
@@ -2216,13 +2286,16 @@ export function extractPreferredLiveUrls(
         channelSeen.add(bare);
         const entry = speedMap[raw] ?? speedMap[bare];
         if (entry?.kind === 'fail') continue;
+        const currentProbe = entry?.probeVersion === CHANNEL_PROBE_RESULT_VERSION;
         ranked.push({
           bare,
-          speed: entry && Number.isFinite(entry.speedMs) ? entry.speedMs : undefined,
+          speed: currentProbe && Number.isFinite(entry.speedMs) ? entry.speedMs : undefined,
+          rank: channelProbeRank(entry),
           index,
         });
       }
       ranked.sort((a, b) => {
+        if (a.rank !== b.rank) return b.rank - a.rank;
         if (a.speed != null && b.speed != null && a.speed !== b.speed) return a.speed - b.speed;
         if (a.speed != null && b.speed == null) return -1;
         if (a.speed == null && b.speed != null) return 1;
@@ -2239,7 +2312,7 @@ export function extractPreferredLiveUrls(
 }
 
 export function normalizeSourceLabelKey(value: string): string {
-  return scrubTypeLiteral(sanitizeTxtLabel(value, "")).trim().toLowerCase();
+  return scrubTypeLiteral(sanitizeTxtLabel(value, '')).trim().toLowerCase();
 }
 
 /** 从合并输出中定位指定上游 URL 实际使用的 $源名 标签。 */
@@ -2546,18 +2619,28 @@ function evaluateSourceQuality(
   return { discard: false, adRatio, playableRatio };
 }
 
-function knownLiveSpeed(entry: ChannelEntry, channelSpeedMap?: ChannelSpeedMap): number | undefined {
-  const speed = channelSpeedMap?.[entry.url.trim()];
-  return speed && speed.kind !== 'fail' ? speed.speedMs : undefined;
+function knownLiveProbe(entry: ChannelEntry, channelSpeedMap?: ChannelSpeedMap): {
+  speed?: number;
+  rank: number;
+} {
+  const probe = channelSpeedMap?.[entry.url.trim()];
+  const currentProbe = probe?.probeVersion === CHANNEL_PROBE_RESULT_VERSION;
+  return {
+    speed: currentProbe && probe.kind !== 'fail' && Number.isFinite(probe.speedMs)
+      ? probe.speedMs
+      : undefined,
+    rank: channelProbeRank(probe),
+  };
 }
 
 function compareLiveEntries(a: ChannelEntry, b: ChannelEntry, channelSpeedMap?: ChannelSpeedMap): number {
-  // 先使用频道测速库中的真实可播速度；未测速的线路再进入源质量排序。
-  const sa = knownLiveSpeed(a, channelSpeedMap);
-  const sb = knownLiveSpeed(b, channelSpeedMap);
-  if (sa != null && sb != null && sa !== sb) return sa - sb;
-  if (sa != null && sb == null) return -1;
-  if (sa == null && sb != null) return 1;
+  // 播放链证据优先，再比较真实速度；未测速的线路最后进入源质量排序。
+  const pa = knownLiveProbe(a, channelSpeedMap);
+  const pb = knownLiveProbe(b, channelSpeedMap);
+  if (pa.rank !== pb.rank) return pb.rank - pa.rank;
+  if (pa.speed != null && pb.speed != null && pa.speed !== pb.speed) return pa.speed - pb.speed;
+  if (pa.speed != null && pb.speed == null) return -1;
+  if (pa.speed == null && pb.speed != null) return 1;
 
   // 速度相同或都未测得时，优先质量分更高的源。
   const qualityA = a.sourceQuality ?? 0;

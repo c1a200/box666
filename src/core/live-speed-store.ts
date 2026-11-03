@@ -3,6 +3,7 @@ import type { ChannelSpeedMap } from './types';
 import { KV_CHANNEL_SPEED_MAP, CHANNEL_SPEED_TTL_MS } from './config';
 
 export const CHANNEL_FAILURE_RETRY_MS = 6 * 60 * 60 * 1000;
+export const CHANNEL_PROBE_RESULT_VERSION = 2;
 
 export async function loadSpeedMap(storage: Storage): Promise<ChannelSpeedMap> {
   const raw = await storage.get(KV_CHANNEL_SPEED_MAP);
@@ -46,7 +47,11 @@ export function selectProbeCandidates(
       const probedAt = entry ? Date.parse(entry.probedAt) : NaN;
       const age = Number.isFinite(probedAt) ? now - probedAt : Number.POSITIVE_INFINITY;
       const isFresh = Number.isFinite(probedAt) && age >= 0 && age < CHANNEL_SPEED_TTL_MS;
-      const due = !entry
+      // Results from the old shallow probe are rechecked once, without waiting
+      // for the seven-day TTL. After that the stored probeVersion makes them
+      // normal cached entries again.
+      const needsVersionUpgrade = !entry || entry.probeVersion !== CHANNEL_PROBE_RESULT_VERSION;
+      const due = needsVersionUpgrade
         || !isFresh
         || (entry.kind === 'fail' && age >= CHANNEL_FAILURE_RETRY_MS);
       if (!due) return null;
@@ -54,9 +59,11 @@ export function selectProbeCandidates(
         ? 0
         : entry.kind === 'fail'
           ? 1
-          : !isFresh
-            ? 2
-            : 3;
+          : needsVersionUpgrade
+            ? 0
+            : !isFresh
+              ? 2
+              : 3;
       return { url, priority, probedAt: Number.isFinite(probedAt) ? probedAt : 0 };
     })
     .filter((item): item is { url: string; priority: number; probedAt: number } => item !== null)
