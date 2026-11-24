@@ -742,7 +742,7 @@ const LOCAL_REGION_ALIASES: ReadonlyArray<readonly [string, readonly string[]]> 
 const LOCAL_CHANNEL_SUFFIX_RE = /频道|电视台|广播电视台|新闻|综合|公共|都市|生活|影视|电影|电视剧|经济|经视|科教|教育|文化|旅游|体育|少儿|国际|资讯|导视|党建|农村|乡村|农业|民生|社会|法制|城市|一套|二套|三套|四套|五套|六套|七套|八套|台$/;
 const LOCAL_CHANNEL_BRAND_RE = /哈哈炫动|ics|上视|珠江|南国|中国蓝|htv|长影|普陀|蒙语|兵团|可克达拉|石河子|胡杨河/;
 const NON_LOCAL_PROGRAM_RE = /电影节|颁奖|典礼|开幕式|闭幕式|晚会|演唱会/;
-const HK_MACAU_TAIWAN_CHANNEL_RE = /港澳台|港台|香港|澳门|台湾|tvb|翡翠|明珠|凤凰|东森|中视|中天|台视|华视|民视|公视|三立|大爱|纬来|tvbs|rthk|澳视|澳广视|非凡新闻|年代新闻|寰宇新闻|龙华|靖天|美亚|viutv|hoytv|香港开电视|莲花卫视/;
+const HK_MACAU_TAIWAN_CHANNEL_RE = /港澳台|港台|香港|澳门|台湾|tvb|翡翠|明珠|凤凰(?!传奇)|东森|中视|中天|台视|华视|民视|公视|三立|大爱|纬来|tvbs|rthk|澳视|澳广视|非凡新闻|年代新闻|寰宇新闻|龙华|靖天|美亚|viutv|hoytv|香港开电视|莲花卫视/;
 const DOCUMENTARY_CHANNEL_RE = /全纪实|金鹰纪实|纪实科教|精品纪录|精品记录|纪录频道|记录频道|纪实频道|探索频道|发现频道|科教频道|科学频道|历史频道|人文频道|地理频道|自然频道|动物频道|纪录片|求索|发现之旅|探索发现|走近科学|百家讲坛|国家记忆|记住乡愁|之江纪录|飞碟之谜|航拍中国|中国村庄|文物宝库|老故事/;
 const SPORTS_CHANNEL_RE = /体育|足球|篮球|排球|网球|台球|斯诺克|羽毛球|乒乓球|棒球|冰球|赛车|赛事|运动|竞技|格斗|搏击|拳击|武术|垂钓|钓鱼|高尔夫|全运|电竞|游戏风云|espn|sports?|football|premierleague|tennis|golf|fishing|snooker|billiards|nba|nfl|mlb|nhl|ufc|wwe|motogp|motorvision|bikechannel/i;
 const EDUCATION_CHANNEL_RE = /教育|教科|科教|学习|课堂|学堂|公开课|慕课|空中课堂|名师讲堂|国学|书法/i;
@@ -884,7 +884,9 @@ function classifyInternationalSubgroup(
   const raw = compactChannelText(rawGroup);
   const name = compactChannelText(channelName);
   const sourceLabels = collectLiveSourceLabels(channel);
-  const text = raw + name + sourceLabels;
+  // 旧运行时的二级目录名（例如“国际·新闻”）不能参与语义打分。
+  // 否则 BBC One、ABC 地方台会被所在旧新闻桶永久锁死在新闻分类里。
+  const text = name + ' ' + sourceLabels;
   if (!name) return null;
 
   if (/^(?:cctv|cetv|newtv|migu|咪咕|中国教育电视台|中央电视|央视)/i.test(name)
@@ -922,8 +924,8 @@ function classifyInternationalSubgroup(
     if (/德语|德語|deutsch|german|\bdw\b|\bard\b|\bzdf\b/i.test(text)) return '国际·德语';
     if (/葡萄牙语|葡语|português|portugues|portuguese|brasil|brazil/i.test(text)) return '国际·葡萄牙语';
     if (/意大利语|意语|italiano|italian|italia/i.test(text)) return '国际·意大利语';
-    if (/土耳其语|türk|turkish|\btrt\b|\bt24\b/i.test(text)) return '国际·土耳其语';
-    if (/日本|日本语|japan|japanese|韩国|韩国语|korea|korean|hindi|urdu|bengali|tamil|telugu|marathi|gujarati|punjabi|印度|asia|亚洲|南亚|东南亚|新加坡|马来西亚|thai|vietnam|印尼|泰国|越南|菲律宾/i.test(text)
+    if (/土耳其语|türk|turkish|turk|trt|t24/i.test(text)) return '国际·土耳其语';
+    if (/日本|日本语|japan|japanese|nhk|韩国|韩国语|korea|korean|arirang|hindi|urdu|bengali|tamil|telugu|marathi|gujarati|punjabi|印度|asia|亚洲|南亚|东南亚|新加坡|马来西亚|thai|vietnam|印尼|泰国|越南|菲律宾/i.test(text)
       || /[\u3040-\u30FF\uAC00-\uD7AF\u0900-\u097F\u0980-\u09FF\u0B80-\u0BFF\u0C00-\u0C7F\u0E00-\u0E7F]/.test(name)) return '国际·亚洲';
   }
 
@@ -960,7 +962,7 @@ function classifyMusicSubgroup(compact: string): string {
   if (OPERA_CHANNEL_RE.test(compact)) return '音乐·戏曲';
   if (/dj|电音|舞曲|慢摇|酒吧/i.test(compact)) return '音乐·DJ';
   if (/演唱会|现场|音乐会|音乐节|live/i.test(compact)) return '音乐·现场';
-  if (/歌曲|歌手|港乐|经典|金曲|情歌|串烧|风云音乐|欣赏音乐/.test(compact)) return '音乐·歌曲';
+  if (/歌曲|歌手|港乐|经典|金曲|情歌|串烧|风云音乐|欣赏音乐|凤凰传奇/.test(compact)) return '音乐·歌曲';
   return '音乐·综合';
 }
 
@@ -1046,6 +1048,10 @@ function normalizeAggregateChannelGroupBase(
   if (/熊猫直播|中央电视塔|直播中国|风景|景区|都江堰|核桃坪|卧龙臭水|大丰麋鹿|白马雪山|基地(?:别墅|成年园|母子园|幼儿园|幼年园)/.test(compact)
     || (/航拍/.test(compact) && !/航拍中国/.test(compact))) return '风景直播';
 
+  // “凤凰传奇”是演唱组合，不是凤凰卫视。旧“港澳台”分组不能把这些
+  // 歌曲永久锁进港澳台目录；其明确品牌语义应优先回到音乐分类。
+  if (/^凤凰传奇(?:[-—《]|$)/.test(compact)) return '音乐';
+
   // 港澳台先于地方和主题判断，避免“香港/台湾”被地方别名误吸。
   if (HK_MACAU_TAIWAN_CHANNEL_RE.test(compact)) return '港澳台';
 
@@ -1057,6 +1063,8 @@ function normalizeAggregateChannelGroupBase(
   if (/求索/.test(compact)) return '纪录';
   if (/家庭理财/.test(compact)) return '新闻财经';
   if (/置业频道/.test(compact)) return '其他';
+  // 动物纪录片标题常含“搏击/竞技/冠军”，不能只凭这些词进入体育目录。
+  if (/^动物(?:搏击|冠军|竞技)|\b动物.*(?:搏击|竞技|运动会|冠军)/.test(compact)) return '纪录';
   if (SPORTS_CHANNEL_RE.test(compact)) return '体育';
 
   // 央视付费频道和超高清频道先于央视主频道判断。
