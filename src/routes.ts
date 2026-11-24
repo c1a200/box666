@@ -4178,7 +4178,17 @@ export function createApp(deps: AppDeps): Hono {
       [{ name: source.name || '直播源', url: source.url, ua: source.ua, header: source.header }],
       isCfRuntime ? 4500 : 8000,
       channelSpeedMap,
-      { maxUrlsPerChannel: -1, maxChannels: 12000, minChannelsPerSource: 5, maxAdRatio: 0.5, minPlayableRatio: 0, storage, concurrency: 1, useCache: true },
+      {
+        maxUrlsPerChannel: -1,
+        maxChannels: 12000,
+        minChannelsPerSource: 5,
+        maxAdRatio: 0.5,
+        minPlayableRatio: 0,
+        storage,
+        concurrency: 1,
+        useCache: true,
+        forceRefresh: true,
+      },
     );
     const ok = result.groups.length > 0;
     const sourceText = ok ? formatLiveGroupsAsTxt(result.groups) : '';

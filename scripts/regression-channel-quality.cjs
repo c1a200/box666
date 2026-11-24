@@ -39,6 +39,10 @@ const {
   mergeLivesToNative,
 } = bundle('src/core/live-merger.ts', 'channel-quality-merger');
 const { computeLiveOutputFingerprint } = bundle('src/core/live-output.ts', 'channel-quality-output');
+const {
+  probeLiveUrlOnce,
+  probeLiveUrlWithRetry,
+} = bundle('src/core/channel-probe.ts', 'channel-probe');
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -345,6 +349,180 @@ function testChannelProbeResume() {
     'a stale incomplete full run must not resume');
 }
 
+async function testProbeFailureClassification() {
+  const originalFetch = global.fetch;
+  const htmlUrl = 'https://probe.example/anti-bot.m3u8';
+  const junkUrl = 'https://probe.example/maintenance.txt';
+  const jsonUrl = 'https://probe.example/status.stream';
+  const emptyUrl = 'https://probe.example/empty.txt';
+  const deniedUrl = 'https://probe.example/denied.m3u8';
+  const missingUrl = 'https://probe.example/missing.m3u8';
+  const goneUrl = 'https://probe.example/gone.m3u8';
+  const malformedHlsUrl = 'https://probe.example/malformed.m3u8';
+  global.fetch = async (input) => {
+    const url = String(input);
+    if (url === htmlUrl) {
+      return new Response('<html><body>Verify you are human</body></html>', {
+        status: 200,
+        headers: { 'content-type': 'text/html' },
+      });
+    }
+    if (url === junkUrl) {
+      return new Response('upstream maintenance message', {
+        status: 200,
+        headers: { 'content-type': 'text/plain' },
+      });
+    }
+    if (url === jsonUrl) {
+      return new Response('{"status":"maintenance"}', {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    if (url === emptyUrl) {
+      return new Response(null, { status: 200 });
+    }
+    if (url === deniedUrl) {
+      return new Response('forbidden', { status: 403 });
+    }
+    if (url === missingUrl) {
+      return new Response('missing', { status: 404 });
+    }
+    if (url === goneUrl) {
+      return new Response('gone', { status: 410 });
+    }
+    if (url === malformedHlsUrl) {
+      return new Response('#EXTM3U\n#EXT-X-TARGETDURATION:6\n', {
+        status: 200,
+        headers: { 'content-type': 'application/vnd.apple.mpegurl' },
+      });
+    }
+    throw new Error('unexpected probe URL: ' + url);
+  };
+  try {
+    for (const [url, expectedReason] of [
+      [htmlUrl, 'content'],
+      [junkUrl, 'content'],
+      [jsonUrl, 'content'],
+      [emptyUrl, 'content'],
+      [deniedUrl, 'http'],
+      [malformedHlsUrl, 'content'],
+    ]) {
+      const result = await probeLiveUrlOnce(url, 1000);
+      assert(result.kind === 'fail', url + ' must not be treated as playable');
+      assert(result.failureReason === expectedReason,
+        url + ' must be classified as ' + expectedReason + ', got ' + result.failureReason);
+    }
+    for (const url of [missingUrl, goneUrl]) {
+      const result = await probeLiveUrlOnce(url, 1000);
+      assert(result.kind === 'fail' && result.failureReason === 'invalid',
+        url + ' must remain a definitive invalid result');
+    }
+    const advertisement = await probeLiveUrlOnce('https://probe.example/ad/live.m3u8', 1000);
+    assert(advertisement.kind === 'fail' && advertisement.failureReason === 'invalid',
+      'an explicit advertisement URL must remain a definitive invalid result');
+  } finally {
+    global.fetch = originalFetch;
+  }
+}
+
+async function testProbeRetriesEveryNonInvalidFailure() {
+  const originalFetch = global.fetch;
+  const retryUrl = 'https://probe.example/retry.ts';
+  const conflictingUrl = 'https://probe.example/conflicting.m3u8';
+  const hardUrl = 'https://probe.example/no-retry.m3u8';
+  const media = new Uint8Array(188 * 3);
+  media[0] = 0x47;
+  media[188] = 0x47;
+  media[376] = 0x47;
+  const calls = new Map();
+  global.fetch = async (input) => {
+    const url = String(input);
+    const count = (calls.get(url) || 0) + 1;
+    calls.set(url, count);
+    if (url === retryUrl) {
+      return count === 1
+        ? new Response('temporary failure', { status: 503 })
+        : new Response(media, {
+          status: 200,
+          headers: { 'content-type': 'video/mp2t' },
+        });
+    }
+    if (url === conflictingUrl) {
+      return count === 1
+        ? new Response('temporary failure', { status: 403 })
+        : new Response('missing', { status: 404 });
+    }
+    if (url === hardUrl) {
+      return new Response('missing', { status: 404 });
+    }
+    throw new Error('unexpected retry URL: ' + url);
+  };
+  try {
+    const retried = await probeLiveUrlWithRetry(retryUrl, 1000, { retryTransient: true });
+    assert(retried.kind === 'ts' && retried.verification === 'media',
+      'a transient HTTP failure must be retried until playback succeeds');
+    assert(calls.get(retryUrl) === 2, 'the retryable URL must be fetched twice');
+
+    const conflicting = await probeLiveUrlWithRetry(conflictingUrl, 1000, { retryTransient: true });
+    assert(conflicting.kind === 'fail' && conflicting.failureReason === 'http',
+      'a transient first attempt must not become invalid after a contradictory second result');
+    assert(calls.get(conflictingUrl) === 2, 'the transient first attempt must be retried');
+
+    const hardFailure = await probeLiveUrlWithRetry(hardUrl, 1000, { retryTransient: true });
+    assert(hardFailure.kind === 'fail' && hardFailure.failureReason === 'invalid',
+      '404 must remain a definitive invalid result');
+    assert(calls.get(hardUrl) === 1, 'a definitive invalid result must not be retried');
+  } finally {
+    global.fetch = originalFetch;
+  }
+}
+
+async function testNestedHlsInvalidEvidenceIsNotMasked() {
+  const originalFetch = global.fetch;
+  const masterUrl = 'https://probe.example/master.m3u8';
+  const mixedMasterUrl = 'https://probe.example/mixed-master.m3u8';
+  const adChildUrl = 'https://probe.example/ad/child.m3u8';
+  const unavailableChildUrl = 'https://probe.example/child-unavailable.m3u8';
+  global.fetch = async (input) => {
+    const url = String(input);
+    if (url === masterUrl) {
+      return new Response([
+        '#EXTM3U',
+        '#EXT-X-STREAM-INF:BANDWIDTH=1000000',
+        adChildUrl,
+      ].join('\n'), { status: 200 });
+    }
+    if (url === mixedMasterUrl) {
+      return new Response([
+        '#EXTM3U',
+        '#EXT-X-STREAM-INF:BANDWIDTH=1000000',
+        adChildUrl,
+        '#EXT-X-STREAM-INF:BANDWIDTH=900000',
+        unavailableChildUrl,
+      ].join('\n'), { status: 200 });
+    }
+    if (url === adChildUrl) {
+      return new Response('#EXTM3U\n#EXT-X-TARGETDURATION:6\n', { status: 200 });
+    }
+    if (url === unavailableChildUrl) {
+      return new Response('temporary upstream error', { status: 503 });
+    }
+    throw new Error('unexpected HLS URL: ' + url);
+  };
+  try {
+    const advertisementOnly = await probeLiveUrlOnce(masterUrl, 1000);
+    assert(advertisementOnly.kind === 'fail' && advertisementOnly.failureReason === 'invalid',
+      'an all-ad child playlist must not be masked as a valid manifest');
+
+    const mixed = await probeLiveUrlOnce(mixedMasterUrl, 1000);
+    assert(mixed.kind === 'fail' && mixed.failureReason === 'http',
+      'mixed definitive and transient child failures must remain retryable');
+  } finally {
+    global.fetch = originalFetch;
+  }
+}
+
 async function main() {
   await testPublishedSnapshotStaysStableDuringWorkingRun();
   testFullAndIncrementalProbeFreshness();
@@ -354,6 +532,9 @@ async function main() {
   await testChannelProbeSchedulePersistenceAndDueChecks();
   await testChannelProbeSlotCannotRepeat();
   testChannelProbeResume();
+  await testProbeFailureClassification();
+  await testProbeRetriesEveryNonInvalidFailure();
+  await testNestedHlsInvalidEvidenceIsNotMasked();
   console.log('regression: channel quality snapshot, scheduling, and line slicing passed');
 }
 

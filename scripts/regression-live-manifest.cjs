@@ -28,8 +28,10 @@ buildSync({
 });
 
 const {
+  liveProxyKey,
   mergeLiveProxyManifest,
   isLiveProxyEntryDistributable,
+  LIVE_PROXY_FAILURE_RULE_VERSION,
 } = require(outfile);
 
 buildSync({
@@ -43,7 +45,9 @@ buildSync({
 
 const {
   buildPreparedLiveGroups,
+  livePrepareStateMatchesInputs,
   prepareLiveSourcesChunk,
+  runLivePrepareChunk,
   serializePreparedLiveGroups,
 } = require(prepareOutfile);
 
@@ -79,6 +83,7 @@ const {
 
 const {
   filterLiveSourcesDetailed: filterLiveSourcesDetailedForRegression,
+  filterLivesBySourceDetailed: filterLivesBySourceDetailedForRegression,
 } = require(mergerOutfile);
 
 const {
@@ -94,7 +99,7 @@ function assert(condition, message) {
 
 // Must match CHANNEL_PROBE_RESULT_VERSION. Keeping fixtures on the current
 // version makes a probe-evidence rule change fail loudly until tests migrate.
-const CURRENT_PROBE_VERSION = 6;
+const CURRENT_PROBE_VERSION = 7;
 
 function countTxtChannelUrls(txt, channelName) {
   let total = 0;
@@ -160,7 +165,7 @@ const migrated = mergeLiveProxyManifest(
   [entry(9, { key: 'new', url: 'https://new.example/live.txt' })],
   { checkedAt: '2026-10-13T00:10:00.000Z', validUrls: ['https://new.example/live.txt'] },
 );
-assert(migrated.version === 4, 'v1 manifest must migrate to v4');
+assert(migrated.version === 5, 'v1 manifest must migrate to v5');
 assert(migrated.entries.some((item) => item.key === 'new' && item.health === 'healthy'), 'new valid entry must be healthy');
 
 // ── 4. 未验证/transient 也可进入质量池（只是排序靠后）──
@@ -175,6 +180,30 @@ const freshTransient = mergeLiveProxyManifest(null, [entry(10, {
 });
 assert(freshTransient.entries.filter(isLiveProxyEntryDistributable).length === 0, 'transient without history or prebuilt text must stay out of the delivery pool');
 assert(freshTransient.entries[0].lastFailure === 'transient', 'transient failure reason must be recorded');
+
+// ── 4b. 旧规则 invalid 是历史误判，迁移为 transient 且不计入三次淘汰 ──
+const migratedLegacyInvalid = mergeLiveProxyManifest(
+  {
+    version: 4,
+    signature: 'legacy-invalid',
+    entries: [entry(11, {
+      health: 'unhealthy',
+      consecutiveFailures: 3,
+      lastFailure: 'invalid',
+    })],
+  },
+  [],
+  { checkedAt: '2026-10-13T00:12:00.000Z', validUrls: [] },
+);
+const legacyInvalidEntry = migratedLegacyInvalid.entries.find((item) => item.key === 'key-11');
+assert(legacyInvalidEntry?.lastFailure === 'transient',
+  'legacy invalid without a failure rule version must be retried as transient');
+assert(legacyInvalidEntry?.failureRuleVersion === LIVE_PROXY_FAILURE_RULE_VERSION,
+  'migrated failure evidence must be stamped with the current rule version');
+assert(legacyInvalidEntry?.consecutiveFailures === 0,
+  'legacy invalid failure counts must not survive the rule migration');
+assert(isLiveProxyEntryDistributable(legacyInvalidEntry),
+  'a migrated legacy invalid with mature text must re-enter the delivery pool');
 
 // ── 5. 之后 valid 会清除失败历史 ──
 const runtimeCured = mergeLiveProxyManifest(roundOne, roundOne.entries, {
@@ -374,17 +403,17 @@ const duplicateLabelPool = [
 const duplicateBlocked = selectLiveDistribution(duplicateLabelPool, { selectionMode: 'simple', maxSources: -1, blockedKeys: ['same-url-a'] });
 assert(duplicateBlocked.length === 1 && duplicateBlocked[0].key === 'same-url-b', 'blocking one duplicate URL key must not remove the other distinct manifest entry');
 
-// ── 15. 聚合度量分流：invalid 绝不混入 transient（Render 聚合快照路径）──
+// ── 15. 聚合度量分流：确定性 invalid 绝不混入 transient（Render 聚合快照路径）──
 const partitioned = partitionMergeSourceMetrics({
   'https://live.example/ok.txt': { health: 'healthy', everSucceeded: true },
   'https://live.example/timeout.txt': { health: 'unhealthy', lastFailure: 'transient' },
   'https://live.example/never.txt': { health: 'unhealthy' },
-  'https://live.example/html.txt': { health: 'unhealthy', lastFailure: 'invalid' },
+  'https://live.example/gone.txt': { health: 'unhealthy', lastFailure: 'invalid' },
 });
 assert(JSON.stringify(partitioned.validUrls) === JSON.stringify(['https://live.example/ok.txt']), 'partition must route healthy urls to valid');
 assert(
-  JSON.stringify(partitioned.invalidUrls) === JSON.stringify(['https://live.example/html.txt']),
-  'partition must route explicit invalid urls to invalid (not transient), got ' + partitioned.invalidUrls.join(','),
+  JSON.stringify(partitioned.invalidUrls) === JSON.stringify(['https://live.example/gone.txt']),
+  'partition must route deterministic invalid urls to invalid (not transient), got ' + partitioned.invalidUrls.join(','),
 );
 assert(
   JSON.stringify(partitioned.transientUrls.sort()) ===
@@ -395,12 +424,12 @@ assert(
 // ── 16. 聚合快照写入：invalid 经 manifest 合并后仍为 invalid，连续三次淘汰 ──
 const snapshotEntries = [
   entry(20, { key: 'b-ok', url: 'https://live.example/ok.txt' }),
-  entry(21, { key: 'b-bad', url: 'https://live.example/html.txt', health: 'unhealthy' }),
+  entry(21, { key: 'b-bad', url: 'https://live.example/gone.txt', health: 'unhealthy' }),
 ];
 let snapshotManifest = null;
 const snapshotMetrics = {
   'https://live.example/ok.txt': { health: 'healthy', everSucceeded: true },
-  'https://live.example/html.txt': { health: 'unhealthy', lastFailure: 'invalid', everSucceeded: false },
+  'https://live.example/gone.txt': { health: 'unhealthy', lastFailure: 'invalid', everSucceeded: false },
 };
 const snapshotPartition = partitionMergeSourceMetrics(snapshotMetrics);
 for (let round = 0; round < 3; round += 1) {
@@ -1348,24 +1377,443 @@ assert(
   'incremental valid-without-text source must not remain distributable',
 );
 
-// ── 18c. HTTP 2xx 但无可用频道正文时必须判定 invalid，不得进入质量池 ──
-async function testSuccessWithoutUsableText() {
+// ── 18c. 所有普通 2xx 异常正文都只算瞬时失败，不能永久判废 ──
+async function testHttpBodyClassification() {
   const originalFetch = global.fetch;
-  global.fetch = async () => new Response('<html><body>ok</body></html>', {
-    status: 200,
-    headers: { 'Content-Type': 'text/html' },
-  });
+  const htmlUrl = 'https://live.example/anti-bot-page.m3u';
+  const junkUrl = 'https://live.example/plain-junk.m3u';
+  global.fetch = async (input) => {
+    const url = String(input);
+    if (url === htmlUrl) {
+      return new Response('<!doctype html><html><body>Cloudflare attention required</body></html>', {
+        status: 200,
+        headers: { 'Content-Type': 'text/html' },
+      });
+    }
+    return new Response('upstream maintenance message without any live channel', {
+      status: 200,
+      headers: { 'Content-Type': 'text/plain' },
+    });
+  };
   try {
     const result = await filterLiveSourcesDetailedForRegression([
-      { name: '空正文', url: 'https://live.example/empty-body.m3u' },
+      { name: '反爬页面', url: htmlUrl },
+      { name: '普通空正文', url: junkUrl },
     ], 1000, undefined, {
       minChannelsPerSource: 1,
       minPlayableRatio: 0,
       maxAdRatio: 1,
     });
-    assert(result.valid.length === 0, '2xx response without playable channels must not be valid');
-    assert(result.invalid.length === 1, '2xx response without playable channels must be invalid');
-    assert(result.transient.length === 0, '2xx response without playable channels must not be transient');
+    assert(result.valid.length === 0, '2xx responses without playable channels must not be valid');
+    assert(
+      result.transient.some((source) => source.url === htmlUrl),
+      'HTML/anti-bot 2xx responses must stay retryable',
+    );
+    assert(
+      result.transient.some((source) => source.url === junkUrl),
+      'ordinary 2xx responses without channels must remain retryable',
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+}
+
+// ── 18d. HTTP 状态分类：仅 404/410 立即判废，其余状态都允许重试 ──
+async function testHttpStatusClassification() {
+  const originalFetch = global.fetch;
+  const transientCodes = [401, 403, 406, 408, 412, 425, 429, 451, 500, 503];
+  const invalidCodes = [404, 410];
+  const sources = [...transientCodes, ...invalidCodes].map((code) => ({
+    name: 'HTTP-' + code,
+    url: 'https://live.example/http-status-' + code + '.m3u',
+  }));
+  global.fetch = async (input) => {
+    const match = String(input).match(/http-status-(\d+)\.m3u/);
+    const status = match ? Number(match[1]) : 500;
+    return new Response('upstream unavailable', {
+      status,
+      headers: { 'Content-Type': 'text/plain' },
+    });
+  };
+  try {
+    const result = await filterLiveSourcesDetailedForRegression(sources, 1000, undefined, {
+      minChannelsPerSource: 1,
+      minPlayableRatio: 0,
+      maxAdRatio: 1,
+    });
+    const transientUrls = new Set(result.transient.map((source) => source.url));
+    const invalidUrls = new Set(result.invalid.map((source) => source.url));
+    for (const code of transientCodes) {
+      assert(
+        transientUrls.has('https://live.example/http-status-' + code + '.m3u'),
+        'HTTP ' + code + ' must remain retryable',
+      );
+    }
+    for (const code of invalidCodes) {
+      assert(
+        invalidUrls.has('https://live.example/http-status-' + code + '.m3u'),
+        'HTTP ' + code + ' must be classified as invalid',
+      );
+    }
+  } finally {
+    global.fetch = originalFetch;
+  }
+}
+
+// ── 18d2. 管理端直连路径必须复用同一套失败分类 ──
+async function testDirectPathFailureClassification() {
+  const originalFetch = global.fetch;
+  const htmlUrl = 'https://live.example/direct-anti-bot.m3u';
+  const deniedUrl = 'https://live.example/direct-403.m3u';
+  global.fetch = async (input) => {
+    if (String(input) === htmlUrl) {
+      return new Response('<html><body>Verify you are human</body></html>', {
+        status: 200,
+        headers: { 'Content-Type': 'text/html' },
+      });
+    }
+    return new Response('forbidden', {
+      status: 403,
+      headers: { 'Content-Type': 'text/plain' },
+    });
+  };
+  try {
+    const htmlResult = await filterLivesBySourceDetailedForRegression(
+      [{ name: '反爬页', url: htmlUrl }],
+      1000,
+      undefined,
+      { useCache: false, minChannelsPerSource: 1, maxAdRatio: 1 },
+    );
+    assert(htmlResult.groups.length === 0 && htmlResult.failure === 'transient',
+      'direct 2xx HTML/anti-bot responses must be retryable');
+
+    const deniedResult = await filterLivesBySourceDetailedForRegression(
+      [{ name: '拒绝访问', url: deniedUrl }],
+      1000,
+      undefined,
+      { useCache: false, minChannelsPerSource: 1, maxAdRatio: 1 },
+    );
+    assert(deniedResult.groups.length === 0 && deniedResult.failure === 'transient',
+      'direct HTTP 403 responses must be retryable');
+  } finally {
+    global.fetch = originalFetch;
+  }
+}
+
+// ── 18d3. 频道数、广告占比等质量门禁失败不得写成永久 invalid ──
+async function testQualityGateFailuresStayTransient() {
+  const originalFetch = global.fetch;
+  const sourceUrl = 'https://live.example/quality-gate-transient.m3u';
+  const sourceText = [
+    '直播,#genre#',
+    'CCTV-1,http://quality-gate.example/cctv1',
+  ].join('\n');
+  global.fetch = async () => new Response(sourceText, {
+    status: 200,
+    headers: { 'Content-Type': 'text/plain' },
+  });
+  try {
+    const result = await filterLiveSourcesDetailedForRegression(
+      [{ name: '质量不足源', url: sourceUrl }],
+      1000,
+      undefined,
+      {
+        minChannelsPerSource: 5,
+        maxAdRatio: 1,
+        maxUrlsPerChannel: 64,
+        forceRefresh: true,
+      },
+    );
+    assert(result.valid.length === 0, 'a source below the channel minimum must not be valid');
+    assert(result.invalid.length === 0, 'quality gate failure must not be recorded as invalid');
+    assert(result.transient.length === 1, 'quality gate failure must remain retryable');
+    assert(result.metrics[sourceUrl]?.lastFailure === 'transient',
+      'quality gate failure metrics must remain transient');
+
+    const directResult = await filterLivesBySourceDetailedForRegression(
+      [{ name: '质量不足源', url: sourceUrl }],
+      1000,
+      undefined,
+      { useCache: false, minChannelsPerSource: 5, maxAdRatio: 1 },
+    );
+    assert(directResult.groups.length === 0 && directResult.failure === 'transient',
+      'direct quality gate failure must remain retryable');
+  } finally {
+    global.fetch = originalFetch;
+  }
+}
+
+// ── 18d4. 手动复检必须绕过新鲜缓存，且失败时不得回退旧正文 ──
+async function testForceRefreshBypassesCachedLiveText() {
+  const originalFetch = global.fetch;
+  const sourceUrl = 'https://live.example/force-refresh-cache.m3u';
+  const sourceText = [
+    '央视,#genre#',
+    'CCTV-1,http://force-refresh.example/cctv1',
+    'CCTV-2,http://force-refresh.example/cctv2',
+    'CCTV-3,http://force-refresh.example/cctv3',
+    'CCTV-4,http://force-refresh.example/cctv4',
+    'CCTV-5,http://force-refresh.example/cctv5',
+  ].join('\n');
+  let failUpstream = false;
+  let fetchCalls = 0;
+  global.fetch = async () => {
+    fetchCalls++;
+    if (failUpstream) {
+      return new Response('upstream unavailable', {
+        status: 503,
+        headers: { 'Content-Type': 'text/plain' },
+      });
+    }
+    return new Response(sourceText, {
+      status: 200,
+      headers: { 'Content-Type': 'text/plain' },
+    });
+  };
+  const options = {
+    minChannelsPerSource: 1,
+    maxAdRatio: 1,
+    maxUrlsPerChannel: 64,
+    useCache: true,
+  };
+  try {
+    const first = await filterLiveSourcesDetailedForRegression(
+      [{ name: '缓存源', url: sourceUrl }],
+      1000,
+      undefined,
+      options,
+    );
+    assert(first.valid.length === 1, 'the first check must download a valid source');
+    assert(fetchCalls === 1, 'the first check must contact the upstream once');
+
+    failUpstream = true;
+    const cached = await filterLiveSourcesDetailedForRegression(
+      [{ name: '缓存源', url: sourceUrl }],
+      1000,
+      undefined,
+      options,
+    );
+    assert(cached.valid.length === 1, 'a normal check may reuse a fresh successful cache');
+    assert(fetchCalls === 1, 'a normal check inside the cache TTL must not contact the upstream');
+
+    const refreshed = await filterLiveSourcesDetailedForRegression(
+      [{ name: '缓存源', url: sourceUrl }],
+      1000,
+      undefined,
+      { ...options, forceRefresh: true },
+    );
+    assert(refreshed.valid.length === 0 && refreshed.transient.length === 1,
+      'forceRefresh must expose upstream failure instead of falling back to cached text');
+    assert(refreshed.metrics[sourceUrl]?.lastFailure === 'transient',
+      'forceRefresh upstream failure must be classified as transient');
+    assert(fetchCalls === 3,
+      'forceRefresh must make fresh requests for both player and browser UA attempts');
+  } finally {
+    global.fetch = originalFetch;
+  }
+}
+
+function testLivePrepareInputFreshness() {
+  const inputSet = {
+    updatedAt: '2026-11-24T01:00:00.000Z',
+    signature: 'https://live.example/freshness.m3u',
+    sourceCount: 1,
+    sources: [{ name: '新鲜度', url: 'https://live.example/freshness.m3u' }],
+  };
+  const state = {
+    cursor: 1,
+    sourceSignature: inputSet.signature,
+    inputUpdatedAt: inputSet.updatedAt,
+    updatedAt: '2026-11-24T01:01:00.000Z',
+    processed: 1,
+    total: 1,
+    ready: 1,
+    failed: 0,
+    complete: true,
+  };
+  assert(
+    livePrepareStateMatchesInputs(state, inputSet),
+    'complete state with the same signature and input timestamp must be reusable',
+  );
+  assert(
+    !livePrepareStateMatchesInputs(state, {
+      ...inputSet,
+      updatedAt: '2026-11-24T02:00:00.000Z',
+    }),
+    'a newer input timestamp must force a new prepare round even when URLs are unchanged',
+  );
+  assert(
+    !livePrepareStateMatchesInputs({ ...state, inputUpdatedAt: '' }, inputSet),
+    'legacy complete state without an input timestamp must not be reused',
+  );
+}
+
+// ── 18e. 当前测速为空只影响本轮下发，不撤销成熟正文 ──
+async function testEmptyProbeDoesNotRevokeMatureText() {
+  const originalFetch = global.fetch;
+  const sourceUrl = 'https://live.example/mature-probe.m3u';
+  const key = await liveProxyKey(sourceUrl);
+  const lineUrls = Array.from({ length: 5 }, (_, index) =>
+    'http://mature-probe.example/cctv-' + index + '.m3u8');
+  const sourceText = [
+    '央视,#genre#',
+    ...lineUrls.map((url, index) => 'CCTV-' + (index + 1) + ',' + url),
+  ].join('\n');
+  const hardFailureMap = Object.fromEntries(lineUrls.map((url) => [url, {
+    speedMs: 0,
+    probedAt: '2026-11-24T00:00:00.000Z',
+    kind: 'fail',
+    failureReason: 'invalid',
+    probeVersion: CURRENT_PROBE_VERSION,
+    consecutiveFailures: 1,
+  }]));
+  global.fetch = async () => new Response(sourceText, {
+    status: 200,
+    headers: { 'Content-Type': 'text/plain' },
+  });
+  try {
+    const matureMemory = new Map();
+    matureMemory.set('live_proxy_manifest', JSON.stringify({
+      version: 4,
+      signature: 'mature-probe-seed',
+      entries: [entry(90, {
+        key,
+        url: sourceUrl,
+        textReady: true,
+        successfulAt: '2026-11-23T00:00:00.000Z',
+      })],
+    }));
+    matureMemory.set('live_txt:' + key, '央视,#genre#\nCCTV-1,http://old-mature.example/live');
+    const matureStorage = {
+      async get(storageKey) { return matureMemory.has(storageKey) ? matureMemory.get(storageKey) : null; },
+      async put(storageKey, value) { matureMemory.set(storageKey, String(value)); },
+    };
+    const matureState = await prepareLiveSourcesChunk(
+      [{ name: '成熟源', url: sourceUrl }],
+      matureStorage,
+      { batchSize: 1, timeoutMs: 1000, concurrency: 1, channelSpeedMap: hardFailureMap },
+    );
+    const matureManifest = JSON.parse(matureMemory.get('live_proxy_manifest'));
+    const matureEntry = matureManifest.entries.find((item) => item.key === key);
+    assert(matureState.ready === 0, 'empty current probe must not mark the source ready this round');
+    assert(matureEntry?.textReady === true, 'empty current probe must not revoke mature textReady');
+    assert(
+      isLiveProxyEntryDistributable(matureEntry) === true,
+      'mature source with retained text must remain distributable as fallback',
+    );
+
+    const freshMemory = new Map();
+    const freshStorage = {
+      async get(storageKey) { return freshMemory.has(storageKey) ? freshMemory.get(storageKey) : null; },
+      async put(storageKey, value) { freshMemory.set(storageKey, String(value)); },
+    };
+    const freshState = await prepareLiveSourcesChunk(
+      [{ name: '新源', url: sourceUrl }],
+      freshStorage,
+      { batchSize: 1, timeoutMs: 1000, concurrency: 1, channelSpeedMap: hardFailureMap },
+    );
+    assert(freshState.ready === 0, 'new source without probe evidence must not be ready');
+    assert(freshState.failed === 1, 'empty-probe source must count as a retryable failure');
+    const freshManifest = JSON.parse(freshMemory.get('live_proxy_manifest'));
+    const freshEntry = freshManifest.entries.find((item) => item.key === key);
+    assert(freshEntry?.textReady === false, 'new source without text must not claim textReady');
+    assert(
+      isLiveProxyEntryDistributable(freshEntry) === false,
+      'new source without probe evidence must not be distributable',
+    );
+    assert(freshEntry?.lastFailure === 'transient', 'empty probe must remain a transient failure');
+  } finally {
+    global.fetch = originalFetch;
+  }
+}
+
+// ── 18f. 旧 invalid 不是永久死刑：新准备轮次成功下载后恢复成熟源 ──
+async function testMatureInvalidSourceRecoversAfterFreshPrepare() {
+  const originalFetch = global.fetch;
+  const sourceUrl = 'https://live.example/mature-invalid-recovery.m3u';
+  const sourceKey = await liveProxyKey(sourceUrl);
+  const sourceText = [
+    '央视,#genre#',
+    'CCTV-1,http://mature-recovery.example/cctv1',
+    'CCTV-2,http://mature-recovery.example/cctv2',
+    'CCTV-3,http://mature-recovery.example/cctv3',
+    'CCTV-4,http://mature-recovery.example/cctv4',
+    'CCTV-5,http://mature-recovery.example/cctv5',
+  ].join('\n');
+
+  global.fetch = async () => new Response(sourceText, {
+    status: 200,
+    headers: { 'Content-Type': 'text/plain' },
+  });
+  try {
+    const memory = new Map();
+    memory.set('live_merge_mode', 'separated');
+    memory.set('live_prepare_inputs', JSON.stringify({
+      updatedAt: '2026-11-24T03:00:00.000Z',
+      signature: sourceUrl,
+      sourceCount: 1,
+      sources: [{ name: '成熟恢复源', url: sourceUrl }],
+    }));
+    // 线上旧状态的典型形态：complete=true、没有 inputUpdatedAt，且旧清单
+    // 曾因瞬态错误被判 invalid，但 successfulAt、everSucceeded 和正文仍在。
+    memory.set('live_prepare_state', JSON.stringify({
+      cursor: 1,
+      sourceSignature: sourceUrl,
+      updatedAt: '2026-11-23T00:00:00.000Z',
+      processed: 1,
+      total: 1,
+      ready: 0,
+      failed: 1,
+      complete: true,
+    }));
+    memory.set('live_proxy_manifest', JSON.stringify({
+      version: 4,
+      signature: 'old-invalid-state',
+      entries: [entry(91, {
+        key: sourceKey,
+        url: sourceUrl,
+        name: '成熟恢复源',
+        health: 'unhealthy',
+        consecutiveFailures: 1,
+        lastFailure: 'invalid',
+        textReady: false,
+        everSucceeded: true,
+        successfulAt: '2026-11-20T00:00:00.000Z',
+      })],
+    }));
+    memory.set('live_txt:' + sourceKey, '央视,#genre#\n旧频道,http://old.example/live');
+
+    const storage = {
+      async get(key) { return memory.has(key) ? memory.get(key) : null; },
+      async put(key, value) { memory.set(key, String(value)); },
+    };
+    const result = await runLivePrepareChunk(storage, {
+      batchSize: 1,
+      timeoutMs: 1000,
+      concurrency: 1,
+    });
+
+    const persisted = JSON.parse(memory.get('live_prepare_state'));
+    const manifest = JSON.parse(memory.get('live_proxy_manifest'));
+    const recovered = manifest.entries.find((item) => item.key === sourceKey);
+    assert(persisted.inputUpdatedAt === '2026-11-24T03:00:00.000Z',
+      'the fresh prepare round must persist the input timestamp');
+    assert(result.state.complete === true && result.state.ready === 1,
+      'a mature source recovered from a fresh download must complete as ready');
+    assert(recovered?.textReady === true,
+      'a successful fresh prepare must restore textReady after a stale invalid classification');
+    assert(recovered?.lastFailure === undefined && recovered?.health === 'healthy',
+      'a successful fresh prepare must clear the transient/invalid failure state');
+    assert(recovered?.everSucceeded === true && recovered?.successfulAt,
+      'mature success history must survive the recovery round');
+    assert(isLiveProxyEntryDistributable(recovered),
+      'the recovered mature source must re-enter the delivery pool');
+    assert((memory.get('live_txt:' + sourceKey) || '').includes('mature-recovery.example/cctv1'),
+      'the source text must be regenerated from the fresh successful response');
+    assert(result.runtimeGroups
+      .flatMap((group) => group.channels)
+      .some((channel) => channel.name === 'CCTV-1'),
+      'the recovered source must be usable by runtime output');
   } finally {
     global.fetch = originalFetch;
   }
@@ -1529,6 +1977,24 @@ async function testManualValidationFailure() {
   assert(persisted.entries[0].textReady === true
     && persisted.entries[0].consecutiveFailures === 3,
   'the retained mature text and failure count must be persisted');
+
+  const explicitInvalid = await recordLiveProxyValidation('manual-fail', 'invalid', storage);
+  assert(explicitInvalid?.lastFailure === 'invalid'
+    && explicitInvalid?.failureRuleVersion === LIVE_PROXY_FAILURE_RULE_VERSION,
+  'current-rule invalid evidence must be persisted with its rule version');
+  assert(explicitInvalid?.textReady === false,
+    'current-rule invalid evidence must revoke mature text');
+  assert(isLiveProxyEntryDistributable(explicitInvalid) === false,
+    'current-rule invalid evidence must leave the source non-distributable');
+
+  const recovered = await recordLiveProxyValidation('manual-fail', 'valid', storage);
+  assert(recovered?.lastFailure === undefined
+    && recovered?.failureRuleVersion === undefined,
+  'a later valid probe must clear both failure state and its rule version');
+  assert(recovered?.textReady === false,
+    'a valid probe alone must not claim that aggregate text has been rebuilt');
+  assert(isLiveProxyEntryDistributable(recovered) === false,
+    'delivery must wait for a successful text rebuild after invalid revoked mature text');
 }
 
 // ── 19. 非增量 texts 更新仍是权威快照：缺失文本必须撤销 ──
@@ -1558,17 +2024,31 @@ async function testStartupReadinessRepair() {
   const legacyEntries = [
     entry(70, { key: 'legacy-ready', url: 'https://live.example/legacy-ready.txt', textReady: false }),
     entry(71, { key: 'legacy-empty', url: 'https://live.example/legacy-empty.txt', textReady: false }),
-    entry(72, { key: 'legacy-invalid', url: 'https://live.example/legacy-invalid.txt', textReady: false, lastFailure: 'invalid' }),
+    entry(72, {
+      key: 'legacy-invalid',
+      url: 'https://live.example/legacy-invalid.txt',
+      textReady: false,
+      consecutiveFailures: 3,
+      lastFailure: 'invalid',
+    }),
     entry(73, { key: 'legacy-blocked', url: 'https://live.example/legacy-blocked.txt', textReady: false, name: '音乐所' }),
+    entry(74, {
+      key: 'current-invalid',
+      url: 'https://live.example/current-invalid.txt',
+      textReady: false,
+      lastFailure: 'invalid',
+      failureRuleVersion: LIVE_PROXY_FAILURE_RULE_VERSION,
+    }),
   ];
   memory.set('live_proxy_manifest', JSON.stringify({
-    version: 4,
+    version: 5,
     signature: 'legacy-readiness',
     entries: legacyEntries,
   }));
   memory.set('live_txt:legacy-ready', '央视,#genre#\nCCTV-1,http://legacy.example/live');
   memory.set('live_txt:legacy-invalid', '央视,#genre#\nCCTV-1,http://invalid.example/live');
   memory.set('live_txt:legacy-blocked', '央视,#genre#\nCCTV-1,http://blocked.example/live');
+  memory.set('live_txt:current-invalid', '央视,#genre#\nCCTV-1,http://current-invalid.example/live');
   const storage = {
     async get(key) { return memory.has(key) ? memory.get(key) : null; },
     async put(key, value) { memory.set(key, String(value)); },
@@ -1576,19 +2056,29 @@ async function testStartupReadinessRepair() {
   const { repairLiveProxyTextReadiness } = require(outfile);
   const repaired = await repairLiveProxyTextReadiness(storage);
   assert(repaired.changed === true, 'startup repair must persist a changed manifest');
-  assert(repaired.repaired === 1, 'startup repair must restore exactly the eligible legacy source');
+  assert(repaired.repaired === 2, 'startup repair must restore eligible ready and legacy-invalid sources');
   assert(repaired.revoked === 0, 'startup repair must not revoke already false entries');
-  assert(repaired.distributable === 1, 'startup repair must expose exactly one distributable source');
+  assert(repaired.distributable === 2, 'startup repair must expose only the recoverable sources');
   const persisted = JSON.parse(memory.get('live_proxy_manifest'));
   const byKey = new Map(persisted.entries.map((item) => [item.key, item]));
   assert(byKey.get('legacy-ready')?.textReady === true, 'startup repair must restore source with valid text');
   assert(byKey.get('legacy-empty')?.textReady === false, 'startup repair must not restore source without text');
-  assert(byKey.get('legacy-invalid')?.textReady === false, 'startup repair must not restore explicitly invalid source');
+  assert(byKey.get('legacy-invalid')?.textReady === true,
+    'legacy invalid evidence must not permanently block an existing complete text');
+  assert(byKey.get('legacy-invalid')?.lastFailure === 'transient'
+    && byKey.get('legacy-invalid')?.consecutiveFailures === 0,
+  'legacy invalid must migrate to retryable transient without old failure counts');
   assert(byKey.get('legacy-blocked')?.textReady === false, 'startup repair must not restore blocked source');
+  assert(byKey.get('current-invalid')?.textReady === false,
+    'current-rule invalid evidence must not be restored from stale text');
   assert(isLiveProxyEntryDistributable(byKey.get('legacy-ready')) === true, 'restored source must be distributable');
   assert(isLiveProxyEntryDistributable(byKey.get('legacy-empty')) === false, 'textless source must remain non-distributable');
-  assert(isLiveProxyEntryDistributable(byKey.get('legacy-invalid')) === false, 'invalid source must remain non-distributable');
+  assert(isLiveProxyEntryDistributable(byKey.get('legacy-invalid')) === true,
+    'migrated legacy invalid source must become distributable when complete text exists');
   assert(isLiveProxyEntryDistributable(byKey.get('legacy-blocked')) === false, 'blocked source must remain non-distributable');
+  assert(isLiveProxyEntryDistributable(byKey.get('current-invalid')) === false,
+    'current-rule invalid source must remain non-distributable');
+  assert(persisted.version === 5, 'startup repair must persist manifest version 5');
 }
 
 
@@ -2008,7 +2498,14 @@ async function main() {
   await testCanonicalChannelLimitAfterPlaybackRanking();
   await testConfiguredOutputLimitInBothModes();
   await testLiveFingerprintIncludesCategoryPins();
-  await testSuccessWithoutUsableText();
+  await testHttpBodyClassification();
+  await testHttpStatusClassification();
+  await testDirectPathFailureClassification();
+  await testQualityGateFailuresStayTransient();
+  await testForceRefreshBypassesCachedLiveText();
+  testLivePrepareInputFreshness();
+  await testEmptyProbeDoesNotRevokeMatureText();
+  await testMatureInvalidSourceRecoversAfterFreshPrepare();
   await testRecoverableProbeFailuresSurvivePrebuild();
   await testTransientFailuresDoNotDiscardSource();
   await testManualValidationFailure();

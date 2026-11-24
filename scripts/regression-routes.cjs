@@ -35,7 +35,7 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-const CURRENT_PROBE_VERSION = 6;
+const CURRENT_PROBE_VERSION = 7;
 
 function countTxtChannelUrls(txt, channelName) {
   let total = 0;

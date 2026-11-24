@@ -19,7 +19,12 @@ import {
 
 const KV_LIVE_PREFIX = 'live:';
 export const KV_LIVE_PROXY_MANIFEST = 'live_proxy_manifest';
-const LIVE_PROXY_MANIFEST_VERSION = 4;
+/**
+ * 失败判定规则版本。旧规则曾把超时、HTML、解析失败等可恢复问题写成
+ * invalid；升级后必须把这些历史结论降级重试，不能让一次误判永久生效。
+ */
+export const LIVE_PROXY_FAILURE_RULE_VERSION = 1;
+const LIVE_PROXY_MANIFEST_VERSION = 5;
 const LIVE_PROXY_MANIFEST_MAX_ENTRIES = 4096;
 const LIVE_PROXY_INVALID_RETENTION_MS = 2 * 24 * 60 * 60 * 1000;
 const LIVE_PROXY_UNHEALTHY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -62,6 +67,8 @@ export interface LiveProxyManifestEntry extends LiveProxySource {
   checkedAt: string;
   successfulAt?: string;
   lastFailure?: 'transient' | 'invalid';
+  /** 产生 lastFailure 时采用的失败判定规则版本。缺失表示规则升级前的历史结论。 */
+  failureRuleVersion?: number;
   kind?: 'aggregated' | 'manual';
   format?: LiveSourceFormat;
   category?: LiveCategory;
@@ -86,6 +93,42 @@ export interface LiveProxyManifest {
   version: number;
   signature: string;
   entries: LiveProxyManifestEntry[];
+}
+
+function isCurrentRuleInvalid(
+  entry: Pick<LiveProxyManifestEntry, 'lastFailure' | 'failureRuleVersion'>,
+): boolean {
+  return entry.lastFailure === 'invalid'
+    && entry.failureRuleVersion === LIVE_PROXY_FAILURE_RULE_VERSION;
+}
+
+/**
+ * 只迁移失败证据，不改变源本身。
+ *
+ * - 旧规则 invalid 没有可信的永久失败证据，降级为 transient 并清零旧的
+ *   连续失败次数，避免历史计数直接触发三次淘汰；
+ * - 旧 transient 保留失败次数，但标记为当前规则；
+ * - 成功记录不应携带失败规则版本。
+ */
+function normalizeFailureEvidence(entry: LiveProxyManifestEntry): LiveProxyManifestEntry {
+  if (!entry.lastFailure) {
+    if (entry.failureRuleVersion === undefined) return entry;
+    const next = { ...entry };
+    delete next.failureRuleVersion;
+    return next;
+  }
+  if (!isCurrentRuleInvalid(entry) && entry.lastFailure === 'invalid') {
+    return {
+      ...entry,
+      lastFailure: 'transient',
+      failureRuleVersion: LIVE_PROXY_FAILURE_RULE_VERSION,
+      consecutiveFailures: 0,
+    };
+  }
+  if (entry.failureRuleVersion !== LIVE_PROXY_FAILURE_RULE_VERSION) {
+    return { ...entry, failureRuleVersion: LIVE_PROXY_FAILURE_RULE_VERSION };
+  }
+  return entry;
 }
 
 export interface LiveProxyValidationUpdate {
@@ -156,7 +199,7 @@ function normalizeManifestEntry(
   const lastFailure = record.lastFailure === 'transient' || record.lastFailure === 'invalid' ? record.lastFailure : undefined;
   const successfulAt = stringValue(record, 'successfulAt') || (legacyVerified && health === 'healthy' ? checkedAt : undefined);
   const url = record.url;
-  return {
+  return normalizeFailureEvidence({
     key: record.key,
     url,
     health,
@@ -164,6 +207,9 @@ function normalizeManifestEntry(
     checkedAt: stringValue(record, 'checkedAt') || checkedAt,
     ...(successfulAt ? { successfulAt } : {}),
     ...(lastFailure ? { lastFailure } : {}),
+    ...(lastFailure && numberValue(record, 'failureRuleVersion') != null
+      ? { failureRuleVersion: numberValue(record, 'failureRuleVersion') }
+      : {}),
     ...(stringValue(record, 'name') ? { name: record.name as string } : {}),
     ...(stringValue(record, 'ua') ? { ua: record.ua as string } : {}),
     ...(record.header && typeof record.header === 'object' ? { header: record.header as Record<string, string> } : {}),
@@ -182,7 +228,7 @@ function normalizeManifestEntry(
     ...(typeof record.everSucceeded === 'boolean' ? { everSucceeded: record.everSucceeded } : {}),
     ...(typeof record.textReady === 'boolean' ? { textReady: record.textReady } : {}),
     ...(stringValue(record, 'lastSeenAt') ? { lastSeenAt: record.lastSeenAt as string } : {}),
-  };
+  });
 }
 
 export function parseLiveProxyManifest(raw: string | null): LiveProxyManifest | null {
@@ -194,6 +240,7 @@ export function parseLiveProxyManifest(raw: string | null): LiveProxyManifest | 
       // 兼容线上尚未重建的旧版清单；v3 没有 textReady，按未就绪处理，
       // 避免升级后整份清单被丢弃，同时在重新聚合前 fail-closed。
       || parsed.version === 3
+      || parsed.version === 4
       || parsed.version === LIVE_PROXY_MANIFEST_VERSION;
     if (!supported || !Array.isArray(parsed.entries)) return null;
     const checkedAt = new Date().toISOString();
@@ -236,6 +283,7 @@ function manifestSignature(entries: LiveProxyManifestEntry[]): string {
     consecutiveFailures: entry.consecutiveFailures,
     successfulAt: entry.successfulAt,
     lastFailure: entry.lastFailure,
+    failureRuleVersion: entry.failureRuleVersion,
     everSucceeded: entry.everSucceeded,
     textReady: entry.textReady === true,
     channelCount: entry.channelCount,
@@ -328,7 +376,12 @@ export function mergeLiveProxyManifest(
 ): LiveProxyManifest {
   const checkedAt = update.checkedAt || new Date().toISOString();
   const byKey = new Map<string, LiveProxyManifestEntry>();
-  if (previous?.entries) for (const entry of previous.entries) byKey.set(entry.key, entry);
+  if (previous?.entries) {
+    for (const entry of previous.entries) {
+      const normalized = normalizeFailureEvidence(entry);
+      byKey.set(normalized.key, normalized);
+    }
+  }
   const valid = new Set(update.validUrls);
   const transient = new Set(update.transientUrls || []);
   const invalid = new Set(update.invalidUrls || []);
@@ -406,17 +459,22 @@ export function mergeLiveProxyManifest(
       const value = metrics[key];
       if (value != null) (merged as unknown as Record<string, unknown>)[key] = value;
     }
-    if (metrics.lastFailure === 'invalid' || metrics.lastFailure === 'transient') merged.lastFailure = metrics.lastFailure;
+    if (metrics.lastFailure === 'invalid' || metrics.lastFailure === 'transient') {
+      merged.lastFailure = metrics.lastFailure;
+      merged.failureRuleVersion = LIVE_PROXY_FAILURE_RULE_VERSION;
+    }
     if (valid.has(current.url)) {
       merged.health = 'healthy';
       merged.consecutiveFailures = 0;
       merged.successfulAt = checkedAt;
       merged.everSucceeded = true;
       delete merged.lastFailure;
+      delete merged.failureRuleVersion;
     } else if (transient.has(current.url)) {
       merged.health = 'unhealthy';
       merged.consecutiveFailures = (previousEntry?.consecutiveFailures ?? 0) + 1;
       merged.lastFailure = 'transient';
+      merged.failureRuleVersion = LIVE_PROXY_FAILURE_RULE_VERSION;
       // 成熟正文在任意次数超时、网络或 HTTP 抖动中保留为后备。新源没有
       // 成功历史时仍不可下发；只有明确 invalid 才撤销。
       merged.textReady = priorReady
@@ -425,6 +483,7 @@ export function mergeLiveProxyManifest(
       merged.health = 'unhealthy';
       merged.consecutiveFailures = (previousEntry?.consecutiveFailures ?? 0) + 1;
       merged.lastFailure = 'invalid';
+      merged.failureRuleVersion = LIVE_PROXY_FAILURE_RULE_VERSION;
       merged.textReady = false;
     }
     byKey.set(current.key, merged);
@@ -438,13 +497,13 @@ export function mergeLiveProxyManifest(
   const currentKeys = new Set(currentEntries.map((item) => item.key));
   for (const [key, entry] of byKey) {
     const isObserved = observed.has(entry.url);
-    const invalidRepeated = isObserved && entry.lastFailure === 'invalid'
+    const invalidRepeated = isObserved && isCurrentRuleInvalid(entry)
       && entry.consecutiveFailures >= LIVE_PROXY_INVALID_DELETE_THRESHOLD;
     let expired = false;
     if (isObserved && entry.lastFailure) {
       const lastActive = Date.parse(entry.successfulAt || '') || Date.parse(entry.checkedAt || '') || now;
       const staleForMs = Math.max(0, now - lastActive);
-      expired = entry.lastFailure === 'invalid'
+      expired = isCurrentRuleInvalid(entry)
         ? staleForMs >= LIVE_PROXY_INVALID_RETENTION_MS
         : staleForMs >= LIVE_PROXY_UNHEALTHY_RETENTION_MS;
     }
@@ -508,15 +567,18 @@ export async function recordLiveProxyValidations(
       nextEntry.successfulAt = checkedAt;
       nextEntry.everSucceeded = true;
       delete nextEntry.lastFailure;
+      delete nextEntry.failureRuleVersion;
     } else if (result.state === 'invalid') {
       nextEntry.health = 'unhealthy';
       nextEntry.consecutiveFailures = (entry.consecutiveFailures || 0) + 1;
       nextEntry.lastFailure = 'invalid';
+      nextEntry.failureRuleVersion = LIVE_PROXY_FAILURE_RULE_VERSION;
       nextEntry.textReady = false;
     } else {
       nextEntry.health = 'unhealthy';
       nextEntry.consecutiveFailures = (entry.consecutiveFailures || 0) + 1;
       nextEntry.lastFailure = 'transient';
+      nextEntry.failureRuleVersion = LIVE_PROXY_FAILURE_RULE_VERSION;
       // 单源手动复检与批量定时复检使用同一语义：成熟正文在任意次数瞬时
       // 失败时保留为后备，只有明确 invalid 才撤销。新源没有历史成功记录时
       // 仍保持不可下发，避免把未验证入口暴露给客户端。
@@ -591,7 +653,7 @@ export async function repairLiveProxyTextReadiness(
     // 永久关闭一个已经拥有完整 #genre# 文本的源。只有明确 invalid 或屏蔽
     // 才撤销，transient 由排序层承担降级。
     const sourceEligible = !isBlockedLiveSource(entry)
-      && entry.lastFailure !== 'invalid';
+      && !isCurrentRuleInvalid(entry);
     const shouldReady = textValid && sourceEligible;
     checked++;
     const wasReady = entry.textReady === true;

@@ -4,7 +4,7 @@ import { createApp } from './routes';
 import { KVStorage } from './storage/kv';
 import { runAggregation } from './aggregator';
 import { probeLiveUrlsBounded } from './core/channel-probe';
-import { loadLivePrepareState, runLivePrepareChunk } from './core/live-prepare';
+import { livePrepareStateMatchesInputs, loadLivePrepareState, runLivePrepareChunk } from './core/live-prepare';
 import { loadLivePrepareInputs } from './core/live-inputs';
 import { repairLiveProxyTextReadiness } from './core/live-source';
 import { rebuildLiveOutput } from './core/live-output';
@@ -386,11 +386,10 @@ export default {
     // complete=true；若不识别签名变化，新直播源会被永久跳过。
     const livePrepareState = await loadLivePrepareState(storage);
     const livePrepareInputs = await loadLivePrepareInputs(storage);
-    const livePrepareSignatureMatches = !!livePrepareState
-      && livePrepareState.sourceSignature === (livePrepareInputs?.signature || '');
     const livePrepareActive = !!livePrepareInputs
       && livePrepareInputs.sources.length > 0
-      && (livePrepareState?.complete !== true || !livePrepareSignatureMatches);
+      && !(livePrepareState?.complete === true
+        && livePrepareStateMatchesInputs(livePrepareState, livePrepareInputs));
     const qualityStatus = await loadQualityStatus(storage);
     const qualityDueMode = await resolveQualityRunMode(storage, new Date(), config.qualityTimezone);
     const qualityDue = qualityDueMode !== null;

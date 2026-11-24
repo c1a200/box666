@@ -43,20 +43,30 @@ interface CachedLiveSource {
 export type LiveDownloadFailure = 'transient' | 'invalid';
 
 function failureFromHttpStatus(status: number): LiveDownloadFailure {
-  return status === 408 || status === 425 || status === 429 || status >= 500
-    ? 'transient'
-    : 'invalid';
+  // 只有内容明确不存在时才永久判废。401/403/406/412/451 常由反爬、
+  // 临时鉴权或地区策略触发，5xx/429 等也可能是上游抖动，都必须允许重试。
+  return status === 404 || status === 410 ? 'invalid' : 'transient';
 }
 
 function looksLikeHtmlError(content: string): boolean {
-  const head = content.slice(0, 2048);
-  return /<!doctype\s+html|<html[\s>]|<head[\s>]|<body[\s>]|cloudflare|attention required|error\s+5\d\d/i.test(head);
+  const head = content.slice(0, 4096);
+  return /<!doctype\s+html|<html[\s>]|<head[\s>]|<body[\s>]|cloudflare|attention required|error\s+5\d\d|just a moment|checking your browser|verify you are human|captcha|access denied|request blocked|rate limit(?:ed)?|too many requests|security check|\bwaf\b|人机验证|安全验证|访问被拒绝|请求被拒绝|请求过于频繁|请稍后再试|启用\s*javascript/i.test(head);
 }
 
 function looksLikeLivePayload(content: string, contentType: string): boolean {
   if (!content || content.length <= 20 || looksLikeHtmlError(content)) return false;
   if (/#EXTM3U|#EXTINF|#genre#/i.test(content)) return true;
   return contentType.includes('mpegurl') || contentType.includes('text/plain');
+}
+
+function unusableLiveBodyFailure(content: string): { failure: LiveDownloadFailure; reason: string } {
+  if (!content.trim()) return { failure: 'transient', reason: 'empty response' };
+  if (looksLikeHtmlError(content)) {
+    return { failure: 'transient', reason: 'HTML or anti-bot response' };
+  }
+  // JSON、维护文本、被截断的正文等都可能随上游策略、出口 IP 或 UA 改变，
+  // 无法证明源已永久失效，只能作为本轮可重试失败。
+  return { failure: 'transient', reason: 'unexpected content' };
 }
 
 interface DownloadOutcome {
@@ -1411,6 +1421,7 @@ async function downloadLive(
   timeoutMs: number,
   stats: LiveDownloadStats,
   browserFallback = true,
+  forceRefresh = false,
 ): Promise<DownloadOutcome> {
   // Blocked sources are treated as permanently invalid and never hit the network
   // or a stale cache. This also removes them from regenerated manifests.
@@ -1426,7 +1437,9 @@ async function downloadLive(
   }
 
   const key = liveCacheKey(input, browserFallback);
-  const cached = liveSourceMemoryCache.get(key);
+  // 手动复检必须真正回源：既不能命中新鲜缓存，也不能在失败后退回旧正文，
+  // 否则管理端会把“上游已经不可用”的状态误报成成功。
+  const cached = forceRefresh ? undefined : liveSourceMemoryCache.get(key);
   const networkStartedAt = Date.now();
   const now = Date.now();
   const cacheFresh = !!cached && now - cached.cachedAt < LIVE_SOURCE_CACHE_TTL_MS;
@@ -1443,6 +1456,14 @@ async function downloadLive(
     : [input.ua || TVBOX_UA];
   let lastFailure: LiveDownloadFailure | undefined;
   let lastReason: string | undefined;
+  const rememberFailure = (failure: LiveDownloadFailure, reason: string) => {
+    // 多次 UA 尝试中，只要有一次是可重试结论，就不能让另一次普通无效正文
+    // 把整体结果升级成永久 invalid。
+    if (lastFailure !== 'transient' || failure === 'transient') {
+      lastFailure = failure;
+      lastReason = reason;
+    }
+  };
 
   for (const ua of uas) {
     const controller = new AbortController();
@@ -1464,8 +1485,7 @@ async function downloadLive(
 
       if (!resp.ok) {
         // 429/5xx/网络类状态是上游暂时不可用，不能据此永久删除入口。
-        lastFailure = failureFromHttpStatus(resp.status);
-        lastReason = `HTTP ${resp.status}`;
+        rememberFailure(failureFromHttpStatus(resp.status), `HTTP ${resp.status}`);
         continue;
       }
 
@@ -1484,13 +1504,13 @@ async function downloadLive(
         return { content: text, cacheHit: false, revalidated: false, staleFallback: false, downloadMs: Date.now() - networkStartedAt };
       }
 
-      // 2xx 但不是直播内容（HTML 错误页、JSON、空响应等）确认无效。
-      lastFailure = 'invalid';
-      lastReason = text ? 'unexpected content' : 'empty content';
+      // 2xx 也可能是空响应、反爬/人机验证或地区策略页面，这类结果会随
+      // UA、出口 IP 和上游策略变化，不能据此永久判废源。
+      const bodyFailure = unusableLiveBodyFailure(text);
+      rememberFailure(bodyFailure.failure, bodyFailure.reason);
     } catch (error: unknown) {
       // 超时、DNS、连接中断和 Worker fetch 异常都视为暂时失败。
-      lastFailure = 'transient';
-      lastReason = error instanceof Error ? error.message : String(error);
+      rememberFailure('transient', error instanceof Error ? error.message : String(error));
     } finally {
       clearTimeout(timer);
     }
@@ -1518,6 +1538,7 @@ async function downloadLiveBatched(
   concurrencyLimit = 3,
   storage?: Storage,
   browserFallback = true,
+  forceRefresh = false,
 ): Promise<{
   results: PromiseSettledResult<{ input: LiveSourceInput; outcome: DownloadOutcome }>[];
   stats: LiveDownloadStats;
@@ -1528,7 +1549,7 @@ async function downloadLiveBatched(
   for (let i = 0; i < sources.length; i += concurrencyLimit) {
     const chunk = sources.slice(i, i + concurrencyLimit);
     const chunkPromises = chunk.map((s) =>
-      downloadLive(s, fetchTimeoutMs, stats, browserFallback).then((outcome) => ({ input: s, outcome })),
+      downloadLive(s, fetchTimeoutMs, stats, browserFallback, forceRefresh).then((outcome) => ({ input: s, outcome })),
     );
     const chunkResults = await Promise.allSettled(chunkPromises);
     results.push(...chunkResults);
@@ -1660,7 +1681,7 @@ function sourceSuccessMetrics(
     adRatio: quality.adRatio ?? null,
     downloadMs: downloadMs ?? null,
     successfulAt: quality.discard ? null : checkedAt,
-    ...(quality.discard ? { lastFailure: 'invalid' as const } : {}),
+    ...(quality.discard ? { lastFailure: quality.failure ?? 'transient' } : {}),
     now: Date.parse(checkedAt),
   };
 }
@@ -1769,7 +1790,7 @@ export async function mergeLivesToNative(
         rank: 0,
       });
     } catch (err) {
-      sourceMetrics[input.url] = sourceFailureMetrics('invalid', checkedAt);
+      sourceMetrics[input.url] = sourceFailureMetrics('transient', checkedAt);
       console.warn(`[live-merger] Parse failed for ${input.name}: ${err}`);
     }
   }
@@ -1944,8 +1965,11 @@ export async function separatedMergeLives(
   const usedSourceLabels = new Set<string>();
   const preparedSources: PreparedLiveSource[] = [];
 
-  for (const r of downloadResults) {
+  for (let i = 0; i < downloadResults.length; i++) {
+    const r = downloadResults[i];
     if (r.status !== 'fulfilled') {
+      const input = sources[i];
+      if (input) sourceMetrics[input.url] = sourceFailureMetrics('transient', checkedAt);
       sourcesFailed++;
       continue;
     }
@@ -1964,7 +1988,7 @@ export async function separatedMergeLives(
         maxSpeedMs: options.preserveAllUrls ? 0 : LIVE_KNOWN_MAX_SPEED_MS,
       });
       const quality = evaluateSourceQuality(prepared, {});
-      const metrics = sourceSuccessMetrics(prepared, quality, outcome.downloadMs, checkedAt);
+      const metrics = sourceSuccessMetrics(prepared, quality, outcome.downloadMs, checkedAt, outcome.staleFallback);
       sourceMetrics[input.url] = metrics;
       if (quality.discard) {
         console.log(`[live-merger] Discarded live source ${sourceName}: ${quality.reason}`);
@@ -1980,7 +2004,7 @@ export async function separatedMergeLives(
         rank: 0,
       });
     } catch (err) {
-      sourceMetrics[input.url] = sourceFailureMetrics('invalid', checkedAt);
+      sourceMetrics[input.url] = sourceFailureMetrics('transient', checkedAt);
       console.warn(`[live-merger] Separated parse failed for ${input.name}: ${err}`);
     }
   }
@@ -2322,9 +2346,9 @@ function isHardLiveProbeFailure(entry: ChannelSpeedMap[string] | undefined): boo
 
 function isTransientLiveProbeFailure(entry: ChannelSpeedMap[string] | undefined): boolean {
   if (!entry || !isCurrentLiveProbe(entry) || entry.kind !== 'fail') return false;
-  return entry.failureReason === 'timeout'
-    || entry.failureReason === 'network'
-    || entry.failureReason === 'http';
+  // 新分类或未来新增的诊断原因都按可重试处理；只有明确 invalid
+  // （广告跳转/屏蔽）才允许从候选池永久删除。
+  return entry.failureReason !== 'invalid';
 }
 
 export interface ChannelSpeedApplyOptions {
@@ -2865,6 +2889,8 @@ export interface FilteredLiveOptions {
   concurrency?: number;
   /** 是否启用带缓存、限并发的下载路径 */
   useCache?: boolean;
+  /** 强制回源并禁用陈旧正文兜底，用于管理端手动复检 */
+  forceRefresh?: boolean;
   /** 是否保留临时失败的上游入口（默认 true，避免一次限流就清空清单） */
   preserveTransientFailures?: boolean;
 }
@@ -2953,6 +2979,8 @@ interface PreparedSourceChannels {
 
 interface SourceQualityDecision {
   discard: boolean;
+  /** discard 时的失败分类；只有内容结构明确无效才可永久判废。 */
+  failure?: LiveDownloadFailure;
   reason?: string;
   adRatio?: number;
   playableRatio?: number;
@@ -2967,18 +2995,24 @@ function evaluateSourceQuality(
   const minPlayableRatio = Math.min(1, Math.max(0, options.minPlayableRatio ?? SEPARATED_MIN_PLAYABLE_RATIO));
 
   if (prepared.totalEntries === 0) {
-    return { discard: true, reason: 'empty source' };
+    return { discard: true, failure: 'transient', reason: 'empty source' };
   }
 
   const adLike = prepared.adEntries + prepared.statusEntries;
   const adRatio = adLike / prepared.totalEntries;
   if (adLike >= 5 && adRatio > maxAdRatio) {
-    return { discard: true, reason: 'ad ratio ' + (adRatio * 100).toFixed(1) + '%', adRatio };
+    return {
+      discard: true,
+      failure: 'transient',
+      reason: 'ad ratio ' + (adRatio * 100).toFixed(1) + '%',
+      adRatio,
+    };
   }
 
   if (prepared.channels.length < minChannels) {
     return {
       discard: true,
+      failure: 'transient',
       reason: 'too few usable channels (' + prepared.channels.length + ' < ' + minChannels + ')',
     };
   }
@@ -2992,6 +3026,7 @@ function evaluateSourceQuality(
     && playableRatio < minPlayableRatio) {
     return {
       discard: true,
+      failure: 'transient',
       reason: 'low playable ratio ' + (playableRatio * 100).toFixed(1) + '%',
       playableRatio,
     };
@@ -3169,7 +3204,8 @@ export async function filterLiveSourcesDetailed(
     timeoutMs,
     concurrency,
     options.storage,
-    false,
+    true,
+    options.forceRefresh === true,
   );
 
   const valid: LiveSourceInput[] = [];
@@ -3185,7 +3221,7 @@ export async function filterLiveSourcesDetailed(
     if (result.status !== 'fulfilled') {
       const input = candidates[i];
       if (input) metrics[input.url] = sourceFailureMetrics('transient', checkedAt);
-      transient.push(input);
+      if (input) transient.push(input);
       continue;
     }
     const { input, outcome } = result.value;
@@ -3203,38 +3239,54 @@ export async function filterLiveSourcesDetailed(
     }
 
     const sourceName = sanitizeTxtLabel(input.name || 'source', 'source');
-    const entries = parseLiveContent(content, sourceName, input.speedMs);
-    const prepared = prepareSourceChannels(entries, channelSpeedMap, {
-      maxUrlsPerChannel: options.maxUrlsPerChannel ?? SEPARATED_MAX_URLS_PER_CHANNEL,
-      maxSpeedMs: options.maxSpeedMs ?? LIVE_KNOWN_MAX_SPEED_MS,
-    });
-    const quality = evaluateSourceQuality(prepared, options);
-    metrics[input.url] = sourceSuccessMetrics(prepared, quality, outcome.downloadMs, checkedAt);
-    if (quality.discard) {
-      invalid.push(input);
-      console.log('[live-merger] Discarded live source ' + sourceName + ': ' + quality.reason);
-      continue;
-    }
-    categories[input.url] = classifyLiveCategory(prepared.channels.map((item) => item.group));
-    const sourceGroups: TVBoxLiveGroup[] = [];
-    const byGroup = new Map<string, TVBoxLiveChannel[]>();
-    for (const { group, channel } of prepared.channels) {
-      if (!byGroup.has(group)) byGroup.set(group, []);
-      byGroup.get(group)!.push(channel);
-    }
-    for (const [group, channels] of byGroup) {
-      if (channels.length > 0) sourceGroups.push({ group, channels });
-    }
-    const sourceText = formatLiveGroupsAsTxt(sourceGroups);
-    if (sourceText.trim() && sourceText.includes('#genre#')) {
-      texts[input.url] = sourceText;
-      valid.push(input);
-    } else {
-      // 下载成功但没有产出可解析正文，不能算 valid；否则清单会继承旧
-      // textReady，最终下发一个没有正文的 /live/<key>。
-      metrics[input.url] = sourceFailureMetrics('invalid', checkedAt);
-      invalid.push(input);
-      console.log('[live-merger] Rejected live source without playable text ' + sourceName);
+    try {
+      const entries = parseLiveContent(content, sourceName, input.speedMs);
+      const prepared = prepareSourceChannels(entries, channelSpeedMap, {
+        maxUrlsPerChannel: options.maxUrlsPerChannel ?? SEPARATED_MAX_URLS_PER_CHANNEL,
+        maxSpeedMs: options.maxSpeedMs ?? LIVE_KNOWN_MAX_SPEED_MS,
+      });
+      const quality = evaluateSourceQuality(prepared, options);
+      metrics[input.url] = sourceSuccessMetrics(
+        prepared,
+        quality,
+        outcome.downloadMs,
+        checkedAt,
+        outcome.staleFallback,
+      );
+      if (quality.discard) {
+        const failure = quality.failure ?? 'transient';
+        if (failure === 'invalid') invalid.push(input);
+        else transient.push(input);
+        console.log('[live-merger] Discarded live source ' + sourceName + ': ' + quality.reason
+          + ' (' + failure + ')');
+        continue;
+      }
+      categories[input.url] = classifyLiveCategory(prepared.channels.map((item) => item.group));
+      const sourceGroups: TVBoxLiveGroup[] = [];
+      const byGroup = new Map<string, TVBoxLiveChannel[]>();
+      for (const { group, channel } of prepared.channels) {
+        if (!byGroup.has(group)) byGroup.set(group, []);
+        byGroup.get(group)!.push(channel);
+      }
+      for (const [group, channels] of byGroup) {
+        if (channels.length > 0) sourceGroups.push({ group, channels });
+      }
+      const sourceText = formatLiveGroupsAsTxt(sourceGroups);
+      if (sourceText.trim() && sourceText.includes('#genre#')) {
+        texts[input.url] = sourceText;
+        valid.push(input);
+      } else {
+        // 下载成功但没有产出可解析正文，不能算 valid；否则清单会继承旧
+        // textReady，最终下发一个没有正文的 /live/<key>。
+        metrics[input.url] = sourceFailureMetrics('transient', checkedAt);
+        transient.push(input);
+        console.log('[live-merger] Rejected live source without playable text ' + sourceName);
+      }
+    } catch (err) {
+      // 单个源的解析/排序异常不能拖垮整批入口，更不能据此永久判废。
+      metrics[input.url] = sourceFailureMetrics('transient', checkedAt);
+      transient.push(input);
+      console.warn('[live-merger] Parse failed for ' + sourceName + ': ' + err);
     }
   }
 
@@ -3279,61 +3331,22 @@ export async function filterLivesBySourceDetailed(
   const preserveSourceGroups = options.preserveSourceGroups !== false;
   const maxSpeedMs = Math.max(0, options.maxSpeedMs ?? LIVE_KNOWN_MAX_SPEED_MS);
 
-  let results: PromiseSettledResult<{ content: string; name: string; failure?: LiveDownloadFailure; reason?: string }>[];
-  const useBatchedDownloads = options.useCache !== false
-    && (options.useCache === true || options.storage !== undefined || options.concurrency !== undefined);
-  if (useBatchedDownloads) {
-    const batched = await downloadLiveBatched(
-      candidates.map((input) => ({
-        name: input.name || 'source',
-        url: input.url,
-        ua: input.ua,
-        header: input.header,
-      })),
-      timeoutMs,
-      Math.max(1, options.concurrency ?? 3),
-      options.storage,
-      false,
-    );
-    results = batched.results.map((result): PromiseSettledResult<{ content: string; name: string; failure?: LiveDownloadFailure; reason?: string }> => {
-      if (result.status !== 'fulfilled') {
-        return { status: 'rejected', reason: result.reason };
-      }
-      const { outcome, input } = result.value;
-      return {
-        status: 'fulfilled',
-        value: outcome.content
-          ? { content: outcome.content, name: input.name || 'source' }
-          : { content: '', name: input.name || 'source', failure: outcome.failure, reason: outcome.reason },
-      };
-    });
-  } else {
-    results = await Promise.allSettled(
-      candidates.map(async (input) => {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeoutMs);
-        try {
-          const resp = await fetch(input.url, {
-            signal: controller.signal,
-            headers: { 'User-Agent': input.ua || TVBOX_UA, ...(input.header || {}) },
-          });
-          if (!resp.ok) {
-            return { content: '', name: input.name || 'source', failure: failureFromHttpStatus(resp.status), reason: `HTTP ${resp.status}` };
-          }
-          const contentType = (resp.headers.get('content-type') || '').toLowerCase();
-          const text = await readLimitedText(resp, controller.signal);
-          if (!looksLikeLivePayload(text, contentType)) {
-            return { content: '', name: input.name || 'source', failure: 'invalid', reason: text ? 'unexpected content' : 'empty content' };
-          }
-          return { content: text, name: input.name || 'source' };
-        } catch (error: unknown) {
-          return { content: '', name: input.name || 'source', failure: 'transient', reason: error instanceof Error ? error.message : String(error) };
-        } finally {
-          clearTimeout(timer);
-        }
-      }),
-    );
-  }
+  // 所有入口必须共用同一套 UA 回退、响应体识别和缓存语义，避免直连路径
+  // 把反爬页、空响应或暂时性 HTTP 错误误判成永久 invalid。
+  const batched = await downloadLiveBatched(
+    candidates.map((input) => ({
+      name: input.name || 'source',
+      url: input.url,
+      ua: input.ua,
+      header: input.header,
+    })),
+    timeoutMs,
+    Math.max(1, options.concurrency ?? 3),
+    options.useCache === false ? undefined : options.storage,
+    true,
+    options.forceRefresh === true || options.useCache === false,
+  );
+  const results = batched.results;
 
   const groups: TVBoxLiveGroup[] = [];
   let emittedChannels = 0;
@@ -3341,55 +3354,65 @@ export async function filterLivesBySourceDetailed(
   let hasTransientFailure = false;
   let hasInvalidFailure = false;
   let reason: string | undefined;
-  for (const result of results) {
-    if (result.status !== 'fulfilled' || !result.value) {
+  for (let i = 0; i < results.length; i++) {
+    const result = results[i];
+    if (result.status !== 'fulfilled') {
       hasTransientFailure = true;
-      reason ??= result.status === 'rejected' ? String(result.reason) : undefined;
+      reason ??= String(result.reason);
       continue;
     }
-    if (!result.value.content) {
-      if (result.value.failure === 'invalid') {
+    const { input, outcome } = result.value;
+    if (!outcome.content) {
+      if (outcome.failure === 'invalid') {
         hasInvalidFailure = true;
       } else {
         hasTransientFailure = true;
       }
-      reason ??= result.value.reason;
+      reason ??= outcome.reason;
       continue;
     }
-    const sourceName = sanitizeTxtLabel(result.value.name || 'source', 'source');
-    const entries = parseLiveContent(result.value.content, sourceName);
-    const prepared = prepareSourceChannels(entries, channelSpeedMap, {
-      maxUrlsPerChannel,
-      maxSpeedMs,
-    });
+    const sourceName = sanitizeTxtLabel(input.name || 'source', 'source');
+    try {
+      const entries = parseLiveContent(outcome.content, sourceName);
+      const prepared = prepareSourceChannels(entries, channelSpeedMap, {
+        maxUrlsPerChannel,
+        maxSpeedMs,
+      });
 
-    const quality = evaluateSourceQuality(prepared, options);
-    if (quality.discard) {
-      hasInvalidFailure = true;
-      reason = quality.reason;
-      console.log('[live-merger] Discarded live source ' + sourceName + ': ' + quality.reason);
-      continue;
-    }
-
-    if (preserveSourceGroups) {
-      const byGroup = new Map<string, TVBoxLiveChannel[]>();
-      for (const { group, channel } of prepared.channels) {
-        if (!byGroup.has(group)) byGroup.set(group, []);
-        byGroup.get(group)!.push(channel);
+      const quality = evaluateSourceQuality(prepared, options);
+      if (quality.discard) {
+        if (quality.failure === 'invalid') hasInvalidFailure = true;
+        else hasTransientFailure = true;
+        reason = quality.reason;
+        console.log('[live-merger] Discarded live source ' + sourceName + ': ' + quality.reason
+          + ' (' + (quality.failure ?? 'transient') + ')');
+        continue;
       }
-      for (const [group, channels] of byGroup) {
-        if (maxChannels > 0 && emittedChannels >= maxChannels) break;
-        const limited = maxChannels > 0 ? channels.slice(0, maxChannels - emittedChannels) : channels;
-        if (limited.length === 0) continue;
-        groups.push({ group: scrubTypeLiteral(group), channels: [...limited].sort((a, b) => compareLiveChannelNames(a.name, b.name)) });
+
+      if (preserveSourceGroups) {
+        const byGroup = new Map<string, TVBoxLiveChannel[]>();
+        for (const { group, channel } of prepared.channels) {
+          if (!byGroup.has(group)) byGroup.set(group, []);
+          byGroup.get(group)!.push(channel);
+        }
+        for (const [group, channels] of byGroup) {
+          if (maxChannels > 0 && emittedChannels >= maxChannels) break;
+          const limited = maxChannels > 0 ? channels.slice(0, maxChannels - emittedChannels) : channels;
+          if (limited.length === 0) continue;
+          groups.push({ group: scrubTypeLiteral(group), channels: [...limited].sort((a, b) => compareLiveChannelNames(a.name, b.name)) });
+          emittedChannels += limited.length;
+        }
+      } else {
+        const remaining = maxChannels > 0 ? Math.max(0, maxChannels - emittedChannels) : prepared.channels.length;
+        const limited = prepared.channels.slice(0, remaining);
+        if (limited.length === 0) break;
+        groups.push({ group: sourceName, channels: limited.map(({ channel }) => channel) });
         emittedChannels += limited.length;
       }
-    } else {
-      const remaining = maxChannels > 0 ? Math.max(0, maxChannels - emittedChannels) : prepared.channels.length;
-      const limited = prepared.channels.slice(0, remaining);
-      if (limited.length === 0) break;
-      groups.push({ group: sourceName, channels: limited.map(({ channel }) => channel) });
-      emittedChannels += limited.length;
+    } catch (err) {
+      hasTransientFailure = true;
+      reason ??= err instanceof Error ? err.message : String(err);
+      console.warn('[live-merger] Separated parse failed for ' + sourceName + ': ' + err);
     }
 
     if (maxChannels > 0 && emittedChannels >= maxChannels) break;

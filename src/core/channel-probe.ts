@@ -108,12 +108,12 @@ export { loadSpeedMap, pruneExpired, selectProbeCandidates, CHANNEL_FAILURE_RETR
 
 // ─── 单 URL 测试 ───────────────────────────────────────
 
-interface ProbeResult {
+export interface ProbeResult {
   url: string;
   speedMs: number;
   kind: 'm3u8' | 'ts' | 'tcp' | 'fail';
   verification?: 'manifest' | 'media';
-  failureReason?: 'timeout' | 'http' | 'invalid' | 'network';
+  failureReason?: 'timeout' | 'http' | 'invalid' | 'network' | 'content';
 }
 
 function playbackVerificationRank(
@@ -232,7 +232,11 @@ async function fetchHead(
     signal,
     headers: probeRequestHeaders(referer),
   });
-  if (!resp.ok) throw Object.assign(new Error('http'), { failureReason: 'http' });
+  if (!resp.ok) {
+    throw Object.assign(new Error('http ' + resp.status), {
+      failureReason: probeFailureReasonFromHttpStatus(resp.status),
+    });
+  }
   const bytes = await readResponseHead(resp, maxBytes);
   return {
     // Relative segment URIs must be resolved against the final redirect target,
@@ -291,11 +295,21 @@ function looksLikePlayableMedia(bytes: Uint8Array, contentType: string): boolean
 
 type ProbeFailureReason = NonNullable<ProbeResult['failureReason']>;
 
+function probeFailureReasonFromHttpStatus(status: number): ProbeFailureReason {
+  // 404/410 是内容明确不存在的硬证据；鉴权、反爬、限流和服务端故障都可能
+  // 随出口、UA 或上游状态恢复，不能写成永久失效。
+  return status === 404 || status === 410 ? 'invalid' : 'http';
+}
+
 function failureReasonFromError(err: unknown, signal: AbortSignal): ProbeFailureReason {
   if (signal.aborted || (err instanceof Error && err.name === 'AbortError')) return 'timeout';
   if (err && typeof err === 'object' && 'failureReason' in err) {
     const reason = (err as { failureReason?: unknown }).failureReason;
-    if (reason === 'timeout' || reason === 'http' || reason === 'invalid' || reason === 'network') {
+    if (reason === 'timeout'
+      || reason === 'http'
+      || reason === 'invalid'
+      || reason === 'network'
+      || reason === 'content') {
       return reason;
     }
   }
@@ -360,17 +374,19 @@ async function verifyHlsPlaylistContent(
     return { url: playlistUrl, speedMs: 0, kind: 'fail', failureReason: 'invalid' };
   }
   if (!isHlsPlaylist(playlist.text)) {
-    return { url: playlistUrl, speedMs: 0, kind: 'fail', failureReason: 'invalid' };
+    return { url: playlistUrl, speedMs: 0, kind: 'fail', failureReason: 'content' };
   }
 
   // A redirected master/media playlist resolves its relative URIs from the
   // final response URL, which can be a different host and path.
   const candidates = hlsMediaCandidates(playlist.text, playlistUrl);
   if (candidates.length === 0) {
-    return { url: playlistUrl, speedMs: 0, kind: 'fail', failureReason: 'invalid' };
+    return { url: playlistUrl, speedMs: 0, kind: 'fail', failureReason: 'content' };
   }
 
   let validChildManifest = false;
+  let sawInvalidFailure = false;
+  let sawContentFailure = false;
   let sawHttpFailure = false;
   let sawNetworkFailure = false;
   let sawTimeout = false;
@@ -411,22 +427,23 @@ async function verifyHlsPlaylistContent(
             depth + 1,
           ),
         );
-        // A valid child playlist is still useful rank evidence even when its
-        // own segment fetch is temporarily unavailable. It must remain below
-        // media proof and never be trusted as coverage.
-        return {
-          result: nested.kind === 'fail'
-            ? {
-              url: head.url || candidate,
-              speedMs: Date.now() - startedAt,
-              kind: 'm3u8',
-              verification: 'manifest',
-            }
-            : nested,
-        };
+        // Do not turn a failed child playlist into manifest success. In
+        // particular, an explicit advertisement redirect must remain visible
+        // to the parent's aggregate decision instead of being masked as a
+        // usable manifest.
+        return { result: nested };
       }
 
-      if (!looksLikePlayableMedia(head.bytes, head.contentType)) return { result: null };
+      if (!looksLikePlayableMedia(head.bytes, head.contentType)) {
+        return {
+          result: {
+            url: head.url || candidate,
+            speedMs: 0,
+            kind: 'fail',
+            failureReason: 'content',
+          },
+        };
+      }
 
       // One verified media segment is sufficient evidence. Requiring a second
       // segment doubled the critical-path deadline and rejected healthy live
@@ -457,10 +474,14 @@ async function verifyHlsPlaylistContent(
     for (const outcome of outcomes) {
       if (outcome.result?.verification === 'manifest') validChildManifest = true;
       if (outcome.result?.kind === 'fail') {
+        if (outcome.result.failureReason === 'invalid') sawInvalidFailure = true;
+        if (outcome.result.failureReason === 'content') sawContentFailure = true;
         if (outcome.result.failureReason === 'http') sawHttpFailure = true;
         if (outcome.result.failureReason === 'network') sawNetworkFailure = true;
         if (outcome.result.failureReason === 'timeout') sawTimeout = true;
       }
+      if (outcome.reason === 'invalid') sawInvalidFailure = true;
+      if (outcome.reason === 'content') sawContentFailure = true;
       if (outcome.reason === 'http') sawHttpFailure = true;
       if (outcome.reason === 'network') sawNetworkFailure = true;
       if (outcome.reason === 'timeout') sawTimeout = true;
@@ -474,13 +495,22 @@ async function verifyHlsPlaylistContent(
     url: playlistUrl,
     speedMs: 0,
     kind: 'fail',
-    failureReason: sawNetworkFailure
-      ? 'network'
-      : sawTimeout
-        ? 'timeout'
-        : sawHttpFailure
-          ? 'http'
-          : 'invalid',
+    // Permanent invalidity requires every attempted variant/segment to carry
+    // definitive invalid evidence. A mix of 404/ad and any transient failure
+    // must stay retryable.
+    failureReason: sawInvalidFailure
+      && !sawContentFailure
+      && !sawHttpFailure
+      && !sawNetworkFailure
+      && !sawTimeout
+      ? 'invalid'
+      : sawNetworkFailure
+        ? 'network'
+        : sawTimeout
+          ? 'timeout'
+          : sawHttpFailure
+            ? 'http'
+            : 'content',
   };
 }
 
@@ -548,7 +578,12 @@ async function probeOnce(url: string, timeoutMs = CHANNEL_PROBE_TIMEOUT_MS): Pro
       });
       const ttfb = Date.now() - start;
       if (!resp.ok) {
-        return { url, speedMs: 0, kind: 'fail', failureReason: 'http' };
+        return {
+          url,
+          speedMs: 0,
+          kind: 'fail',
+          failureReason: probeFailureReasonFromHttpStatus(resp.status),
+        };
       }
       if (isAdvertisementLiveUrl(resp.url || url)) {
         return { url, speedMs: 0, kind: 'fail', failureReason: 'invalid' };
@@ -557,7 +592,7 @@ async function probeOnce(url: string, timeoutMs = CHANNEL_PROBE_TIMEOUT_MS): Pro
       const bytes = await readResponseHead(resp, 64 * 1024);
       const contentType = resp.headers.get('content-type') || '';
       if (bytes.length === 0) {
-        return { url, speedMs: 0, kind: 'fail', failureReason: 'invalid' };
+        return { url, speedMs: 0, kind: 'fail', failureReason: 'content' };
       }
 
       const text = new TextDecoder().decode(bytes);
@@ -565,13 +600,16 @@ async function probeOnce(url: string, timeoutMs = CHANNEL_PROBE_TIMEOUT_MS): Pro
         return verifyHlsPlayback(url, start, controller.signal, childAttemptTimeoutMs);
       }
       if (looksLikeHtml(bytes) || /^text\//i.test(contentType)) {
-        return { url, speedMs: 0, kind: 'fail', failureReason: 'invalid' };
+        return { url, speedMs: 0, kind: 'fail', failureReason: 'content' };
       }
       if (looksLikePlayableMedia(bytes, contentType)) {
         return { url, speedMs: ttfb, kind: 'ts', verification: 'media' };
       }
       if (isDeclaredMedia) {
-        return { url, speedMs: 0, kind: 'fail', failureReason: 'invalid' };
+        return { url, speedMs: 0, kind: 'fail', failureReason: 'content' };
+      }
+      if (/^application\/(?:json|[^;]+\+json|xml)\b/i.test(contentType.trim())) {
+        return { url, speedMs: 0, kind: 'fail', failureReason: 'content' };
       }
       return { url, speedMs: ttfb, kind: 'tcp' };
     };
@@ -593,8 +631,7 @@ async function probeOnce(url: string, timeoutMs = CHANNEL_PROBE_TIMEOUT_MS): Pro
 }
 
 function isRetryableProbeFailure(result: ProbeResult): boolean {
-  return result.kind === 'fail'
-    && (result.failureReason === 'timeout' || result.failureReason === 'network');
+  return result.kind === 'fail' && result.failureReason !== 'invalid';
 }
 
 async function probeSingle(
@@ -608,10 +645,14 @@ async function probeSingle(
   await new Promise((resolve) => setTimeout(resolve, PROBE_RETRY_DELAY_MS));
   const retried = await probeOnce(url, timeoutMs);
   if (retried.kind !== 'fail') return retried;
-  // Preserve a timeout/network cause even when the second attempt classifies a
-  // malformed response as invalid; diagnostics should identify the real issue.
-  return first.failureReason === 'timeout' || first.failureReason === 'network' ? first : retried;
+  // A transient first attempt must never be upgraded to permanent invalid by a
+  // second, contradictory observation. The source earns invalidity only from a
+  // first attempt that is itself definitive.
+  return retried.failureReason === 'invalid' ? first : retried;
 }
+
+// Exported for focused regression tests and administrative diagnostics.
+export { probeOnce as probeLiveUrlOnce, probeSingle as probeLiveUrlWithRetry };
 
 // ─── 并发池 ────────────────────────────────────────────
 
@@ -632,7 +673,12 @@ async function runWithConcurrency<T, R>(
         results[i] = await fn(items[i], i);
       } catch {
         // 兜底：fn 理论上已内部 try/catch；此路径保险返回显式 fail 对象
-        results[i] = { url: String(items[i]), speedMs: 0, kind: 'fail' } as R;
+        results[i] = {
+          url: String(items[i]),
+          speedMs: 0,
+          kind: 'fail',
+          failureReason: 'network',
+        } as R;
       }
       done++;
       if (onProgress) onProgress(done, items.length, results[i]);

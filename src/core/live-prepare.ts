@@ -8,7 +8,7 @@ import {
   mergeLiveCandidateTreeSources,
 } from './live-merger';
 import { listLiveProxyEntries, pruneLiveProxyManifestToUrls, updateLiveProxyManifest, type LiveProxyEntryHint, type LiveProxyManifestEntry } from './live-source';
-import { loadLivePrepareInputs, livePrepareInputSignature } from './live-inputs';
+import { loadLivePrepareInputs, livePrepareInputSignature, type LivePrepareInputSet } from './live-inputs';
 import { loadPublishedSpeedMap } from './live-speed-store';
 import { rebuildLiveOutput } from './live-output';
 import type { TVBoxLiveGroup } from './types';
@@ -19,6 +19,7 @@ import type { ChannelSpeedMap } from './types';
 export interface LivePrepareState {
   cursor: number;
   sourceSignature: string;
+  inputUpdatedAt: string;
   updatedAt: string;
   processed: number;
   total: number;
@@ -35,6 +36,7 @@ function parseState(raw: string | null): LivePrepareState | null {
     return {
       cursor: Math.max(0, Math.floor(parsed.cursor)),
       sourceSignature: parsed.sourceSignature,
+      inputUpdatedAt: typeof parsed.inputUpdatedAt === 'string' ? parsed.inputUpdatedAt : '',
       updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : '',
       processed: Number.isFinite(parsed.processed) ? Math.max(0, Math.floor(parsed.processed as number)) : 0,
       total: Number.isFinite(parsed.total) ? Math.max(0, Math.floor(parsed.total as number)) : 0,
@@ -57,6 +59,16 @@ function parseGroups(raw: string | null): TVBoxLiveGroup[] {
   }
 }
 
+export function livePrepareStateMatchesInputs(
+  state: LivePrepareState | null,
+  inputSet: LivePrepareInputSet | null,
+): boolean {
+  return !!state
+    && !!inputSet
+    && state.sourceSignature === inputSet.signature
+    && state.inputUpdatedAt === inputSet.updatedAt;
+}
+
 function sourceSignature(sources: readonly LiveSourceInput[]): string {
   // 与 live-inputs 的持久化签名保持完全一致，避免输入未变也开启新一轮。
   return livePrepareInputSignature(sources);
@@ -75,12 +87,14 @@ export async function prepareLiveSourcesChunk(
     timeoutMs?: number;
     concurrency?: number;
     channelSpeedMap?: ChannelSpeedMap;
+    inputUpdatedAt?: string;
   } = {},
 ): Promise<LivePrepareState> {
   const total = sources.length;
   const signature = sourceSignature(sources);
   const previous = parseState(await storage.get(KV_LIVE_PREPARE_STATE));
-  const sameSourceSet = previous?.sourceSignature === signature;
+  const sameSourceSet = previous?.sourceSignature === signature
+    && (!options.inputUpdatedAt || previous?.inputUpdatedAt === options.inputUpdatedAt);
   const startsNewRound = !sameSourceSet || previous?.complete === true;
   if (startsNewRound) {
     // 新一轮必须先裁剪上一轮已不存在的入口，防止幽灵源借旧 manifest/文本继续下发。
@@ -96,7 +110,7 @@ export async function prepareLiveSourcesChunk(
     const validated = await filterLiveSourcesDetailed(
       batch,
       options.timeoutMs ?? 6000,
-      options.channelSpeedMap,
+      undefined,
       {
         storage,
         concurrency: Math.max(1, options.concurrency ?? 3),
@@ -123,11 +137,11 @@ export async function prepareLiveSourcesChunk(
     // “线路可播放”，应用端拿到的 /live/<key> 仍会大面积 404/5xx。
     const gatedTexts: Record<string, string> = {};
     const gatedValid: string[] = [];
-    const gatedInvalid: string[] = [];
+    const gatedTransient: string[] = [];
     for (const source of validated.valid) {
       const rawText = validated.texts[source.url];
       if (!rawText) {
-        gatedInvalid.push(source.url);
+        gatedTransient.push(source.url);
         continue;
       }
       const gatedGroups = applyChannelSpeedToGroups(
@@ -142,13 +156,11 @@ export async function prepareLiveSourcesChunk(
         gatedTexts[source.url] = gatedText;
         gatedValid.push(source.url);
       } else {
-        gatedInvalid.push(source.url);
+        // 结构解析成功、但当前测速结果暂时没有可下发线路，只能说明
+        // “此刻质量不足”，不能据此撤销成熟正文或把源永久判废。
+        gatedTransient.push(source.url);
       }
     }
-    const gatedInvalidAll = [
-      ...validated.invalid.map((source) => source.url),
-      ...gatedInvalid,
-    ];
     await updateLiveProxyManifest(
       batch.map((source) => ({
         name: source.name,
@@ -159,8 +171,11 @@ export async function prepareLiveSourcesChunk(
       storage,
       {
         validUrls: gatedValid,
-        transientUrls: validated.transient.map((source) => source.url),
-        invalidUrls: gatedInvalidAll,
+        transientUrls: [
+          ...validated.transient.map((source) => source.url),
+          ...gatedTransient,
+        ],
+        invalidUrls: validated.invalid.map((source) => source.url),
         metrics: validated.metrics,
         hints,
         texts: gatedTexts,
@@ -178,6 +193,7 @@ export async function prepareLiveSourcesChunk(
   const next: LivePrepareState = {
     cursor: nextCursor,
     sourceSignature: signature,
+    inputUpdatedAt: options.inputUpdatedAt ?? previous?.inputUpdatedAt ?? '',
     updatedAt: new Date().toISOString(),
     processed: nextCursor,
     total,
@@ -246,14 +262,11 @@ export async function runLivePrepareChunk(
 ): Promise<LivePrepareChunkResult> {
   const inputSet = await loadLivePrepareInputs(storage);
   const sources = inputSet?.sources ?? [];
-  const signature = inputSet?.signature || livePrepareInputSignature(sources);
   const previousState = await loadLivePrepareState(storage);
   // 已完成且输入未变时复用结果；避免手动重复调用接口触发新一轮全量下载。
-  if (
-    !options.forceNewRound
+  if (!options.forceNewRound
     && previousState?.complete === true
-    && previousState.sourceSignature === signature
-  ) {
+    && livePrepareStateMatchesInputs(previousState, inputSet)) {
     const readyEntries = await listLiveProxyEntries(storage);
     const preparedGroups = await buildPreparedLiveGroups(readyEntries, storage);
     return { state: previousState, readyEntries, preparedGroups, runtimeGroups: preparedGroups };
@@ -264,6 +277,7 @@ export async function runLivePrepareChunk(
     const state = previousState ?? {
       cursor: 0,
       sourceSignature: '',
+      inputUpdatedAt: inputSet?.updatedAt || '',
       updatedAt: new Date().toISOString(),
       processed: 0,
       total: 0,
@@ -287,6 +301,7 @@ export async function runLivePrepareChunk(
     timeoutMs: options.timeoutMs,
     concurrency: options.concurrency,
     channelSpeedMap,
+    inputUpdatedAt: inputSet?.updatedAt || '',
   });
   const readyEntries = await listLiveProxyEntries(storage);
   const preparedGroups = await buildPreparedLiveGroups(readyEntries, storage);

@@ -204,8 +204,8 @@ export function isLiveSourceDistributable(metrics: LiveSourceMetrics): boolean {
 
 /**
  * 把某一轮逐源度量按结果分流为 valid / transient / invalid 三组 URL。
- * 关键点：明确 invalid（解析失败、内容不是直播）绝不能混入 transient，
- * 否则清单合并会把 invalid 覆盖成 transient，明确失效源永远无法被淘汰。
+ * 只有 404/410、明确广告/屏蔽等确定性证据才归入 invalid；解析失败、空响应、
+ * HTML、反爬和质量门禁失败必须归入 transient，否则可恢复故障会被永久淘汰。
  */
 export function partitionMergeSourceMetrics(
   metricsByUrl: Record<string, LiveSourceMetrics>,

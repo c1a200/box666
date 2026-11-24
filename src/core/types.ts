@@ -485,8 +485,11 @@ export interface ChannelSpeedEntry {
   probeVersion?: number;
   /** 播放链验证等级：manifest=仅播放列表可用，media=已验证媒体分片。 */
   verification?: 'manifest' | 'media';
-  /** 失败原因，用于区分超时、HTTP 错误与内容无效。 */
-  failureReason?: 'timeout' | 'http' | 'invalid' | 'network';
+  /**
+   * 失败原因。只有 invalid 是确定性硬失败（明确广告/屏蔽）；
+   * timeout、network、http、content 都必须允许后续重试。
+   */
+  failureReason?: 'timeout' | 'http' | 'invalid' | 'network' | 'content';
 }
 export type ChannelSpeedMap = Record<string, ChannelSpeedEntry>;
 
