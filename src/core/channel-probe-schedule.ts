@@ -1,6 +1,6 @@
 import type { Storage } from '../storage/interface';
-import type { ChannelProbeSchedule } from './types';
-import type { ChannelProbeWorkingState } from './live-speed-store';
+import type { ChannelProbeSchedule, ChannelProbeTrigger } from './types';
+import type { ChannelProbeWorkingState, PublishedSpeedSnapshotSummary } from './live-speed-store';
 import {
   DEFAULT_CHANNEL_PROBE_REPEAT_DAYS,
   DEFAULT_CHANNEL_PROBE_TIME,
@@ -293,4 +293,27 @@ export function isResumableFullProbeWorkingState(
   const startedMs = Date.parse(working.runStartedAt);
   const ageMs = nowMs - startedMs;
   return Number.isFinite(ageMs) && ageMs >= 0 && ageMs < maxAgeMs;
+}
+
+/**
+ * A scheduled full pass is required when:
+ * 1. an interrupted full checkpoint can resume;
+ * 2. the last complete full pass used older probe rules;
+ * 3. startup has no published ranking at all;
+ * 4. the configured schedule slot is due.
+ */
+export function shouldRunScheduledFullProbeForState(input: {
+  snapshot: Pick<PublishedSpeedSnapshotSummary, 'probeVersion'> | null;
+  working: ChannelProbeWorkingState | null;
+  trigger: ChannelProbeTrigger;
+  scheduleDue: boolean;
+  currentProbeVersion: number;
+  nowMs?: number;
+}): boolean {
+  if (isResumableFullProbeWorkingState(input.working, input.nowMs)) return true;
+  // Missing versions are snapshots written before version tracking existed and
+  // therefore have no proof that every line was checked by the new detector.
+  if (input.snapshot && input.snapshot.probeVersion !== input.currentProbeVersion) return true;
+  if (input.trigger === 'startup' && !input.snapshot) return true;
+  return input.scheduleDue;
 }

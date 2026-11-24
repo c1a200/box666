@@ -22,6 +22,45 @@ export interface LiveSourcePolicyResult<T extends BlockableLiveSource> {
   blocked: T[];
 }
 
+const ADVERTISEMENT_PATH_SEGMENTS = new Set([
+  'ad',
+  'ads',
+  'advert',
+  'advertisement',
+  'advertisements',
+  'preroll',
+  'promo',
+  'promos',
+]);
+
+/**
+ * Detect advertisement destinations after redirects.
+ *
+ * Only path segments are inspected. A substring check such as `includes('ad')`
+ * would reject many legitimate hosts and channel names ("broadcast", "load",
+ * "shadow"), while probe redirects commonly switch to an unmistakable
+ * `/ad/`, `/preroll/` or `playad.m3u8` destination.
+ */
+export function isAdvertisementLiveUrl(url: string): boolean {
+  try {
+    const parsed = new URL(stripLiveSourceSuffix(url));
+    const segments = parsed.pathname
+      .split('/')
+      .filter(Boolean)
+      .map((segment) => {
+        try {
+          return decodeURIComponent(segment).toLowerCase();
+        } catch {
+          return segment.toLowerCase();
+        }
+      });
+    if (segments.some((segment) => ADVERTISEMENT_PATH_SEGMENTS.has(segment))) return true;
+    return segments.some((segment) => /(?:^|[._-])playad(?:[._-]|$)/i.test(segment));
+  } catch {
+    return false;
+  }
+}
+
 function stripLiveSourceSuffix(url: string): string {
   const value = url.trim();
   const suffixIndex = value.indexOf('$');

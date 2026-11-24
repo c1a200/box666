@@ -15,7 +15,7 @@ export const CHANNEL_FAILURE_RETRY_MS = 6 * 60 * 60 * 1000;
 // Increment whenever the probe evidence rules change. A version bump makes
 // every line earn fresh playback proof instead of inheriting a false-negative
 // from an older, shallower detector.
-export const CHANNEL_PROBE_RESULT_VERSION = 5;
+export const CHANNEL_PROBE_RESULT_VERSION = 6;
 export const CHANNEL_QUALITY_SNAPSHOT_VERSION = 1;
 export const CHANNEL_PROBE_WORKING_VERSION = 1;
 
@@ -34,6 +34,12 @@ export interface ChannelQualitySnapshotStats {
 export interface ChannelQualitySnapshot {
   version: number;
   publishedAt: string;
+  /**
+   * Probe rule version of the latest completed full evaluation. Incremental
+   * publishes preserve this value so a bounded CF pass cannot claim that every
+   * candidate has already been checked by the new detector.
+   */
+  probeVersion?: number;
   /** Latest complete/full evaluation that produced this published ranking. */
   lastFullPublishedAt?: string;
   map: ChannelSpeedMap;
@@ -43,6 +49,7 @@ export interface ChannelQualitySnapshot {
 export interface PublishedSpeedSnapshotSummary {
   version: number;
   publishedAt: string;
+  probeVersion?: number;
   lastFullPublishedAt?: string;
   urls: number;
   stats: ChannelQualitySnapshotStats;
@@ -113,6 +120,7 @@ export async function loadPublishedSpeedSnapshotSummary(storage: Storage): Promi
   return {
     version: snapshot.version,
     publishedAt: snapshot.publishedAt,
+    ...(snapshot.probeVersion != null ? { probeVersion: snapshot.probeVersion } : {}),
     ...(snapshot.lastFullPublishedAt ? { lastFullPublishedAt: snapshot.lastFullPublishedAt } : {}),
     urls: Object.keys(snapshot.map).length,
     stats: snapshot.stats,
@@ -177,9 +185,16 @@ export async function publishSpeedSnapshot(
   const lastFullPublishedAt = stats.evaluationMode === 'full'
     ? publishedAt
     : previousFullPublishedAt;
+  // Only a completed full pass proves that every current candidate was checked
+  // with the current detector. Incremental/bounded runs may probe a fresh
+  // subset, but must not mask a pending detector-version full evaluation.
+  const probeVersion = stats.evaluationMode === 'full'
+    ? CHANNEL_PROBE_RESULT_VERSION
+    : previous?.probeVersion;
   const snapshot: ChannelQualitySnapshot = {
     version: CHANNEL_QUALITY_SNAPSHOT_VERSION,
     publishedAt,
+    ...(probeVersion != null ? { probeVersion } : {}),
     ...(lastFullPublishedAt ? { lastFullPublishedAt } : {}),
     map,
     stats,

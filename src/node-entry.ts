@@ -21,12 +21,16 @@ import { createApp } from './routes';
 import { runAggregation } from './aggregator';
 import { collectJarEntriesForSites, prefetchJarBinaries } from './core/jar-proxy';
 import { runChannelProbe, isProbeEnabled } from './core/channel-probe';
-import { loadPublishedSpeedSnapshotSummary, loadWorkingSpeedState } from './core/live-speed-store';
+import {
+  CHANNEL_PROBE_RESULT_VERSION,
+  loadPublishedSpeedSnapshotSummary,
+  loadWorkingSpeedState,
+} from './core/live-speed-store';
 import {
   isChannelProbeScheduleDue,
-  isResumableFullProbeWorkingState,
   loadChannelProbeSchedule,
   markChannelProbeRun,
+  shouldRunScheduledFullProbeForState,
 } from './core/channel-probe-schedule';
 import { currentAggregationPhase } from './core/logger';
 import { repairLiveProxyTextReadiness } from './core/live-source';
@@ -487,19 +491,29 @@ async function main() {
       loadPublishedSpeedSnapshotSummary(storage),
       loadWorkingSpeedState(storage),
     ]);
-    if (isResumableFullProbeWorkingState(working)) {
-      console.log("[channel-probe] Interrupted full evaluation found; scheduling resume");
-      return true;
-    }
-    // A fresh installation has no published ranking yet; bootstrap it even
-    // when the first configured daily slot is still in the future.
-    if (trigger === "startup" && !snapshot) return true;
-    return isChannelProbeScheduleDue(
+    const scheduleDue = await isChannelProbeScheduleDue(
       storage,
       new Date(),
       config.qualityTimezone || "Asia/Shanghai",
       currentCronTime,
     );
+    const shouldRun = shouldRunScheduledFullProbeForState({
+      snapshot,
+      working,
+      trigger,
+      scheduleDue,
+      currentProbeVersion: CHANNEL_PROBE_RESULT_VERSION,
+    });
+    if (shouldRun && snapshot && snapshot.probeVersion !== CHANNEL_PROBE_RESULT_VERSION) {
+      console.log(
+        "[channel-probe] Probe rules changed (" +
+        (snapshot.probeVersion ?? "legacy") +
+        " -> " +
+        CHANNEL_PROBE_RESULT_VERSION +
+        "); forcing full evaluation",
+      );
+    }
+    return shouldRun;
   }
 
   async function scheduleFullChannelProbeIfDue(

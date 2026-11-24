@@ -35,7 +35,7 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-const CURRENT_PROBE_VERSION = 5;
+const CURRENT_PROBE_VERSION = 6;
 
 function countTxtChannelUrls(txt, channelName) {
   let total = 0;
@@ -754,18 +754,17 @@ async function readSites(response) {
     assert((renderLive.headers.get('content-type') || '').includes('text/plain'), 'render separated /live/<key> must return text');
     assert(renderLiveText.includes('#genre#'), 'render separated /live/<key> must return live text');
     assert(renderLiveText.includes('https://live.example/cctv.m3u'), 'render separated /live/<key> must keep playback-verified lines');
-    assert(renderLiveText.includes('https://live.example/cctv-backup.m3u'), 'render separated /live/<key> must keep verified manifest fallbacks');
+    assert(!renderLiveText.includes('https://live.example/cctv-backup.m3u'),
+      'render separated /live/<key> must not mix manifest fallbacks into a media-verified channel');
+    assert(!renderLiveText.includes('https://live.example/cctv-tcp.m3u')
+      && !renderLiveText.includes('https://live.example/cctv-unknown.m3u'),
+      'render separated /live/<key> must not leak connectivity-only or unknown fallbacks');
     const renderCctvLine = renderLiveText.split(/\r?\n/).find((line) => line.startsWith('CCTV1,')) || '';
-    const orderedRenderUrls = [
-      'https://live.example/cctv.m3u',
-      'https://live.example/cctv-backup.m3u',
-      'https://live.example/cctv-tcp.m3u',
-      'https://live.example/cctv-unknown.m3u',
-    ];
-    const orderedPositions = orderedRenderUrls.map((url) => renderCctvLine.indexOf(url));
-    assert(orderedPositions.every((position) => position >= 0), 'render separated /live/<key> must keep verified and fallback lines');
-    assert(orderedPositions.every((position, index) => index === 0 || position > orderedPositions[index - 1]),
-      'verified lines must precede TCP, which must precede unknown fallback lines');
+    assert(renderCctvLine === 'CCTV1,https://live.example/cctv.m3u',
+      'render separated /live/<key> must emit only the highest playback-evidence tier, got ' + renderCctvLine);
+    const directRenderLive = await renderSeparated.app.request('https://render.example/live/abc12345');
+    assert((await directRenderLive.text()) === renderLiveText,
+      'render direct and configured live links must use identical runtime text and ordering');
     const authRenderLive = await renderSeparated.app.request('https://render.example/auth/code-a/live/abc12345');
     assert(authRenderLive.status === 200, 'auth separated /live/<key> must remain available');
     assert((await authRenderLive.text()) === renderLiveText,

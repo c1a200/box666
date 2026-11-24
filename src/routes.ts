@@ -2534,7 +2534,7 @@ export function createApp(deps: AppDeps): Hono {
         ...headers,
       },
     });
-    const LIVE_SOURCE_FILTER_VERSION = 1;
+    const LIVE_SOURCE_FILTER_VERSION = 2;
 
     /**
      * 分离模式下发的 /live/<key> 只读聚合阶段预构建文本。
@@ -2602,17 +2602,20 @@ export function createApp(deps: AppDeps): Hono {
 
       // 单源预构建文本只是候选池，不能直接下发。它与 /live 使用同一套
       // 当前 probeVersion、验真优先、后备保护、失败剔除、质量排序和条数上限。
+      const distribution = await loadLiveDistribution(storage);
+      const channelLimit = toLiveDistributionPolicy(distribution).maxUrlsPerChannel;
       const verifiedGroups = applyChannelSpeedToGroups(
         parseLiveGroupsFromTxt(prebuilt),
         await loadChannelSpeedMap(storage),
         undefined,
-        6,
+        channelLimit,
         {
           requirePlaybackVerification: true,
-          allowBackupOnInsufficientVerification: true,
         },
       );
-      const verifiedText = verifiedGroups.length > 0 ? formatLiveGroupsAsTxt(verifiedGroups) : '';
+      const verifiedText = verifiedGroups.length > 0
+        ? formatLiveGroupsAsTxt(verifiedGroups, channelLimit)
+        : '';
       if (!verifiedText.trim() || !verifiedText.includes('#genre#')) {
         if (cache && cacheKey) {
           const cacheableEmpty = new Response('', {
@@ -4175,7 +4178,7 @@ export function createApp(deps: AppDeps): Hono {
       [{ name: source.name || '直播源', url: source.url, ua: source.ua, header: source.header }],
       isCfRuntime ? 4500 : 8000,
       channelSpeedMap,
-      { maxUrlsPerChannel: 6, maxChannels: 12000, minChannelsPerSource: 5, maxAdRatio: 0.5, minPlayableRatio: 0.2, storage, concurrency: 1, useCache: true },
+      { maxUrlsPerChannel: -1, maxChannels: 12000, minChannelsPerSource: 5, maxAdRatio: 0.5, minPlayableRatio: 0, storage, concurrency: 1, useCache: true },
     );
     const ok = result.groups.length > 0;
     const sourceText = ok ? formatLiveGroupsAsTxt(result.groups) : '';

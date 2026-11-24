@@ -333,19 +333,28 @@ export function mergeLiveProxyManifest(
   const transient = new Set(update.transientUrls || []);
   const invalid = new Set(update.invalidUrls || []);
   const observed = new Set<string>([...valid, ...transient, ...invalid]);
-  // 增量分片只对 currentEntries 负责：本批明确失败/未产文的源必须立即
-  // 关闭 textReady，不能继续借用旧正文下发；本批未出现的其他 ready 源
-  // 仍保留，避免每推进一步就把其余已完成批次清空。
+  // 增量分片只对 currentEntries 负责：本批明确无效或权威文本快照中
+  // 未产文的源必须立即关闭 textReady；本批未出现的其他 ready 源仍保留，
+  // 避免每推进一步就把其余已完成批次清空。
   const incrementalTextUpdate = !!update.texts && update.incremental === true;
   const batchTextUrls = new Set(Object.entries(update.texts || {})
     .filter(([, text]) => typeof text === 'string' && text.trim() && text.includes('#genre#'))
     .map(([url]) => url));
-  // invalid 是权威失败，必须立即撤销就绪；transient 只是疑似临时故障，
-  // 不能清空成熟正文，最终由下面的分支在前置成功文本存在时保留后备资格。
-  const failedInBatch = new Set([
+  // 只有明确 invalid，或本轮权威文本构建确认“有效但无正文”，才立即撤销
+  // textReady。transient 无论连续多少次都只是当前网络环境的瞬时结论；成熟正文
+  // 必须保留到重新成功或明确 invalid，否则 Render 出网抖动会让整台频道消失。
+  const textStateAuthoritative = !!(update.fullSnapshot || (update.texts && !update.incremental));
+  const revokedInBatch = new Set([
     ...invalid,
     ...currentEntries
-      .filter((item) => !valid.has(item.url) || (incrementalTextUpdate && !batchTextUrls.has(item.url)))
+      .filter((item) => textStateAuthoritative
+        && valid.has(item.url)
+        && !batchTextUrls.has(item.url))
+      .map((item) => item.url),
+    ...currentEntries
+      .filter((item) => incrementalTextUpdate
+        && valid.has(item.url)
+        && !batchTextUrls.has(item.url))
       .map((item) => item.url),
   ]);
 
@@ -376,12 +385,13 @@ export function mergeLiveProxyManifest(
       // 完整快照或带文本的更新代表本轮文本状态是权威结果；
       // 不能从 previous 的 spread 中继承旧的 textReady。
       ...((update.fullSnapshot || (update.texts && !update.incremental)) ? { textReady: false } : {}),
-      // 本批明确失败或未产文的入口必须显式落为 false；否则 previousEntry 的 spread
+      // 本批明确无效或权威文本快照中未产文的入口必须显式落为 false；
+      // 否则 previousEntry 的 spread
       // 会把旧的 textReady=true 带回来，形成客户端可见但正文不存在的幽灵入口。
-      ...(failedInBatch.has(current.url) ? { textReady: false } : {}),
+      ...(revokedInBatch.has(current.url) ? { textReady: false } : {}),
       ...(current.textReady === undefined
         && previousEntry?.textReady === true
-        && !failedInBatch.has(current.url)
+        && !revokedInBatch.has(current.url)
         && !update.fullSnapshot
         && (!update.texts || update.incremental)
         ? { textReady: true }
@@ -407,13 +417,10 @@ export function mergeLiveProxyManifest(
       merged.health = 'unhealthy';
       merged.consecutiveFailures = (previousEntry?.consecutiveFailures ?? 0) + 1;
       merged.lastFailure = 'transient';
-      // 普通定时复检允许成熟正文在 1-2 次抖动中保留为后备；
-      // 但增量分片已经宣称本批负责文本状态，若该源本轮未产出正文，
-      // 必须立即撤销，避免 failedInBatch 语义失效。
-      merged.textReady = !incrementalTextUpdate
-        && priorReady
-        && priorSucceeded
-        && merged.consecutiveFailures < 3;
+      // 成熟正文在任意次数超时、网络或 HTTP 抖动中保留为后备。新源没有
+      // 成功历史时仍不可下发；只有明确 invalid 才撤销。
+      merged.textReady = priorReady
+        && priorSucceeded;
     } else if (invalid.has(current.url)) {
       merged.health = 'unhealthy';
       merged.consecutiveFailures = (previousEntry?.consecutiveFailures ?? 0) + 1;
@@ -510,10 +517,13 @@ export async function recordLiveProxyValidations(
       nextEntry.health = 'unhealthy';
       nextEntry.consecutiveFailures = (entry.consecutiveFailures || 0) + 1;
       nextEntry.lastFailure = 'transient';
-      // 单源手动复检是权威探测，失败即撤销下发资格；批量分片迁移/定时
-      // 复检则在 1-2 次抖动内保留成熟正文，由 mergeLiveProxyManifest
-      // 的 priorReady/priorSucceeded 逻辑处理，避免两种语义混淆。
-      nextEntry.textReady = false;
+      // 单源手动复检与批量定时复检使用同一语义：成熟正文在任意次数瞬时
+      // 失败时保留为后备，只有明确 invalid 才撤销。新源没有历史成功记录时
+      // 仍保持不可下发，避免把未验证入口暴露给客户端。
+      const matureText = entry.textReady === true
+        && entry.everSucceeded !== false
+        && (entry.everSucceeded === true || !!entry.successfulAt);
+      nextEntry.textReady = matureText;
     }
     byKey.set(result.key, nextEntry);
     output.push({ key: result.key, state: result.state, entry: nextEntry });
@@ -664,12 +674,6 @@ export async function updateLiveProxyManifest(
 ): Promise<LiveProxyManifest> {
   const proxyEntries = prepareManifestEntries(entries, validationUpdate.hints, validationUpdate.labels);
   for (const entry of proxyEntries) entry.key = await urlToKey(entry.url);
-  // 完整快照或带 texts 的更新是权威文本状态：本轮没有有效文本的入口
-  // 必须显式落为未就绪，不能继续沿用上一轮旧的 textReady。
-  const textStateAuthoritative = !!(validationUpdate.fullSnapshot || (validationUpdate.texts && !validationUpdate.incremental));
-  if (textStateAuthoritative) {
-    for (const entry of proxyEntries) entry.textReady = false;
-  }
   // 代理文本只接受“非空且包含频道分组”的完整构建结果；文本就绪与清单不得分离更新。
   for (const entry of proxyEntries) {
     const text = validationUpdate.texts?.[entry.url];
@@ -693,34 +697,12 @@ export async function updateLiveProxyManifest(
     entry.qualityScore = computeLiveSourceQualityScore(metrics);
   }
   const previous = parseLiveProxyManifest(await storage.get(KV_LIVE_PROXY_MANIFEST));
-  const invalidOrTransient = new Set([
-    ...(validationUpdate.transientUrls || []),
-    ...(validationUpdate.invalidUrls || []),
-  ]);
-  const incrementalTextUpdate = !!validationUpdate.texts && validationUpdate.incremental === true;
-  const batchTextUrls = new Set(Object.entries(validationUpdate.texts || {})
-    .filter(([, text]) => typeof text === 'string' && text.trim() && text.includes('#genre#'))
-    .map(([url]) => url));
   // 历史成功时间必须继承；否则本轮临时失败会把成熟后备源错误降级。
   for (const entry of proxyEntries) {
     const prior = previous?.entries.find((item) => item.key === entry.key);
     if (!prior) continue;
     if (!entry.successfulAt && prior.successfulAt) entry.successfulAt = prior.successfulAt;
     if (entry.everSucceeded == null && prior.everSucceeded != null) entry.everSucceeded = prior.everSucceeded;
-    // 局部验证可以沿用旧文本；分片预热也只更新本批次，不得清空其他已完成批次。
-    // 完整聚合若本轮没有产出该源文本，才不得继续标记为 ready，防止 App 收到空入口。
-    if (
-      entry.textReady !== true
-      && prior.textReady === true
-      && !invalidOrTransient.has(entry.url)
-      // 增量 texts 是“本批正文”的权威结果：只有本批确实生成了正文的源
-      // 才能继承旧 ready；valid 但无正文的幽灵入口也必须撤销。
-      && (!incrementalTextUpdate || batchTextUrls.has(entry.url))
-      && !validationUpdate.fullSnapshot
-      && (!validationUpdate.texts || validationUpdate.incremental)
-    ) {
-      entry.textReady = true;
-    }
   }
   const manifest = mergeLiveProxyManifest(previous, proxyEntries, validationUpdate);
   if (!previous || previous.signature !== manifest.signature) {

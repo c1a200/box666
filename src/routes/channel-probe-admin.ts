@@ -71,6 +71,7 @@ export function mountChannelProbeRoutes(app: Hono, deps: ChannelProbeRouteDeps):
       lastFullPublishedAt: snapshot?.lastFullPublishedAt ?? status.lastFullPublishedAt ?? null,
       snapshotUrls: snapshot?.urls ?? status.snapshotUrls ?? 0,
       snapshotVersion: snapshot?.version ?? status.snapshotVersion ?? null,
+      probeVersion: snapshot?.probeVersion ?? status.snapshotProbeVersion ?? null,
       publishedInThisRun: status.publishedInThisRun === true,
       snapshot,
       status,

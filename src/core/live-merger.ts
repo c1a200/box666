@@ -187,7 +187,10 @@ const SEPARATED_MAX_CHANNELS = 12000;
 export const LIVE_KNOWN_MAX_SPEED_MS = 5000;
 const SEPARATED_MIN_CHANNELS_PER_SOURCE = 5;
 const SEPARATED_MAX_AD_RATIO = 0.5;
-const SEPARATED_MIN_PLAYABLE_RATIO = 0.2;
+// 源级可播比例只适合作为可选的诊断/排序指标。直播线路的最终资格必须由
+// 频道级验真与后备策略决定：一个源里某个热门频道可能只剩 1 条可播线路，
+// 但这条线路仍然值得下发，不能因为整源比例低而把整个源删除。
+const SEPARATED_MIN_PLAYABLE_RATIO = 0;
 
 // ─── 频道名规范化 ──────────────────────────────────────
 
@@ -294,8 +297,11 @@ function parseTxt(content: string, source: string, sourceSpeedMs?: number): Chan
       continue;
     }
 
-    // 右侧可能包含多个 URL，用 # 分隔
-    const urls = right.split('#').filter((u) => /^https?:\/\//i.test(u.trim()));
+    // 右侧可能包含多个 URL，用 # 或 ; 分隔。只在下一条确实是 URL 时
+    // 切分，避免误伤查询参数中合法的普通分号。
+    const urls = right
+      .split(/[#;](?=https?:\/\/)/i)
+      .filter((u) => /^https?:\/\//i.test(u.trim()));
     for (const u of urls) {
       out.push({
         group: currentGroup,
@@ -473,8 +479,11 @@ function formatLiveGroupsAsTxtInternal(
   return lines.join('\n');
 }
 
-export function formatLiveGroupsAsTxt(groups: TVBoxLiveGroup[]): string {
-  return formatLiveGroupsAsTxtInternal(groups, false);
+export function formatLiveGroupsAsTxt(
+  groups: TVBoxLiveGroup[],
+  maxUrlsPerChannel = -1,
+): string {
+  return formatLiveGroupsAsTxtInternal(groups, false, undefined, maxUrlsPerChannel);
 }
 
 /**
@@ -1330,7 +1339,7 @@ export function parseLiveGroupsFromTxt(content: string): TVBoxLiveGroup[] {
     // 运行时 TXT 形如 `URL$源名#短哈希#URL$源名#短哈希`，必须按“下一个 URL”
     // 切分，不能按裸 `#` 切分，否则会丢掉源标签，导致重启后无法按源过滤与匹配测速。
     const urls = right
-      .split(/#(?=https?:\/\/)/i)
+      .split(/[#;](?=https?:\/\/)/i)
       .map((value) => value.trim())
       .filter((value) => /^https?:\/\//i.test(value));
     if (!name || urls.length === 0) continue;
@@ -2117,6 +2126,109 @@ function normalizeCandidateGroups(value: unknown): TVBoxLiveGroup[] {
   return groups;
 }
 
+export interface MergeLiveCandidateTreeOptions {
+  /** Legacy URL-only indexes are probe material and must not create output channels. */
+  legacyUrls?: readonly string[];
+  /** Append a synthetic recovery group so background probes can still reach legacy URLs. */
+  includeLegacyOnlyGroup?: boolean;
+}
+
+/**
+ * Merge every candidate-tree source without letting one partial tree hide a
+ * more complete one.
+ *
+ * Deduplication is scoped to group + channel + bare URL. A later labeled form
+ * replaces an earlier bare form so source selection still works after restarts,
+ * while distinct source labels for distinct URLs remain intact.
+ */
+export function mergeLiveCandidateTreeSources(
+  trees: readonly (readonly TVBoxLiveGroup[])[],
+  options: MergeLiveCandidateTreeOptions = {},
+): TVBoxLiveGroup[] {
+  interface MergedCandidateChannel {
+    name: string;
+    urls: Map<string, string>;
+  }
+
+  interface MergedCandidateGroup {
+    group: string;
+    channels: Map<string, MergedCandidateChannel>;
+  }
+
+  const allTrees = trees.map((tree) => normalizeCandidateGroups(tree));
+  const labeledByBare = new Map<string, string>();
+  for (const tree of allTrees) {
+    for (const group of tree) {
+      for (const channel of group.channels) {
+        for (const rawUrl of channel.urls) {
+          const parsed = splitLiveUrlLabel(rawUrl);
+          const bare = parsed.bare.trim();
+          if (bare && parsed.label && !labeledByBare.has(bare)) {
+            labeledByBare.set(bare, rawUrl.trim());
+          }
+        }
+      }
+    }
+  }
+
+  const mergedGroups = new Map<string, MergedCandidateGroup>();
+  for (const tree of allTrees) {
+    for (const group of tree) {
+      const groupKey = group.group.toLocaleLowerCase('zh-CN');
+      let targetGroup = mergedGroups.get(groupKey);
+      if (!targetGroup) {
+        targetGroup = { group: group.group, channels: new Map() };
+        mergedGroups.set(groupKey, targetGroup);
+      }
+      for (const channel of group.channels) {
+        const channelKey = channel.name.toLocaleLowerCase('zh-CN');
+        let targetChannel = targetGroup.channels.get(channelKey);
+        if (!targetChannel) {
+          targetChannel = { name: channel.name, urls: new Map() };
+          targetGroup.channels.set(channelKey, targetChannel);
+        }
+        for (const rawUrl of channel.urls) {
+          const parsed = splitLiveUrlLabel(rawUrl);
+          const bare = parsed.bare.trim();
+          if (!bare) continue;
+          const preferred = labeledByBare.get(bare) || rawUrl.trim();
+          const existing = targetChannel.urls.get(bare);
+          if (!existing || (!splitLiveUrlLabel(existing).label && splitLiveUrlLabel(preferred).label)) {
+            targetChannel.urls.set(bare, preferred);
+          }
+        }
+      }
+    }
+  }
+
+  const output: TVBoxLiveGroup[] = [];
+  const officialBareUrls = new Set<string>();
+  for (const mergedGroup of mergedGroups.values()) {
+    const channels: TVBoxLiveChannel[] = [];
+    for (const channel of mergedGroup.channels.values()) {
+      const urls = [...channel.urls.entries()].map(([bare, url]) => {
+        officialBareUrls.add(bare);
+        return url;
+      });
+      if (urls.length > 0) channels.push({ name: channel.name, urls });
+    }
+    if (channels.length > 0) output.push({ group: mergedGroup.group, channels });
+  }
+
+  if (options.includeLegacyOnlyGroup === true) {
+    const legacyUrls = Array.from(new Set((options.legacyUrls || [])
+      .map((url) => splitLiveUrlLabel(url).bare.trim())
+      .filter((url) => url && !officialBareUrls.has(url))));
+    if (legacyUrls.length > 0) {
+      output.push({
+        group: '候选恢复',
+        channels: [{ name: '全部线路', urls: legacyUrls }],
+      });
+    }
+  }
+  return output;
+}
+
 /** 序列化可持久化的完整候选树；旧版裸 URL 数组仍可被解析函数兼容。 */
 export function serializeLiveCandidatePool(groups: readonly TVBoxLiveGroup[]): string {
   const snapshot: LiveCandidatePoolSnapshot = {
@@ -2175,13 +2287,7 @@ export function extractAllUrls(groups: TVBoxLiveGroup[]): string[] {
   return Array.from(set);
 }
 
-/**
- * 将频道级验真结果应用到已合并的频道树。
- *
- * 严格语义只输出当前版本已验真的 media/manifest 线路。最终下发可通过
- * allowBackupOnInsufficientVerification 启用环境性误判保护：验真线路始终
- * 排在最前，只有验真数量不足时才用 TCP/未知/少量瞬时失败补到目标下限。
- */
+/** 将频道级验真结果应用到已合并的频道树。 */
 function channelProbeRank(entry: ChannelSpeedMap[string] | undefined): number {
   if (!entry || entry.kind === 'fail' || entry.probeVersion !== CHANNEL_PROBE_RESULT_VERSION) return -1;
   if (entry.verification === 'media') return 2;
@@ -2201,31 +2307,29 @@ function isCurrentLiveProbe(
 /**
  * 硬失败才允许从候选池中删除。
  *
- * timeout/network 的单次或两次失败可能只是 Render 到 CDN 的瞬时抖动；旧版本
- * 结论也可能来自较浅的验真器。这两类记录必须留到新版复测，否则频道会在源级
- * 预构建阶段就被清空，后续最终下发没有线路可补。
+ * timeout/network/http 的单次或两次失败都可能只是 Render 到 CDN 的瞬时抖动；
+ * 旧版本结论也可能来自较浅的验真器。这些记录必须留到新版复测，否则频道会在
+ * 源级预构建阶段就被清空，后续最终下发没有线路可补。
  */
 function isHardLiveProbeFailure(entry: ChannelSpeedMap[string] | undefined): boolean {
-  if (!entry || !isCurrentLiveProbe(entry) || entry.kind !== 'fail') return false;
-  return (entry.consecutiveFailures ?? 1) >= 3
-    || entry.failureReason === 'http'
-    || entry.failureReason === 'invalid';
+  return Boolean(
+    entry
+    && isCurrentLiveProbe(entry)
+    && entry.kind === 'fail'
+    && entry.failureReason === 'invalid',
+  );
 }
 
 function isTransientLiveProbeFailure(entry: ChannelSpeedMap[string] | undefined): boolean {
   if (!entry || !isCurrentLiveProbe(entry) || entry.kind !== 'fail') return false;
-  return (entry.consecutiveFailures ?? 1) < 3
-    && (entry.failureReason === 'timeout' || entry.failureReason === 'network');
+  return entry.failureReason === 'timeout'
+    || entry.failureReason === 'network'
+    || entry.failureReason === 'http';
 }
 
 export interface ChannelSpeedApplyOptions {
   /** 为 true 时优先只保留当前探测版本中已确认可播放的线路；默认 strict。 */
   requirePlaybackVerification?: boolean;
-  /**
-   * 最终下发使用。仅当验真线路不足目标下限时，按 TCP/未知/瞬时失败顺序补足；
-   * 不会为了填满较大的频道上限而混入后备线路。
-   */
-  allowBackupOnInsufficientVerification?: boolean;
 }
 
 const LIVE_AUTH_QUERY_KEY = /^(?:auth|authid|authorization|token|access_token|livekey|live_key|streamid|stream_id|sign|signature|expires?|exp|key|pass|passwd|password|pwd|username|user|account)$/i;
@@ -2278,11 +2382,34 @@ function isPlaybackVerifiedProbe(
 }
 
 /**
+ * Coverage top-up is a media-evidence budget, not a manifest budget.
+ *
+ * A master playlist whose child is reachable is useful as a final fallback, but
+ * it does not prove that decodable media can be fetched. Counting it as
+ * coverage stops the scheduler before it reaches the playable tail of a
+ * channel and was the main reason healthy lines disappeared from Render output.
+ */
+function isMediaVerifiedProbe(
+  entry: ChannelSpeedMap[string] | undefined,
+): boolean {
+  return Boolean(entry && isPlaybackVerifiedProbe(entry) && entry.verification === 'media');
+}
+
+interface RankedLiveUrl {
+  url: string;
+  speed?: number;
+  failures: number;
+  preference: number;
+  index: number;
+}
+
+/**
  * 将频道级验真结果应用到已合并的频道树。
  *
- * 严格模式只保留当前版本 verification=media/manifest 且未失败、未超速的线路。
- * 最终下发额外开启后备保护，但后备永远不会越过任何验真线路，也不会把较大的
- * 频道上限当成必须填满的目标。候选预构建仍使用 requirePlaybackVerification=false。
+ * 最终下发只使用最高一级非空证据：media > manifest > 可恢复后备。
+ * 某频道即使只有一条 media 线路也只下发这一条，绝不为了凑数混入 manifest、
+ * TCP、未知线路或瞬时失败。候选探测模式则保留全部可探测层级，供后台补测。
+ * 所有层级先完整稳定排序，再按频道上限截取，因此 9/15/全部是同一顺序的前缀。
  */
 export function applyChannelSpeedToGroups(
   groups: TVBoxLiveGroup[],
@@ -2292,30 +2419,17 @@ export function applyChannelSpeedToGroups(
   options: ChannelSpeedApplyOptions = {},
 ): TVBoxLiveGroup[] {
   const requirePlaybackVerification = options.requirePlaybackVerification !== false;
-  const allowBackup = requirePlaybackVerification
-    && options.allowBackupOnInsufficientVerification === true;
   const speedLimit = Math.max(0, maxSpeedMs);
   const perChannelLimit = maxUrlsPerChannel === -1 ? -1 : Math.max(1, maxUrlsPerChannel);
-  // 9 是“尽量保持可切换线路”的下限，不是频道上限。上限大于 9 时，
-  // 即使验真数量只有 9 条也不拿未知线路硬凑到 15 条。
-  const backupTarget = Math.min(9, perChannelLimit < 0 ? 9 : perChannelLimit);
   const output: TVBoxLiveGroup[] = [];
 
   for (const group of groups) {
     const channels: TVBoxLiveChannel[] = [];
     for (const channel of group.channels || []) {
       const seen = new Set<string>();
-      const verified: Array<{ url: string; speed: number; rank: number; preference: number; index: number }> = [];
-      const unknown: Array<{ url: string; index: number }> = [];
-      const transient: Array<{ url: string; failures: number; index: number }> = [];
-      const backup: Array<{
-        url: string;
-        tier: number;
-        failures: number;
-        speed?: number;
-        preference: number;
-        index: number;
-      }> = [];
+      const media: RankedLiveUrl[] = [];
+      const manifest: RankedLiveUrl[] = [];
+      const fallback: Array<RankedLiveUrl & { tier: number }> = [];
 
       for (const [index, rawUrl] of (channel.urls || []).entries()) {
         const url = rawUrl.trim();
@@ -2326,93 +2440,54 @@ export function applyChannelSpeedToGroups(
 
         const speed = speedMap[url] ?? speedMap[bare];
         if (isHardLiveProbeFailure(speed)) continue;
+        const preference = liveProbePreference(bare, splitLiveUrlLabel(url).label);
         if (requirePlaybackVerification) {
           if (speed && isPlaybackVerifiedProbe(speed)) {
             if (speedLimit > 0 && speed.speedMs > speedLimit) continue;
-            verified.push({
+            const ranked = {
               url,
               speed: speed.speedMs,
-              rank: channelProbeRank(speed),
-              preference: liveProbePreference(bare, splitLiveUrlLabel(url).label),
-              index,
-            });
-            continue;
-          }
-          if (!allowBackup) continue;
-
-          const preference = liveProbePreference(bare, splitLiveUrlLabel(url).label);
-          const currentProbe = isCurrentLiveProbe(speed);
-          if (isTransientLiveProbeFailure(speed)) {
-            const failures = speed.consecutiveFailures ?? 1;
-            backup.push({ url, tier: 0, failures, preference, index });
-            continue;
-          }
-
-          const knownSpeed = currentProbe && speed?.kind !== 'fail' && Number.isFinite(speed?.speedMs)
-            ? speed.speedMs
-            : undefined;
-          if (knownSpeed != null && speedLimit > 0 && knownSpeed > speedLimit) continue;
-          if (currentProbe && speed?.kind === 'tcp') {
-            backup.push({
-              url,
-              tier: 2,
-              failures: 0,
-              speed: knownSpeed,
+              failures: speed.consecutiveFailures ?? 0,
               preference,
               index,
-            });
+            };
+            if (isMediaVerifiedProbe(speed)) media.push(ranked);
+            else manifest.push(ranked);
             continue;
           }
-          backup.push({
-            url,
-            tier: 1,
-            failures: 0,
-            speed: knownSpeed,
-            preference,
-            index,
-          });
-          continue;
         }
 
-        if (isTransientLiveProbeFailure(speed)) {
-          transient.push({ url, failures: speed.consecutiveFailures ?? 1, index });
-          continue;
-        }
-        if (speed?.kind === 'fail') {
-          unknown.push({ url, index });
-          continue;
-        }
-        // 候选保留模式仍需把旧版/TCP/未知结果放在已验真线路之后，
-        // 让它们有机会进入下一轮探测，但绝不会因此冒充最终可播线路。
         const currentProbe = isCurrentLiveProbe(speed);
-        const knownSpeed = currentProbe && Number.isFinite(speed?.speedMs)
+        const knownSpeed = currentProbe
+          && speed?.kind !== 'fail'
+          && Number.isFinite(speed?.speedMs)
           ? speed.speedMs
           : undefined;
-        if (knownSpeed == null) {
-          unknown.push({ url, index });
-          continue;
-        }
-        if (speedLimit > 0 && knownSpeed > speedLimit) continue;
-        verified.push({
+        if (knownSpeed != null && speedLimit > 0 && knownSpeed > speedLimit) continue;
+        fallback.push({
           url,
           speed: knownSpeed,
-          rank: channelProbeRank(speed),
-          preference: liveProbePreference(bare, splitLiveUrlLabel(url).label),
+          failures: speed?.consecutiveFailures ?? 0,
+          preference,
           index,
+          // Current connectivity/TCP is stronger evidence than a transient
+          // failure, while old-version results remain last and are retried.
+          tier: !currentProbe ? 0 : speed?.kind !== 'fail' ? 2 : 1,
         });
       }
 
-      verified.sort((a, b) =>
-        b.rank - a.rank
-        || a.preference - b.preference
-        || a.speed - b.speed
-        || a.index - b.index);
-      unknown.sort((a, b) => a.index - b.index);
-      transient.sort((a, b) => a.failures - b.failures || a.index - b.index);
-      backup.sort((a, b) =>
+      const sortVerified = (items: RankedLiveUrl[]): void => {
+        items.sort((a, b) =>
+          (a.speed ?? Number.POSITIVE_INFINITY) - (b.speed ?? Number.POSITIVE_INFINITY)
+          || a.preference - b.preference
+          || a.index - b.index);
+      };
+      sortVerified(media);
+      sortVerified(manifest);
+      fallback.sort((a, b) =>
         b.tier - a.tier
-        || a.failures - b.failures
         || a.preference - b.preference
+        || a.failures - b.failures
         || (a.speed == null
           ? (b.speed == null ? 0 : 1)
           : b.speed == null
@@ -2420,17 +2495,14 @@ export function applyChannelSpeedToGroups(
             : a.speed - b.speed)
         || a.index - b.index);
 
-      let limited: Array<{ url: string }>;
-      if (!requirePlaybackVerification) {
-        const selected = [...verified, ...unknown, ...transient];
-        limited = perChannelLimit < 0 ? selected : selected.slice(0, perChannelLimit);
-      } else {
-        const verifiedLimited = perChannelLimit < 0 ? verified : verified.slice(0, perChannelLimit);
-        const needed = backupTarget - verifiedLimited.length;
-        limited = allowBackup && needed > 0
-          ? [...verifiedLimited, ...backup.slice(0, needed)]
-          : verifiedLimited;
-      }
+      const selected = requirePlaybackVerification
+        ? media.length > 0
+          ? media
+          : manifest.length > 0
+            ? manifest
+            : fallback
+        : [...media, ...manifest, ...fallback];
+      const limited = perChannelLimit < 0 ? selected : selected.slice(0, perChannelLimit);
       const urls = limited.map((item) => item.url);
       if (urls.length > 0) channels.push({ ...channel, urls });
     }
@@ -2552,7 +2624,7 @@ export function extractCoverageTopUpLiveUrls(
         if (!bare || channelSeen.has(bare)) continue;
         channelSeen.add(bare);
         const entry = speedMap[raw] ?? speedMap[bare];
-        if (isPlaybackVerifiedProbe(entry) && entry.speedMs <= LIVE_KNOWN_MAX_SPEED_MS) {
+        if (isMediaVerifiedProbe(entry) && entry.speedMs <= LIVE_KNOWN_MAX_SPEED_MS) {
           verified++;
         }
         ranked.push({
@@ -2777,7 +2849,7 @@ export interface FilteredLiveOptions {
   minChannelsPerSource?: number;
   /** 广告/状态类条目占比超过该值时整源丢弃。默认 0.5。 */
   maxAdRatio?: number;
-  /** 已知测速线路中可用线路的最低占比。默认 0.2。 */
+  /** 已知测速线路中可用线路的最低占比；0 表示关闭整源比例淘汰（默认）。 */
   minPlayableRatio?: number;
   /** 每个频道最多保留多少条可用线路 */
   maxUrlsPerChannel?: number;
@@ -2915,7 +2987,9 @@ function evaluateSourceQuality(
   const playableRatio = prepared.knownSpeedEntries > 0
     ? (prepared.knownSpeedEntries - knownUnplayable) / prepared.knownSpeedEntries
     : 1;
-  if (prepared.knownSpeedEntries >= minChannels && playableRatio < minPlayableRatio) {
+  if (minPlayableRatio > 0
+    && prepared.knownSpeedEntries >= minChannels
+    && playableRatio < minPlayableRatio) {
     return {
       discard: true,
       reason: 'low playable ratio ' + (playableRatio * 100).toFixed(1) + '%',

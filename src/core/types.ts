@@ -540,6 +540,7 @@ export interface ChannelProbeStatus {
   /** 当前已发布排行榜的时间、版本和线路数；全量运行期间保持不变。 */
   publishedAt?: string;
   snapshotVersion?: number;
+  snapshotProbeVersion?: number;
   snapshotUrls?: number;
   lastFullPublishedAt?: string;
   publishedInThisRun?: boolean;

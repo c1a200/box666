@@ -30,6 +30,7 @@ import {
   bareLiveSourceUrl,
   liveUrlSourceLabel,
   mergeAggregatedLiveGroups,
+  mergeLiveCandidateTreeSources,
   formatAggregatedLiveGroupsAsTxt,
   normalizeSourceLabelKey,
   parseLiveCandidatePool,
@@ -42,7 +43,7 @@ import { loadPublishedSpeedMap } from './live-speed-store';
  * 分类、目录分页、频道名归一、验真/后备选择策略等会改变最终 TXT 的
  * 逻辑发生变化时必须递增，否则持久化指纹不变，线上会继续命中旧 runtime TXT。
  */
-const LIVE_OUTPUT_FORMAT_VERSION = 7;
+const LIVE_OUTPUT_FORMAT_VERSION = 10;
 
 export interface RebuildLiveOutputOptions {
   reason?: string;
@@ -76,29 +77,26 @@ function parseGroups(raw: string | null): TVBoxLiveGroup[] {
 }
 
 /**
- * 输出重建使用的候选结构恢复顺序：
- * 本机完整合并树 -> 持久化结构化候选快照 -> 本机运行时树 -> 运行时 TXT。
+ * 输出重建必须合并所有带频道结构的候选来源，不能让任一局部树遮蔽更完整的池。
  *
- * Render 重启后 `channel_merged_tree` / `channel_runtime_tree` 属于本地缓存，
- * 因此必须优先从 durable 的 `channel_candidate_urls` 恢复完整频道树；这样策略
- * 从小集合扩展到全量时不会丢源。旧版裸 URL 数组不含频道结构，仍禁止用它重建。
+ * `channel_merged_tree` 可能只是当前分片；`channel_candidate_urls` 是完整结构化
+ * 快照；运行时树/TXT 则可能保留上一轮可下发线路。旧版裸 URL 数组不含频道结构，
+ * 仅用于后台补测，禁止在正式输出中生成“候选恢复”频道。
  */
 async function loadCandidateGroups(storage: Storage): Promise<TVBoxLiveGroup[]> {
-  const merged = parseGroups(await storage.get(KV_CHANNEL_MERGED_TREE));
-  if (merged.length > 0) return merged;
-
-  const persisted = parseLiveCandidatePool(await storage.get(KV_CHANNEL_CANDIDATE_URLS));
-  if (persisted.source === 'structured') {
-    // 进程内合并树已丢失时，持久快照比运行时前沿更完整：后者可能只是此前
-    // 少量下发策略派生出的子集，若先采用它，后续切换全量仍会永久漏源。
-    return persisted.groups;
-  }
-
-  const runtime = parseGroups(await storage.get(KV_CHANNEL_RUNTIME_TREE));
-  if (runtime.length > 0) return runtime;
-
-  const runtimeTxt = await storage.get(KV_LIVE_MERGED_TXT);
-  return runtimeTxt ? parseLiveGroupsFromTxt(runtimeTxt) : [];
+  const [mergedRaw, persistedRaw, runtimeRaw, runtimeTxt] = await Promise.all([
+    storage.get(KV_CHANNEL_MERGED_TREE),
+    storage.get(KV_CHANNEL_CANDIDATE_URLS),
+    storage.get(KV_CHANNEL_RUNTIME_TREE),
+    storage.get(KV_LIVE_MERGED_TXT),
+  ]);
+  const persisted = parseLiveCandidatePool(persistedRaw);
+  return mergeLiveCandidateTreeSources([
+    parseGroups(mergedRaw),
+    persisted.source === 'structured' ? persisted.groups : [],
+    parseGroups(runtimeRaw),
+    runtimeTxt ? parseLiveGroupsFromTxt(runtimeTxt) : [],
+  ]);
 }
 
 function stablePolicyKey(policy: LiveDistributionPolicy): string {
@@ -265,7 +263,14 @@ export async function selectLiveGroupsForPolicy(
   }
 
   if (candidateGroups.length > 0 && (rankByBareUrl.size > 0 || selectedLabels.size > 0)) {
-    const filtered = filterAndOrderGroupsBySource(candidateGroups, rankByBareUrl, selectedLabels);
+    // 候选树可能是聚合过程中的局部快照：同一源可能在树里只有部分频道，
+    // 而 live_txt:<key> 已包含该源完整正文。必须先合并两种证据再过滤，
+    // 否则候选树只要命中一条线路就会提前返回，静默丢掉其余频道。
+    const mappingGroups = mergeLiveCandidateTreeSources([
+      candidateGroups,
+      selectedSourceGroups,
+    ]);
+    const filtered = filterAndOrderGroupsBySource(mappingGroups, rankByBareUrl, selectedLabels);
     if (filtered.length > 0) return { groups: filtered, selected, labels };
   }
 
@@ -292,28 +297,25 @@ async function buildSnapshot(
   const selected = selection.selected;
   const labels = selection.labels;
   const liveMergeMode = (await storage.get(KV_LIVE_MERGE_MODE)) || 'separated';
-  const mergedChannelLimit = liveMergeMode === 'merged' ? normalizedPolicy.maxUrlsPerChannel : -1;
-  // 分离模式仍按单源最多 6 条保留原有行为；合并模式必须先跨分组
-  // 归一频道名，再在完整候选池上测速择优，最后才执行每频道限额。
-  const runtimeChannelLimit = liveMergeMode === 'merged' ? mergedChannelLimit : 6;
-  const canonicalGroups = liveMergeMode === 'merged'
-    ? mergeAggregatedLiveGroups(selection.groups)
-    : selection.groups;
+  const channelLimit = normalizedPolicy.maxUrlsPerChannel;
+  // 两种模式都必须先跨分组归一频道名，再在完整候选池上测速择优，
+  // 最后才执行每频道限额。否则同名频道会各自截断，既不是全局最优，
+  // 也会让分离模式继续受历史固定 6 条上限影响。
+  const canonicalGroups = mergeAggregatedLiveGroups(selection.groups);
   const speedMap = await loadPublishedSpeedMap(storage);
   const runtimeGroups = canonicalGroups.length > 0
     ? applyChannelSpeedToGroups(
       canonicalGroups,
       speedMap,
       undefined,
-      runtimeChannelLimit,
+      channelLimit,
       {
         requirePlaybackVerification: true,
-        allowBackupOnInsufficientVerification: true,
       },
     )
     : [];
   const txt = runtimeGroups.length > 0
-    ? formatAggregatedLiveGroupsAsTxt(runtimeGroups, mergedChannelLimit)
+    ? formatAggregatedLiveGroupsAsTxt(runtimeGroups, channelLimit)
     : '';
 
   // 选中了源却无法生成任何频道，说明候选树映射或正文恢复失败。此时必须

@@ -1,13 +1,18 @@
 import type { Storage } from '../storage/interface';
 import { KV_LIVE_PREPARE_STATE, KV_LIVE_TEXT_PREFIX, KV_CHANNEL_MERGED_TREE, KV_CHANNEL_CANDIDATE_URLS, KV_LIVE_MERGE_REPORT, KV_LIVE_MERGE_MODE } from './config';
 import type { LiveSourceInput } from './live-merger';
-import { applyChannelSpeedToGroups, filterLiveSourcesDetailed, formatLiveGroupsAsTxt } from './live-merger';
+import {
+  applyChannelSpeedToGroups,
+  filterLiveSourcesDetailed,
+  formatLiveGroupsAsTxt,
+  mergeLiveCandidateTreeSources,
+} from './live-merger';
 import { listLiveProxyEntries, pruneLiveProxyManifestToUrls, updateLiveProxyManifest, type LiveProxyEntryHint, type LiveProxyManifestEntry } from './live-source';
 import { loadLivePrepareInputs, livePrepareInputSignature } from './live-inputs';
 import { loadPublishedSpeedMap } from './live-speed-store';
 import { rebuildLiveOutput } from './live-output';
 import type { TVBoxLiveGroup } from './types';
-import { parseLiveGroupsFromTxt, serializeLiveCandidatePool } from './live-merger';
+import { parseLiveCandidatePool, parseLiveGroupsFromTxt, serializeLiveCandidatePool } from './live-merger';
 import type { LiveCategory } from './live-quality';
 import type { ChannelSpeedMap } from './types';
 
@@ -39,6 +44,16 @@ function parseState(raw: string | null): LivePrepareState | null {
     };
   } catch {
     return null;
+  }
+}
+
+function parseGroups(raw: string | null): TVBoxLiveGroup[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed as TVBoxLiveGroup[] : [];
+  } catch {
+    return [];
   }
 }
 
@@ -87,7 +102,9 @@ export async function prepareLiveSourcesChunk(
         concurrency: Math.max(1, options.concurrency ?? 3),
         minChannelsPerSource: 5,
         maxAdRatio: 0.5,
-        minPlayableRatio: 0.2,
+        // 不按整源可播率淘汰：单条可播线路也可能承载高频频道，最终由
+        // applyChannelSpeedToGroups 的频道级验真/后备逻辑决定是否下发。
+        minPlayableRatio: 0,
         maxUrlsPerChannel: -1,
         maxChannels: 12000,
         useCache: true,
@@ -273,8 +290,18 @@ export async function runLivePrepareChunk(
   });
   const readyEntries = await listLiveProxyEntries(storage);
   const preparedGroups = await buildPreparedLiveGroups(readyEntries, storage);
-  await storage.put(KV_CHANNEL_MERGED_TREE, JSON.stringify(preparedGroups));
-  await storage.put(KV_CHANNEL_CANDIDATE_URLS, serializePreparedLiveGroups(preparedGroups));
+  const [existingMergedRaw, existingCandidateRaw] = await Promise.all([
+    storage.get(KV_CHANNEL_MERGED_TREE),
+    storage.get(KV_CHANNEL_CANDIDATE_URLS),
+  ]);
+  const existingCandidate = parseLiveCandidatePool(existingCandidateRaw);
+  const mergedCandidateGroups = mergeLiveCandidateTreeSources([
+    parseGroups(existingMergedRaw),
+    existingCandidate.source === 'structured' ? existingCandidate.groups : [],
+    preparedGroups,
+  ]);
+  await storage.put(KV_CHANNEL_MERGED_TREE, JSON.stringify(mergedCandidateGroups));
+  await storage.put(KV_CHANNEL_CANDIDATE_URLS, serializePreparedLiveGroups(mergedCandidateGroups));
   const rebuilt = await rebuildLiveOutput(storage);
   await storage.put(KV_LIVE_MERGE_REPORT, JSON.stringify({
     updatedAt: new Date().toISOString(),
@@ -284,13 +311,13 @@ export async function runLivePrepareChunk(
     prepare: state,
     textReady: readyEntries.length,
     distributable: readyEntries.length,
-    preparedGroups: preparedGroups.length,
+    preparedGroups: mergedCandidateGroups.length,
     runtimeGroups: rebuilt.groups.length,
   }));
   return {
     state,
     readyEntries,
-    preparedGroups,
+    preparedGroups: mergedCandidateGroups,
     runtimeGroups: rebuilt.groups,
   };
 }

@@ -34,9 +34,11 @@ import {
   parseLiveCandidatePool,
   parseLiveGroupsFromTxt,
   mergeAggregatedLiveGroups,
+  mergeLiveCandidateTreeSources,
 } from './live-merger';
 import { rebuildLiveOutput } from './live-output';
 import { isLiveProxyEntryDistributable, listAllLiveProxyEntries, liveProxyEntryLabel } from './live-source';
+import { isAdvertisementLiveUrl } from './live-policy';
 import { loadLiveDistribution, toLiveDistributionPolicy } from './live-distribution-store';
 import { selectLiveDistribution } from './live-quality';
 import { isResumableFullProbeWorkingState } from './channel-probe-schedule';
@@ -131,16 +133,18 @@ function playbackVerificationRank(
   return 0;
 }
 
-function isPlaybackVerifiedProbeResult(result: ProbeResult): boolean {
-  return playbackVerificationRank({
-    kind: result.kind,
-    verification: result.verification,
-    probeVersion: CHANNEL_PROBE_RESULT_VERSION,
-    speedMs: result.speedMs,
-  }) > 0;
+function isMediaVerifiedProbeResult(result: ProbeResult): boolean {
+  return result.verification === 'media'
+    && playbackVerificationRank({
+      kind: result.kind,
+      verification: result.verification,
+      probeVersion: CHANNEL_PROBE_RESULT_VERSION,
+      speedMs: result.speedMs,
+    }) === 2;
 }
 
 const HLS_MEDIA_CANDIDATE_LIMIT = 16;
+const HLS_CANDIDATE_CONCURRENCY = 4;
 const HLS_TIMEOUT_MULTIPLIER = 4;
 const UNKNOWN_TIMEOUT_MULTIPLIER = 3;
 const HLS_CHILD_ATTEMPT_TIMEOUT_MS = 3000;
@@ -335,23 +339,32 @@ async function withChildProbeDeadline<T>(
   }
 }
 
-async function verifyHlsPlaylist(
-  url: string,
+interface HlsCandidateOutcome {
+  result: ProbeResult | null;
+  reason?: ProbeFailureReason;
+}
+
+async function verifyHlsPlaylistContent(
+  playlist: FetchHeadResult,
+  requestedUrl: string,
   startedAt: number,
   signal: AbortSignal,
   childTimeoutMs: number,
-  depth = 0,
-  referer?: string,
+  depth: number,
 ): Promise<ProbeResult> {
-  const requestedUrl = resolvePlaylistUrl(url, referer || url) || url;
-  const playlist = await fetchHead(requestedUrl, 512 * 1024, signal, referer);
+  // A redirect can turn a healthy-looking source into an advertisement. The
+  // original URL is therefore insufficient evidence; every redirect target
+  // participating in the playback proof must be checked.
+  const playlistUrl = playlist.url || requestedUrl;
+  if (isAdvertisementLiveUrl(playlistUrl)) {
+    return { url: playlistUrl, speedMs: 0, kind: 'fail', failureReason: 'invalid' };
+  }
   if (!isHlsPlaylist(playlist.text)) {
-    return { url: requestedUrl, speedMs: 0, kind: 'fail', failureReason: 'invalid' };
+    return { url: playlistUrl, speedMs: 0, kind: 'fail', failureReason: 'invalid' };
   }
 
   // A redirected master/media playlist resolves its relative URIs from the
   // final response URL, which can be a different host and path.
-  const playlistUrl = playlist.url || requestedUrl;
   const candidates = hlsMediaCandidates(playlist.text, playlistUrl);
   if (candidates.length === 0) {
     return { url: playlistUrl, speedMs: 0, kind: 'fail', failureReason: 'invalid' };
@@ -361,7 +374,8 @@ async function verifyHlsPlaylist(
   let sawHttpFailure = false;
   let sawNetworkFailure = false;
   let sawTimeout = false;
-  for (const candidate of candidates) {
+
+  const probeCandidate = async (candidate: string): Promise<HlsCandidateOutcome> => {
     try {
       // Segments only need a few TS packets to prove this is real media. Reading
       // 512 KiB from every candidate is slow and can itself cause false timeouts.
@@ -370,44 +384,89 @@ async function verifyHlsPlaylist(
         childTimeoutMs,
         (childSignal) => fetchHead(candidate, 64 * 1024, childSignal, playlistUrl),
       );
-      if (isHlsPlaylist(head.text)) {
-        validChildManifest = true;
-        if (depth < 2) {
-          const nested = await withChildProbeDeadline(
-            signal,
-            childTimeoutMs,
-            (childSignal) => verifyHlsPlaylist(
-              candidate,
-              startedAt,
-              childSignal,
-              childTimeoutMs,
-              depth + 1,
-              playlistUrl,
-            ),
-          );
-          if (nested.kind !== 'fail') return nested;
-        }
-        continue;
+      if (isAdvertisementLiveUrl(head.url || candidate)) {
+        return { result: { url: head.url || candidate, speedMs: 0, kind: 'fail', failureReason: 'invalid' } };
       }
-      if (!looksLikePlayableMedia(head.bytes, head.contentType)) continue;
+
+      if (isHlsPlaylist(head.text)) {
+        if (depth >= 2) {
+          return {
+            result: {
+              url: head.url || candidate,
+              speedMs: Date.now() - startedAt,
+              kind: 'm3u8',
+              verification: 'manifest',
+            },
+          };
+        }
+        const nested = await withChildProbeDeadline(
+          signal,
+          childTimeoutMs,
+          (childSignal) => verifyHlsPlaylistContent(
+            head,
+            candidate,
+            startedAt,
+            childSignal,
+            childTimeoutMs,
+            depth + 1,
+          ),
+        );
+        // A valid child playlist is still useful rank evidence even when its
+        // own segment fetch is temporarily unavailable. It must remain below
+        // media proof and never be trusted as coverage.
+        return {
+          result: nested.kind === 'fail'
+            ? {
+              url: head.url || candidate,
+              speedMs: Date.now() - startedAt,
+              kind: 'm3u8',
+              verification: 'manifest',
+            }
+            : nested,
+        };
+      }
+
+      if (!looksLikePlayableMedia(head.bytes, head.contentType)) return { result: null };
 
       // One verified media segment is sufficient evidence. Requiring a second
       // segment doubled the critical-path deadline and rejected healthy live
       // playlists while their CDN was temporarily slow.
-      return { url: playlistUrl, speedMs: Date.now() - startedAt, kind: 'm3u8', verification: 'media' };
+      return {
+        result: {
+          url: playlistUrl,
+          speedMs: Date.now() - startedAt,
+          kind: 'm3u8',
+          verification: 'media',
+        },
+      };
     } catch (err) {
-      if (signal.aborted) {
-        return { url: playlistUrl, speedMs: 0, kind: 'fail', failureReason: 'timeout' };
+      return { result: null, reason: failureReasonFromError(err, signal) };
+    }
+  };
+
+  // Probe variants/segments four at a time. Candidates often point at different
+  // CDN edges, so a single hanging edge must not serialize every later playable
+  // line behind its own child timeout.
+  for (let offset = 0; offset < candidates.length; offset += HLS_CANDIDATE_CONCURRENCY) {
+    const batch = candidates.slice(offset, offset + HLS_CANDIDATE_CONCURRENCY);
+    const outcomes = await Promise.all(batch.map(probeCandidate));
+
+    const media = outcomes.find((outcome) => outcome.result?.verification === 'media');
+    if (media?.result) return media.result;
+
+    for (const outcome of outcomes) {
+      if (outcome.result?.verification === 'manifest') validChildManifest = true;
+      if (outcome.result?.kind === 'fail') {
+        if (outcome.result.failureReason === 'http') sawHttpFailure = true;
+        if (outcome.result.failureReason === 'network') sawNetworkFailure = true;
+        if (outcome.result.failureReason === 'timeout') sawTimeout = true;
       }
-      const reason = failureReasonFromError(err, signal);
-      if (reason === 'timeout') {
-        sawTimeout = true;
-        continue;
-      }
-      if (reason === 'http') sawHttpFailure = true;
-      if (reason === 'network') sawNetworkFailure = true;
+      if (outcome.reason === 'http') sawHttpFailure = true;
+      if (outcome.reason === 'network') sawNetworkFailure = true;
+      if (outcome.reason === 'timeout') sawTimeout = true;
     }
   }
+
   if (validChildManifest) {
     return { url: playlistUrl, speedMs: Date.now() - startedAt, kind: 'm3u8', verification: 'manifest' };
   }
@@ -423,6 +482,29 @@ async function verifyHlsPlaylist(
           ? 'http'
           : 'invalid',
   };
+}
+
+async function verifyHlsPlaylist(
+  url: string,
+  startedAt: number,
+  signal: AbortSignal,
+  childTimeoutMs: number,
+  depth = 0,
+  referer?: string,
+): Promise<ProbeResult> {
+  const requestedUrl = resolvePlaylistUrl(url, referer || url) || url;
+  if (isAdvertisementLiveUrl(requestedUrl)) {
+    return { url: requestedUrl, speedMs: 0, kind: 'fail', failureReason: 'invalid' };
+  }
+  const playlist = await fetchHead(requestedUrl, 512 * 1024, signal, referer);
+  return verifyHlsPlaylistContent(
+    playlist,
+    requestedUrl,
+    startedAt,
+    signal,
+    childTimeoutMs,
+    depth,
+  );
 }
 
 async function verifyHlsPlayback(
@@ -467,6 +549,9 @@ async function probeOnce(url: string, timeoutMs = CHANNEL_PROBE_TIMEOUT_MS): Pro
       const ttfb = Date.now() - start;
       if (!resp.ok) {
         return { url, speedMs: 0, kind: 'fail', failureReason: 'http' };
+      }
+      if (isAdvertisementLiveUrl(resp.url || url)) {
+        return { url, speedMs: 0, kind: 'fail', failureReason: 'invalid' };
       }
 
       const bytes = await readResponseHead(resp, 64 * 1024);
@@ -589,38 +674,28 @@ function parseMergedGroups(raw: string | null): TVBoxLiveGroup[] {
 }
 
 /**
- * 候选池恢复顺序：
- * 1. 本进程/本机仍有完整合并树时优先使用；
- * 2. Render 重启后完整树丢失，优先使用持久化的结构化候选快照，恢复完整树；
- * 3. 仅旧版裸 URL 索引时，与运行时前沿合并后仅供补测，不用于重建输出。
+ * 合并所有候选来源，供调度器在完整探测面上工作。
+ *
+ * 局部 `channel_merged_tree` 绝不能遮蔽更完整的结构化快照或运行时前沿。
+ * 旧版裸 URL 索引只进入“候选恢复”组补测，不能生成正式输出频道。
  */
 async function loadCandidateTree(storage: Storage): Promise<TVBoxLiveGroup[]> {
-  const merged = parseMergedGroups(await storage.get(KV_CHANNEL_MERGED_TREE));
-  if (merged.length > 0) return merged;
-
-  const persisted = parseLiveCandidatePool(await storage.get(KV_CHANNEL_CANDIDATE_URLS));
-  if (persisted.source === 'structured') return persisted.groups;
-
-  const runtime = parseMergedGroups(await storage.get(KV_CHANNEL_RUNTIME_TREE));
-  const runtimeTxt = runtime.length === 0 ? await storage.get(KV_LIVE_MERGED_TXT) : null;
-  const recoveredGroups = runtime.length > 0
-    ? runtime
-    : runtimeTxt
-      ? parseLiveGroupsFromTxt(runtimeTxt)
-      : [];
-  const candidateUrls = persisted.source === 'legacy-urls' ? persisted.urls : [];
-  if (candidateUrls.length === 0) return recoveredGroups;
-  if (recoveredGroups.length === 0) {
-    return [{ group: '候选恢复', channels: [{ name: '全部线路', urls: candidateUrls }] }];
-  }
-
-  // 运行时 TXT 只保留当前下发前沿（每频道线路数由下发配置决定），候选索引保留完整去重线路。
-  // 将前沿未覆盖的 URL 补进“候选恢复”分组，专门供后台补测；输出重建仍使用
-  // 带频道结构的运行时树，不会把这两个候选线路误当成正式频道下发。
-  const frontierUrls = new Set(extractAllUrls(recoveredGroups));
-  const remaining = candidateUrls.filter((url) => !frontierUrls.has(bareLiveSourceUrl(url)));
-  if (remaining.length === 0) return recoveredGroups;
-  return [...recoveredGroups, { group: '候选恢复', channels: [{ name: '全部线路', urls: remaining }] }];
+  const [mergedRaw, persistedRaw, runtimeRaw, runtimeTxt] = await Promise.all([
+    storage.get(KV_CHANNEL_MERGED_TREE),
+    storage.get(KV_CHANNEL_CANDIDATE_URLS),
+    storage.get(KV_CHANNEL_RUNTIME_TREE),
+    storage.get(KV_LIVE_MERGED_TXT),
+  ]);
+  const persisted = parseLiveCandidatePool(persistedRaw);
+  return mergeLiveCandidateTreeSources([
+    parseMergedGroups(mergedRaw),
+    persisted.source === 'structured' ? persisted.groups : [],
+    parseMergedGroups(runtimeRaw),
+    runtimeTxt ? parseLiveGroupsFromTxt(runtimeTxt) : [],
+  ], {
+    legacyUrls: persisted.source === 'legacy-urls' ? persisted.urls : [],
+    includeLegacyOnlyGroup: true,
+  });
 }
 
 /**
@@ -700,9 +775,14 @@ export async function probeLiveUrlsBounded(
   for (const result of results) {
     const previous = speedMap[result.url];
     const isFailed = result.kind === 'fail';
+    const mediaVerified = isMediaVerifiedProbeResult(result);
     if (!previous
       || previous.kind !== result.kind
       || previous.verification !== result.verification
+      || previous.failureReason !== result.failureReason
+      || (isFailed
+        && (previous.consecutiveFailures ?? 0) >= 2
+        && (previous.consecutiveFailures ?? 0) + 1 >= 3)
       || previous.probeVersion !== CHANNEL_PROBE_RESULT_VERSION) {
       stateChanged = true;
     }
@@ -715,8 +795,8 @@ export async function probeLiveUrlsBounded(
       ...(result.failureReason ? { failureReason: result.failureReason } : {}),
       ...(isFailed ? { consecutiveFailures: (previous?.consecutiveFailures || 0) + 1 } : {}),
     };
-    if (result.kind === 'fail') failed++;
-    else success++;
+    if (isFailed) failed++;
+    if (mediaVerified) success++;
   }
 
   if (results.length > 0) {
@@ -794,6 +874,9 @@ export async function runChannelProbe(
     ? {
       publishedAt: publishedSnapshot.publishedAt,
       snapshotVersion: publishedSnapshot.version,
+      ...(publishedSnapshot.probeVersion != null
+        ? { snapshotProbeVersion: publishedSnapshot.probeVersion }
+        : {}),
       snapshotUrls: Object.keys(publishedSnapshot.map).length,
       ...(publishedSnapshot.lastFullPublishedAt ? { lastFullPublishedAt: publishedSnapshot.lastFullPublishedAt } : {}),
     }
@@ -902,11 +985,11 @@ export async function runChannelProbe(
     ? mergeAggregatedLiveGroups(parseLiveGroupsFromTxt(runtimeTxt))
     : [];
   const prioritySet = new Set<string>();
-  const multiLineOnly = (sourceGroups: readonly TVBoxLiveGroup[]): TVBoxLiveGroup[] =>
+  const withProbeableChannels = (sourceGroups: readonly TVBoxLiveGroup[]): TVBoxLiveGroup[] =>
     sourceGroups
       .map((group) => ({
         group: group.group,
-        channels: (group.channels || []).filter((channel) => (channel.urls || []).length > 1),
+        channels: (group.channels || []).filter((channel) => (channel.urls || []).length > 0),
       }))
       .filter((group) => group.channels.length > 0);
 
@@ -922,7 +1005,7 @@ export async function runChannelProbe(
       })),
     }))
     : [];
-  const priorityGroups = multiLineOnly(
+  const priorityGroups = withProbeableChannels(
     selectedCandidateGroups.length > 0 ? selectedCandidateGroups : currentFrontier,
   );
 
@@ -966,7 +1049,7 @@ export async function runChannelProbe(
         if (prioritySet.has(url)) priorityCount++;
         else backgroundCount++;
         if (entry.kind === 'fail') failedCount++;
-        else successCount++;
+        if (playbackVerificationRank(entry) === 2) successCount++;
       }
       status.probed = probedCount;
       status.priorityProbed = priorityCount;
@@ -1009,7 +1092,7 @@ export async function runChannelProbe(
           ...(result.failureReason ? { failureReason: result.failureReason } : {}),
           ...(failed ? { consecutiveFailures: (previous?.consecutiveFailures || 0) + 1 } : {}),
         };
-        if (isPlaybackVerifiedProbeResult(result)
+        if (isMediaVerifiedProbeResult(result)
           && playbackVerificationRank(next) > playbackVerificationRank(previous)) {
           playbackGained++;
         }
@@ -1141,6 +1224,7 @@ export async function runChannelProbe(
     });
     status.publishedAt = snapshot.publishedAt;
     status.snapshotVersion = snapshot.version;
+    if (snapshot.probeVersion != null) status.snapshotProbeVersion = snapshot.probeVersion;
     status.snapshotUrls = Object.keys(finalMap).length;
     status.lastFullPublishedAt = snapshot.lastFullPublishedAt;
     status.publishedInThisRun = true;

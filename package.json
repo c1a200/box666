@@ -1,6 +1,6 @@
 {
   "name": "tvbox-source-aggregator",
-  "version": "3.3.36",
+  "version": "3.3.37",
   "private": true,
   "scripts": {
     "dev:cf": "wrangler dev",
