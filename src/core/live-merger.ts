@@ -582,6 +582,13 @@ const INTERNATIONAL_SUBGROUP_ORDER = [
   '国际·纪录',
   '国际·英语',
   '国际·俄语',
+  '国际·法语',
+  '国际·西班牙语',
+  '国际·阿拉伯语',
+  '国际·德语',
+  '国际·葡萄牙语',
+  '国际·意大利语',
+  '国际·土耳其语',
   '国际·亚洲',
   '国际·其他',
 ] as const;
@@ -707,7 +714,7 @@ const LOCAL_REGION_ALIASES: ReadonlyArray<readonly [string, readonly string[]]> 
   ['辽宁', ['辽宁', '沈阳', '大连', '鞍山', '抚顺', '本溪', '丹东', '锦州', '营口', '阜新', '辽阳', '盘锦', '铁岭', '朝阳', '葫芦岛']],
   ['吉林', ['吉林', '长春', '四平', '辽源', '通化', '白山', '松原', '白城', '延边', '延吉', '敦化', '桦甸', '舒兰', '磐石', '双辽', '通化县', '柳河', '辉南', '靖宇', '九台', '龙井', '汪清', '珲春', '东丰', '长白', '长影']],
   ['黑龙江', ['黑龙江', '哈尔滨', '齐齐哈尔', '鸡西', '鹤岗', '双鸭山', '大庆', '伊春', '佳木斯', '七台河', '牡丹江', '黑河', '绥化', '大兴安岭', '甘南县']],
-  ['上海', ['上海', '哈哈炫动', 'ics']],
+  ['上海', ['上海', '哈哈炫动', 'ics', '上视']],
   ['江苏', ['江苏', '南京', '无锡', '徐州', '常州', '苏州', '南通', '连云港', '淮安', '盐城', '扬州', '镇江', '泰州', '宿迁', '江阴', '宜兴', '常熟', '张家港', '昆山', '吴江', '太仓', '溧水', '金湖', '句容', '靖江', '新沂', '溧阳', '高邮', '仪征', '丹阳', '扬中', '兴化', '泰兴', '沭阳', '泗洪', '泗阳']],
   ['浙江', ['浙江', '杭州', '宁波', '温州', '嘉兴', '湖州', '绍兴', '金华', '衢州', '舟山', '台州', '丽水', '余杭', '萧山', '义乌', '诸暨', '上虞', '嵊州', '新昌', '余姚', '慈溪', '象山', '宁海', '奉化', '苍南', '平湖', '海宁', '桐乡', '嘉善', '海盐', '长兴', '德清', '安吉', '兰溪', '东阳', '永康', '武义', '浦江', '磐安', '开化', '龙游', '常山', '江山', '天台', '仙居', '三门', '温岭', '临海', '玉环', '青田', '缙云', '遂昌', '松阳', '云和', '庆元', '龙泉', '景宁', '岱山', '嵊泗', '洞头', '永嘉', '平阳', '文成', '泰顺', '瑞安', '乐清', '中国蓝', 'htv', '普陀']],
   ['安徽', ['安徽', '合肥', '芜湖', '蚌埠', '淮南', '马鞍山', '淮北', '铜陵', '安庆', '黄山', '滁州', '阜阳', '宿州', '六安', '亳州', '池州', '宣城', '广德', '涡阳', '灵璧', '祁门', '固镇']],
@@ -733,8 +740,14 @@ const LOCAL_REGION_ALIASES: ReadonlyArray<readonly [string, readonly string[]]> 
 ];
 
 const LOCAL_CHANNEL_SUFFIX_RE = /频道|电视台|广播电视台|新闻|综合|公共|都市|生活|影视|电影|电视剧|经济|经视|科教|教育|文化|旅游|体育|少儿|国际|资讯|导视|党建|农村|乡村|农业|民生|社会|法制|城市|一套|二套|三套|四套|五套|六套|七套|八套|台$/;
-const LOCAL_CHANNEL_BRAND_RE = /哈哈炫动|ics|珠江|南国|中国蓝|htv|长影|普陀|蒙语|兵团|可克达拉|石河子|胡杨河/;
+const LOCAL_CHANNEL_BRAND_RE = /哈哈炫动|ics|上视|珠江|南国|中国蓝|htv|长影|普陀|蒙语|兵团|可克达拉|石河子|胡杨河/;
 const NON_LOCAL_PROGRAM_RE = /电影节|颁奖|典礼|开幕式|闭幕式|晚会|演唱会/;
+const HK_MACAU_TAIWAN_CHANNEL_RE = /港澳台|港台|香港|澳门|台湾|tvb|翡翠|明珠|凤凰|东森|中视|中天|台视|华视|民视|公视|三立|大爱|纬来|tvbs|rthk|澳视|澳广视|非凡新闻|年代新闻|寰宇新闻|龙华|靖天|美亚|viutv|hoytv|香港开电视|莲花卫视/;
+const DOCUMENTARY_CHANNEL_RE = /全纪实|金鹰纪实|纪实科教|精品纪录|精品记录|纪录频道|记录频道|纪实频道|探索频道|发现频道|科教频道|科学频道|历史频道|人文频道|地理频道|自然频道|动物频道|纪录片|求索|发现之旅|探索发现|走近科学|百家讲坛|国家记忆|记住乡愁|之江纪录|飞碟之谜|航拍中国|中国村庄|文物宝库|老故事/;
+const SPORTS_CHANNEL_RE = /体育|足球|篮球|排球|网球|台球|斯诺克|羽毛球|乒乓球|棒球|冰球|赛车|赛事|运动|竞技|格斗|搏击|拳击|武术|垂钓|钓鱼|高尔夫|全运|电竞|游戏风云|espn|sports?|football|premierleague|tennis|golf|fishing|snooker|billiards|nba|nfl|mlb|nhl|ufc|wwe|motogp|motorvision|bikechannel/i;
+const EDUCATION_CHANNEL_RE = /教育|教科|科教|学习|课堂|学堂|公开课|慕课|空中课堂|名师讲堂|国学|书法/i;
+const NEWS_LAW_TRAFFIC_CHANNEL_RE = /新闻|资讯|财经|商业|法治|法制|社会与法|中国交通|交通频道|城市交通|交通电视|红绿灯|交警|庭审/i;
+const OPERA_CHANNEL_RE = /戏曲|梨园|京剧|越剧|豫剧|黄梅|评剧|昆曲|曲艺|沪剧|淮剧|川剧|粤剧|潮剧|晋剧|秦腔|梆子|花鼓戏|采茶戏|二人转|评弹/i;
 
 function compactChannelText(value: string): string {
   return sanitizeTxtLabel(value, '')
@@ -748,6 +761,7 @@ function compactChannelText(value: string): string {
     .replace(/東/g, '东')
     .replace(/內/g, '内')
     .replace(/臺/g, '台')
+    .replace(/亞/g, '亚')
     .replace(/灣/g, '湾')
     .replace(/衛/g, '卫')
     .replace(/視/g, '视');
@@ -758,7 +772,7 @@ function detectLocalRegion(rawGroup: string, channelName: string): string | null
   const name = compactChannelText(channelName);
   const text = raw + name;
   if (!text) return null;
-  if (/香港|澳门|台湾|港台|港澳台|tvb|翡翠|明珠|凤凰|东森|中视|台视|三立|纬来|tvbs|rthk|澳视/.test(text)) return null;
+  if (HK_MACAU_TAIWAN_CHANNEL_RE.test(text)) return null;
   if (/卫视/.test(name) || /卫视/.test(raw)) return null;
   // “甘南县”属于黑龙江，不能与甘肃“甘南”混淆；“海南州”属于青海。
   if (/甘南县/.test(text)) return '黑龙江';
@@ -869,32 +883,66 @@ function classifyInternationalSubgroup(
 ): string | null {
   const raw = compactChannelText(rawGroup);
   const name = compactChannelText(channelName);
-  const text = raw + name + collectLiveSourceLabels(channel);
+  const sourceLabels = collectLiveSourceLabels(channel);
+  const text = raw + name + sourceLabels;
   if (!name) return null;
 
   if (/^(?:cctv|cetv|newtv|migu|咪咕|中国教育电视台|中央电视|央视)/i.test(name)
-    || /卫视|港澳台|香港|澳门|台湾|tvb|翡翠|明珠|凤凰|东森|中视|台视|三立|纬来|tvbs|rthk|澳视/.test(text)
+    || /卫视|港澳台|香港|澳门|台湾|tvb|翡翠|明珠|凤凰|东森|中视|台视|三立|纬来|tvbs|rthk|澳视|中天/.test(text)
     || /地方频道|省频道|市频道|县频道/.test(text)) return null;
   if (/4k|8k|uhd/i.test(text)) return null;
 
   const hasExplicitInternationalGroup = /国际|海外|外语|境外/.test(raw);
-  const hasInternationalBrand = /cgtn|中国国际电视台|bbc|cnn|abc|nbc|cbs|fox|bloomberg|cnbc|aljazeera|jazeera|euronews|france24|dw|nhk|arirang|kbs|mbc|sbs|tv5|skynews|discovery|animalplanet|natgeo|nationalgeographic|cartoonnetwork|disney|nickelodeon|espn|hbo|cinemax|starmovies|tvbs?|foxnews/i.test(text);
+  const hasInternationalBrand = /cgtn|中国国际电视台|中国环球电视|bbc|cnn|abc|nbc|cbs|fox|bloomberg|cnbc|aljazeera|jazeera|euronews|france24|dw|nhk|arirang|kbs|mbc|sbs|tv5|skynews|discovery|animalplanet|natgeo|nationalgeographic|cartoonnetwork|disney|nickelodeon|espn|hbo|cinemax|starmovies|tvbs?|foxnews|rtdoc/i.test(text);
   const latinOnly = /[a-z]{2,}/i.test(name) && !/[\u4e00-\u9fff]/.test(name);
   const hasCyrillicName = /[\u0400-\u04FF]/.test(name);
-  const hasForeignLanguageHint = /英语|英文|俄语|俄罗斯|俄羅斯|日本|韩国|印度|亚洲|新加坡|马来西亚|泰国|越南|菲律宾/.test(text);
-  if (!hasExplicitInternationalGroup && !hasInternationalBrand && !latinOnly && !hasCyrillicName && !hasForeignLanguageHint) return null;
+  const hasForeignLanguageHint = /英语|英文|俄语|俄罗斯|俄羅斯|法语|法語|法文|西班牙语|西语|阿拉伯语|阿语|德语|德語|葡萄牙语|葡语|意大利语|意语|土耳其语|日本|日本语|韩国|韩国语|印度|亚洲|南亚|东南亚|新加坡|马来西亚|泰国|越南|菲律宾/.test(text);
+  const hasInternationalChannelShape = !/[\u4e00-\u9fff]/.test(name)
+    || /频道|电视台|广播|国际|外语|新闻|资讯|财经|音乐|影视|电影|纪录|纪实|体育|少儿|tv$/i.test(name);
+  if (!hasExplicitInternationalGroup
+    && !hasInternationalBrand
+    && !latinOnly
+    && !hasCyrillicName
+    && !(hasForeignLanguageHint && hasInternationalChannelShape)) return null;
   if (hasExplicitInternationalGroup && /[\u4e00-\u9fff]/.test(name)
     && !hasInternationalBrand && !hasForeignLanguageHint
     && !/新闻|体育|少儿|纪录|影视|电影/.test(text)) return null;
 
-  if (/news|新闻|资讯|business|财经|bloomberg|cnbc|bbc|cnn|aljazeera|euronews|france24|dw|nhk|arirang|abc|nbc|cbs|foxnews|skynews/i.test(text)) return '国际·新闻';
-  if (/sports?|足球|篮球|体育|espn|football|nba|premierleague|tennis/i.test(text)) return '国际·体育';
+  // 语言标签优先于泛资讯标签。“CGTN 法语”“DW Español”“France 2”
+  // 不应继续落入英语或新闻大桶。带 English 明确后缀时仍按英语频道处理。
+  // 旧运行时可能已把外语频道放在“国际·英语”，不能把分组名当成语言标签。
+  const hasEnglishHint = /英语|英文|english/i.test(name + sourceLabels);
+  if (!hasEnglishHint) {
+    if (/俄语|俄罗斯|俄羅斯|russia|russian|русск|россия|перв|тнт|стс|нтв|карусель|ukraine|беларусь|белорус|украин|україн|kazakh|哈萨克/i.test(text)
+      || /[\u0400-\u04FF]/.test(name)) return '国际·俄语';
+    if (/法语|法語|法文|français|francais|french|\bfrance\b|france\d|franceinfo|cgtnf|\bw9\b|tv5/i.test(text)) return '国际·法语';
+    if (/西班牙语|西语|español|espanol|spanish|castellano/i.test(text)) return '国际·西班牙语';
+    if (/阿拉伯语|阿语|arabic|arabia|العربية|عربي|الجزيرة|al\s*jazeera|aljazeera/i.test(text)
+      || /[\u0600-\u06FF]/.test(name)) return '国际·阿拉伯语';
+    if (/德语|德語|deutsch|german|\bdw\b|\bard\b|\bzdf\b/i.test(text)) return '国际·德语';
+    if (/葡萄牙语|葡语|português|portugues|portuguese|brasil|brazil/i.test(text)) return '国际·葡萄牙语';
+    if (/意大利语|意语|italiano|italian|italia/i.test(text)) return '国际·意大利语';
+    if (/土耳其语|türk|turkish|\btrt\b|\bt24\b/i.test(text)) return '国际·土耳其语';
+    if (/日本|日本语|japan|japanese|韩国|韩国语|korea|korean|hindi|urdu|bengali|tamil|telugu|marathi|gujarati|punjabi|印度|asia|亚洲|南亚|东南亚|新加坡|马来西亚|thai|vietnam|印尼|泰国|越南|菲律宾/i.test(text)
+      || /[\u3040-\u30FF\uAC00-\uD7AF\u0900-\u097F\u0980-\u09FF\u0B80-\u0BFF\u0C00-\u0C7F\u0E00-\u0E7F]/.test(name)) return '国际·亚洲';
+  }
+
+  // 纪录片品牌必须先于新闻判断，避免 BBC Earth、RT Documentary 被 BBC/RT
+  // 的新闻品牌带进国际新闻。
+  if (/documentary|documentar|纪录|紀錄|记录|纪实|探索|发现|自然|nature|wild|history|science|discovery|animalplanet|natgeo|nationalgeographic|bbcearth|travel/i.test(text)) {
+    return '国际·纪录';
+  }
+
+  // CGTN 的英文本部仍属于国际新闻；其纪录片和语言频道已在上面分流。
+  if (/cgtn|中国国际电视台|中国环球电视/i.test(text)
+    && (hasEnglishHint || !/记录|紀錄|纪录|documentary/i.test(text))) return '国际·新闻';
+
+  if (SPORTS_CHANNEL_RE.test(text)) return '国际·体育';
   if (/cartoon|kids|少儿|儿童|卡通|disney|nickelodeon|nick/i.test(text)) return '国际·少儿';
-  if (/discovery|animalplanet|natgeo|nationalgeographic|history|science|documentary|纪录|探索|自然/i.test(text)) return '国际·纪录';
   if (/movie|cinema|film|drama|series|hbo|cinemax|starmovies|影视|电影|剧场/i.test(text)) return '国际·影视';
-  if (hasCyrillicName
-    || /俄语|俄罗斯|俄羅斯|russia|russian|русск|россия|перв|тнт|стс|нтв|карусель|ukraine|беларусь|белорус|украин|україн|kazakh|哈萨克/i.test(text)) return '国际·俄语';
-  if (/日本|japan|nhk|韩国|korea|kbs|mbc|sbs|arirang|tvn|jtbc|印度|india|asianet|astro|亚洲|asia|singapore|malaysia|thai|vietnam|印尼|泰国|越南|菲律宾/i.test(text)) return '国际·亚洲';
+  // 只有带明确新闻语义或完整新闻品牌时才进入国际新闻。普通 BBC One、
+  // ABC KGO-TV、NBC 地方台仍是国际综合频道，不能被三字母品牌一刀切。
+  if (/news|新闻|资讯|business|财经|bloomberg|cnbc|cnn|aljazeera|euronews|france\s*24|dw|nhk|arirang|abcnews|nbcnews|cbsnews|foxnews|skynews|gbnews|i24news|trtworld|rtnews/i.test(text)) return '国际·新闻';
   return '国际·英语';
 }
 
@@ -909,7 +957,7 @@ function classifyFilmSubgroup(compact: string): string {
 }
 
 function classifyMusicSubgroup(compact: string): string {
-  if (/戏曲|梨园|京剧|越剧|豫剧|黄梅|评剧|昆曲|曲艺/.test(compact)) return '音乐·戏曲';
+  if (OPERA_CHANNEL_RE.test(compact)) return '音乐·戏曲';
   if (/dj|电音|舞曲|慢摇|酒吧/i.test(compact)) return '音乐·DJ';
   if (/演唱会|现场|音乐会|音乐节|live/i.test(compact)) return '音乐·现场';
   if (/歌曲|歌手|港乐|经典|金曲|情歌|串烧|风云音乐|欣赏音乐/.test(compact)) return '音乐·歌曲';
@@ -919,16 +967,18 @@ function classifyMusicSubgroup(compact: string): string {
 function classifyDocumentarySubgroup(compact: string): string {
   if (/(?:一套|二套|综合|公共|影综艺|汉语|哈萨克语|蒙古语|藏语|维语)$/.test(compact)
     && !/动物|自然|野生|纪录|纪实|探索|科学/.test(compact)) return '地方·其他';
+  // “金鹰纪实”等品牌名含动物词，先按明确纪实频道分流，避免被“鹰”误判为自然。
+  if (/全纪实|金鹰纪实|纪实科教|精品纪录|精品记录|纪录片/.test(compact)) return '纪录·探索';
   if (/动物|自然|野生|丛林|大象|海豚|海鬣蜥|棕熊|潜水|田园|地理|世界地理|风光|生态|狮子|狮|老虎|虎|猎豹|豹|北极熊|熊|狼|鳄鱼|鳄|蟒蛇|蛇|鲸鱼|鲸|鲨鱼|鲨|海獭|水獭|猴子|猴|猩猩|猫科|大猫|角马|斑马|长颈鹿|犀牛|河马|企鹅|雪鸮|鸮|鸟|鹰|鹤|鹿|马|牛|羊|兔|鼠|鱼|龟|昆虫|捕食|捕猎|猎手|生存|进化|家族|幼崽|幼狮|幼虎|幼豹|海洋|深海|海底|河流|河|湖泊|湖|森林|草原|荒野|沙漠|冰川|冰雪|极地|雨林|湿地|山脉|巨兽|宠物|狗|猫/.test(compact)) return '纪录·自然';
-  if (/人文|历史|老故事|中国村庄|人物|文化|考古|美食|旅行|地理中国|美丽中国|美丽云南|乘着火车看中国|国家公园|世界遗产|古镇|民俗|非遗/.test(compact)) return '纪录·人文';
-  if (/探索|发现|科学|科技|宇宙|军事|兵器|神秘|未解|纪录|纪实|真相|谜|UFO|飞碟|未来|工程|机械|医学/.test(compact)) return '纪录·探索';
+  if (/人文|历史|老故事|中国村庄|人物|文化|考古|文物|美食|旅行|地理中国|美丽中国|美丽云南|乘着火车看中国|国家公园|世界遗产|古镇|民俗|非遗|百家讲坛|国家记忆|记住乡愁|档案/.test(compact)) return '纪录·人文';
+  if (/探索|发现|科学|科技|宇宙|军事|兵器|神秘|未解|纪录|纪实|真相|谜|UFO|飞碟|未来|工程|机械|医学|走近科学|探索发现/.test(compact)) return '纪录·探索';
   return '纪录·综合';
 }
 
 function classifyScenerySubgroup(compact: string): string {
   if (/城市|街景|道路|港口|车站|机场|校园|商圈|步行街|夜景|码头|广场|大厦|立交|高铁|地铁/.test(compact)) return '风景·城市';
   if (/景区|景点|旅游|直播中国|熊猫直播|中央电视塔|航拍|风景|黄山|泰山|华山|长城|古镇|古城|瀑布|峡谷|雪山|温泉|观景台|湿地|动物园|植物园|云海|日出|日落|山|湖|寺|塔|桥|岛|湾/.test(compact)) return '风景·景区';
-  if (/森林|草原|海洋|沙漠|冰川|雨林|极地|自然|河流|湖泊|湿地/.test(compact)) return '风景·自然';
+  if (/森林|草原|海洋|沙漠|冰川|雨林|极地|自然|河流|湖泊|湿地|都江堰|核桃坪|卧龙|大丰麋鹿|白马雪山|基地(?:别墅|成年园|母子园|幼儿园|幼年园)/.test(compact)) return '风景·自然';
   return '风景·综合';
 }
 
@@ -950,7 +1000,7 @@ function classifyOtherSubgroup(
   if (/影视|电影|影院|剧场|电视剧|连续剧|剧集|港剧|美剧|韩剧|短剧|动漫|动画|番剧|国漫|综艺|大片|老片|喜剧|科幻|恐怖|战争|武侠|动作|悬疑|犯罪|爱情|解说/i.test(text)) return '其他·影视';
   const region = detectLocalRegion(rawGroup, channelName);
   if (region) return '地方·' + region;
-  if (/生活|美食|健康|汽车|房产|家居|时尚|美妆|旅游|民生|都市|法治|茶|教育/.test(text)) return '其他·生活服务';
+  if (/生活|美食|健康|汽车|房产|置业|家居|时尚|美妆|旅游|民生|都市|法治|茶|教育/.test(text)) return '其他·生活服务';
   return '其他·综合';
 }
 
@@ -993,21 +1043,21 @@ function normalizeAggregateChannelGroupBase(
   if (!compact) return group;
 
   // 实时风景机位名称可能包含“中央”，必须先于央视兜底判断。
-  if (/熊猫直播|中央电视塔|直播中国|风景|景区/.test(compact)
+  if (/熊猫直播|中央电视塔|直播中国|风景|景区|都江堰|核桃坪|卧龙臭水|大丰麋鹿|白马雪山|基地(?:别墅|成年园|母子园|幼儿园|幼年园)/.test(compact)
     || (/航拍/.test(compact) && !/航拍中国/.test(compact))) return '风景直播';
 
   // 港澳台先于地方和主题判断，避免“香港/台湾”被地方别名误吸。
-  if (/港澳台|港台|香港|澳门|台湾|tvb|翡翠|明珠|凤凰|东森|中视|台视|三立|纬来|tvbs|rthk|澳视/.test(compact)) return '港澳台';
+  if (HK_MACAU_TAIWAN_CHANNEL_RE.test(compact)) return '港澳台';
 
   // 国际、教育及常见数字付费频道品牌先于央视兜底，避免混入央视。
-  if (/cgtn|中国国际电视台/.test(compact)) return '国际';
+  if (/cgtn|中国国际电视台|中国环球电视/.test(compact)) return '国际';
   if (/cetv|中国教育电视台/.test(compact)) return '教育';
   if (/newtv/.test(compact)) return classifyNewTv(compact);
   if (/咪咕视频/.test(compact)) return '其他';
   if (/求索/.test(compact)) return '纪录';
   if (/家庭理财/.test(compact)) return '新闻财经';
   if (/置业频道/.test(compact)) return '其他';
-  if (/弈坛春秋|黑莓电竞|央视高网/.test(compact)) return '体育';
+  if (SPORTS_CHANNEL_RE.test(compact)) return '体育';
 
   // 央视付费频道和超高清频道先于央视主频道判断。
   const cctvSpecial = classifyCctvSpecial(compact);
@@ -1026,24 +1076,26 @@ function normalizeAggregateChannelGroupBase(
   // 内容主题只处理语义非常明确的频道；普通地方综合/公共/新闻台仍留在地方目录。
   if (/第一财经|财富天下/.test(compact)) return '新闻财经';
   if (/新闻综合|综合新闻/.test(compact)) return fromLocalGroup ? '地方·其他' : '新闻财经';
-  if (/教育|教科|学习/.test(compact)) return '教育';
-  if (/之江纪录|飞碟之谜|航拍中国|中国村庄|动物|自然|野生|丛林|大象|海豚|海鬣蜥|棕熊|潜水|田园|纪录片|探索|地理|人文/.test(compact)) return '纪录';
+  // 明确的纪实/科教品牌必须先于教育判断，避免“纪实科教”被“科教”吸走。
+  if (DOCUMENTARY_CHANNEL_RE.test(compact)) return '纪录';
+  if (EDUCATION_CHANNEL_RE.test(compact)) return '教育';
+  if (/动物|自然|野生|丛林|大象|海豚|海鬣蜥|棕熊|潜水|田园|探索|地理|人文|历史|科学|考古|军事|宇宙|未解|UFO|飞碟/.test(compact)) return '纪录';
   if (/^[\u4e00-\u9fa5]{1,8}(?:4k|8k)$/.test(compact.replace(/(?:频道)?超?$/, ''))) return '4K/8K';
-  if (/新闻|资讯|财经|商业/.test(compact)) return fromLocalGroup ? '地方·其他' : '新闻财经';
+  if (NEWS_LAW_TRAFFIC_CHANNEL_RE.test(compact)) return fromLocalGroup ? '地方·其他' : '新闻财经';
   if (/电视剧|连续剧|剧集|港剧|美剧|韩剧|短剧|经典剧|大剧|戏剧|射雕|神雕|倚天屠龙|笑傲江湖|寻秦记|创世纪|大时代|楚汉骄雄|大唐双龙传|法政先锋|鉴证实录|妙手仁心|陀枪师姐|洗冤录|刑事侦缉档案|金枝欲孽|活佛济公|西游记|封神榜|倩女幽魂|龙门飞甲|甄嬛传|还珠格格|亮剑|雪豹|华山论剑|三国|流星花园|大地恩情|凡人修仙|粤经典|水浒传|天龙八部|鹿鼎记|绝代双娇|神探狄仁|铁齿铜牙|神医喜来|父母爱情|白鹿原|大染坊|炊事班|士兵突击|我的团长|雍正王朝|康熙微服|玫瑰故事|梦华录|星汉灿烂|永夜星河|问心|漫长的季节|爱情公寓|家有儿女|海绵宝宝|蜡笔小新|叮当|龙珠|柯南|圣斗士|四驱兄弟|头文字|足球小将|全职高手|一人之下|一人之上|笑看风云|庆余年|雪中悍刀行|延禧攻略|武林外传|仙剑奇侠传|新白娘子|我爱男保姆|我的前半生|传闻中的芊芊|第一滴血|火蓝刀锋|炮神|渗透|风筝|开端|流金岁月|少寒|如果岁月|电视轮播|电视轮|轮播/.test(compact)) return '电视剧';
-  if (/电影|影院|影视|剧场|大片|动作片|喜剧片|科幻片|恐怖片|战争片|武侠片|港片|周星驰|成龙|林正英|周润发|邵氏|陈翔六点半|视觉|重温经典|古装|妖魔|好片|经典怀旧|警匪悬疑|科幻梦工场|速度与激情/.test(compact)) return '影视';
+  if (/电影|影院|影视|剧场|大片|动作片|喜剧片|科幻片|恐怖片|战争片|武侠片|港片|周星驰|成龙|林正英|周润发|邵氏|陈翔六点半|视觉|重温经典|古装|妖魔|好片|经典怀旧|警匪悬疑|科幻梦工场|速度与激情|天映经典/.test(compact)) return '影视';
   if (/生活|民生|都市/.test(compact)) {
     // 地方组的综合/民生台保留地方归属；普通节目名不再误判为地方台。
     if (fromLocalGroup && !/生活技巧|生活时尚|幸福生活|北漂生活|夜魔人|papi酱|朱一旦/.test(compact)) return '地方·其他';
     return '其他';
   }
-  if (/体育|足球|篮球|网球|台球|斯诺克|赛事|运动|竞技|格斗|全运|spotv|sports?|football/.test(compact)) return '体育';
+  if (SPORTS_CHANNEL_RE.test(compact)) return '体育';
   if (/少儿|儿童|卡通|动漫|动画|青少|猫和老鼠|七龙珠|中华小当家/.test(compact)) return '少儿';
-  if (/音乐|歌曲|演唱会|港乐|dj|串烧|风云音乐|音乐现场/.test(compact)) return '音乐';
+  if (/音乐|歌曲|演唱会|港乐|dj|串烧|风云音乐|音乐现场|广场舞/.test(compact) || OPERA_CHANNEL_RE.test(compact)) return '音乐';
   if (/春晚|春节|贺岁/.test(compact)) return '春晚';
   if (/直播中国|风景|景区|航拍/.test(compact)) return '风景直播';
   if (/一起看|虎牙|斗鱼|b站|原创|zonghe|综合直播|抖音|快手/.test(compact)) return '一起看';
-  if (/女性时尚|时尚|咪视界|爱奇艺综|脱口秀|颁奖典礼|颁奖礼|红地毯|走红毯|广场舞|梨园|欣赏频道|数字频道|解说频道|car|测试|备用/.test(compact)) return '其他';
+  if (/女性时尚|时尚|咪视界|爱奇艺综|脱口秀|颁奖典礼|颁奖礼|红地毯|走红毯|欣赏频道|数字频道|解说频道|car|测试|备用/.test(compact)) return '其他';
 
   if (fromLocalGroup) return group.startsWith('地方·') ? group : '地方·其他';
   return group === '其他' ? '其他' : group;
@@ -1068,7 +1120,9 @@ function normalizeAggregateChannelGroup(
   const name = sanitizeTxtLabel(rawChannelName, '未命名');
   const compact = compactChannelText(name);
 
-  if (/cgtn|中国国际电视台/i.test(compact)) return '国际·新闻';
+  if (/cgtn|中国国际电视台|中国环球电视/i.test(compact)) {
+    return classifyInternationalSubgroup(rawGroup, name, channel) || '国际·新闻';
+  }
   if (/newtv/i.test(compact)) return classifyNewTv(compact) === '电视剧' ? '电视剧' : '其他·NewTV';
   if (/咪咕视频|咪视界/.test(compact)) return '其他·咪咕';
   if (/4k|8k|uhd/i.test(compact)) return '4K/8K';

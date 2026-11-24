@@ -1178,6 +1178,64 @@ const subgroupGroups = [{
     { name: '其他组YY线路', urls: ['https://sub.example/yy/6000002'] },
     { name: 'россия 1', urls: ['http://sub.example/russia-one'] },
     { name: 'беларусь 24', urls: ['http://sub.example/belarus-24'] },
+    { name: 'DW Deutsch', urls: ['http://sub.example/dw-de'] },
+    { name: 'hindi khabar', urls: ['http://sub.example/hindi-khabar'] },
+    { name: '上视外语 8M', urls: ['http://sub.example/shanghai-foreign'] },
+    { name: '中天亞洲', urls: ['http://sub.example/cti-asia'] },
+    { name: '金色学堂 8M', urls: ['http://sub.example/education'] },
+    { name: '百变课堂 8M', urls: ['http://sub.example/classroom'] },
+    { name: '全纪实 8M', urls: ['http://sub.example/documentary'] },
+    { name: '金鹰纪实', urls: ['http://sub.example/golden-eagle-doc'] },
+    { name: '纪实科教 8M', urls: ['http://sub.example/doc-science'] },
+    { name: '快乐垂钓 8M', urls: ['http://sub.example/fishing'] },
+    { name: '高尔夫', urls: ['http://sub.example/golf'] },
+    { name: '电子竞技 8M', urls: ['http://sub.example/esports-generic'] },
+    { name: '游戏风云 8M', urls: ['http://sub.example/game-wind'] },
+    { name: '睛彩竞技', urls: ['http://sub.example/esports-colorful'] },
+    { name: '睛彩篮球', urls: ['http://sub.example/basketball-colorful'] },
+    { name: '武术世界', urls: ['http://sub.example/martial-arts'] },
+    { name: '睛彩羽毛球', urls: ['http://sub.example/badminton'] },
+    { name: '现代教育', urls: ['http://sub.example/modern-education'] },
+    { name: '经济科教', urls: ['http://sub.example/economics-science-education'] },
+    { name: '党员教育', urls: ['http://sub.example/party-education'] },
+    { name: '法治天地', urls: ['http://sub.example/law'] },
+    { name: '法制天地', urls: ['http://sub.example/law-alt'] },
+    { name: '中国交通', urls: ['http://sub.example/traffic'] },
+    { name: '交通频道', urls: ['http://sub.example/traffic-channel'] },
+    { name: '哒啵电竞', urls: ['http://sub.example/esports'] },
+    { name: '电竞天堂 8M', urls: ['http://sub.example/esports-heaven'] },
+    { name: '梨园频道', urls: ['http://sub.example/opera'] },
+    { name: '沪剧频道', urls: ['http://sub.example/shanghai-opera'] },
+    { name: '文物宝库', urls: ['http://sub.example/relics'] },
+    { name: '置业频道', urls: ['http://sub.example/property'] },
+    { name: '都江堰神树坪②', urls: ['http://sub.example/panda-camera'] },
+  ],
+}, {
+  group: '国际·新闻',
+  channels: [
+    { name: 'CGTN Français', urls: ['http://sub.example/cgtn-fr'] },
+    { name: 'CGTN Español', urls: ['http://sub.example/cgtn-es'] },
+    { name: 'CGTN العربية', urls: ['http://sub.example/cgtn-ar'] },
+    { name: 'CGTN Русский', urls: ['http://sub.example/cgtn-ru'] },
+    { name: 'CGTN记录', urls: ['http://sub.example/cgtn-doc-cn'] },
+    { name: 'CGTN F', urls: ['http://sub.example/cgtn-f'] },
+    { name: '中国环球电视', urls: ['http://sub.example/cgtn-cn'] },
+  ],
+}, {
+  group: '国际·英语',
+  channels: [
+    { name: 'france 2', urls: ['http://sub.example/france-2'] },
+    { name: 'italia 1', urls: ['http://sub.example/italia-1'] },
+    { name: 'cine brasil', urls: ['http://sub.example/cine-brasil'] },
+    { name: 'BBC Earth', urls: ['http://sub.example/bbc-earth'] },
+    { name: 'BBC One', urls: ['http://sub.example/bbc-one'] },
+    { name: 'ABC KGO-TV', urls: ['http://sub.example/abc-kgo'] },
+    { name: 'France 24 English', urls: ['http://sub.example/france-24-en'] },
+    { name: 'DW Español', urls: ['http://sub.example/dw-es'] },
+    { name: 'CNN Brasil', urls: ['http://sub.example/cnn-brasil'] },
+    { name: 'franceinfo', urls: ['http://sub.example/france-info'] },
+    { name: 'Sky News Arabia', urls: ['http://sub.example/sky-news-arabia'] },
+    { name: 'Love Nature', urls: ['http://sub.example/love-nature'] },
   ],
 }, {
   group: '影视',
@@ -1230,7 +1288,57 @@ assert(subgroupOfChannel('张家港新闻综合') === '地方·江苏', 'an expl
 assert(subgroupOfChannel('大庆公共') === '地方·黑龙江', 'local-channel structure must be detected before platform fallback');
 assert(subgroupOfChannel('россия 1') === '国际·俄语', 'Cyrillic international channels must not fall into the generic other bucket');
 assert(subgroupOfChannel('беларусь 24') === '国际·俄语', 'Cyrillic-language brands must share the Russian-language subgroup');
+assert(subgroupOfChannel('CGTN Français') === '国际·法语', 'CGTN French must use the French-language subgroup');
+assert(subgroupOfChannel('CGTN Español') === '国际·西班牙语', 'CGTN Spanish must use the Spanish-language subgroup');
+assert(subgroupOfChannel('CGTN العربية') === '国际·阿拉伯语', 'CGTN Arabic must use the Arabic-language subgroup');
+assert(subgroupOfChannel('CGTN Русский') === '国际·俄语', 'CGTN Russian must use the Russian-language subgroup');
+assert(subgroupOfChannel('DW Deutsch') === '国际·德语', 'DW German must use the German-language subgroup');
+assert(subgroupOfChannel('france 2') === '国际·法语', 'France 2 must use the French-language subgroup');
+assert(subgroupOfChannel('italia 1') === '国际·意大利语', 'Italia 1 must use the Italian-language subgroup');
+assert(subgroupOfChannel('cine brasil') === '国际·葡萄牙语', 'Brazilian Portuguese channels must use the Portuguese-language subgroup');
+assert(subgroupOfChannel('hindi khabar') === '国际·亚洲', 'Hindi channels must use the Asian-language subgroup');
+assert(subgroupOfChannel('上视外语 8M') === '地方·上海', 'Shanghai foreign-language channels must keep their local region');
+assert(subgroupOfChannel('中天亞洲') === '港澳台', 'CTi Asia must use the Hong Kong/Macau/Taiwan group');
+assert(subgroupOfChannel('中国环球电视') === '国际·新闻', 'China Global Television must use international news');
+assert(subgroupOfChannel('金色学堂 8M') === '教育', 'education channels must not fall into 其他·综合');
+assert(subgroupOfChannel('百变课堂 8M') === '教育', 'classroom channels must not fall into 其他·综合');
+assert(subgroupOfChannel('全纪实 8M') === '纪录·探索', 'full-documentary channels must use the documentary group');
+assert(subgroupOfChannel('金鹰纪实') === '纪录·探索', 'documentary channels must use the documentary group');
+assert(subgroupOfChannel('纪实科教 8M') === '纪录·探索', 'documentary-science channels must use the documentary group');
+assert(subgroupOfChannel('快乐垂钓 8M') === '体育', 'fishing channels must use the sports group');
+assert(subgroupOfChannel('高尔夫') === '体育', 'golf channels must use the sports group');
+assert(subgroupOfChannel('电子竞技 8M') === '体育', 'generic esports channels must use the sports group');
+assert(subgroupOfChannel('游戏风云 8M') === '体育', 'game-channel brands must use the sports group');
+assert(subgroupOfChannel('睛彩竞技') === '体育', 'sports-competition variants must use the sports group');
+assert(subgroupOfChannel('睛彩篮球') === '体育', 'basketball variants must use the sports group');
+assert(subgroupOfChannel('武术世界') === '体育', 'martial-arts channels must use the sports group');
+assert(subgroupOfChannel('睛彩羽毛球') === '体育', 'badminton channels must use the sports group');
+assert(subgroupOfChannel('现代教育') === '教育', 'modern-education channels must use the education group');
+assert(subgroupOfChannel('经济科教') === '教育', 'economics/science-education channels must use the education group');
+assert(subgroupOfChannel('党员教育') === '教育', 'party-education channels must use the education group');
+assert(subgroupOfChannel('法治天地') === '新闻财经', 'law channels must use the news/finance group');
+assert(subgroupOfChannel('法制天地') === '新闻财经', 'law channels using the 法制 variant must use the news/finance group');
+assert(subgroupOfChannel('中国交通') === '新闻财经', 'traffic channels must use the news/finance group');
+assert(subgroupOfChannel('交通频道') === '新闻财经', 'generic traffic channels must use the news/finance group');
+assert(subgroupOfChannel('哒啵电竞') === '体育', 'esports channels must use the sports group');
+assert(subgroupOfChannel('电竞天堂 8M') === '体育', 'esports channels must use the sports group');
+assert(subgroupOfChannel('梨园频道') === '音乐·戏曲', 'opera channels must use the opera subgroup');
+assert(subgroupOfChannel('沪剧频道') === '音乐·戏曲', 'local-opera variants must use the opera subgroup');
+assert(subgroupOfChannel('文物宝库') === '纪录·人文', 'cultural-relic channels must use the humanities documentary subgroup');
+assert(subgroupOfChannel('置业频道') === '其他·生活服务', 'property channels must use the life-service subgroup');
+assert(subgroupOfChannel('都江堰神树坪②') === '风景·自然', 'wildlife camera channels must use the natural-scenery subgroup');
 assert(subgroupOfChannel('abc news') === '国际·新闻', 'English news channel must use international news subgroup');
+assert(subgroupOfChannel('BBC Earth') === '国际·纪录', 'BBC documentary brands must not be forced into international news');
+assert(subgroupOfChannel('BBC One') === '国际·英语', 'general BBC entertainment must stay in the English subgroup');
+assert(subgroupOfChannel('ABC KGO-TV') === '国际·英语', 'local ABC affiliate channels must stay in the English subgroup');
+assert(subgroupOfChannel('France 24 English') === '国际·新闻', 'English-language France 24 must use international news');
+assert(subgroupOfChannel('DW Español') === '国际·西班牙语', 'DW Spanish must use the Spanish-language subgroup');
+assert(subgroupOfChannel('CNN Brasil') === '国际·葡萄牙语', 'CNN Brasil must use the Portuguese-language subgroup');
+assert(subgroupOfChannel('CGTN记录') === '国际·纪录', 'CGTN documentary variants must use the international documentary subgroup');
+assert(subgroupOfChannel('CGTN F') === '国际·法语', 'CGTN French feed aliases must use the French-language subgroup');
+assert(subgroupOfChannel('franceinfo') === '国际·法语', 'France Info must use the French-language subgroup');
+assert(subgroupOfChannel('Sky News Arabia') === '国际·阿拉伯语', 'Sky News Arabia must use the Arabic-language subgroup');
+assert(subgroupOfChannel('Love Nature') === '国际·纪录', 'international nature channels must use the documentary subgroup');
 assert(subgroupOfChannel('Zeta TV') === '国际·英语', 'English channel must not be split by initial letter');
 assert(subgroupOfChannel('Alpha TV') === '国际·英语', 'English channels must share the semantic English subgroup');
 assert(subgroupOfChannel('咪咕视频1') === '其他·咪咕', 'Migu channel must use Migu subgroup');
