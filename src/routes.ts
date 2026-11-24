@@ -70,7 +70,12 @@ export interface AppDeps {
   storage: Storage;
   config: AppConfig;
   triggerRefresh: () => Promise<AggregationTriggerResult | void>;
-  triggerLivePrepare?: () => Promise<unknown>; // 仅 Cloudflare 入口启用直播正文分片准备
+  triggerLivePrepare?: (options?: {
+    batchSize?: number;
+    timeoutMs?: number;
+    concurrency?: number;
+    forceNewRound?: boolean;
+  }) => Promise<unknown>; // 仅 Cloudflare 入口启用直播正文分片准备
   triggerQuality?: (mode: SearchQualityRunMode) => Promise<void>;   // Node/Docker 入口启用质量分级
   onCronIntervalChange?: (intervalMinutes: number, time?: string) => void;
   enableChannelProbe?: boolean; // 仅 Node/Docker 入口启用
@@ -4091,8 +4096,18 @@ export function createApp(deps: AppDeps): Hono {
     if (deps.isSyncing?.()) {
       return c.json({ success: false, skipped: true, reason: 'aggregation-running' }, 409);
     }
+    const integerQuery = (name: string, fallback: number, min: number, max: number) => {
+      const value = Number(c.req.query(name));
+      return Number.isFinite(value) ? Math.min(max, Math.max(min, Math.floor(value))) : fallback;
+    };
+    const forceNewRound = /^(?:1|true|yes)$/i.test(c.req.query('force') || '');
     try {
-      const result = await deps.triggerLivePrepare();
+      const result = await deps.triggerLivePrepare({
+        batchSize: integerQuery('batchSize', 8, 1, 8),
+        timeoutMs: integerQuery('timeoutMs', 6000, 1000, 15000),
+        concurrency: integerQuery('concurrency', 3, 1, 3),
+        forceNewRound,
+      });
       return c.json({ success: true, result });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

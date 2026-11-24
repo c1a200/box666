@@ -310,10 +310,11 @@ export default {
       },
       storage,
       config,
-      triggerLivePrepare: () => runLivePrepareChunk(storage, {
-        batchSize: 8,
-        timeoutMs: 6000,
-        concurrency: 3,
+      triggerLivePrepare: (options) => runLivePrepareChunk(storage, {
+        batchSize: options?.batchSize ?? 8,
+        timeoutMs: options?.timeoutMs ?? 6000,
+        concurrency: options?.concurrency ?? 3,
+        forceNewRound: options?.forceNewRound === true,
       }),
       triggerQuality: (mode) => runQualityChunkWithStatus(storage, mode, config.qualityTimezone),
       isSyncing: () => liveAggregationStatus.get(aggregationStatusKey(storage))?.running === true,
