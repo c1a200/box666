@@ -2601,13 +2601,16 @@ export function createApp(deps: AppDeps): Hono {
       }
 
       // 单源预构建文本只是候选池，不能直接下发。它与 /live 使用同一套
-      // 当前 probeVersion、播放验真、失败剔除、质量排序和严格条数上限。
+      // 当前 probeVersion、验真优先、后备保护、失败剔除、质量排序和条数上限。
       const verifiedGroups = applyChannelSpeedToGroups(
         parseLiveGroupsFromTxt(prebuilt),
         await loadChannelSpeedMap(storage),
         undefined,
         6,
-        { requirePlaybackVerification: true },
+        {
+          requirePlaybackVerification: true,
+          allowBackupOnInsufficientVerification: true,
+        },
       );
       const verifiedText = verifiedGroups.length > 0 ? formatLiveGroupsAsTxt(verifiedGroups) : '';
       if (!verifiedText.trim() || !verifiedText.includes('#genre#')) {

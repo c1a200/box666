@@ -1818,7 +1818,7 @@ export async function mergeLivesToNative(
   for (const [, agg] of channelMap) {
     const urlList = Array.from(agg.urls.values()).filter((e) => {
       if (options.preserveAllUrls) return true;
-      return channelSpeedMap?.[e.url]?.kind !== 'fail';
+      return !isHardLiveProbeFailure(channelSpeedMap?.[e.url]);
     });
     if (urlList.length === 0) continue;
     urlList.sort((a, b) => compareLiveEntries(a, b, channelSpeedMap));
@@ -2178,11 +2178,9 @@ export function extractAllUrls(groups: TVBoxLiveGroup[]): string[] {
 /**
  * 将频道级验真结果应用到已合并的频道树。
  *
- * 下发语义：
- * - 已验证成功且未超速的线路按速度优先；
- * - 未知线路保留为后备，但始终排在已验证线路之后；
- * - 单次/两次失败保留为最后备选，连续三次失败才剔除；
- * - 每频道条数限制在分层之后执行，避免坏线路挤掉好线路；-1 表示保留全部。
+ * 严格语义只输出当前版本已验真的 media/manifest 线路。最终下发可通过
+ * allowBackupOnInsufficientVerification 启用环境性误判保护：验真线路始终
+ * 排在最前，只有验真数量不足时才用 TCP/未知/少量瞬时失败补到目标下限。
  */
 function channelProbeRank(entry: ChannelSpeedMap[string] | undefined): number {
   if (!entry || entry.kind === 'fail' || entry.probeVersion !== CHANNEL_PROBE_RESULT_VERSION) return -1;
@@ -2194,9 +2192,40 @@ function channelProbeRank(entry: ChannelSpeedMap[string] | undefined): number {
   return 0;
 }
 
+function isCurrentLiveProbe(
+  entry: ChannelSpeedMap[string] | undefined,
+): entry is ChannelSpeedMap[string] {
+  return Boolean(entry && entry.probeVersion === CHANNEL_PROBE_RESULT_VERSION);
+}
+
+/**
+ * 硬失败才允许从候选池中删除。
+ *
+ * timeout/network 的单次或两次失败可能只是 Render 到 CDN 的瞬时抖动；旧版本
+ * 结论也可能来自较浅的验真器。这两类记录必须留到新版复测，否则频道会在源级
+ * 预构建阶段就被清空，后续最终下发没有线路可补。
+ */
+function isHardLiveProbeFailure(entry: ChannelSpeedMap[string] | undefined): boolean {
+  if (!entry || !isCurrentLiveProbe(entry) || entry.kind !== 'fail') return false;
+  return (entry.consecutiveFailures ?? 1) >= 3
+    || entry.failureReason === 'http'
+    || entry.failureReason === 'invalid';
+}
+
+function isTransientLiveProbeFailure(entry: ChannelSpeedMap[string] | undefined): boolean {
+  if (!entry || !isCurrentLiveProbe(entry) || entry.kind !== 'fail') return false;
+  return (entry.consecutiveFailures ?? 1) < 3
+    && (entry.failureReason === 'timeout' || entry.failureReason === 'network');
+}
+
 export interface ChannelSpeedApplyOptions {
-  /** 为 true 时只保留当前探测版本中已确认可播放的线路；默认 strict。 */
+  /** 为 true 时优先只保留当前探测版本中已确认可播放的线路；默认 strict。 */
   requirePlaybackVerification?: boolean;
+  /**
+   * 最终下发使用。仅当验真线路不足目标下限时，按 TCP/未知/瞬时失败顺序补足；
+   * 不会为了填满较大的频道上限而混入后备线路。
+   */
+  allowBackupOnInsufficientVerification?: boolean;
 }
 
 const LIVE_AUTH_QUERY_KEY = /^(?:auth|authid|authorization|token|access_token|livekey|live_key|streamid|stream_id|sign|signature|expires?|exp|key|pass|passwd|password|pwd|username|user|account)$/i;
@@ -2220,7 +2249,7 @@ function hasLiveAuthHint(url: string, sourceLabel: string): boolean {
   }
 }
 
-/** 同等级线路的偏好分越低越好；只在已通过验真的线路之间使用。 */
+/** 同等级线路的偏好分越低越好；验真线路和后备线路都使用同一口径。 */
 function liveProbePreference(url: string, sourceLabel: string): number {
   let preference = 0;
   try {
@@ -2236,7 +2265,7 @@ function liveProbePreference(url: string, sourceLabel: string): number {
 
 function isPlaybackVerifiedProbe(
   entry: ChannelSpeedMap[string] | undefined,
-): entry is ChannelSpeedMap[string] {
+): boolean {
   return Boolean(
     entry
     && entry.kind !== 'fail'
@@ -2251,13 +2280,9 @@ function isPlaybackVerifiedProbe(
 /**
  * 将频道级验真结果应用到已合并的频道树。
  *
- * 默认下发语义：
- * - 只保留当前探测版本中 verification=media/manifest 且未失败、未超速的线路；
- * - media 优先于 manifest，同等级再按普通公网/无鉴权偏好和速度排序；
- * - 未知、TCP-only、旧版本和任意失败结果都不允许凑数；
- * - 每频道条数只是上限。-1 表示保留全部“已验真”线路。
- *
- * requirePlaybackVerification=false 仅供探测候选预构建使用，不能用于最终下发。
+ * 严格模式只保留当前版本 verification=media/manifest 且未失败、未超速的线路。
+ * 最终下发额外开启后备保护，但后备永远不会越过任何验真线路，也不会把较大的
+ * 频道上限当成必须填满的目标。候选预构建仍使用 requirePlaybackVerification=false。
  */
 export function applyChannelSpeedToGroups(
   groups: TVBoxLiveGroup[],
@@ -2267,8 +2292,13 @@ export function applyChannelSpeedToGroups(
   options: ChannelSpeedApplyOptions = {},
 ): TVBoxLiveGroup[] {
   const requirePlaybackVerification = options.requirePlaybackVerification !== false;
+  const allowBackup = requirePlaybackVerification
+    && options.allowBackupOnInsufficientVerification === true;
   const speedLimit = Math.max(0, maxSpeedMs);
   const perChannelLimit = maxUrlsPerChannel === -1 ? -1 : Math.max(1, maxUrlsPerChannel);
+  // 9 是“尽量保持可切换线路”的下限，不是频道上限。上限大于 9 时，
+  // 即使验真数量只有 9 条也不拿未知线路硬凑到 15 条。
+  const backupTarget = Math.min(9, perChannelLimit < 0 ? 9 : perChannelLimit);
   const output: TVBoxLiveGroup[] = [];
 
   for (const group of groups) {
@@ -2278,6 +2308,14 @@ export function applyChannelSpeedToGroups(
       const verified: Array<{ url: string; speed: number; rank: number; preference: number; index: number }> = [];
       const unknown: Array<{ url: string; index: number }> = [];
       const transient: Array<{ url: string; failures: number; index: number }> = [];
+      const backup: Array<{
+        url: string;
+        tier: number;
+        failures: number;
+        speed?: number;
+        preference: number;
+        index: number;
+      }> = [];
 
       for (const [index, rawUrl] of (channel.urls || []).entries()) {
         const url = rawUrl.trim();
@@ -2287,27 +2325,66 @@ export function applyChannelSpeedToGroups(
         seen.add(bare);
 
         const speed = speedMap[url] ?? speedMap[bare];
+        if (isHardLiveProbeFailure(speed)) continue;
         if (requirePlaybackVerification) {
-          if (!isPlaybackVerifiedProbe(speed)) continue;
-          if (speedLimit > 0 && speed.speedMs > speedLimit) continue;
-          verified.push({
+          if (speed && isPlaybackVerifiedProbe(speed)) {
+            if (speedLimit > 0 && speed.speedMs > speedLimit) continue;
+            verified.push({
+              url,
+              speed: speed.speedMs,
+              rank: channelProbeRank(speed),
+              preference: liveProbePreference(bare, splitLiveUrlLabel(url).label),
+              index,
+            });
+            continue;
+          }
+          if (!allowBackup) continue;
+
+          const preference = liveProbePreference(bare, splitLiveUrlLabel(url).label);
+          const currentProbe = isCurrentLiveProbe(speed);
+          if (isTransientLiveProbeFailure(speed)) {
+            const failures = speed.consecutiveFailures ?? 1;
+            backup.push({ url, tier: 0, failures, preference, index });
+            continue;
+          }
+
+          const knownSpeed = currentProbe && speed?.kind !== 'fail' && Number.isFinite(speed?.speedMs)
+            ? speed.speedMs
+            : undefined;
+          if (knownSpeed != null && speedLimit > 0 && knownSpeed > speedLimit) continue;
+          if (currentProbe && speed?.kind === 'tcp') {
+            backup.push({
+              url,
+              tier: 2,
+              failures: 0,
+              speed: knownSpeed,
+              preference,
+              index,
+            });
+            continue;
+          }
+          backup.push({
             url,
-            speed: speed.speedMs,
-            rank: channelProbeRank(speed),
-            preference: liveProbePreference(bare, splitLiveUrlLabel(url).label),
+            tier: 1,
+            failures: 0,
+            speed: knownSpeed,
+            preference,
             index,
           });
           continue;
         }
 
+        if (isTransientLiveProbeFailure(speed)) {
+          transient.push({ url, failures: speed.consecutiveFailures ?? 1, index });
+          continue;
+        }
         if (speed?.kind === 'fail') {
-          const failures = speed.consecutiveFailures ?? 1;
-          if (failures < 3) transient.push({ url, failures, index });
+          unknown.push({ url, index });
           continue;
         }
         // 候选保留模式仍需把旧版/TCP/未知结果放在已验真线路之后，
         // 让它们有机会进入下一轮探测，但绝不会因此冒充最终可播线路。
-        const currentProbe = speed?.probeVersion === CHANNEL_PROBE_RESULT_VERSION;
+        const currentProbe = isCurrentLiveProbe(speed);
         const knownSpeed = currentProbe && Number.isFinite(speed?.speedMs)
           ? speed.speedMs
           : undefined;
@@ -2332,10 +2409,28 @@ export function applyChannelSpeedToGroups(
         || a.index - b.index);
       unknown.sort((a, b) => a.index - b.index);
       transient.sort((a, b) => a.failures - b.failures || a.index - b.index);
-      const selected = requirePlaybackVerification
-        ? verified
-        : [...verified, ...unknown, ...transient];
-      const limited = perChannelLimit < 0 ? selected : selected.slice(0, perChannelLimit);
+      backup.sort((a, b) =>
+        b.tier - a.tier
+        || a.failures - b.failures
+        || a.preference - b.preference
+        || (a.speed == null
+          ? (b.speed == null ? 0 : 1)
+          : b.speed == null
+            ? -1
+            : a.speed - b.speed)
+        || a.index - b.index);
+
+      let limited: Array<{ url: string }>;
+      if (!requirePlaybackVerification) {
+        const selected = [...verified, ...unknown, ...transient];
+        limited = perChannelLimit < 0 ? selected : selected.slice(0, perChannelLimit);
+      } else {
+        const verifiedLimited = perChannelLimit < 0 ? verified : verified.slice(0, perChannelLimit);
+        const needed = backupTarget - verifiedLimited.length;
+        limited = allowBackup && needed > 0
+          ? [...verifiedLimited, ...backup.slice(0, needed)]
+          : verifiedLimited;
+      }
       const urls = limited.map((item) => item.url);
       if (urls.length > 0) channels.push({ ...channel, urls });
     }
@@ -2351,7 +2446,7 @@ export function applyChannelSpeedToGroups(
  * 目标是先覆盖“当前最可能被下发”的线路，而不是一次性测完整个候选池：
  * - 已成功且速度可用的线路优先，按速度从快到慢；
  * - 未知线路随后保留，保证新源有机会进入前沿；
- * - 已明确失败的线路不进入优先集合；
+ * - 仅硬失败线路不进入优先集合；瞬时失败排在未知线路之后重新补测；
  * - 每个频道最多取 limit 条，避免单一热门频道吞掉全部预算。
  */
 export function extractPreferredLiveUrls(
@@ -2372,12 +2467,14 @@ export function extractPreferredLiveUrls(
         if (!bare || channelSeen.has(bare)) continue;
         channelSeen.add(bare);
         const entry = speedMap[raw] ?? speedMap[bare];
-        if (entry?.kind === 'fail') continue;
+        if (isHardLiveProbeFailure(entry)) continue;
         const currentProbe = entry?.probeVersion === CHANNEL_PROBE_RESULT_VERSION;
         ranked.push({
           bare,
-          speed: currentProbe && Number.isFinite(entry.speedMs) ? entry.speedMs : undefined,
-          rank: channelProbeRank(entry),
+          speed: currentProbe && entry.kind !== 'fail' && Number.isFinite(entry.speedMs)
+            ? entry.speedMs
+            : undefined,
+          rank: isTransientLiveProbeFailure(entry) ? -2 : channelProbeRank(entry),
           index,
         });
       }
@@ -2467,7 +2564,9 @@ export function extractCoverageTopUpLiveUrls(
               ? 1
               : entry?.kind && entry.kind !== 'fail'
                 ? 0
-                : -1,
+                : isTransientLiveProbeFailure(entry)
+                  ? -2
+                  : -1,
           speed: Number.isFinite(entry?.speedMs) ? entry?.speedMs : undefined,
           index,
         });
@@ -2483,6 +2582,7 @@ export function extractCoverageTopUpLiveUrls(
         // 当前版本的任何结果都已有明确结论：成功项计入目标，失败/TCP/未知
         // 不在优先阶段重复重测。没有当前版本结果且未排队的线路才是补测对象。
         .filter((item) => item.entry?.probeVersion !== CHANNEL_PROBE_RESULT_VERSION)
+        .filter((item) => !isHardLiveProbeFailure(item.entry))
         .filter((item) => !excluded.has(item.bare))
         .filter((item) => !deferred.has(item.bare))
         .sort((a, b) => {
@@ -2649,7 +2749,7 @@ export async function fetchAndParseLiveUrls(
   for (const e of allEntries) {
     if (channelSpeedMap) {
       const speed = channelSpeedMap[e.url];
-      if (speed?.kind === 'fail') continue;
+      if (isHardLiveProbeFailure(speed)) continue;
     }
 
     const grp = e.group || '其他';
@@ -2831,12 +2931,12 @@ function knownLiveProbe(entry: ChannelEntry, channelSpeedMap?: ChannelSpeedMap):
   rank: number;
 } {
   const probe = channelSpeedMap?.[entry.url.trim()];
-  const currentProbe = probe?.probeVersion === CHANNEL_PROBE_RESULT_VERSION;
+  const currentProbe = isCurrentLiveProbe(probe);
   return {
     speed: currentProbe && probe.kind !== 'fail' && Number.isFinite(probe.speedMs)
       ? probe.speedMs
       : undefined,
-    rank: channelProbeRank(probe),
+    rank: isTransientLiveProbeFailure(probe) ? -2 : channelProbeRank(probe),
   };
 }
 
@@ -2903,15 +3003,18 @@ function prepareSourceChannels(
     }
 
     const speed = channelSpeedMap?.[entry.url.trim()];
-    if (speed) {
-      knownSpeedEntries++;
-      if (speed.kind === 'fail') {
+    if (speed && isCurrentLiveProbe(speed)) {
+      if (isHardLiveProbeFailure(speed)) {
+        knownSpeedEntries++;
         knownFailedEntries++;
         return false;
       }
-      if (maxSpeedMs > 0 && speed.speedMs > maxSpeedMs) {
-        knownTooSlowEntries++;
-        return false;
+      if (speed.kind !== 'fail' && Number.isFinite(speed.speedMs)) {
+        knownSpeedEntries++;
+        if (maxSpeedMs > 0 && speed.speedMs > maxSpeedMs) {
+          knownTooSlowEntries++;
+          return false;
+        }
       }
     }
     return true;

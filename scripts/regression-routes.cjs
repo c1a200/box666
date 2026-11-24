@@ -35,6 +35,8 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+const CURRENT_PROBE_VERSION = 5;
+
 function countTxtChannelUrls(txt, channelName) {
   let total = 0;
   for (const rawLine of txt.split(/\r?\n/)) {
@@ -687,8 +689,8 @@ async function readSites(response) {
       ],
     };
     const modeChannelSpeedMap = {
-      'https://live.example/cctv.m3u': { speedMs: 120, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 4 },
-      'https://live.example/hunan.m3u': { speedMs: 180, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 4 },
+      'https://live.example/cctv.m3u': { speedMs: 120, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: CURRENT_PROBE_VERSION },
+      'https://live.example/hunan.m3u': { speedMs: 180, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: CURRENT_PROBE_VERSION },
     };
     const separated = makeApp({ mergedConfig: modeConfig, liveMergeMode: 'separated', liveProxyManifest: manifest });
     const separatedRoot = await (await separated.app.request('https://box.example/')).json();
@@ -733,9 +735,9 @@ async function readSites(response) {
       },
       channelSpeedMap: {
         ...modeChannelSpeedMap,
-        'https://live.example/cctv-unknown.m3u': { speedMs: 10, probedAt: '2026-11-03T00:00:00.000Z', kind: 'unknown', probeVersion: 4 },
-        'https://live.example/cctv-tcp.m3u': { speedMs: 20, probedAt: '2026-11-03T00:00:00.000Z', kind: 'tcp', probeVersion: 4 },
-        'https://live.example/cctv-backup.m3u': { speedMs: 60, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'manifest', probeVersion: 4 },
+        'https://live.example/cctv-unknown.m3u': { speedMs: 10, probedAt: '2026-11-03T00:00:00.000Z', kind: 'unknown', probeVersion: CURRENT_PROBE_VERSION },
+        'https://live.example/cctv-tcp.m3u': { speedMs: 20, probedAt: '2026-11-03T00:00:00.000Z', kind: 'tcp', probeVersion: CURRENT_PROBE_VERSION },
+        'https://live.example/cctv-backup.m3u': { speedMs: 60, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'manifest', probeVersion: CURRENT_PROBE_VERSION },
       },
       config: { workerBaseUrl: '', localBaseUrl: 'https://render.example' },
     });
@@ -753,10 +755,21 @@ async function readSites(response) {
     assert(renderLiveText.includes('#genre#'), 'render separated /live/<key> must return live text');
     assert(renderLiveText.includes('https://live.example/cctv.m3u'), 'render separated /live/<key> must keep playback-verified lines');
     assert(renderLiveText.includes('https://live.example/cctv-backup.m3u'), 'render separated /live/<key> must keep verified manifest fallbacks');
-    assert(!renderLiveText.includes('cctv-unknown') && !renderLiveText.includes('cctv-tcp'), 'render separated /live/<key> must omit unknown and TCP-only candidates');
+    const renderCctvLine = renderLiveText.split(/\r?\n/).find((line) => line.startsWith('CCTV1,')) || '';
+    const orderedRenderUrls = [
+      'https://live.example/cctv.m3u',
+      'https://live.example/cctv-backup.m3u',
+      'https://live.example/cctv-tcp.m3u',
+      'https://live.example/cctv-unknown.m3u',
+    ];
+    const orderedPositions = orderedRenderUrls.map((url) => renderCctvLine.indexOf(url));
+    assert(orderedPositions.every((position) => position >= 0), 'render separated /live/<key> must keep verified and fallback lines');
+    assert(orderedPositions.every((position, index) => index === 0 || position > orderedPositions[index - 1]),
+      'verified lines must precede TCP, which must precede unknown fallback lines');
     const authRenderLive = await renderSeparated.app.request('https://render.example/auth/code-a/live/abc12345');
     assert(authRenderLive.status === 200, 'auth separated /live/<key> must remain available');
-    assert((await authRenderLive.text()) === renderLiveText, 'root and auth separated links must use the same strict source text');
+    assert((await authRenderLive.text()) === renderLiveText,
+      'root and auth separated links must use identical runtime text and source ordering');
 
     const renderMerged = makeApp({
       mergedConfig: modeConfig,
@@ -833,8 +846,8 @@ async function readSites(response) {
       ],
     };
     const coldStartSpeedMap = {
-      'https://live.example/cctv.m3u': { speedMs: 120, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 4 },
-      'https://live.example/hunan.m3u': { speedMs: 180, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 4 },
+      'https://live.example/cctv.m3u': { speedMs: 120, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: CURRENT_PROBE_VERSION },
+      'https://live.example/hunan.m3u': { speedMs: 180, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: CURRENT_PROBE_VERSION },
     };
     const coldStart = makeApp({
       mergedConfig: { sites: mergedConfig.sites, lives: [] },
@@ -879,7 +892,7 @@ async function readSites(response) {
       }],
     };
     const duplicateChannelSpeedMap = Object.fromEntries(
-      duplicateUrls.map((url, index) => [url, { speedMs: 100 + index, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: 4 }]),
+      duplicateUrls.map((url, index) => [url, { speedMs: 100 + index, probedAt: '2026-11-03T00:00:00.000Z', kind: 'm3u8', verification: 'media', probeVersion: CURRENT_PROBE_VERSION }]),
     );
     const duplicateChannelLive = makeApp({
       mergedConfig: { sites: mergedConfig.sites, lives: [] },

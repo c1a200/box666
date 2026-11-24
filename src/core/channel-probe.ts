@@ -143,6 +143,7 @@ function isPlaybackVerifiedProbeResult(result: ProbeResult): boolean {
 const HLS_MEDIA_CANDIDATE_LIMIT = 16;
 const HLS_TIMEOUT_MULTIPLIER = 4;
 const UNKNOWN_TIMEOUT_MULTIPLIER = 3;
+const HLS_CHILD_ATTEMPT_TIMEOUT_MS = 3000;
 const PROBE_RETRY_DELAY_MS = 350;
 
 function resolvePlaylistUrl(raw: string, base: string): string {
@@ -297,10 +298,48 @@ function failureReasonFromError(err: unknown, signal: AbortSignal): ProbeFailure
   return 'network';
 }
 
+function probeTimeoutError(): Error & { failureReason: ProbeFailureReason } {
+  return Object.assign(new Error('probe attempt timeout'), {
+    failureReason: 'timeout' as const,
+  });
+}
+
+/**
+ * HLS 子清单/分片共享外层轮询总超时，但每个候选必须有独立短超时。
+ * 否则第一条挂死线路会吃掉整轮预算，后续可播候选永远没有机会被检查。
+ */
+async function withChildProbeDeadline<T>(
+  parentSignal: AbortSignal,
+  timeoutMs: number,
+  task: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  if (parentSignal.aborted) throw probeTimeoutError();
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const onParentAbort = () => controller.abort();
+  parentSignal.addEventListener('abort', onParentAbort, { once: true });
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(probeTimeoutError());
+    }, Math.max(1, timeoutMs));
+  });
+  try {
+    return await Promise.race([task(controller.signal), deadline]);
+  } catch (err) {
+    if (parentSignal.aborted) throw probeTimeoutError();
+    throw err;
+  } finally {
+    if (timer) clearTimeout(timer);
+    parentSignal.removeEventListener('abort', onParentAbort);
+  }
+}
+
 async function verifyHlsPlaylist(
   url: string,
   startedAt: number,
   signal: AbortSignal,
+  childTimeoutMs: number,
   depth = 0,
   referer?: string,
 ): Promise<ProbeResult> {
@@ -321,15 +360,31 @@ async function verifyHlsPlaylist(
   let validChildManifest = false;
   let sawHttpFailure = false;
   let sawNetworkFailure = false;
+  let sawTimeout = false;
   for (const candidate of candidates) {
     try {
       // Segments only need a few TS packets to prove this is real media. Reading
       // 512 KiB from every candidate is slow and can itself cause false timeouts.
-      const head = await fetchHead(candidate, 64 * 1024, signal, playlistUrl);
+      const head = await withChildProbeDeadline(
+        signal,
+        childTimeoutMs,
+        (childSignal) => fetchHead(candidate, 64 * 1024, childSignal, playlistUrl),
+      );
       if (isHlsPlaylist(head.text)) {
         validChildManifest = true;
         if (depth < 2) {
-          const nested = await verifyHlsPlaylist(candidate, startedAt, signal, depth + 1, playlistUrl);
+          const nested = await withChildProbeDeadline(
+            signal,
+            childTimeoutMs,
+            (childSignal) => verifyHlsPlaylist(
+              candidate,
+              startedAt,
+              childSignal,
+              childTimeoutMs,
+              depth + 1,
+              playlistUrl,
+            ),
+          );
           if (nested.kind !== 'fail') return nested;
         }
         continue;
@@ -341,9 +396,13 @@ async function verifyHlsPlaylist(
       // playlists while their CDN was temporarily slow.
       return { url: playlistUrl, speedMs: Date.now() - startedAt, kind: 'm3u8', verification: 'media' };
     } catch (err) {
+      if (signal.aborted) {
+        return { url: playlistUrl, speedMs: 0, kind: 'fail', failureReason: 'timeout' };
+      }
       const reason = failureReasonFromError(err, signal);
       if (reason === 'timeout') {
-        return { url: playlistUrl, speedMs: 0, kind: 'fail', failureReason: 'timeout' };
+        sawTimeout = true;
+        continue;
       }
       if (reason === 'http') sawHttpFailure = true;
       if (reason === 'network') sawNetworkFailure = true;
@@ -356,12 +415,23 @@ async function verifyHlsPlaylist(
     url: playlistUrl,
     speedMs: 0,
     kind: 'fail',
-    failureReason: sawNetworkFailure ? 'network' : sawHttpFailure ? 'http' : 'invalid',
+    failureReason: sawNetworkFailure
+      ? 'network'
+      : sawTimeout
+        ? 'timeout'
+        : sawHttpFailure
+          ? 'http'
+          : 'invalid',
   };
 }
 
-async function verifyHlsPlayback(url: string, startedAt: number, signal: AbortSignal): Promise<ProbeResult> {
-  const result = await verifyHlsPlaylist(url, startedAt, signal);
+async function verifyHlsPlayback(
+  url: string,
+  startedAt: number,
+  signal: AbortSignal,
+  childTimeoutMs: number,
+): Promise<ProbeResult> {
+  const result = await verifyHlsPlaylist(url, startedAt, signal, childTimeoutMs);
   return result.url === url ? result : { ...result, url };
 }
 
@@ -379,12 +449,16 @@ async function probeOnce(url: string, timeoutMs = CHANNEL_PROBE_TIMEOUT_MS): Pro
     : isM3U8
       ? requestedTimeoutMs * HLS_TIMEOUT_MULTIPLIER
       : requestedTimeoutMs * UNKNOWN_TIMEOUT_MULTIPLIER;
+  const childAttemptTimeoutMs = Math.max(
+    500,
+    Math.min(HLS_CHILD_ATTEMPT_TIMEOUT_MS, Math.round(effectiveTimeoutMs / 6)),
+  );
   const start = Date.now();
   let timer: ReturnType<typeof setTimeout> | undefined;
 
   try {
     const attempt = async (): Promise<ProbeResult> => {
-      if (isM3U8) return verifyHlsPlayback(url, start, controller.signal);
+      if (isM3U8) return verifyHlsPlayback(url, start, controller.signal, childAttemptTimeoutMs);
 
       const resp = await fetch(url, {
         signal: controller.signal,
@@ -403,7 +477,7 @@ async function probeOnce(url: string, timeoutMs = CHANNEL_PROBE_TIMEOUT_MS): Pro
 
       const text = new TextDecoder().decode(bytes);
       if (isHlsPlaylist(text)) {
-        return verifyHlsPlayback(url, start, controller.signal);
+        return verifyHlsPlayback(url, start, controller.signal, childAttemptTimeoutMs);
       }
       if (looksLikeHtml(bytes) || /^text\//i.test(contentType)) {
         return { url, speedMs: 0, kind: 'fail', failureReason: 'invalid' };
