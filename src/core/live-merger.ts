@@ -880,8 +880,9 @@ function classifyInternationalSubgroup(
   const hasExplicitInternationalGroup = /国际|海外|外语|境外/.test(raw);
   const hasInternationalBrand = /cgtn|中国国际电视台|bbc|cnn|abc|nbc|cbs|fox|bloomberg|cnbc|aljazeera|jazeera|euronews|france24|dw|nhk|arirang|kbs|mbc|sbs|tv5|skynews|discovery|animalplanet|natgeo|nationalgeographic|cartoonnetwork|disney|nickelodeon|espn|hbo|cinemax|starmovies|tvbs?|foxnews/i.test(text);
   const latinOnly = /[a-z]{2,}/i.test(name) && !/[\u4e00-\u9fff]/.test(name);
+  const hasCyrillicName = /[\u0400-\u04FF]/.test(name);
   const hasForeignLanguageHint = /英语|英文|俄语|俄罗斯|俄羅斯|日本|韩国|印度|亚洲|新加坡|马来西亚|泰国|越南|菲律宾/.test(text);
-  if (!hasExplicitInternationalGroup && !hasInternationalBrand && !latinOnly) return null;
+  if (!hasExplicitInternationalGroup && !hasInternationalBrand && !latinOnly && !hasCyrillicName && !hasForeignLanguageHint) return null;
   if (hasExplicitInternationalGroup && /[\u4e00-\u9fff]/.test(name)
     && !hasInternationalBrand && !hasForeignLanguageHint
     && !/新闻|体育|少儿|纪录|影视|电影/.test(text)) return null;
@@ -891,7 +892,8 @@ function classifyInternationalSubgroup(
   if (/cartoon|kids|少儿|儿童|卡通|disney|nickelodeon|nick/i.test(text)) return '国际·少儿';
   if (/discovery|animalplanet|natgeo|nationalgeographic|history|science|documentary|纪录|探索|自然/i.test(text)) return '国际·纪录';
   if (/movie|cinema|film|drama|series|hbo|cinemax|starmovies|影视|电影|剧场/i.test(text)) return '国际·影视';
-  if (/俄语|俄罗斯|俄羅斯|russia|russian|русск|россия|перв|тнт|стс|нтв|карусель|ukraine|бел|kazakh|哈萨克/i.test(text)) return '国际·俄语';
+  if (hasCyrillicName
+    || /俄语|俄罗斯|俄羅斯|russia|russian|русск|россия|перв|тнт|стс|нтв|карусель|ukraine|беларусь|белорус|украин|україн|kazakh|哈萨克/i.test(text)) return '国际·俄语';
   if (/日本|japan|nhk|韩国|korea|kbs|mbc|sbs|arirang|tvn|jtbc|印度|india|asianet|astro|亚洲|asia|singapore|malaysia|thai|vietnam|印尼|泰国|越南|菲律宾/i.test(text)) return '国际·亚洲';
   return '国际·英语';
 }
@@ -943,7 +945,7 @@ function classifyOtherSubgroup(
   if (/newtv/i.test(text)) return '其他·NewTV';
   if (/测试|备用|防走失|直播源|接口/.test(text)) return '其他·测试备用';
   if (/购物|商城|电视购物|好物|种草|消费/.test(text)) return '其他·购物生活';
-  if (/俄语|俄罗斯|俄羅斯|russia|russian|русск|россия|перв|тнт|стс|нтв|карусель|哈萨克/i.test(text)) return '其他·俄语';
+  if (/俄语|俄罗斯|俄羅斯|russia|russian|русск|россия|перв|тнт|стс|нтв|карусель|беларусь|белорус|украин|україн|哈萨克/i.test(text)) return '国际·俄语';
   if (/音乐|歌曲|歌mv|mv|dj|电音|舞曲|慢摇|演唱会|音乐会|音乐节|戏曲|京剧|越剧|豫剧|黄梅|评剧|昆曲|曲艺/i.test(text)) return '其他·音乐';
   if (/影视|电影|影院|剧场|电视剧|连续剧|剧集|港剧|美剧|韩剧|短剧|动漫|动画|番剧|国漫|综艺|大片|老片|喜剧|科幻|恐怖|战争|武侠|动作|悬疑|犯罪|爱情|解说/i.test(text)) return '其他·影视';
   const region = detectLocalRegion(rawGroup, channelName);
@@ -1070,6 +1072,11 @@ function normalizeAggregateChannelGroup(
   if (/newtv/i.test(compact)) return classifyNewTv(compact) === '电视剧' ? '电视剧' : '其他·NewTV';
   if (/咪咕视频|咪视界/.test(compact)) return '其他·咪咕';
   if (/4k|8k|uhd/i.test(compact)) return '4K/8K';
+
+  // 明确地方台必须优先于平台归类。部分上游会把“张家港新闻综合”这类
+  // 地方频道混进“一起看”，不能因为原始分组是平台就永久留在平台兜底桶。
+  const explicitRegion = detectLocalRegion(rawGroup, name);
+  if (explicitRegion && shouldUseLocalRegion(rawGroup, name)) return `地方·${explicitRegion}`;
 
   // 历史运行时曾经按首字母/平台ID拆桶。旧分桶不能覆盖频道自身的明确语义，
   // 否则“国际·新闻”里的虎牙频道、“国际·综合”里的央视频道会被永久误留。

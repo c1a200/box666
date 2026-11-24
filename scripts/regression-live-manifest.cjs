@@ -1157,6 +1157,8 @@ const subgroupGroups = [{
     { name: '裸线路YY1', urls: ['https://sub.example/yy/5000003'] },
     { name: '裸线路B站1', urls: ['https://sub.example/bilibili/5000004'] },
     { name: '裸线路快手1', urls: ['https://sub.example/kuaishou/5000005'] },
+    { name: '张家港新闻综合', urls: ['http://sub.example/zjg-news'] },
+    { name: '大庆公共', urls: ['http://sub.example/daqing-public'] },
   ],
 }, {
   group: '其他',
@@ -1174,6 +1176,8 @@ const subgroupGroups = [{
     { name: '123频道', urls: ['http://sub.example/other-123'] },
     { name: '其他组虎牙线路', urls: ['https://sub.example/huya/6000001'] },
     { name: '其他组YY线路', urls: ['https://sub.example/yy/6000002'] },
+    { name: 'россия 1', urls: ['http://sub.example/russia-one'] },
+    { name: 'беларусь 24', urls: ['http://sub.example/belarus-24'] },
   ],
 }, {
   group: '影视',
@@ -1222,6 +1226,10 @@ assert(subgroupOfChannel('裸线路B站1') === '一起看·B站其他', 'bare Bi
 assert(subgroupOfChannel('裸线路快手1') === '一起看·短视频其他', 'bare short-video URL must identify its platform without a source label');
 assert(subgroupOfChannel('其他组虎牙线路') === '一起看·虎牙其他', 'Huya URL in a legacy other bucket must move back to 一起看');
 assert(subgroupOfChannel('其他组YY线路') === '一起看·YY其他', 'YY URL in a legacy other bucket must move back to 一起看');
+assert(subgroupOfChannel('张家港新闻综合') === '地方·江苏', 'an explicit local channel must win over its together-platform bucket');
+assert(subgroupOfChannel('大庆公共') === '地方·黑龙江', 'local-channel structure must be detected before platform fallback');
+assert(subgroupOfChannel('россия 1') === '国际·俄语', 'Cyrillic international channels must not fall into the generic other bucket');
+assert(subgroupOfChannel('беларусь 24') === '国际·俄语', 'Cyrillic-language brands must share the Russian-language subgroup');
 assert(subgroupOfChannel('abc news') === '国际·新闻', 'English news channel must use international news subgroup');
 assert(subgroupOfChannel('Zeta TV') === '国际·英语', 'English channel must not be split by initial letter');
 assert(subgroupOfChannel('Alpha TV') === '国际·英语', 'English channels must share the semantic English subgroup');
@@ -1351,6 +1359,16 @@ const legacyBucketGroups = [{
   channels: [
     { name: '生活服务频道', urls: ['http://legacy.example/life'] },
   ],
+}, {
+  group: '一起看·其他',
+  channels: [
+    { name: '张家港新闻综合', urls: ['http://legacy.example/zjg-news'] },
+  ],
+}, {
+  group: '其他·俄语',
+  channels: [
+    { name: 'россия 1', urls: ['http://legacy.example/russia-one'] },
+  ],
 }];
 const legacyBucketTxt = formatAggregatedLiveGroupsAsTxt(legacyBucketGroups);
 const legacyBucketParsed = parseLiveGroupsFromTxt(legacyBucketTxt);
@@ -1376,8 +1394,10 @@ assert(legacyGroupOfChannel('经典电影') === '影视·电影', 'legacy movie 
 assert(legacyGroupOfChannel('自然动物') === '纪录·自然', 'legacy documentary page must round-trip into its semantic subgroup');
 assert(legacyGroupOfChannel('景区直播') === '风景·景区', 'legacy scenery page must round-trip into its semantic subgroup');
 assert(legacyGroupOfChannel('生活服务频道') === '其他·生活服务', 'persisted semantic subgroup must remain idempotent');
+assert(legacyGroupOfChannel('张家港新闻综合') === '地方·江苏', 'legacy together fallback must release an explicit local channel');
+assert(legacyGroupOfChannel('россия 1') === '国际·俄语', 'legacy other-Russian bucket must merge into international Russian');
 assert(
-  legacyBucketParsed.every((group) => !/^(?:国际·英语[A-Z](?:\d{2})?|其他·(?:字母[A-Z]|数字|中文[A-Z]|中文其他)(?:\d{2})?|一起看·[^·]+(?:中文[A-Z]|中文其他|字母数字)(?:\d{2})?)$/.test(group.group)),
+  legacyBucketParsed.every((group) => !/^(?:国际·英语[A-Z](?:\d{2})?|其他·(?:字母[A-Z]|数字|中文[A-Z]|中文其他|俄语)(?:\d{2})?|一起看·[^·]+(?:中文[A-Z]|中文其他|字母数字)(?:\d{2})?)$/.test(group.group)),
   'legacy initial-letter and numeric buckets must never be emitted',
 );
 assert(
@@ -1416,6 +1436,27 @@ assert(pagedHeaders.indexOf(huyaPageBase + '02') < pagedHeaders.indexOf(huyaPage
 assert(pagedParsed.some((group) => group.group === '地方·浙江' && group.channels.length === 220), 'local province groups must stay complete and unpaged');
 assert(pagedParsed.reduce((sum, group) => sum + group.channels.length, 0) === 621, 'paging must not lose channels');
 assert(pagedParsed.reduce((sum, group) => sum + group.channels.reduce((urls, channel) => urls + channel.urls.length, 0), 0) === 621, 'paging must not lose channel URLs');
+
+// 17e. 语义统一后仍要保留超量容量的 01/02/03 分页，不能为了去编号而丢频道。
+const pagedInternationalGroups = [{
+  group: '国际·英语R01',
+  channels: Array.from({ length: 361 }, (_, index) => ({
+    name: 'Global TV ' + String(index + 1).padStart(3, '0'),
+    urls: ['http://international-paged.example/channel/' + index],
+  })),
+}];
+const pagedInternationalTxt = formatAggregatedLiveGroupsAsTxt(pagedInternationalGroups);
+const pagedInternationalParsed = parseLiveGroupsFromTxt(pagedInternationalTxt);
+const englishPages = pagedInternationalParsed.filter((group) => group.group.startsWith('国际·英语'));
+assert(englishPages.length === 3, '361 international English channels must retain three capacity pages');
+assert(
+  englishPages.map((group) => group.group).join(',') === '国际·英语01,国际·英语02,国际·英语03',
+  'international English capacity pages must use stable semantic 01/02/03 suffixes',
+);
+assert(
+  englishPages.map((group) => group.channels.length).join(',') === '180,180,1',
+  'international English capacity pages must preserve every channel',
+);
 // ── 18. 分片更新：仅撤销本批次未就绪文本，不清空其他已完成批次 ──
 const incrementalBase = mergeLiveProxyManifest(null, [entry(50), entry(51)], {
   checkedAt: '2026-10-13T02:00:00.000Z',
