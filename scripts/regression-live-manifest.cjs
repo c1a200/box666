@@ -1152,6 +1152,11 @@ const subgroupGroups = [{
     { name: '斗鱼随便看看1', urls: ['http://sub.example/douyu/2000001$斗鱼#55555555'] },
     { name: 'YY随便看看1', urls: ['http://sub.example/yy/3000001$YY#66666666'] },
     { name: '随便看看频道1', urls: ['http://sub.example/generic/4000001'] },
+    { name: '裸线路虎牙1', urls: ['https://sub.example/huya/5000001'] },
+    { name: '裸线路斗鱼1', urls: ['https://sub.example/douyu/5000002'] },
+    { name: '裸线路YY1', urls: ['https://sub.example/yy/5000003'] },
+    { name: '裸线路B站1', urls: ['https://sub.example/bilibili/5000004'] },
+    { name: '裸线路快手1', urls: ['https://sub.example/kuaishou/5000005'] },
   ],
 }, {
   group: '其他',
@@ -1167,6 +1172,8 @@ const subgroupGroups = [{
     { name: '未分类频道', urls: ['http://sub.example/other'] },
     { name: 'Z频道', urls: ['http://sub.example/other-z'] },
     { name: '123频道', urls: ['http://sub.example/other-123'] },
+    { name: '其他组虎牙线路', urls: ['https://sub.example/huya/6000001'] },
+    { name: '其他组YY线路', urls: ['https://sub.example/yy/6000002'] },
   ],
 }, {
   group: '影视',
@@ -1208,6 +1215,13 @@ assert(subgroupOfChannel('虎牙随便看看1') === '一起看·虎牙其他', '
 assert(subgroupOfChannel('斗鱼随便看看1') === '一起看·斗鱼其他', 'unclassified Douyu channel must use one stable fallback subgroup');
 assert(subgroupOfChannel('YY随便看看1') === '一起看·YY其他', 'unclassified YY channel must use one stable fallback subgroup');
 assert(subgroupOfChannel('随便看看频道1') === '一起看·其他', 'unclassified together channel must not produce 一起看·其他其他');
+assert(subgroupOfChannel('裸线路虎牙1') === '一起看·虎牙其他', 'bare Huya URL must identify its platform without a source label');
+assert(subgroupOfChannel('裸线路斗鱼1') === '一起看·斗鱼其他', 'bare Douyu URL must identify its platform without a source label');
+assert(subgroupOfChannel('裸线路YY1') === '一起看·YY其他', 'bare YY URL must identify its platform without a source label');
+assert(subgroupOfChannel('裸线路B站1') === '一起看·B站其他', 'bare Bilibili URL must identify its platform without a source label');
+assert(subgroupOfChannel('裸线路快手1') === '一起看·短视频其他', 'bare short-video URL must identify its platform without a source label');
+assert(subgroupOfChannel('其他组虎牙线路') === '一起看·虎牙其他', 'Huya URL in a legacy other bucket must move back to 一起看');
+assert(subgroupOfChannel('其他组YY线路') === '一起看·YY其他', 'YY URL in a legacy other bucket must move back to 一起看');
 assert(subgroupOfChannel('abc news') === '国际·新闻', 'English news channel must use international news subgroup');
 assert(subgroupOfChannel('Zeta TV') === '国际·英语', 'English channel must not be split by initial letter');
 assert(subgroupOfChannel('Alpha TV') === '国际·英语', 'English channels must share the semantic English subgroup');
@@ -1268,9 +1282,19 @@ const legacyBucketGroups = [{
     { name: '湖南卫视', urls: ['http://legacy.example/hunan'] },
   ],
 }, {
+  group: '国际·英语R',
+  channels: [
+    { name: 'Bravo TV', urls: ['http://legacy.example/bravo'] },
+  ],
+}, {
   group: '其他·中文A',
   channels: [
     { name: '购物频道', urls: ['http://legacy.example/shop'] },
+  ],
+}, {
+  group: '其他·中文其他',
+  channels: [
+    { name: '生活服务频道2', urls: ['http://legacy.example/life2'] },
   ],
 }, {
   group: '其他·字母C',
@@ -1296,6 +1320,16 @@ const legacyBucketGroups = [{
   group: '一起看·YY中文A',
   channels: [
     { name: 'YY随便看看2', urls: ['http://legacy.example/yy2$YY#11112222'] },
+  ],
+}, {
+  group: '一起看·YY中文其他',
+  channels: [
+    { name: 'YY随便看看3', urls: ['http://legacy.example/yy3'] },
+  ],
+}, {
+  group: '一起看·YY字母数字',
+  channels: [
+    { name: 'YY随便看看4', urls: ['http://legacy.example/yy4'] },
   ],
 }, {
   group: '影视·电影01',
@@ -1328,18 +1362,22 @@ assert(legacyGroupOfChannel('Alpha TV') === '国际·英语', 'legacy internatio
 assert(legacyGroupOfChannel('CCTV-5') === '央视', 'legacy international bucket must not hide a real CCTV channel');
 assert(legacyGroupOfChannel('小虎牙频道甲') === '一起看·虎牙其他', 'legacy international bucket must not hide a Huya source');
 assert(legacyGroupOfChannel('湖南卫视') === '卫视', 'legacy international bucket must not hide a satellite channel');
+assert(legacyGroupOfChannel('Bravo TV') === '国际·英语', 'legacy international page without a two-digit suffix must collapse into 国际·英语');
 assert(legacyGroupOfChannel('购物频道') === '其他·购物生活', 'legacy Chinese-letter bucket must retain semantic subgrouping');
+assert(legacyGroupOfChannel('生活服务频道2') === '其他·生活服务', 'legacy 其他·中文其他 bucket must retain semantic subgrouping');
 assert(legacyGroupOfChannel('测试频道') === '其他·测试备用', 'legacy Latin-letter bucket must retain semantic subgrouping');
 assert(legacyGroupOfChannel('未分类频道') === '其他·综合', 'legacy numeric bucket must collapse into 其他·综合');
 assert(legacyGroupOfChannel('虎牙随便看看2') === '一起看·虎牙其他', 'legacy Huya page bucket must collapse into one platform fallback');
 assert(legacyGroupOfChannel('斗鱼随便看看2') === '一起看·斗鱼其他', 'legacy Douyu bucket must collapse into one platform fallback');
 assert(legacyGroupOfChannel('YY随便看看2') === '一起看·YY其他', 'legacy YY bucket must collapse into one platform fallback');
+assert(legacyGroupOfChannel('YY随便看看3') === '一起看·YY其他', 'legacy 一起看·YY中文其他 bucket must collapse into one platform fallback');
+assert(legacyGroupOfChannel('YY随便看看4') === '一起看·YY其他', 'legacy 一起看·YY字母数字 bucket must collapse into one platform fallback');
 assert(legacyGroupOfChannel('经典电影') === '影视·电影', 'legacy movie page must round-trip into its semantic subgroup');
 assert(legacyGroupOfChannel('自然动物') === '纪录·自然', 'legacy documentary page must round-trip into its semantic subgroup');
 assert(legacyGroupOfChannel('景区直播') === '风景·景区', 'legacy scenery page must round-trip into its semantic subgroup');
 assert(legacyGroupOfChannel('生活服务频道') === '其他·生活服务', 'persisted semantic subgroup must remain idempotent');
 assert(
-  legacyBucketParsed.every((group) => !/^(?:国际·英语[A-Z](?:\d{2})?|其他·(?:字母[A-Z]|数字|中文[A-Z]|中文其他)(?:\d{2})?|一起看·[^·]+(?:中文[A-Z]|字母数字)(?:\d{2})?)$/.test(group.group)),
+  legacyBucketParsed.every((group) => !/^(?:国际·英语[A-Z](?:\d{2})?|其他·(?:字母[A-Z]|数字|中文[A-Z]|中文其他)(?:\d{2})?|一起看·[^·]+(?:中文[A-Z]|中文其他|字母数字)(?:\d{2})?)$/.test(group.group)),
   'legacy initial-letter and numeric buckets must never be emitted',
 );
 assert(

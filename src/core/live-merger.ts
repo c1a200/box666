@@ -814,18 +814,37 @@ function collectLiveSourceLabels(channel?: TVBoxLiveChannel): string {
     .join(' ') || '';
 }
 
+/**
+ * 部分聚合源只保留裸代理 URL，没有 `$源名` 标签。平台仍可从 URL 路径
+ * （如 `/huya/`、`/douyu/`、`/yy/`）稳定识别，不能因为这些频道缺少
+ * 平台文字就全部落进容量分页后的“一起看·其他01/02...”。
+ */
+function collectLiveUrlEvidence(channel?: TVBoxLiveChannel): string {
+  return (channel?.urls || [])
+    .map((url) => compactChannelText(splitLiveUrlLabel(url).bare))
+    .join(' ');
+}
+
+function collectLiveSourceEvidence(channel?: TVBoxLiveChannel): string {
+  return collectLiveSourceLabels(channel) + ' ' + collectLiveUrlEvidence(channel);
+}
+
+function detectTogetherPlatform(text: string): string {
+  if (/虎牙|(?:^|[^a-z0-9])huya(?:$|[^a-z0-9])/i.test(text)) return '虎牙';
+  if (/斗鱼|(?:^|[^a-z0-9])douyu(?:$|[^a-z0-9])/i.test(text)) return '斗鱼';
+  if (/b站|哔哩|bilibili|b23\.tv/i.test(text)) return 'B站';
+  if (/抖音|douyin|快手|kuaishou|短视频/i.test(text)) return '短视频';
+  if (/(?:^|[^a-z0-9])yy(?:$|[^a-z0-9])|歪歪|yylunbo/i.test(text)) return 'YY';
+  return '其他';
+}
+
 function classifyTogetherSubgroup(
   rawGroup: string,
   channelName: string,
   channel?: TVBoxLiveChannel,
 ): string {
-  const text = compactChannelText(rawGroup) + compactChannelText(channelName) + collectLiveSourceLabels(channel);
-  let platform = '其他';
-  if (/虎牙|huya/i.test(text)) platform = '虎牙';
-  else if (/斗鱼|douyu/i.test(text)) platform = '斗鱼';
-  else if (/yy|歪歪/i.test(text)) platform = 'YY';
-  else if (/b站|哔哩|bilibili/i.test(text)) platform = 'B站';
-  else if (/抖音|快手|短视频/i.test(text)) platform = '短视频';
+  const text = compactChannelText(rawGroup) + compactChannelText(channelName) + collectLiveSourceEvidence(channel);
+  const platform = detectTogetherPlatform(text);
 
   let kind = '';
   if (/游戏|电竞|王者|和平精英|英雄联盟|lol|吃鸡|我的世界|原神|传奇|魔兽|主机|单机|手游|街机|csgo|dota|绝地求生|永劫无间|apex|pubg|比赛|赛事|联赛|开黑|攻略|对战|竞技/i.test(text)) {
@@ -1054,9 +1073,10 @@ function normalizeAggregateChannelGroup(
 
   // 历史运行时曾经按首字母/平台ID拆桶。旧分桶不能覆盖频道自身的明确语义，
   // 否则“国际·新闻”里的虎牙频道、“国际·综合”里的央视频道会被永久误留。
-  const togetherText = compact + collectLiveSourceLabels(channel);
+  const togetherText = compact + collectLiveSourceEvidence(channel);
   if (group === '一起看'
-    || /一起看|虎牙|斗鱼|b站|原创|zonghe|综合直播|抖音|快手/i.test(togetherText)) {
+    || /一起看|虎牙|斗鱼|b站|原创|zonghe|综合直播|抖音|快手|短视频/i.test(togetherText)
+    || detectTogetherPlatform(togetherText) !== '其他') {
     return classifyTogetherSubgroup(rawGroup, name, channel);
   }
 

@@ -43,7 +43,7 @@ import { loadPublishedSpeedMap } from './live-speed-store';
  * 分类、目录分页、频道名归一、验真/后备选择策略等会改变最终 TXT 的
  * 逻辑发生变化时必须递增，否则持久化指纹不变，线上会继续命中旧 runtime TXT。
  */
-const LIVE_OUTPUT_FORMAT_VERSION = 12;
+const LIVE_OUTPUT_FORMAT_VERSION = 13;
 
 export interface RebuildLiveOutputOptions {
   reason?: string;
