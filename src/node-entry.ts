@@ -832,7 +832,8 @@ async function main() {
     triggerRefresh: runWithGuard,
     triggerQuality: runQualityWithGuard,
     enableChannelProbe: true,
-    triggerChannelProbe: (trigger = "manual") => scheduleChannelProbe(trigger, 0, "incremental"),
+    triggerChannelProbe: (trigger = "manual", evaluationMode = "incremental") =>
+      scheduleChannelProbe(trigger, 0, evaluationMode),
     enableBuilder: true,
     isSyncing: () => refreshRunning,
     aggregationStatus,

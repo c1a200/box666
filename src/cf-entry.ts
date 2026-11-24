@@ -315,6 +315,8 @@ export default {
         timeoutMs: options?.timeoutMs ?? 6000,
         concurrency: options?.concurrency ?? 3,
         forceNewRound: options?.forceNewRound === true,
+        deferRebuild: options?.deferRebuild === true,
+        rebuildOnly: options?.rebuildOnly === true,
       }),
       triggerQuality: (mode) => runQualityChunkWithStatus(storage, mode, config.qualityTimezone),
       isSyncing: () => liveAggregationStatus.get(aggregationStatusKey(storage))?.running === true,

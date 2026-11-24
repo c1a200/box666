@@ -2,7 +2,7 @@
 
 import type { Hono } from 'hono';
 import type { Storage } from '../storage/interface';
-import type { AppConfig, ChannelProbeSchedule, ChannelProbeTrigger } from '../core/types';
+import type { AppConfig, ChannelProbeEvaluationMode, ChannelProbeSchedule, ChannelProbeTrigger } from '../core/types';
 import {
   isProbeEnabled,
   setProbeEnabled,
@@ -35,6 +35,7 @@ export interface ChannelProbeRouteDeps {
   config: AppConfig;
   triggerChannelProbe?: (
     trigger?: ChannelProbeTrigger,
+    evaluationMode?: ChannelProbeEvaluationMode,
   ) => Promise<void>;
   onChannelProbeScheduleChange?: (schedule: ChannelProbeSchedule) => void;
   getChannelProbeInitialTime?: () => string;
@@ -153,29 +154,35 @@ export function mountChannelProbeRoutes(app: Hono, deps: ChannelProbeRouteDeps):
     return c.json({ success: true, intervalMinutes: 1440, schedule });
   });
 
-  // POST /admin/channel-probe/trigger — 手动增量补检（异步启动，不阻塞响应）
+  // POST /admin/channel-probe/trigger?mode=full|incremental — 手动评估（异步启动）
   app.post('/admin/channel-probe/trigger', async (c) => {
     if (!verifyAdmin(c.req.raw, config)) return c.json({ error: 'Unauthorized' }, 401);
     if (!(await isProbeEnabled(storage))) {
       return c.json({ success: false, error: 'Probe is disabled, enable it first' }, 400);
     }
+    const requestedMode = (c.req.query('mode') || 'incremental').toLowerCase();
+    if (requestedMode !== 'full' && requestedMode !== 'incremental') {
+      return c.json({ error: 'mode must be full or incremental' }, 400);
+    }
+    const evaluationMode = requestedMode as ChannelProbeEvaluationMode;
     // A full evaluation already covers every candidate. Do not queue an
     // incremental pass behind it; the shared scheduler also absorbs duplicates.
     if (isRunning()) {
       return c.json({ success: false, running: true, error: 'Probe is already running' }, 409);
     }
     if (triggerChannelProbe) {
-      void triggerChannelProbe('manual').catch((err) => {
+      void triggerChannelProbe('manual', evaluationMode).catch((err) => {
         console.error('[channel-probe-admin] Trigger error:', err);
       });
     } else {
-      void runChannelProbe(storage, { trigger: 'manual' }).catch((err) => {
+      void runChannelProbe(storage, { trigger: 'manual', evaluationMode }).catch((err) => {
         console.error('[channel-probe-admin] Trigger error:', err);
       });
     }
     return c.json({
       success: true,
       running: isRunning(),
+      evaluationMode,
       message: isRunning() ? 'Probe queued' : 'Probe started',
     });
   });

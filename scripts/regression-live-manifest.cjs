@@ -2562,6 +2562,55 @@ async function main() {
   const preparedSnapshot = serializePreparedLiveGroups(preparedGroups);
   assert(preparedSnapshot.includes('源K#12345678'), 'prepared snapshot must retain source label');
 
+  // ── 22. CF 分片下载可延迟重建，避免每个小分片重复扫描全量频道树 ──
+  const deferredUrl = 'https://live.example/deferred.m3u';
+  const deferredKey = await liveProxyKey(deferredUrl);
+  const deferredMemory = new Map([
+    ['live_prepare_inputs', JSON.stringify({
+      updatedAt: '2026-11-24T04:00:00.000Z',
+      signature: deferredUrl,
+      sourceCount: 1,
+      sources: [{ name: '延迟重建源', url: deferredUrl, isAggregated: true }],
+    })],
+    ['live_prepare_state', JSON.stringify({
+      cursor: 1,
+      sourceSignature: deferredUrl,
+      inputUpdatedAt: '2026-11-24T04:00:00.000Z',
+      updatedAt: '2026-11-24T04:00:01.000Z',
+      processed: 1,
+      total: 1,
+      ready: 1,
+      failed: 0,
+      complete: true,
+    })],
+    ['live_proxy_manifest', JSON.stringify({
+      version: 4,
+      signature: 'deferred-rebuild',
+      entries: [entry(70, {
+        key: deferredKey,
+        url: deferredUrl,
+        name: '延迟重建源',
+        textReady: true,
+      })],
+    })],
+    ['live_txt:' + deferredKey, '央视,#genre#\nCCTV-1,http://deferred.example/live$源D#12345678'],
+  ]);
+  const deferredWrites = [];
+  const deferredStorage = {
+    async get(key) { return deferredMemory.has(key) ? deferredMemory.get(key) : null; },
+    async put(key, value) {
+      deferredWrites.push(key);
+      deferredMemory.set(key, String(value));
+    },
+  };
+  const deferredResult = await runLivePrepareChunk(deferredStorage, { deferRebuild: true });
+  assert(deferredResult.rebuilt === false, 'deferRebuild must not rebuild runtime output');
+  assert(deferredResult.readyEntries.length === 1, 'deferRebuild must still expose prepared text count');
+  assert(
+    deferredWrites.length === 0,
+    'an unchanged complete prepare round with deferRebuild must not rewrite candidate/output state',
+  );
+
   console.log('regression: live manifest + distribution passed');
 }
 

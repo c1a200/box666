@@ -244,66 +244,17 @@ export interface LivePrepareChunkResult {
   readyEntries: LiveProxyManifestEntry[];
   preparedGroups: TVBoxLiveGroup[];
   runtimeGroups: TVBoxLiveGroup[];
+  rebuilt: boolean;
+  changed?: boolean;
+  version?: string;
 }
 
-/**
- * 读取持久化输入清单并推进一个分片，然后把本批成功文本立即接入统一
- * 候选树与运行时输出。这个函数不参与聚合主流程，避免下载直播源把
- * 聚合 Worker 长任务拖死。
- */
-export async function runLivePrepareChunk(
+async function rebuildPreparedLiveOutput(
   storage: Storage,
-  options: {
-    batchSize?: number;
-    timeoutMs?: number;
-    concurrency?: number;
-    forceNewRound?: boolean;
-  } = {},
+  sources: readonly LiveSourceInput[],
+  state: LivePrepareState,
+  readyEntries: LiveProxyManifestEntry[],
 ): Promise<LivePrepareChunkResult> {
-  const inputSet = await loadLivePrepareInputs(storage);
-  const sources = inputSet?.sources ?? [];
-  const previousState = await loadLivePrepareState(storage);
-  // 已完成且输入未变时复用结果；避免手动重复调用接口触发新一轮全量下载。
-  if (!options.forceNewRound
-    && previousState?.complete === true
-    && livePrepareStateMatchesInputs(previousState, inputSet)) {
-    const readyEntries = await listLiveProxyEntries(storage);
-    const preparedGroups = await buildPreparedLiveGroups(readyEntries, storage);
-    return { state: previousState, readyEntries, preparedGroups, runtimeGroups: preparedGroups };
-  }
-  if (sources.length === 0) {
-    // 输入清单尚未由一次成功聚合写入，或直播被禁用/过滤为空时，
-    // 不得把状态或候选树误推进为空；交由聚合收尾显式处理空输出。
-    const state = previousState ?? {
-      cursor: 0,
-      sourceSignature: '',
-      inputUpdatedAt: inputSet?.updatedAt || '',
-      updatedAt: new Date().toISOString(),
-      processed: 0,
-      total: 0,
-      ready: 0,
-      failed: 0,
-      complete: true,
-    };
-    const readyEntries = await listLiveProxyEntries(storage);
-    const preparedGroups = await buildPreparedLiveGroups(readyEntries, storage);
-    return { state, readyEntries, preparedGroups, runtimeGroups: preparedGroups };
-  }
-  if (options.forceNewRound) {
-    const state = await loadLivePrepareState(storage);
-    if (state) {
-      await storage.put(KV_LIVE_PREPARE_STATE, JSON.stringify({ ...state, complete: true }));
-    }
-  }
-  const channelSpeedMap = await loadPublishedSpeedMap(storage);
-  const state = await prepareLiveSourcesChunk(sources, storage, {
-    batchSize: options.batchSize,
-    timeoutMs: options.timeoutMs,
-    concurrency: options.concurrency,
-    channelSpeedMap,
-    inputUpdatedAt: inputSet?.updatedAt || '',
-  });
-  const readyEntries = await listLiveProxyEntries(storage);
   const preparedGroups = await buildPreparedLiveGroups(readyEntries, storage);
   const [existingMergedRaw, existingCandidateRaw] = await Promise.all([
     storage.get(KV_CHANNEL_MERGED_TREE),
@@ -328,11 +279,121 @@ export async function runLivePrepareChunk(
     distributable: readyEntries.length,
     preparedGroups: mergedCandidateGroups.length,
     runtimeGroups: rebuilt.groups.length,
+    outputVersion: rebuilt.version,
   }));
   return {
     state,
     readyEntries,
     preparedGroups: mergedCandidateGroups,
     runtimeGroups: rebuilt.groups,
+    rebuilt: true,
+    changed: rebuilt.changed,
+    version: rebuilt.version,
   };
+}
+
+async function recordDeferredPrepareReport(
+  storage: Storage,
+  sources: readonly LiveSourceInput[],
+  state: LivePrepareState,
+  readyEntries: LiveProxyManifestEntry[],
+): Promise<void> {
+  await storage.put(KV_LIVE_MERGE_REPORT, JSON.stringify({
+    updatedAt: new Date().toISOString(),
+    mode: (await storage.get(KV_LIVE_MERGE_MODE)) === 'merged' ? 'merged' : 'separated',
+    platform: 'cloudflare',
+    sources: sources.length,
+    prepare: state,
+    textReady: readyEntries.length,
+    distributable: readyEntries.length,
+    rebuildDeferred: true,
+  }));
+}
+
+/**
+ * 读取持久化输入清单并推进一个分片，然后把本批成功文本立即接入统一
+ * 候选树与运行时输出。这个函数不参与聚合主流程，避免下载直播源把
+ * 聚合 Worker 长任务拖死。
+ */
+export async function runLivePrepareChunk(
+  storage: Storage,
+  options: {
+    batchSize?: number;
+    timeoutMs?: number;
+    concurrency?: number;
+    forceNewRound?: boolean;
+    deferRebuild?: boolean;
+    rebuildOnly?: boolean;
+  } = {},
+): Promise<LivePrepareChunkResult> {
+  const inputSet = await loadLivePrepareInputs(storage);
+  const sources = inputSet?.sources ?? [];
+  const previousState = await loadLivePrepareState(storage);
+  if (options.rebuildOnly) {
+    if (!previousState || sources.length === 0) {
+      throw new Error('No live preparation state or inputs available for rebuild');
+    }
+    const readyEntries = await listLiveProxyEntries(storage);
+    return rebuildPreparedLiveOutput(storage, sources, previousState, readyEntries);
+  }
+  // 已完成且输入未变时复用结果；避免手动重复调用接口触发新一轮全量下载。
+  if (!options.forceNewRound
+    && previousState?.complete === true
+    && livePrepareStateMatchesInputs(previousState, inputSet)) {
+    const readyEntries = await listLiveProxyEntries(storage);
+    if (options.deferRebuild) {
+      return {
+        state: previousState,
+        readyEntries,
+        preparedGroups: [],
+        runtimeGroups: [],
+        rebuilt: false,
+      };
+    }
+    return rebuildPreparedLiveOutput(storage, sources, previousState, readyEntries);
+  }
+  if (sources.length === 0) {
+    // 输入清单尚未由一次成功聚合写入，或直播被禁用/过滤为空时，
+    // 不得把状态或候选树误推进为空；交由聚合收尾显式处理空输出。
+    const state = previousState ?? {
+      cursor: 0,
+      sourceSignature: '',
+      inputUpdatedAt: inputSet?.updatedAt || '',
+      updatedAt: new Date().toISOString(),
+      processed: 0,
+      total: 0,
+      ready: 0,
+      failed: 0,
+      complete: true,
+    };
+    const readyEntries = await listLiveProxyEntries(storage);
+    const preparedGroups = await buildPreparedLiveGroups(readyEntries, storage);
+    return { state, readyEntries, preparedGroups, runtimeGroups: preparedGroups, rebuilt: false };
+  }
+  if (options.forceNewRound) {
+    const state = await loadLivePrepareState(storage);
+    if (state) {
+      await storage.put(KV_LIVE_PREPARE_STATE, JSON.stringify({ ...state, complete: true }));
+    }
+  }
+  const channelSpeedMap = await loadPublishedSpeedMap(storage);
+  const state = await prepareLiveSourcesChunk(sources, storage, {
+    batchSize: options.batchSize,
+    timeoutMs: options.timeoutMs,
+    concurrency: options.concurrency,
+    channelSpeedMap,
+    inputUpdatedAt: inputSet?.updatedAt || '',
+  });
+  const readyEntries = await listLiveProxyEntries(storage);
+  if (options.deferRebuild) {
+    await recordDeferredPrepareReport(storage, sources, state, readyEntries);
+    return {
+      state,
+      readyEntries,
+      preparedGroups: [],
+      runtimeGroups: [],
+      rebuilt: false,
+    };
+  }
+  return rebuildPreparedLiveOutput(storage, sources, state, readyEntries);
 }

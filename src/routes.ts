@@ -40,7 +40,7 @@ import { mergeSourcePins, reconcileSourcePins, type SourcePinScopes } from './co
 import { applyChannelSpeedToGroups, formatLiveGroupsAsTxt, filterLivesBySourceDetailed, parseLiveGroupsFromTxt } from './core/live-merger';
 import { containsBlockedLiveUrl, isBlockedLiveSource, isBlockedLiveUrl } from './core/live-policy';
 import { autoNameFromUrl, backupTypeMismatch, createSourceBackup, extractBackupItems, parseSourceList } from './core/source-list-parser';
-import type { TVBoxConfig, TVBoxSite, SearchQuotaConfig, SiteQualityGrade, TVBoxLive, ClientAuthCode, ClientDistributionConfig, LiveDistributionConfig, SourceDistributionMode, SourceSelectionMode, ChannelProbeTrigger, ChannelProbeSchedule } from './core/types';
+import type { TVBoxConfig, TVBoxSite, SearchQuotaConfig, SiteQualityGrade, TVBoxLive, ClientAuthCode, ClientDistributionConfig, LiveDistributionConfig, SourceDistributionMode, SourceSelectionMode, ChannelProbeTrigger, ChannelProbeEvaluationMode, ChannelProbeSchedule } from './core/types';
 import { mountChannelProbeRoutes } from './routes/channel-probe-admin';
 import { loadPublishedSpeedMap as loadChannelSpeedMap } from './core/live-speed-store';
 import { createLogViewerRouter } from './routes/log-viewer';
@@ -75,11 +75,16 @@ export interface AppDeps {
     timeoutMs?: number;
     concurrency?: number;
     forceNewRound?: boolean;
+    deferRebuild?: boolean;
+    rebuildOnly?: boolean;
   }) => Promise<unknown>; // 仅 Cloudflare 入口启用直播正文分片准备
   triggerQuality?: (mode: SearchQualityRunMode) => Promise<void>;   // Node/Docker 入口启用质量分级
   onCronIntervalChange?: (intervalMinutes: number, time?: string) => void;
   enableChannelProbe?: boolean; // 仅 Node/Docker 入口启用
-  triggerChannelProbe?: (trigger?: ChannelProbeTrigger) => Promise<void>;
+  triggerChannelProbe?: (
+    trigger?: ChannelProbeTrigger,
+    evaluationMode?: ChannelProbeEvaluationMode,
+  ) => Promise<void>;
   onChannelProbeScheduleChange?: (schedule: ChannelProbeSchedule) => void;
   getChannelProbeInitialTime?: () => string;
   enableBuilder?: boolean;      // 仅 Node/Docker 入口启用（配置构建器）
@@ -4101,14 +4106,40 @@ export function createApp(deps: AppDeps): Hono {
       return Number.isFinite(value) ? Math.min(max, Math.max(min, Math.floor(value))) : fallback;
     };
     const forceNewRound = /^(?:1|true|yes)$/i.test(c.req.query('force') || '');
+    const deferRebuild = /^(?:1|true|yes)$/i.test(c.req.query('deferRebuild') || '');
+    const rebuildOnly = /^(?:1|true|yes)$/i.test(c.req.query('rebuildOnly') || '');
     try {
       const result = await deps.triggerLivePrepare({
         batchSize: integerQuery('batchSize', 8, 1, 8),
         timeoutMs: integerQuery('timeoutMs', 6000, 1000, 15000),
         concurrency: integerQuery('concurrency', 3, 1, 3),
         forceNewRound,
+        deferRebuild,
+        rebuildOnly,
       });
-      return c.json({ success: true, result });
+      const summary = result && typeof result === 'object'
+        ? result as {
+          state?: unknown;
+          readyEntries?: unknown[];
+          preparedGroups?: unknown[];
+          runtimeGroups?: unknown[];
+          rebuilt?: boolean;
+          changed?: boolean;
+          version?: string;
+        }
+        : null;
+      return c.json({
+        success: true,
+        result: summary ? {
+          state: summary.state,
+          readyEntries: summary.readyEntries?.length ?? 0,
+          preparedGroups: summary.preparedGroups?.length ?? 0,
+          runtimeGroups: summary.runtimeGroups?.length ?? 0,
+          rebuilt: summary.rebuilt === true,
+          changed: summary.changed === true,
+          version: summary.version,
+        } : result,
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return c.json({ success: false, error: message }, 500);
