@@ -514,9 +514,18 @@ function normalizeSnapshot(raw: unknown): SearchQualitySnapshot | null {
       || entry.jarProbeResult === 'timeout' || entry.jarProbeResult === 'not_probed'
       ? entry.jarProbeResult
       : undefined;
+    const jarHttpStatus = typeof entry.jarHttpStatus === 'number' ? entry.jarHttpStatus : undefined;
+    const hardJarFailure = !!jarProbeResult && isHardJarProbeFailure({
+      key: entry.key || '',
+      siteKey: entry.key || '',
+      result: jarProbeResult,
+      speedMs: typeof entry.jarSpeedMs === 'number' ? entry.jarSpeedMs : null,
+      httpStatus: jarHttpStatus,
+    });
     const invalidFailure = failureKind === 'invalid'
       || httpStatus === 404
-      || httpStatus === 410;
+      || httpStatus === 410
+      || hardJarFailure;
     // 3.3.4 and earlier classified many client JARs as unusable merely because
     // Render could not validate a placeholder/image URL as a ZIP. Migrate those
     // historical records to untestable immediately; a later quality run can
@@ -524,13 +533,7 @@ function normalizeSnapshot(raw: unknown): SearchQualitySnapshot | null {
     const softJarFailure = rawGrade === 'unusable'
       && !!jarProbeResult
       && !invalidFailure
-      && !isHardJarProbeFailure({
-        key: entry.key || '',
-        siteKey: entry.key || '',
-        result: jarProbeResult,
-        speedMs: typeof entry.jarSpeedMs === 'number' ? entry.jarSpeedMs : null,
-        httpStatus: typeof entry.jarHttpStatus === 'number' ? entry.jarHttpStatus : undefined,
-      });
+      && !hardJarFailure;
     // Older probe classifiers persisted every recoverable network/HTTP error
     // as unusable. Those records must not become permanent exclusions merely
     // because the snapshot predates failureKind/httpStatus.
@@ -538,18 +541,20 @@ function normalizeSnapshot(raw: unknown): SearchQualitySnapshot | null {
       && result !== 'ok'
       && !invalidFailure
       && !softJarFailure;
-    const grade: SiteQualityGrade = softProbeFailure
-      ? 'transient'
-      : softJarFailure
-        ? 'untestable'
-        : rawGrade;
+    const grade: SiteQualityGrade = invalidFailure
+      ? 'unusable'
+      : softProbeFailure
+        ? 'transient'
+        : softJarFailure
+          ? 'untestable'
+          : rawGrade;
     const normalized: SearchQualitySnapshot['entries'][number] = {
       ...entry,
       grade,
       speedMs: typeof entry.speedMs === 'number' ? entry.speedMs : null,
       result,
       httpStatus,
-      failureKind,
+      failureKind: invalidFailure ? 'invalid' : failureKind,
       consecutiveFailures: typeof entry.consecutiveFailures === 'number' ? entry.consecutiveFailures : 0,
       // Recompute the score after a legacy unusable -> fallback migration.
       qualityScore: typeof entry.qualityScore === 'number' ? entry.qualityScore : undefined,

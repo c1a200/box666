@@ -229,7 +229,12 @@ assert(conflictingLimits.authCodes[0].maxSites === 2, 'current maxSites must win
           { key: 'legacy-404', name: '历史 404', grade: 'unusable', result: 'error', speedMs: null, httpStatus: 404, failureKind: 'transient', consecutiveFailures: 2 },
           { key: 'legacy-410', name: '历史 410', grade: 'unusable', result: 'error', speedMs: null, httpStatus: 410, consecutiveFailures: 2 },
           { key: 'legacy-invalid', name: '历史明确失效', grade: 'unusable', result: 'error', speedMs: null, failureKind: 'invalid', consecutiveFailures: 2 },
+          { key: 'legacy-jar-404', name: '历史 JAR 404', grade: 'unusable', result: 'not_probed', speedMs: null, jarProbeResult: 'error', jarHttpStatus: 404, consecutiveFailures: 2 },
+          { key: 'legacy-jar-410', name: '历史 JAR 410', grade: 'unusable', result: 'not_probed', speedMs: null, jarProbeResult: 'error', jarHttpStatus: 410, consecutiveFailures: 2 },
+          { key: 'stale-jar-404', name: '已误迁 JAR 404', grade: 'transient', result: 'not_probed', speedMs: null, jarProbeResult: 'error', jarHttpStatus: 404, failureKind: 'transient', consecutiveFailures: 2 },
+          { key: 'stale-jar-410', name: '已误迁 JAR 410', grade: 'transient', result: 'not_probed', speedMs: null, jarProbeResult: 'error', jarHttpStatus: 410, failureKind: 'transient', consecutiveFailures: 2 },
           { key: 'legacy-jar-401', name: '历史 JAR 401', grade: 'unusable', result: 'not_probed', speedMs: null, jarProbeResult: 'error', jarHttpStatus: 401, consecutiveFailures: 2 },
+          { key: 'legacy-jar-403', name: '历史 JAR 403', grade: 'unusable', result: 'not_probed', speedMs: null, jarProbeResult: 'error', jarHttpStatus: 403, consecutiveFailures: 2 },
         ],
       });
     },
@@ -241,7 +246,12 @@ assert(conflictingLimits.authCodes[0].maxSites === 2, 'current maxSites must win
   assert(migratedEntries.get('legacy-404').grade === 'unusable', 'legacy unusable 404 must remain unusable');
   assert(migratedEntries.get('legacy-410').grade === 'unusable', 'legacy unusable 410 must remain unusable');
   assert(migratedEntries.get('legacy-invalid').grade === 'unusable', 'explicit invalid failure must remain unusable');
+  assert(migratedEntries.get('legacy-jar-404').grade === 'unusable', 'legacy JAR 404 must remain unusable');
+  assert(migratedEntries.get('legacy-jar-410').grade === 'unusable', 'legacy JAR 410 must remain unusable');
+  assert(migratedEntries.get('stale-jar-404').grade === 'unusable', 'already-migrated JAR 404 must be restored to unusable');
+  assert(migratedEntries.get('stale-jar-410').grade === 'unusable', 'already-migrated JAR 410 must be restored to unusable');
   assert(migratedEntries.get('legacy-jar-401').grade === 'untestable', 'legacy JAR 401 must migrate to client-verifiable untestable');
+  assert(migratedEntries.get('legacy-jar-403').grade === 'untestable', 'legacy JAR 403 must migrate to client-verifiable untestable');
   console.log('regression: source merge and client auth policy checks passed');
 })().catch((error) => {
   console.error(error && error.stack ? error.stack : error);
