@@ -2,6 +2,7 @@
 
 import type { Storage } from './storage/interface';
 import type { AppConfig, SourceEntry, SourcedConfig, MacCMSSourceEntry, SourceFetchResult, SourceHealthRecord, AggregationLog, AggLogFailedSource, AggLogSiteChange, TVBoxSite, TVBoxLive, SiteHealthMap } from './core/types';
+import { failureKindForHttpStatus } from './core/probe-classification';
 import { fetchConfigs } from './core/fetcher';
 import { mergeConfigs, cleanLocalRefs, cleanEmptyEntries } from './core/merger';
 import { batchSiteSpeedTest, appendSpeedToName, filterUnreachableSites, type SiteProbeResult } from './core/speedtest';
@@ -1052,7 +1053,7 @@ async function updateSiteHealth(
   if (probeMap.size === 0) return;
 
   const raw = await storage.get(KV_SITE_HEALTH_MAP);
-  let healthMap: Record<string, { consecutiveFailures: number; lastProbeTime: string; lastProbeResult: string; lastSuccessTime?: string }> = {};
+  let healthMap: SiteHealthMap = {};
   if (raw) {
     try {
       const parsed = JSON.parse(raw);
@@ -1073,13 +1074,29 @@ async function updateSiteHealth(
       : (prev?.consecutiveFailures ?? 0) + 1;
     probe.lastSuccessTime = probe.result === 'ok' ? now : prev?.lastSuccessTime;
     if (probe.result === 'ok') {
-      healthMap[key] = { consecutiveFailures: 0, lastProbeTime: now, lastProbeResult: 'ok', lastSuccessTime: now };
-    } else {
       healthMap[key] = {
+        key,
+        consecutiveFailures: 0,
+        lastProbeTime: now,
+        lastProbeResult: 'ok',
+        lastSuccessTime: now,
+        probeVersion: 2,
+      };
+    } else {
+      const failureKind = probe.failureKind
+        ?? (typeof probe.httpStatus === 'number'
+          ? failureKindForHttpStatus(probe.httpStatus)
+          : 'transient');
+      probe.failureKind = failureKind;
+      healthMap[key] = {
+        key,
         consecutiveFailures: (prev?.consecutiveFailures ?? 0) + 1,
         lastProbeTime: now,
         lastProbeResult: probe.result,
+        lastFailureKind: failureKind,
+        httpStatus: probe.httpStatus,
         lastSuccessTime: prev?.lastSuccessTime,
+        probeVersion: 2,
       };
     }
   }
@@ -1099,8 +1116,9 @@ async function updateSiteHealth(
     }
   }
 
-  // 自动清理：连续失败 >= 5 时加黑名单（需开关开启）。清理必须覆盖
-  // 过滤前全量，否则本轮被过滤掉的源无法累计到自动清理阈值。
+  // 自动清理：只有连续失败 >= 5 且最后一次是确定性失效（404/410）时才
+  // 加黑名单。超时、429、5xx、鉴权限制与网络错误都必须继续重试。
+  // 清理必须覆盖过滤前全量，否则本轮被过滤掉的源无法累计到阈值。
   const autoCleanRaw = await storage.get(KV_SITE_AUTO_CLEAN);
   if (autoCleanRaw === 'true' && allSites.length > 0) {
     const blacklist = await loadBlacklist(storage);
@@ -1110,7 +1128,10 @@ async function updateSiteHealth(
     for (const site of allSites) {
       if (cleaned >= MAX_AUTO_CLEAN) break;
       const h = healthMap[site.key];
-      if (h && h.consecutiveFailures >= 5) {
+      const definitivelyInvalid = h?.lastFailureKind === 'invalid'
+        || h?.httpStatus === 404
+        || h?.httpStatus === 410;
+      if (h && h.consecutiveFailures >= 5 && definitivelyInvalid) {
         const fp = await siteFingerprint(site);
         if (!blacklist.sites.includes(fp)) {
           blacklist.sites.push(fp);

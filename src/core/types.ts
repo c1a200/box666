@@ -237,7 +237,7 @@ export const SOURCE_CATEGORIES: readonly SourceCategory[] = [
 // 源分发分桶上限。
 // 未配置=不额外限制；0=该分类一个都不下发；-1=该分类全部下发；正数=按最终顺序保留前 N 个。
 export interface SiteBucketLimits {
-  quality?: Partial<Record<'excellent' | 'good' | 'usable' | 'untestable', number>>;
+  quality?: Partial<Record<'excellent' | 'good' | 'usable' | 'untestable' | 'transient' | 'timeout', number>>;
   type?: Partial<Record<SourceCategory, number>>;
 }
 
@@ -343,8 +343,10 @@ export interface SearchQuotaReport {
 }
 
 // 站点质量分级（基于聚合阶段已有验活/测速结果，不额外发起请求）
-// 质量池包含 excellent / good / usable / untestable；timeout 与 unusable 不下发。
-export type SiteQualityGrade = 'excellent' | 'good' | 'usable' | 'untestable' | 'timeout' | 'unusable';
+// 质量池包含除 unusable 外的全部等级。transient 表示本次探测失败但可恢复，
+// 必须保留在低优先级后备池中，不能因一次网络波动被永久淘汰。
+export type SiteQualityGrade = 'excellent' | 'good' | 'usable' | 'untestable' | 'timeout' | 'transient' | 'unusable';
+export type ProbeFailureKind = 'invalid' | 'transient';
 
 export interface SiteQualityGradeBucket {
   count: number;
@@ -357,10 +359,12 @@ export interface SiteQualityGrades {
   usable: SiteQualityGradeBucket;    // 可用：3001-6000ms
   untestable: SiteQualityGradeBucket; // 无法由服务端直接探测（如客户端 JAR/网盘登录源）
   timeout: SiteQualityGradeBucket;   // 超时：>6000ms、无结果或未完成探测
-  unusable: SiteQualityGradeBucket;  // 不可用：连续失败/明确错误
+  transient: SiteQualityGradeBucket; // 临时失败：网络/限流/反爬/空响应等可恢复故障
+  unusable: SiteQualityGradeBucket;  // 不可用：仅确定性硬失败，如 404/410 或明确广告
   poolTotal: number;                 // 质量池总数（服务端验证 + 客户端后备）
   serverVerifiedTotal: number;      // excellent/good/usable，可默认下发
   clientFallbackTotal: number;      // untestable，客户端后备候选
+  transientTotal: number;           // transient，低优先级可恢复候选
 }
 // 搜索源质量分级快照
 export interface SearchQualityEntry {
@@ -369,6 +373,8 @@ export interface SearchQualityEntry {
   grade: SiteQualityGrade;
   speedMs: number | null;
   result: 'ok' | 'empty' | 'error' | 'timeout' | 'not_probed';
+  httpStatus?: number;
+  failureKind?: ProbeFailureKind;
   probedAt?: string;
   consecutiveFailures: number;
   // JAR/远程扩展的服务端元数据预检。失败是软降级，不等于客户端执行失败。
@@ -499,6 +505,9 @@ export interface SiteHealthRecord {
   consecutiveFailures: number;
   lastProbeTime: string;
   lastProbeResult: 'ok' | 'empty' | 'error' | 'timeout' | 'not_probed';
+  lastFailureKind?: ProbeFailureKind;
+  httpStatus?: number;
+  probeVersion?: number;
   lastSuccessTime?: string;
 }
 export type SiteHealthMap = Record<string, SiteHealthRecord>;

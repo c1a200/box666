@@ -561,6 +561,8 @@ ${sharedStyles}
           <option value="good" data-i18n="sqGood">良</option>
           <option value="usable" data-i18n="sqUsable">可用</option>
           <option value="untestable" data-i18n="sqUntestable">待客户端最终验证</option>
+          <option value="transient" data-i18n="sqTransient">临时失败</option>
+          <option value="timeout" data-i18n="sqTimeout">超时</option>
           <option value="blocked" data-i18n="sqBlocked">已屏蔽</option>
         </select>
         <span id="sqSourceFilterCount" style="font-size:0.75rem;color:var(--text-secondary)"></span>
@@ -943,7 +945,7 @@ const translations = {
     qualityTimes:'Times', qualityTimesPh:'e.g. 04:30, 16:30', qualityRepeatDays:'Quality pool refresh (days)', qualityFullRepeatDays:'Full grading interval (days)',
     qualityRunPool:'Retest quality pool', qualityRunFull:'Full re-grade', qualityRunNow:'Run now', qualityRefresh:'Refresh grading status', qualityStatusLabel:'Status', qualityStatusMode:'mode',
     qualityScheduleDesc:'Grading runs asynchronously in the background and returns immediately, so the page and other requests are never blocked. Daily runs refresh the quality pool with ordinary HTTP quality checks. Sources that require cloud-drive login, JAR execution or other client-side capabilities are finally verified by the client. Cloud-drive login and credentials are handled entirely by the client and are never stored, distributed or injected by the server. When the full-grading interval is reached or the quality pool is empty, a full grading run happens automatically. Both Cloudflare and Node/Render run in small chunks and yield between chunks; Node/Render resumes from the saved cursor after a restart.',
-    qualityGradeDesc:'Quality grades run in background chunks and do not block client startup: excellent <=1000ms, good 1001-3000ms, usable 3001-6000ms. The server verifies directly reachable sources only. Searchable JAR/client-runtime sources remain eligible through the quality pool; they are not the same as unsearchable. The default is all eligible fallback sources, and each auth code can set client fallback to 0, N, or all. Timeout and unusable sources are never served. Source categories and counts are configured per auth code; the global parser limit is the only global runtime cap.',
+    qualityGradeDesc:'Quality grades run in background chunks and do not block client startup: excellent <=1000ms, good 1001-3000ms, usable 3001-6000ms. The server verifies directly reachable sources only. Searchable JAR/client-runtime sources remain eligible through the quality pool; they are not the same as unsearchable. The default is all eligible fallback sources, and each auth code can set client fallback to 0, N, or all. Recoverable failures and timeouts remain as low-priority fallbacks; only confirmed invalid sources are excluded. Source categories and counts are configured per auth code; the global parser limit is the only global runtime cap.',
     qualityNoSnapshot:'No grading result yet. Run grading once to build the quality pool.',
     qualityStateIdle:'idle', qualityStateRunning:'running', qualityStateDone:'done', qualityStateError:'error',
     qualityLastRun:'Last run', qualityNextRun:'Next run', qualityLastFullRun:'Last full run', qualityNextFullRun:'Next full run', qualityNever:'never',
@@ -956,10 +958,11 @@ const translations = {
     tabSearchQuota:'Quality Grades',
     sqStatsCurrent:'Current actual counts', sqStatsSearchable:'searchable sources', sqStatsQuick:'quick search', sqStatsQuickLimit:'automatic limit', sqStatsPool:'quality pool', sqStatsServerVerified:'server verified', sqStatsClientFallback:'client fallback', sqStatsParsers:'Parsers', sqStatsKept:'kept', sqStatsProbed:'probed', sqStatsRemoved:'removed', sqStatsLimit:'limit', sqStatsUnlimited:'unlimited', sqStatsQuality:'Quality grades', sqStatsNoData:'Run aggregation to show quality grades and parser counts.', sqPoolTotal:'Total quality-pool sources', sqStatsDistributable:'actual distributable', sqStatsBlocked:'blacklist blocked', sqQuality:'graded',
     sqKey:'Source identifier', sqName:'Source name', sqSource:'Source type', sqReason:'Exclusion reason', sqGrade:'Quality grade / score', sqSpeedStatus:'Response speed / confidence', sqRank:'Overall / category rank', sqAction:'Action',
+    sqExcellent:'Excellent', sqGood:'Good', sqUsable:'Usable', sqUntestable:'Client verification', sqTransient:'Transient failure', sqTimeout:'Timeout', sqUnusable:'Unusable',
     sqRankingHint:'Lists follow the overall quality-pool rank; each category table also shows its category rank. Pins are ordered by when they were selected. Global pins may cross categories; category pins only lead within their own category and never break category delivery priority.', sqPin:'Pin', sqUnpin:'Unpin', sqPinGlobal:'Pin globally', sqPinCategory:'Pin in category', sqPinnedGlobal:'Global pin', sqPinnedCategory:'Category pin',
     sqBlock:'Block', sqUnblock:'Unblock', sqBlocked:'Blocked', sqBlockedDesc:'Blocked sources are excluded from all client outputs but remain here so they can be restored.', sqSourceFilterPh:'Search source name or key...', sqFilterAll:'All grades', sqFilterPinned:'Pinned only', sqFilterMatched:'Matched', sqFilterNoMatch:'No matching sources',
-    sqPinned:'Pinned', sqPinnedDesc:'Global pins may take delivery slots across categories. Category pins only move ahead of normal sources inside their own category, so a later category cannot bypass an earlier category. Both root and auth-link pins are merged and ordered by selection time. Use Pinned only, then click Unpin on a row to remove one.', sqOtherSources:'Quality Pool Sources', sqQualityPoolDesc:'Sources in the ordered quality pool and eligible for distribution. Pins only reorder eligible candidates and never bypass quality-pool, blocking, or count limits; blocked sources stay in this list but are excluded from every client output.', sqExcludedSources:'Sources Outside Quality Pool', sqExcludedDesc:'Searchable sources that were assessed but are outside the quality pool, for example timeout or unusable sources. They are not distributed to clients.', sqReasonJsUrlExcluded:'JS URL excluded', sqReasonTimeout:'Timeout', sqReasonUnusable:'Unusable', sqReasonNotInPool:'Not in quality pool', sqReasonOutsideQualityPool:'Outside quality pool',
-    sqXmlSources:'XML Sources', sqXmlDesc:'TVBox type 0 XML interface sources. Quality grades only affect their order within this list.', sqJsonSources:'JSON / MacCMS Sources', sqJsonDesc:'TVBox type 1 JSON or MacCMS interface sources.', sqJarSources:'JAR / Extension Sources', sqJarDesc:'TVBox type 3 local JAR or remote extension sources, excluding JS URL entries.', sqJsSources:'JS URL Sources', sqJsDesc:'TVBox type 3 sources whose API is an HTTP(S) URL.', sqRemoteSources:'Remote Sources', sqRemoteDesc:'TVBox type 4 remote site sources.', sqUncategorizedSources:'Other Sources', sqUncategorizedDesc:'Sources whose interface type could not be classified. They are listed separately instead of being mixed into a quality grade.', sqXml:'XML', sqJson:'JSON / MacCMS', sqJar:'JAR / Extension', sqJs:'JS URL', sqRemote:'Remote', sqOther:'Other', sqUnavailableSources:'Unavailable Sources', sqUnavailableDesc:'Searchable sources that are blocked, timed out, unusable, or outside the current quality pool. They are not distributed to clients.', sqBlockedSources:'Blocked Sources', sqBlockedDescLong:'Blocked sources are excluded from all client outputs but remain here so they can be restored.',
+    sqPinned:'Pinned', sqPinnedDesc:'Global pins may take delivery slots across categories. Category pins only move ahead of normal sources inside their own category, so a later category cannot bypass an earlier category. Both root and auth-link pins are merged and ordered by selection time. Use Pinned only, then click Unpin on a row to remove one.', sqOtherSources:'Quality Pool Sources', sqQualityPoolDesc:'Sources in the ordered quality pool and eligible for distribution. Pins only reorder eligible candidates and never bypass quality-pool, blocking, or count limits; blocked sources stay in this list but are excluded from every client output.', sqExcludedSources:'Sources Outside Quality Pool', sqExcludedDesc:'Searchable sources that were assessed but are outside the quality pool. Only confirmed invalid sources are excluded.', sqReasonJsUrlExcluded:'JS URL excluded', sqReasonTransient:'Transient failure', sqReasonTimeout:'Timeout', sqReasonUnusable:'Unusable', sqReasonNotInPool:'Not in quality pool', sqReasonOutsideQualityPool:'Outside quality pool',
+    sqXmlSources:'XML Sources', sqXmlDesc:'TVBox type 0 XML interface sources. Quality grades only affect their order within this list.', sqJsonSources:'JSON / MacCMS Sources', sqJsonDesc:'TVBox type 1 JSON or MacCMS interface sources.', sqJarSources:'JAR / Extension Sources', sqJarDesc:'TVBox type 3 local JAR or remote extension sources, excluding JS URL entries.', sqJsSources:'JS URL Sources', sqJsDesc:'TVBox type 3 sources whose API is an HTTP(S) URL.', sqRemoteSources:'Remote Sources', sqRemoteDesc:'TVBox type 4 remote site sources.', sqUncategorizedSources:'Other Sources', sqUncategorizedDesc:'Sources whose interface type could not be classified. They are listed separately instead of being mixed into a quality grade.', sqXml:'XML', sqJson:'JSON / MacCMS', sqJar:'JAR / Extension', sqJs:'JS URL', sqRemote:'Remote', sqOther:'Other', sqUnavailableSources:'Unavailable Sources', sqUnavailableDesc:'Searchable sources that are blocked, confirmed invalid, or outside the current quality pool. Recoverable failures and timeouts remain eligible as low-priority fallbacks.', sqBlockedSources:'Blocked Sources', sqBlockedDescLong:'Blocked sources are excluded from all client outputs but remain here so they can be restored.',
     sqLeanRemoved:'lean-removed',
     channelProbeTitle:'Channel Speed Probe (Node/Docker)',
     channelProbeRepeatDaysLabel:'Repeat interval',
@@ -1127,7 +1130,7 @@ const translations = {
     qualityTimes:'执行时间', qualityTimesPh:'例如 04:30, 16:30', qualityRepeatDays:'质量池重排周期（天）', qualityFullRepeatDays:'全量分级周期（天）',
     qualityRunPool:'重测质量池', qualityRunFull:'全量重测', qualityRunNow:'立即执行', qualityRefresh:'刷新分级状态', qualityStatusLabel:'状态', qualityStatusMode:'模式',
     qualityScheduleDesc:'分级在后台异步执行，点击后立即返回，不会阻塞网页或其他请求。日常重测质量池中的源；需要网盘登录、JAR 运行或其他客户端能力的源由应用端最终验证。网盘登录和凭证处理完全由应用端完成，服务端不会保存、下发或注入凭证。到达全量周期或质量池为空时自动全量分级。Cloudflare 和 Node/Render 都按小分片执行并在分片间让出事件循环；Node/Render 异常重启后会从已保存游标继续。',
-    qualityGradeDesc:'质量分级（后台分块测速，不影响应用端启动速度）：优 ≤1000ms；良 1001-3000ms；可用 3001-6000ms。服务端只验证可直接请求的源；可搜索 JAR/客户端运行时源同样进入质量排序；根链接与鉴权码默认全部下发，只有超时和屏蔽源排除。源类型与数量可在此按需设置。',
+    qualityGradeDesc:'质量分级（后台分块测速，不影响应用端启动速度）：优 ≤1000ms；良 1001-3000ms；可用 3001-6000ms。服务端只验证可直接请求的源；可搜索 JAR/客户端运行时源同样进入质量排序；根链接与鉴权码默认全部下发。临时失败和超时仍作为低优先级后备，只有确认失效或屏蔽的源会被排除。源类型与数量可在此按需设置。',
     qualityNoSnapshot:'尚无分级结果，先执行一次分级以建立质量池。',
     qualityStateIdle:'空闲', qualityStateRunning:'运行中', qualityStateDone:'已完成', qualityStateError:'错误',
     qualityLastRun:'上次执行', qualityNextRun:'下次执行', qualityLastFullRun:'上次全量', qualityNextFullRun:'下次全量', qualityNever:'从未',
@@ -1139,13 +1142,13 @@ const translations = {
     maxParses:'解析器上限', autoSearchLimit:'自动安全配额', searchQuotaDesc:'这里只控制根配置下发的健康解析器数量；填 0 表示不限制。可搜索源的类型和数量由鉴权码设置决定，根链接不再按全局可搜索源上限裁剪。', sortSearchBySpeed:'按测速速度排序', sortSearchBySpeedDesc:'复用现有站点测速结果，将较快的源排在前面；不会额外发起测速请求。置顶源始终最前。', leanStartup:'轻量启动', leanStartupDesc:'根配置启动阶段去掉远程 JAR/扩展站点，缩短影视仓/TVBox 启动时间；置顶源仍保留。', maxStartupQuickSearchDesc:'根地址启动配置使用的快速搜索上限；0 表示不限制。完整配置仍可通过 /config-full.json 获取。', startupOptimizationDesc:'快速搜索源默认不限制。可搜索源的类型和数量由鉴权码按质量池顺序选择；/config-full.json 保留完整搜索源。', startupMode:'启动模式', startupModeLean:'轻量', startupModeFull:'完整', startupModeDesc:'轻量模式在根地址返回裁剪后的启动配置以加快启动；完整配置仍可通过 /config-full.json 获取。', pruneDeadParses:'剔除失效解析器', pruneDeadParsesDesc:'主动探测解析器地址并剔除确认超时或失效的项，避免客户端启动时逐个等待死解析器。',
     tabSearchQuota:'分级表',
     sqStatsCurrent:'当前实际数量', sqStatsSearchable:'可搜索源', sqStatsQuick:'快速搜索', sqStatsQuickLimit:'自动上限', sqStatsPool:'质量池', sqStatsServerVerified:'服务端已验证', sqStatsClientFallback:'客户端后备', sqStatsParsers:'解析器', sqStatsKept:'最终保留', sqStatsProbed:'探测', sqStatsRemoved:'剔除', sqStatsLimit:'上限', sqStatsUnlimited:'不限制', sqStatsQuality:'质量分级', sqStatsNoData:'执行聚合后显示质量分级和解析器数量。', sqPoolTotal:'质量池总数', sqStatsDistributable:'实际可下发', sqStatsBlocked:'黑名单屏蔽', sqQuality:'已分级',
-    sqExcellent:'优', sqGood:'良', sqUsable:'可用', sqUntestable:'待客户端最终验证', sqTimeout:'超时', sqUnusable:'不可用', sqCumulative:'累计',
+    sqExcellent:'优', sqGood:'良', sqUsable:'可用', sqUntestable:'待客户端最终验证', sqTransient:'临时失败', sqTimeout:'超时', sqUnusable:'不可用', sqCumulative:'累计',
     sqReasonBlocked:'已屏蔽', sqReasonNotInFinal:'未进入最终列表', sqReasonNotSearchable:'不可搜索',
     sqKey:'源标识', sqName:'源名称', sqSource:'源类型', sqReason:'未入选原因', sqGrade:'质量等级 / 分数', sqSpeedStatus:'响应速度 / 可信度', sqRank:'总排名 / 分类排名', sqAction:'操作',
     sqRankingHint:'所有列表按质量池总排名排列；每个分类表同时显示该分类内排名。置顶源按实际选择置顶的时间排序；分类置顶只在本分类内优先，不突破分类下发优先级。', sqPin:'置顶', sqUnpin:'取消置顶', sqPinGlobal:'总榜置顶', sqPinCategory:'分类置顶', sqPinnedGlobal:'总榜置顶', sqPinnedCategory:'分类置顶',
     sqBlock:'屏蔽', sqUnblock:'取消屏蔽', sqBlocked:'已屏蔽', sqBlockedDesc:'屏蔽源不会下发到任何客户端，但仍保留在管理列表中，可随时恢复。可按名称或源标识搜索，并按质量等级或“已屏蔽”筛选。', sqSourceFilterPh:'搜索源名称或源标识...', sqFilterAll:'全部等级', sqFilterPinned:'仅置顶源', sqFilterMatched:'匹配', sqFilterNoMatch:'没有匹配的源',
-    sqPinned:'置顶源', sqPinnedDesc:'总榜置顶可跨分类优先占用下发名额；分类置顶只在本分类内排到普通源之前，不能突破分类之间的下发优先级。根链接和鉴权链接的置顶合并后，按实际选择置顶的时间排序。使用“仅置顶源”筛选后，点击对应行的“取消置顶”即可移除。', sqOtherSources:'质量池源', sqQualityPoolDesc:'已进入统一质量排序、可参与下发选择的源。置顶只调整候选源顺序，不会绕过质量池、屏蔽或数量限制；屏蔽后仍保留在此列表，但不会下发到任何客户端。', sqExcludedSources:'质量池外源', sqExcludedDesc:'已经评估但未进入质量池的可搜索源，例如超时或不可用，不会下发到客户端。', sqReasonJsUrlExcluded:'JS URL 已排除', sqReasonTimeout:'超时', sqReasonUnusable:'不可用', sqReasonNotInPool:'不在质量池', sqReasonOutsideQualityPool:'质量池外',
-    sqXmlSources:'XML 源', sqXmlDesc:'TVBox 0 类 XML 接口源；质量等级决定其在统一排序和 XML 分类中的位置。', sqJsonSources:'JSON / MacCMS 源', sqJsonDesc:'TVBox 1 类 JSON 或 MacCMS 接口源。', sqJarSources:'JAR / 扩展源', sqJarDesc:'TVBox 3 类本地 JAR 或远程扩展源，不包含 API 为 HTTP(S) 的 JS 地址源。', sqJsSources:'JS 地址源', sqJsDesc:'TVBox 3 类且 API 为 HTTP(S) 地址的 JS 接口源。', sqRemoteSources:'远程站点源', sqRemoteDesc:'TVBox 4 类远程站点源。', sqUncategorizedSources:'其他类型源', sqUncategorizedDesc:'无法按接口机制归入上述类型的源，单独列出，不与质量等级混在一起。', sqUnavailableSources:'不可用 / 未入选源', sqUnavailableDesc:'可搜索但已屏蔽、超时、不可用或不在当前质量池中的源，不会下发到客户端。', sqBlockedSources:'屏蔽源', sqBlockedDescLong:'屏蔽源不会下发到任何客户端，但仍保留在管理列表中，可随时恢复。', sqXml:'XML', sqJson:'JSON / MacCMS', sqJar:'JAR / 扩展', sqJs:'JS 地址', sqRemote:'远程', sqOther:'其他',
+    sqPinned:'置顶源', sqPinnedDesc:'总榜置顶可跨分类优先占用下发名额；分类置顶只在本分类内排到普通源之前，不能突破分类之间的下发优先级。根链接和鉴权链接的置顶合并后，按实际选择置顶的时间排序。使用“仅置顶源”筛选后，点击对应行的“取消置顶”即可移除。', sqOtherSources:'质量池源', sqQualityPoolDesc:'已进入统一质量排序、可参与下发选择的源。置顶只调整候选源顺序，不会绕过质量池、屏蔽或数量限制；屏蔽后仍保留在此列表，但不会下发到任何客户端。', sqExcludedSources:'质量池外源', sqExcludedDesc:'已经评估但未进入质量池的可搜索源；只有确认失效的源会被排除。', sqReasonJsUrlExcluded:'JS URL 已排除', sqReasonTransient:'临时失败', sqReasonTimeout:'超时', sqReasonUnusable:'不可用', sqReasonNotInPool:'不在质量池', sqReasonOutsideQualityPool:'质量池外',
+    sqXmlSources:'XML 源', sqXmlDesc:'TVBox 0 类 XML 接口源；质量等级决定其在统一排序和 XML 分类中的位置。', sqJsonSources:'JSON / MacCMS 源', sqJsonDesc:'TVBox 1 类 JSON 或 MacCMS 接口源。', sqJarSources:'JAR / 扩展源', sqJarDesc:'TVBox 3 类本地 JAR 或远程扩展源，不包含 API 为 HTTP(S) 的 JS 地址源。', sqJsSources:'JS 地址源', sqJsDesc:'TVBox 3 类且 API 为 HTTP(S) 地址的 JS 接口源。', sqRemoteSources:'远程站点源', sqRemoteDesc:'TVBox 4 类远程站点源。', sqUncategorizedSources:'其他类型源', sqUncategorizedDesc:'无法按接口机制归入上述类型的源，单独列出，不与质量等级混在一起。', sqUnavailableSources:'不可用 / 未入选源', sqUnavailableDesc:'可搜索但已屏蔽、确认失效或不在当前质量池中的源；临时失败和超时仍作为低优先级后备保留。', sqBlockedSources:'屏蔽源', sqBlockedDescLong:'屏蔽源不会下发到任何客户端，但仍保留在管理列表中，可随时恢复。', sqXml:'XML', sqJson:'JSON / MacCMS', sqJar:'JAR / 扩展', sqJs:'JS 地址', sqRemote:'远程', sqOther:'其他',
     sqLeanRemoved:'轻量剔除',
     channelProbeTitle:'频道级测速（仅 Node/Docker）',
     channelProbeRepeatDaysLabel:'重复间隔',
@@ -2559,7 +2562,7 @@ function renderSourceBucketControls(container, limits, onChange) {
   if (!container) return;
   container.innerHTML = '';
   const groups = [
-    { name: t('sqQuality'), group: 'quality', keys: ['excellent', 'good', 'usable', 'untestable'], labels: [t('sqExcellent'), t('sqGood'), t('sqUsable'), t('sqUntestable')] },
+    { name: t('sqQuality'), group: 'quality', keys: ['excellent', 'good', 'usable', 'untestable', 'transient', 'timeout'], labels: [t('sqExcellent'), t('sqGood'), t('sqUsable'), t('sqUntestable'), t('sqTransient'), t('sqTimeout')] },
     { name: t('credentialSiteTypes'), group: 'type', keys: SOURCE_CATEGORY_KEYS, labels: SOURCE_CATEGORY_KEYS.map(credentialTypeLabel) },
   ];
   groups.forEach((set) => {
@@ -2791,6 +2794,7 @@ async function loadSearchQuotaReport() {
     const q = d.qualityGrades;
     if (q) {
       const untestableCount = q.untestable && typeof q.untestable.count === 'number' ? q.untestable.count : 0;
+      const transientCount = q.transient && typeof q.transient.count === 'number' ? q.transient.count : 0;
       const serverVerified = typeof d.qualityPoolServerVerified === 'number'
         ? d.qualityPoolServerVerified
         : (typeof q.serverVerifiedTotal === 'number' ? q.serverVerifiedTotal : q.excellent.count + q.good.count + q.usable.count);
@@ -2803,7 +2807,7 @@ async function loadSearchQuotaReport() {
       const servableText = distributablePoolCount === null
         ? ''
         : ' / ' + t('sqStatsDistributable') + ': ' + distributablePoolCount + (blockedPoolCount ? ' (' + t('sqStatsBlocked') + ' ' + blockedPoolCount + ')' : '');
-      const qualityText = t('sqStatsQuality') + ': ' + t('sqExcellent') + ' ' + q.excellent.count + ' (' + q.excellent.cumulative + ') / ' + t('sqGood') + ' ' + q.good.count + ' (' + q.good.cumulative + ') / ' + t('sqUsable') + ' ' + q.usable.count + ' (' + q.usable.cumulative + ') / ' + t('sqUntestable') + ' ' + untestableCount + ' (' + q.untestable.cumulative + ') / ' + t('sqTimeout') + ' ' + q.timeout.count + ' (' + q.timeout.cumulative + ') / ' + t('sqUnusable') + ' ' + q.unusable.count + ' · ' + t('sqStatsPool') + ': ' + qualityPoolCount + ' (' + t('sqStatsServerVerified') + ' ' + serverVerified + ', ' + t('sqStatsClientFallback') + ' ' + clientFallback + ')' + servableText;
+      const qualityText = t('sqStatsQuality') + ': ' + t('sqExcellent') + ' ' + q.excellent.count + ' (' + q.excellent.cumulative + ') / ' + t('sqGood') + ' ' + q.good.count + ' (' + q.good.cumulative + ') / ' + t('sqUsable') + ' ' + q.usable.count + ' (' + q.usable.cumulative + ') / ' + t('sqUntestable') + ' ' + untestableCount + ' (' + q.untestable.cumulative + ') / ' + t('sqTransient') + ' ' + transientCount + ' (' + (q.transient ? q.transient.cumulative : 0) + ') / ' + t('sqTimeout') + ' ' + q.timeout.count + ' (' + q.timeout.cumulative + ') / ' + t('sqUnusable') + ' ' + q.unusable.count + ' · ' + t('sqStatsPool') + ': ' + qualityPoolCount + ' (' + t('sqStatsServerVerified') + ' ' + serverVerified + ', ' + t('sqStatsClientFallback') + ' ' + clientFallback + ')' + servableText;
       $('sqQualityGrades').textContent = qualityText;
       const stats = $('searchQuotaStats');
       if (stats) {
@@ -2812,7 +2816,7 @@ async function loadSearchQuotaReport() {
         const parserText = typeof d.parseKept === 'number'
           ? t('sqStatsParsers') + ': ' + t('sqStatsKept') + ' ' + d.parseKept + (typeof d.parseProbed === 'number' ? ', ' + t('sqStatsProbed') + ' ' + d.parseProbed : '') + (typeof d.parseRemoved === 'number' && d.parseRemoved > 0 ? ', ' + t('sqStatsRemoved') + ' ' + d.parseRemoved : '') + (typeof d.parseLimit === 'number' && d.parseLimit > 0 ? ', ' + t('sqStatsLimit') + ' ' + d.parseLimit : ', ' + t('sqStatsUnlimited'))
           : t('sqStatsParsers') + ': ' + t('sqStatsNoData');
-        stats.textContent = t('sqStatsCurrent') + ': ' + t('sqStatsSearchable') + ' ' + d.searchable + ' · ' + t('sqStatsPool') + ' ' + qualityPoolCount + ' (' + t('sqStatsServerVerified') + ' ' + serverVerified + ', ' + t('sqStatsClientFallback') + ' ' + clientFallback + ')' + servableText + ' · ' + t('sqStatsQuick') + ' ' + quickCount + quickLimit + '. ' + parserText + '. ' + t('sqStatsQuality') + ': ' + t('sqExcellent') + ' ' + q.excellent.count + ', ' + t('sqGood') + ' ' + q.good.count + ', ' + t('sqUsable') + ' ' + q.usable.count + ', ' + t('sqUntestable') + ' ' + untestableCount + ', ' + t('sqTimeout') + ' ' + q.timeout.count + ', ' + t('sqUnusable') + ' ' + q.unusable.count + '.';
+        stats.textContent = t('sqStatsCurrent') + ': ' + t('sqStatsSearchable') + ' ' + d.searchable + ' · ' + t('sqStatsPool') + ' ' + qualityPoolCount + ' (' + t('sqStatsServerVerified') + ' ' + serverVerified + ', ' + t('sqStatsClientFallback') + ' ' + clientFallback + ')' + servableText + ' · ' + t('sqStatsQuick') + ' ' + quickCount + quickLimit + '. ' + parserText + '. ' + t('sqStatsQuality') + ': ' + t('sqExcellent') + ' ' + q.excellent.count + ', ' + t('sqGood') + ' ' + q.good.count + ', ' + t('sqUsable') + ' ' + q.usable.count + ', ' + t('sqUntestable') + ' ' + untestableCount + ', ' + t('sqTransient') + ' ' + transientCount + ', ' + t('sqTimeout') + ' ' + q.timeout.count + ', ' + t('sqUnusable') + ' ' + q.unusable.count + '.';
       }
     } else {
       $('sqQualityGrades').textContent = '';
@@ -3078,11 +3082,12 @@ function renderQualityStats(d) {
   const ex = bucket('excellent');
   const good = bucket('good');
   const usable = bucket('usable');
+  const transient = bucket('transient');
   const timeout = bucket('timeout');
   const unusable = bucket('unusable');
   const th = snap.thresholds || { excellentMaxMs: 1000, goodMaxMs: 3000, usableMaxMs: 6000 };
   html += '<div style="margin-top:4px"><strong>' + t('qualityGradesTitle') + '</strong></div>';
-  const untestable = g.untestable || { count: 0, cumulative: 0 }; html += '<div>' + t('sqExcellent') + ': ' + ex.count + ' (<= ' + th.excellentMaxMs + 'ms, ' + t('sqCumulative') + ' ' + ex.cumulative + ') · ' + t('sqGood') + ': ' + good.count + ' (' + th.excellentMaxMs + '-' + th.goodMaxMs + 'ms, ' + t('sqCumulative') + ' ' + good.cumulative + ') · ' + t('sqUsable') + ': ' + usable.count + ' (' + th.goodMaxMs + '-' + (th.usableMaxMs || 6000) + 'ms, ' + t('sqCumulative') + ' ' + usable.cumulative + ') · ' + t('sqUntestable') + ': ' + untestable.count + ' (' + t('sqCumulative') + ' ' + untestable.cumulative + ') · ' + t('sqTimeout') + ': ' + timeout.count + ' (' + t('sqCumulative') + ' ' + timeout.cumulative + ') · ' + t('sqUnusable') + ': ' + unusable.count + '</div>';
+  const untestable = g.untestable || { count: 0, cumulative: 0 }; html += '<div>' + t('sqExcellent') + ': ' + ex.count + ' (<= ' + th.excellentMaxMs + 'ms, ' + t('sqCumulative') + ' ' + ex.cumulative + ') · ' + t('sqGood') + ': ' + good.count + ' (' + th.excellentMaxMs + '-' + th.goodMaxMs + 'ms, ' + t('sqCumulative') + ' ' + good.cumulative + ') · ' + t('sqUsable') + ': ' + usable.count + ' (' + th.goodMaxMs + '-' + (th.usableMaxMs || 6000) + 'ms, ' + t('sqCumulative') + ' ' + usable.cumulative + ') · ' + t('sqUntestable') + ': ' + untestable.count + ' (' + t('sqCumulative') + ' ' + untestable.cumulative + ') · ' + t('sqTransient') + ': ' + transient.count + ' (' + t('sqCumulative') + ' ' + transient.cumulative + ') · ' + t('sqTimeout') + ': ' + timeout.count + ' (' + t('sqCumulative') + ' ' + timeout.cumulative + ') · ' + t('sqUnusable') + ': ' + unusable.count + '</div>';
   const coverage = snap.coverage || {};
   const testable = typeof coverage.testable === 'number' ? coverage.testable : 0;
   const probed = typeof coverage.probed === 'number' ? coverage.probed : 0;
@@ -3169,6 +3174,7 @@ function qualityGradeLabel(grade) {
   if (grade === 'good') return t('sqGood');
   if (grade === 'usable') return t('sqUsable');
   if (grade === 'untestable') return t('sqUntestable');
+  if (grade === 'transient') return t('sqTransient');
   if (grade === 'timeout') return t('sqTimeout');
   if (grade === 'unusable') return t('sqUnusable');
   return '-';
@@ -3177,6 +3183,7 @@ function qualityGradeLabel(grade) {
 function qualityReasonLabel(reason) {
   if (reason === 'blocked') return t('sqReasonBlocked');
   if (reason === 'js-url-excluded') return t('sqReasonJsUrlExcluded');
+  if (reason === 'transient') return t('sqReasonTransient');
   if (reason === 'timeout') return t('sqReasonTimeout');
   if (reason === 'unusable') return t('sqReasonUnusable');
   if (reason === 'not-in-final') return t('sqReasonNotInFinal');
@@ -3190,7 +3197,7 @@ function qualityGradeColor(grade) {
   if (grade === 'good') return 'var(--primary)';
   if (grade === 'usable') return 'var(--accent)';
   if (grade === 'untestable') return 'var(--text-secondary)';
-  if (grade === 'timeout') return 'var(--red)';
+  if (grade === 'transient' || grade === 'timeout') return 'var(--yellow)';
   if (grade === 'unusable') return 'var(--red)';
   return 'var(--text-secondary)';
 }
@@ -3204,7 +3211,7 @@ function qualitySpeedLabel(entry) {
 function qualityScoreLabel(entry) {
   if (!entry) return '-';
   if (typeof entry.qualityScore === 'number' && isFinite(entry.qualityScore)) return String(Math.round(entry.qualityScore));
-  const base = { excellent: 900, good: 760, usable: 600, untestable: 420, timeout: 80, unusable: 0 }[entry.grade];
+  const base = { excellent: 900, good: 760, usable: 600, untestable: 420, transient: 120, timeout: 80, unusable: 0 }[entry.grade];
   return typeof base === 'number' ? String(base) : '-';
 }
 
@@ -3275,7 +3282,7 @@ function countSearchCategories(items) {
 function isUnavailableSearchSite(site, entry) {
   return site && (
     site.unavailable === true
-    || (entry && (entry.grade === 'timeout' || entry.grade === 'unusable'))
+    || (entry && entry.grade === 'unusable')
   );
 }
 
@@ -3285,8 +3292,9 @@ function searchSiteGradeRank(site, entry) {
   if (grade === 'good') return 1;
   if (grade === 'usable') return 2;
   if (grade === 'untestable') return 3;
-  if (grade === 'timeout') return 4;
-  if (grade === 'unusable') return 5;
+  if (grade === 'transient') return 4;
+  if (grade === 'timeout') return 5;
+  if (grade === 'unusable') return 6;
   return 3;
 }
 

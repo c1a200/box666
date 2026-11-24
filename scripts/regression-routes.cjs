@@ -225,8 +225,9 @@ async function readSites(response) {
     assert(sites.length >= 2, 'root link should receive enabled startup sites when requireAuth is false');
     const keys = sites.map((site) => site.key);
     assert(keys.includes('source-client-fallback'), 'root link should include all client-runtime fallback sources');
-    assert(!keys.includes('source-timeout'), 'root link must never distribute timeout sources');
+    assert(keys.includes('source-timeout'), 'root link must retain timeout sources as low-priority fallback candidates');
     assert(keys.indexOf('source-excellent') < keys.indexOf('source-good'), 'root link must preserve the quality-pool order');
+    assert(keys.indexOf('source-good') < keys.indexOf('source-timeout'), 'healthy sources must rank before timeout fallback sources');
   }
 
   {
@@ -244,6 +245,8 @@ async function readSites(response) {
       grade: index === 118 ? 'timeout' : index === 119 ? 'unusable' : index < 5 ? 'untestable' : 'excellent',
       speedMs: index < 5 || index >= 118 ? null : 100 + index,
       result: index === 118 ? 'timeout' : index === 119 ? 'error' : index < 5 ? 'not_probed' : 'ok',
+      httpStatus: index === 119 ? 404 : undefined,
+      failureKind: index === 119 ? 'invalid' : index >= 118 ? 'transient' : undefined,
       consecutiveFailures: index >= 118 ? 1 : 0,
     }));
     const allDistribution = {
@@ -265,11 +268,11 @@ async function readSites(response) {
     const authSites = await readSites(await app.request('https://box.example/auth/bulk-all/'));
     const rootKeys = rootSites.map((site) => site.key).sort();
     const authKeys = authSites.map((site) => site.key).sort();
-    assert(rootSites.length === 118, 'root full selection must distribute every eligible source above the old 50-source range; got ' + rootSites.length);
+    assert(rootSites.length === 119, 'root full selection must distribute every recoverable source while excluding confirmed 404 sources; got ' + rootSites.length);
     assert(authSites.length === rootSites.length, 'auth full selection must match root full selection count');
     assert(authKeys.join(',') === rootKeys.join(','), 'auth and root full selection must distribute the same deduplicated eligible source set');
     assert(authSites.filter((site) => site.type === 3).length === 5, 'auth full selection must retain every eligible searchable JAR source');
-    assert(!authKeys.includes('bulk-source-118') && !authKeys.includes('bulk-source-119'), 'auth full selection must exclude timeout and unusable sources just like root');
+    assert(authKeys.includes('bulk-source-118') && !authKeys.includes('bulk-source-119'), 'auth full selection must retain timeout fallback while excluding confirmed invalid sources');
 
     const limitedDistribution = {
       ...allDistribution,
@@ -609,7 +612,7 @@ async function readSites(response) {
     const sites = await readSites(await app.request('https://box.example/config-full.json'));
     const keys = sites.map((site) => site.key);
     assert(!keys.includes('source-outside-pool'), 'full config must not restore searchable sources outside the quality pool');
-    assert(!keys.includes('source-timeout'), 'full config must not restore timeout sources');
+    assert(keys.includes('source-timeout'), 'full config must retain timeout sources as fallback candidates');
     assert(keys.includes('source-client-fallback'), 'full config should keep the default client-runtime fallback');
     assert(keys.includes('source-plugin'), 'full config may keep non-searchable functional extensions');
   }
@@ -1089,7 +1092,7 @@ async function readSites(response) {
     const sites = await readSites(await app.request('https://box.example/auth/controlled-fallback/'));
     const fallbackCount = sites.filter((site) => site.key === 'source-client-fallback').length;
     assert(fallbackCount === 1, 'explicit untestable policy should include at most the configured count: ' + sites.map((site) => site.key).join(','));
-    assert(!sites.some((site) => site.key === 'source-timeout'), 'timeout sources must remain excluded under fallback policy');
+    assert(sites.some((site) => site.key === 'source-timeout'), 'timeout sources must remain eligible as low-priority fallback under fallback policy');
   }
 
   {
@@ -1195,7 +1198,7 @@ async function readSites(response) {
     const { app } = makeApp({ distribution: searchModeDistribution });
     const searchable = await readSites(await app.request('https://box.example/auth/search-only/'));
     const keys = searchable.map((site) => site.key).sort().join(',');
-    assert(keys === 'source-client-fallback,source-custom-type,source-excellent,source-good,source-xml-good', 'search mode should include only searchable sites, got ' + keys);
+    assert(keys === 'source-client-fallback,source-custom-type,source-excellent,source-good,source-timeout,source-xml-good', 'search mode should include every eligible searchable site, including recoverable timeout fallbacks; got ' + keys);
   }
 
   {
@@ -1359,7 +1362,7 @@ async function readSites(response) {
     const categorySelectionPinKeys = categorySelectionPinSites
       .filter((site) => site.searchable === 1)
       .map((site) => site.key);
-    assert(categorySelectionPinKeys.slice(0, 4).join(',') === 'source-good,source-xml-good,source-excellent,source-client-fallback',
+    assert(categorySelectionPinKeys.slice(0, 6).join(',') === 'source-good,source-xml-good,source-excellent,source-timeout,source-client-fallback,source-custom-type',
       'auth category selection must keep global pins first and category pins inside their category priority, got ' + categorySelectionPinKeys.join(','));
     const mergedCategoryPinDistribution = {
       ...inheritedPinDistribution,
@@ -1664,7 +1667,7 @@ async function readSites(response) {
     };
     const { app } = makeApp({ distribution: pinnedPolicyDistribution });
     const sites = await readSites(await app.request('https://box.example/auth/pinned-policy/'));
-    assert(sites.map((site) => site.key).sort().join(',') === 'source-plugin,source-quick-only', 'pinned keys must not bypass searchable-source exclusions, while functional non-searchable plugins remain available; got ' + sites.map((site) => site.key).join(','));
+    assert(sites.map((site) => site.key).sort().join(',') === 'source-plugin,source-quick-only,source-timeout', 'pinned keys must not bypass searchable-source exclusions, while recoverable fallback and functional non-searchable plugins remain available; got ' + sites.map((site) => site.key).join(','));
 
     const pinnedLimitDistribution = {
       requireAuth: false,

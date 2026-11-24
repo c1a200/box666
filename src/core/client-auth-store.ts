@@ -25,6 +25,7 @@ const QUALITY_GRADES = new Set<SiteQualityGrade>([
   'good',
   'usable',
   'untestable',
+  'transient',
   'timeout',
   'unusable',
 ]);
@@ -117,7 +118,10 @@ function normalizeNumberMap(value: unknown, allowedKeys?: Set<string>): Partial<
 
 function normalizeBucketLimits(value: unknown): SiteBucketLimits | undefined {
   const source = asRecord(value);
-  const quality = normalizeNumberMap(source.quality, new Set(['excellent', 'good', 'usable', 'untestable']));
+  const quality = normalizeNumberMap(
+    source.quality,
+    new Set(['excellent', 'good', 'usable', 'untestable', 'transient', 'timeout']),
+  );
   const rawType = asRecord(source.type);
   const type: Partial<Record<SourceCategory, number>> = {};
   for (const category of SOURCE_CATEGORIES) {
@@ -155,6 +159,9 @@ function mergeLegacyClientFilters(
     for (const grade of ['excellent', 'good', 'usable', 'untestable'] as const) {
       quality[grade] = legacyGrades.includes(grade) ? -1 : 0;
     }
+    // transient/timeout were introduced after the legacy grade list. Leaving
+    // them unset preserves them as fallbacks instead of silently excluding
+    // every recoverable source during migration.
   }
   if (!hasBucketGroup(limits, 'type') && legacyTypes.length > 0) {
     for (const category of SOURCE_CATEGORIES) {

@@ -21,6 +21,7 @@ const {
   qualityPoolKeysFromPool,
   distributableKeysFromPool,
   isHardJarProbeFailure,
+  gradeForProbe,
 } = require(outfile);
 
 function assert(condition, message) {
@@ -67,21 +68,35 @@ const mixedPool = {
   entries: [
     { key: 'excellent', grade: 'excellent', qualityScore: 900 },
     { key: 'untestable', grade: 'untestable', qualityScore: 420 },
+    { key: 'transient', grade: 'transient', qualityScore: 120 },
     { key: 'timeout', grade: 'timeout', qualityScore: 80 },
     { key: 'unusable', grade: 'unusable', qualityScore: 0 },
   ],
 };
 const qualityPoolKeys = [...qualityPoolKeysFromPool(mixedPool)];
-assert(qualityPoolKeys.join(',') === 'excellent,untestable', 'quality pool must include untestable and exclude timeout/unusable');
+assert(qualityPoolKeys.join(',') === 'excellent,untestable,transient,timeout', 'quality pool must include every recoverable fallback grade and exclude unusable');
 
 const distributed = [...distributableKeysFromPool({ entries: [
   { key: 'verified', grade: 'good', qualityScore: 760 },
+  { key: 'transient', grade: 'transient', qualityScore: 120 },
+  { key: 'timeout', grade: 'timeout', qualityScore: 80 },
   { key: 'client-a', grade: 'untestable', qualityScore: 420 },
   { key: 'client-b', grade: 'untestable', qualityScore: 420 },
   { key: 'dead', grade: 'unusable', qualityScore: 0 },
 ] }, { includeUntestable: true })];
-assert(distributed.join(',') === 'verified,client-a,client-b', 'default client fallback must keep all untestable sources');
+assert(distributed.join(',') === 'verified,transient,timeout,client-a,client-b', 'default distribution must keep recoverable failures while excluding unusable sources');
+assert(gradeForProbe({ key: 'status-404', result: 'error', speedMs: null, httpStatus: 404, failureKind: 'transient', consecutiveFailures: 1 }) === 'unusable', 'HTTP 404 must win over a stale transient failure kind');
+assert(gradeForProbe({ key: 'status-410', result: 'error', speedMs: null, httpStatus: 410, consecutiveFailures: 1 }) === 'unusable', 'HTTP 410 is a definitive invalid source');
+assert(gradeForProbe({ key: 'status-401', result: 'error', speedMs: null, httpStatus: 401, consecutiveFailures: 1 }) === 'transient', 'HTTP 401 must remain a recoverable failure');
+assert(gradeForProbe({ key: 'status-403', result: 'error', speedMs: null, httpStatus: 403, consecutiveFailures: 1 }) === 'transient', 'HTTP 403 must remain a recoverable failure');
+assert(gradeForProbe({ key: 'status-500', result: 'error', speedMs: null, httpStatus: 500, failureKind: 'transient', consecutiveFailures: 1 }) === 'transient', 'HTTP 5xx must remain a recoverable failure');
+assert(gradeForProbe({ key: 'network-error', result: 'error', speedMs: null, failureKind: 'transient', consecutiveFailures: 1 }) === 'transient', 'network errors must remain recoverable');
+assert(gradeForProbe({ key: 'empty-response', result: 'empty', speedMs: null, httpStatus: 200, failureKind: 'transient', consecutiveFailures: 1 }) === 'transient', 'empty responses must remain recoverable');
 assert(isHardJarProbeFailure({ key: 'x', siteKey: 'x', result: 'error', speedMs: null, httpStatus: 404 }) === true, 'missing remote JAR must remain unusable');
+assert(isHardJarProbeFailure({ key: 'x', siteKey: 'x', result: 'error', speedMs: null, httpStatus: 410 }) === true, 'gone remote JAR must remain unusable');
+assert(isHardJarProbeFailure({ key: 'x', siteKey: 'x', result: 'error', speedMs: null, httpStatus: 401 }) === false, 'JAR authentication failures must remain client-verifiable');
+assert(isHardJarProbeFailure({ key: 'x', siteKey: 'x', result: 'error', speedMs: null, httpStatus: 403 }) === false, 'JAR forbidden responses must remain client-verifiable');
+assert(isHardJarProbeFailure({ key: 'x', siteKey: 'x', result: 'error', speedMs: null, httpStatus: 500 }) === false, 'JAR upstream failures must remain client-verifiable');
 assert(isHardJarProbeFailure({ key: 'x', siteKey: 'x', result: 'error', speedMs: null, httpStatus: 200, zipValid: false, md5Verified: false }) === false, 'metadata/placeholder JAR failures must remain untestable');
 
 console.log('regression: quality pool freshness checks passed');

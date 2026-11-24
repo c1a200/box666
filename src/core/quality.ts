@@ -18,6 +18,7 @@ import type {
 import type { Storage } from '../storage/interface';
 import { batchSiteSpeedTest, isSiteProbeable, type SiteProbeResult } from './speedtest';
 import { probeJarHealth, applyJarProbeToEntry, isRemoteJarSite, type JarProbeResult } from './jar-health';
+import { isInvalidProbeFailure } from './probe-classification';
 import { classifySearchSource } from './search-quota';
 import { calculateQualityScore, compareQualityEntries, normalizeQualityGrade, qualityConfidenceForEntry, qualityScoreForEntry } from './quality-ranking';
 import {
@@ -101,8 +102,22 @@ export function getQualityPoolHealth(
 // The quality pool contains every source with a positive quality score. The
 // distribution policy may still limit `untestable` to a small client fallback
 // window, but that is a serving decision rather than pool membership.
-const QUALITY_POOL_GRADES = new Set<SiteQualityGrade>(['excellent', 'good', 'usable', 'untestable']);
+const QUALITY_POOL_GRADES = new Set<SiteQualityGrade>([
+  'excellent',
+  'good',
+  'usable',
+  'untestable',
+  'timeout',
+  'transient',
+]);
 const SERVER_VERIFIED_GRADES = new Set<SiteQualityGrade>(['excellent', 'good', 'usable']);
+const PROBEABLE_POOL_GRADES = new Set<SiteQualityGrade>([
+  'excellent',
+  'good',
+  'usable',
+  'transient',
+  'timeout',
+]);
 
 function isNodeRuntime(): boolean {
   return typeof process !== 'undefined' && !!process.env.PORT;
@@ -410,27 +425,32 @@ function createEmptyGrades(): SiteQualityGrades {
     usable: { count: 0, cumulative: 0 },
     untestable: { count: 0, cumulative: 0 },
     timeout: { count: 0, cumulative: 0 },
+    transient: { count: 0, cumulative: 0 },
     unusable: { count: 0, cumulative: 0 },
     poolTotal: 0,
     serverVerifiedTotal: 0,
     clientFallbackTotal: 0,
+    transientTotal: 0,
   };
 }
 
 const normalizeGrade = normalizeQualityGrade;
 
-export function gradeForProbe(probe: SiteProbeResult | undefined, historicalFailures = 0): SiteQualityGrade {
+export function gradeForProbe(
+  probe: SiteProbeResult | undefined,
+  historicalFailures = 0,
+  historicalFailureKind?: 'invalid' | 'transient',
+  historicalResult?: 'ok' | 'empty' | 'error' | 'timeout' | 'not_probed',
+): SiteQualityGrade {
   if (!probe || probe.result === 'not_probed') {
-    return historicalFailures >= 3 ? 'unusable' : 'timeout';
+    if (historicalFailureKind === 'invalid') return 'unusable';
+    if (historicalResult === 'ok' && historicalFailures < 3) return 'usable';
+    return 'transient';
   }
-  if (probe.result === 'error' || probe.result === 'empty') {
-    return 'unusable';
-  }
-  if (probe.result === 'timeout') {
-    return historicalFailures >= 3 ? 'unusable' : 'timeout';
-  }
+  if (isInvalidProbeFailure(probe)) return 'unusable';
+  if (probe.result === 'error' || probe.result === 'empty' || probe.result === 'timeout') return 'transient';
   const speed = probe.speedMs;
-  if (speed == null) return 'timeout';
+  if (speed == null) return 'transient';
   if (speed <= QUALITY_THRESHOLDS.excellent) return 'excellent';
   if (speed <= QUALITY_THRESHOLDS.good) return 'good';
   if (speed <= QUALITY_THRESHOLDS.usable) return 'usable';
@@ -450,14 +470,15 @@ function buildGrades(entries: SearchQualitySnapshot['entries']): SiteQualityGrad
   for (const entry of entries) {
     const grade = normalizeGrade(entry.grade);
     grades[grade].count++;
-    if (grade !== 'timeout' && grade !== 'unusable') {
+    if (grade !== 'unusable') {
       grades.poolTotal++;
       if (grade === 'excellent' || grade === 'good' || grade === 'usable') grades.serverVerifiedTotal++;
       else if (grade === 'untestable') grades.clientFallbackTotal++;
+      else if (grade === 'transient') grades.transientTotal++;
     }
   }
   let cumulative = 0;
-  for (const grade of ['excellent', 'good', 'usable', 'untestable', 'timeout'] as const) {
+  for (const grade of ['excellent', 'good', 'usable', 'untestable', 'timeout', 'transient'] as const) {
     cumulative += grades[grade].count;
     grades[grade].cumulative = cumulative;
   }
@@ -476,16 +497,33 @@ function normalizeSnapshot(raw: unknown): SearchQualitySnapshot | null {
   if (!Array.isArray(parsed.entries)) return null;
   const entries = parsed.entries.map((entry: any) => {
     const rawGrade = normalizeGrade(entry.grade);
+    const result: SearchQualitySnapshot['entries'][number]['result'] =
+      entry.result === 'ok' || entry.result === 'empty' || entry.result === 'error'
+        || entry.result === 'timeout' || entry.result === 'not_probed'
+        ? entry.result
+        : 'not_probed';
+    const httpStatus = typeof entry.httpStatus === 'number' ? entry.httpStatus : undefined;
+    const failureKind = httpStatus === 404 || httpStatus === 410
+      ? 'invalid'
+      : entry.failureKind === 'invalid' || entry.failureKind === 'transient'
+        ? entry.failureKind
+        : result !== 'ok'
+          ? 'transient'
+          : undefined;
     const jarProbeResult = entry.jarProbeResult === 'ok' || entry.jarProbeResult === 'error'
       || entry.jarProbeResult === 'timeout' || entry.jarProbeResult === 'not_probed'
       ? entry.jarProbeResult
       : undefined;
+    const invalidFailure = failureKind === 'invalid'
+      || httpStatus === 404
+      || httpStatus === 410;
     // 3.3.4 and earlier classified many client JARs as unusable merely because
     // Render could not validate a placeholder/image URL as a ZIP. Migrate those
     // historical records to untestable immediately; a later quality run can
     // still promote or remove them using the explicit HTTP failure rules.
     const softJarFailure = rawGrade === 'unusable'
       && !!jarProbeResult
+      && !invalidFailure
       && !isHardJarProbeFailure({
         key: entry.key || '',
         siteKey: entry.key || '',
@@ -493,21 +531,37 @@ function normalizeSnapshot(raw: unknown): SearchQualitySnapshot | null {
         speedMs: typeof entry.jarSpeedMs === 'number' ? entry.jarSpeedMs : null,
         httpStatus: typeof entry.jarHttpStatus === 'number' ? entry.jarHttpStatus : undefined,
       });
-    const grade = softJarFailure ? 'untestable' : rawGrade;
-    return {
+    // Older probe classifiers persisted every recoverable network/HTTP error
+    // as unusable. Those records must not become permanent exclusions merely
+    // because the snapshot predates failureKind/httpStatus.
+    const softProbeFailure = rawGrade === 'unusable'
+      && result !== 'ok'
+      && !invalidFailure
+      && !softJarFailure;
+    const grade: SiteQualityGrade = softProbeFailure
+      ? 'transient'
+      : softJarFailure
+        ? 'untestable'
+        : rawGrade;
+    const normalized: SearchQualitySnapshot['entries'][number] = {
       ...entry,
       grade,
       speedMs: typeof entry.speedMs === 'number' ? entry.speedMs : null,
-      result: entry.result === 'ok' || entry.result === 'empty' || entry.result === 'error' || entry.result === 'timeout' || entry.result === 'not_probed'
-        ? entry.result
-        : 'not_probed',
+      result,
+      httpStatus,
+      failureKind,
       consecutiveFailures: typeof entry.consecutiveFailures === 'number' ? entry.consecutiveFailures : 0,
-      // Recompute the score after a legacy unusable -> untestable migration.
-      qualityScore: softJarFailure ? undefined : (typeof entry.qualityScore === 'number' ? entry.qualityScore : undefined),
-      qualityConfidence: softJarFailure ? 0.2 : (typeof entry.qualityConfidence === 'number' ? entry.qualityConfidence : undefined),
+      // Recompute the score after a legacy unusable -> fallback migration.
+      qualityScore: typeof entry.qualityScore === 'number' ? entry.qualityScore : undefined,
+      qualityConfidence: typeof entry.qualityConfidence === 'number' ? entry.qualityConfidence : undefined,
       jarProbeResult,
       category: typeof entry.category === 'string' ? entry.category : undefined,
     };
+    if (softProbeFailure || softJarFailure) {
+      normalized.qualityScore = calculateQualityScore(normalized);
+      normalized.qualityConfidence = softProbeFailure ? 0.2 : 0.2;
+    }
+    return normalized;
   }) as SearchQualitySnapshot['entries'];
   const sorted = sortQualityEntries(entries);
   const grades = buildGrades(sorted);
@@ -609,7 +663,9 @@ export function candidateKeysFromPool(pool: SearchQualitySnapshot | null): Set<s
   if (!pool || !Array.isArray(pool.entries)) return keys;
   for (const entry of pool.entries) {
     const grade = normalizeGrade(entry.grade);
-    if (SERVER_VERIFIED_GRADES.has(grade) && qualityScoreForEntry(entry) > 0) keys.add(entry.key);
+    // Recoverable failures must be re-probed during incremental runs or they
+    // would remain stuck in the fallback tier forever.
+    if (PROBEABLE_POOL_GRADES.has(grade)) keys.add(entry.key);
   }
   return keys;
 }
@@ -630,7 +686,7 @@ export function distributableKeysFromPool(
   for (const entry of pool.entries) {
     if (options.eligibleKeys && !options.eligibleKeys.has(entry.key)) continue;
     const grade = normalizeGrade(entry.grade);
-    if (SERVER_VERIFIED_GRADES.has(grade)) {
+    if (grade !== 'unusable' && grade !== 'untestable') {
       keys.add(entry.key);
       continue;
     }
@@ -656,7 +712,8 @@ export function qualityTargetSites(sites: TVBoxSite[], pool: SearchQualitySnapsh
  * 对可搜索池执行一次质量分级并持久化。
  *
  * candidate 模式只重测当前服务端可验证的质量池子集；full 模式重测全部可服务端探测的 searchable。
- * untestable 由客户端执行，不参与服务端重测；timeout/unusable 保留历史统计但不进入质量池。
+ * untestable 由客户端执行，不参与服务端重测；transient/timeout 保留为低优先级
+ * 后备并参与后续重测，只有确定性失效的 unusable 不进入质量池。
  */
 export async function runQualityGrading(
   storage: Storage,
@@ -720,9 +777,9 @@ export function isHardJarProbeFailure(probe: JarProbeResult): boolean {
   // 客户端运行时才会真正执行 type=3 扩展。Render 侧遇到超时、5xx、
   // 非 ZIP 响应或 MD5 不一致，只能说明本次预检无法证明质量；尤其是
   // 聚合源常用图片/占位地址填充 jar 字段，不能据此把整类源误判为不可用。
-  // 只有明确的鉴权拒绝或资源不存在，才足以排除该源。
+  // 401/403 也可能只是鉴权头或地区策略变化；只有 404/410 能确认资源失效。
   return typeof probe.httpStatus === 'number'
-    && [401, 403, 404, 410].includes(probe.httpStatus);
+    && [404, 410].includes(probe.httpStatus);
 }
 
 function buildQualityEntries(
@@ -784,14 +841,27 @@ function buildQualityEntries(
     const effectiveProbe: SiteProbeResult | undefined = freshProbe
       ? probe
       : previousEntry
-        ? { key: site.key, speedMs: previousEntry.speedMs, result: previousEntry.result }
+        ? {
+            key: site.key,
+            speedMs: previousEntry.speedMs,
+            result: previousEntry.result,
+            httpStatus: previousEntry.httpStatus,
+            failureKind: previousEntry.failureKind,
+            consecutiveFailures: previousFailures,
+          }
         : probe;
+    const historicalFailureKind = probe?.failureKind
+      ?? healthMap[site.key]?.lastFailureKind
+      ?? previousEntry?.failureKind;
+    const historicalResult = effectiveProbe?.result ?? previousEntry?.result;
     const entry: SearchQualitySnapshot['entries'][number] = {
       key: site.key,
       name: site.name || site.key,
-      grade: gradeForProbe(effectiveProbe, consecutiveFailures),
+      grade: gradeForProbe(effectiveProbe, consecutiveFailures, historicalFailureKind, historicalResult),
       speedMs: effectiveProbe?.speedMs ?? null,
       result: effectiveProbe?.result ?? 'not_probed',
+      httpStatus: effectiveProbe?.httpStatus,
+      failureKind: effectiveProbe?.failureKind,
       probedAt: freshProbe ? now : previousEntry?.probedAt,
       consecutiveFailures,
       qualityScore: 0,
@@ -992,13 +1062,13 @@ export function unusableKeys(pool: SearchQualitySnapshot | null): Set<string> {
   return keys;
 }
 
-/** 不进入质量池的 key 集合（超时 + 明确不可用）。 */
+/** 不进入质量池的 key 集合（仅确定性不可用）。 */
 export function excludedQualityKeys(pool: SearchQualitySnapshot | null): Set<string> {
   const keys = new Set<string>();
   if (!pool || !Array.isArray(pool.entries)) return keys;
   for (const entry of pool.entries) {
     const grade = normalizeGrade(entry.grade);
-    if (grade === 'timeout' || grade === 'unusable') keys.add(entry.key);
+    if (grade === 'unusable') keys.add(entry.key);
   }
   return keys;
 }

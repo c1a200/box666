@@ -121,7 +121,10 @@ export function normalizeSiteBucketLimits(value: unknown): SiteBucketLimits | un
     }
     return out;
   };
-  const quality = normalizeMap(source.quality, new Set(['excellent', 'good', 'usable', 'untestable']));
+  const quality = normalizeMap(
+    source.quality,
+    new Set(['excellent', 'good', 'usable', 'untestable', 'transient', 'timeout']),
+  );
   const rawType = source.type && typeof source.type === 'object' && !Array.isArray(source.type)
     ? source.type as Record<string, unknown>
     : {};
@@ -402,18 +405,21 @@ function createEmptyQualityGrades(): SiteQualityGrades {
     good: { count: 0, cumulative: 0 },
     usable: { count: 0, cumulative: 0 },
     untestable: { count: 0, cumulative: 0 },
+    transient: { count: 0, cumulative: 0 },
     timeout: { count: 0, cumulative: 0 },
     unusable: { count: 0, cumulative: 0 },
     poolTotal: 0,
     serverVerifiedTotal: 0,
     clientFallbackTotal: 0,
+    transientTotal: 0,
   };
 }
 
 /**
  * 基于本次验活结果、历史连续失败次数和测速延迟，对“未截断的可搜索候选池”分级。
  * 探测预算耗尽时复用历史健康记录，避免把此前稳定可用的源误归为 unknown。
- * 不额外发请求；不可用源不进入 poolTotal，但会保留在 unusable 统计中。
+ * 不额外发请求；只有确定性失效源不进入 poolTotal，临时失败与超时仍作为
+ * 低优先级后备保留。
  */
 function getSiteQualityGrade(
   site: TVBoxSite,
@@ -429,18 +435,25 @@ function getSiteQualityGrade(
   const hasPriorSuccess = !!health?.lastSuccessTime || !!probe?.lastSuccessTime;
   const historicalHealthy = !!health && failures < 3
     && (health.lastProbeResult === 'ok' || hasPriorSuccess);
+  const historicalInvalid = health?.lastFailureKind === 'invalid'
+    || health?.httpStatus === 404
+    || health?.httpStatus === 410;
 
   // 本次没有完成探测：优先使用历史健康度，避免预算耗尽导致好源被降级。
   if (!probe || probe.result === 'not_probed') {
-    if (failures >= 3) return 'unusable';
-    return historicalHealthy ? 'usable' : 'timeout';
+    if (historicalInvalid) return 'unusable';
+    return historicalHealthy ? 'usable' : 'transient';
   }
 
-  if (probe.result === 'error' || probe.result === 'empty') return 'unusable';
-  if (probe.result === 'timeout') return failures >= 3 ? 'unusable' : 'timeout';
+  if (probe.failureKind === 'invalid'
+    || probe.httpStatus === 404
+    || probe.httpStatus === 410) return 'unusable';
+  if (probe.result === 'error' || probe.result === 'empty' || probe.result === 'timeout') {
+    return 'transient';
+  }
 
   const speed = probe.speedMs;
-  if (failures >= 3 || speed == null) return 'timeout';
+  if (failures >= 3 || speed == null) return 'transient';
   if (speed <= QUALITY_EXCELLENT_MS) return 'excellent';
   if (speed <= QUALITY_GOOD_MS) return 'good';
   if (speed <= QUALITY_USABLE_MS) return 'usable';
@@ -456,15 +469,16 @@ function buildQualityGrades(
   for (const site of candidateSites) {
     const grade = getSiteQualityGrade(site, probeMap, healthMap);
     grades[grade].count++;
-    if (grade !== 'timeout' && grade !== 'unusable') {
+    if (grade !== 'unusable') {
       grades.poolTotal++;
       if (grade === 'untestable') grades.clientFallbackTotal++;
-      else grades.serverVerifiedTotal++;
+      else if (grade === 'transient') grades.transientTotal++;
+      else if (grade !== 'timeout') grades.serverVerifiedTotal++;
     }
   }
 
   let cumulative = 0;
-  for (const grade of ['excellent', 'good', 'usable', 'untestable', 'timeout'] as const) {
+  for (const grade of ['excellent', 'good', 'usable', 'untestable', 'transient', 'timeout'] as const) {
     cumulative += grades[grade].count;
     grades[grade].cumulative = cumulative;
   }
@@ -516,10 +530,11 @@ export function applySearchQuota(
     return getSiteQualityGrade(site, options.probeMap, options.healthMap);
   };
 
-  // 优/良/可用/客户端不可探测源进入客户端候选池；超时与不可用均不可绕过，置顶也不能例外。
+  // 只有确定性失效的 unusable 被排除；临时失败和超时仍作为低优先级后备，
+  // 置顶也不能绕过这一硬门禁。
   const isUsableForSearch = (site: TVBoxSite): boolean => {
     const grade = gradeForSite(site);
-    return grade === 'excellent' || grade === 'good' || grade === 'usable' || grade === 'untestable';
+    return grade !== 'unusable';
   };
   let candidates = sites.filter(site => site.searchable === 1 && isUsableForSearch(site));
 
@@ -530,8 +545,9 @@ export function applySearchQuota(
     good: 1,
     usable: 2,
     untestable: 3,
-    timeout: 4,
-    unusable: 5,
+    transient: 4,
+    timeout: 5,
+    unusable: 6,
   };
   const hasPool = qualityEntries.size > 0;
   const hasProbe = !!options.probeMap && options.probeMap.size > 0;

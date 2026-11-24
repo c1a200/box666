@@ -1941,7 +1941,9 @@ export function createApp(deps: AppDeps): Hono {
       ? effectivePoolEntries.length - distributablePoolEntries.length
       : null;
     report.qualityPoolServerVerified = effectiveQualityPool
-      ? effectivePoolEntries.filter((entry) => entry.grade !== 'untestable').length
+      ? effectivePoolEntries.filter((entry) => entry.grade === 'excellent'
+        || entry.grade === 'good'
+        || entry.grade === 'usable').length
       : null;
     report.qualityPoolClientFallback = effectiveQualityPool
       ? effectivePoolEntries.filter((entry) => entry.grade === 'untestable').length
@@ -3306,7 +3308,8 @@ export function createApp(deps: AppDeps): Hono {
     const liveSet = new Set(blacklist.lives);
 
     // 搜索页必须使用与搜索配额、质量池完全相同的候选集合。
-    // JS HTTP 入口参与服务端可达性/速度分级；timeout/unusable 不下发。
+    // JS HTTP 入口参与服务端可达性/速度分级；只有确定性 unusable 不下发，
+    // timeout/transient 仍作为低优先级后备保留。
     const qualityPool = await loadQualityPool(storage);
     const qualityPoolHealth = getQualityPoolHealth(qualityPool);
     const qualityEntryMap = new Map(
@@ -3328,7 +3331,6 @@ export function createApp(deps: AppDeps): Hono {
     const qualityReason = (site: TVBoxSite, blocked: boolean, inRuntimePool: boolean): string => {
       if (blocked) return 'blocked';
       const entry = qualityEntryMap.get(site.key);
-      if (entry?.grade === 'timeout') return 'timeout';
       if (entry?.grade === 'unusable') return 'unusable';
       if (qualityPoolHealth.state === 'expired' || qualityPoolHealth.state === 'unavailable') {
         return 'quality-pool-expired';

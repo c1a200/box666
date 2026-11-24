@@ -7,6 +7,9 @@ const SCORE_BY_GRADE: Record<SiteQualityGrade, number> = {
   // Client-verifiable sources are deliberately below every server-verified
   // source. They can be opted in, but must not silently win a top-N list.
   untestable: 420,
+  // Recoverable failures remain eligible as low-priority fallbacks. They rank
+  // below client-verifiable sources and above slow-but-successful probes.
+  transient: 120,
   timeout: 80,
   unusable: 0,
 };
@@ -15,7 +18,7 @@ export function normalizeQualityGrade(value: unknown): SiteQualityGrade {
   if (value === 'unknown') return 'timeout';
   if (value === 'credential-ready') return 'untestable';
   if (value === 'excellent' || value === 'good' || value === 'usable'
-    || value === 'untestable' || value === 'timeout' || value === 'unusable') {
+    || value === 'untestable' || value === 'transient' || value === 'timeout' || value === 'unusable') {
     return value;
   }
   return 'timeout';
@@ -57,6 +60,7 @@ export function qualityConfidenceForEntry(entry: Pick<SearchQualityEntry, 'grade
   const grade = normalizeQualityGrade(entry.grade);
   if (grade === 'excellent' || grade === 'good' || grade === 'usable') return 0.85;
   if (grade === 'untestable') return entry.jarProbeResult === 'ok' ? 0.55 : 0.25;
+  if (grade === 'transient') return 0.1;
   return 0;
 }
 
@@ -70,5 +74,5 @@ export function compareQualityEntries(a: SearchQualityEntry, b: SearchQualityEnt
 }
 
 export function qualityGradeRank(value: unknown): number {
-  return ({ excellent: 0, good: 1, usable: 2, untestable: 3, timeout: 4, unusable: 5 } as Record<SiteQualityGrade, number>)[normalizeQualityGrade(value)];
+  return ({ excellent: 0, good: 1, usable: 2, untestable: 3, transient: 4, timeout: 5, unusable: 6 } as Record<SiteQualityGrade, number>)[normalizeQualityGrade(value)];
 }

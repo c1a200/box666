@@ -1,6 +1,7 @@
 import { TVBOX_UA, DEFAULT_SPEED_TEST_CONCURRENCY, DEFAULT_SPEED_TEST_BUDGET_MS } from './config';
 import { logger } from './logger';
-import type { TVBoxSite } from './types';
+import { failureKindForHttpStatus, isInvalidProbeFailure } from './probe-classification';
+import type { ProbeFailureKind, TVBoxSite } from './types';
 
 export type ProbeResult = 'ok' | 'empty' | 'error' | 'timeout' | 'not_probed';
 
@@ -8,6 +9,8 @@ export interface SiteProbeResult {
   key: string;
   speedMs: number | null;
   result: ProbeResult;
+  httpStatus?: number;
+  failureKind?: ProbeFailureKind;
   consecutiveFailures?: number;
   lastSuccessTime?: string;
 }
@@ -23,7 +26,7 @@ async function siteProbe(
   deep: boolean,
   options: SiteProbeOptions = {},
   externalSignal?: AbortSignal,
-): Promise<{ speedMs: number | null; result: ProbeResult }> {
+): Promise<{ speedMs: number | null; result: ProbeResult; httpStatus?: number; failureKind?: ProbeFailureKind }> {
   const controller = new AbortController();
   const abortFromExternal = () => controller.abort();
   if (externalSignal?.aborted) controller.abort();
@@ -38,21 +41,32 @@ async function siteProbe(
     });
     const speedMs = Date.now() - start;
 
-    if (!resp.ok) return { speedMs: null, result: 'error' };
+    if (!resp.ok) {
+      return {
+        speedMs: null,
+        result: 'error',
+        httpStatus: resp.status,
+        failureKind: failureKindForHttpStatus(resp.status),
+      };
+    }
 
     const body = await resp.text();
 
     if (!deep) {
-      return { speedMs, result: body.length > 0 ? 'ok' : 'empty' };
+      return body.length > 0
+        ? { speedMs, result: 'ok', httpStatus: resp.status }
+        : { speedMs: null, result: 'empty', httpStatus: resp.status, failureKind: 'transient' };
     }
 
     const valid = validateResponseContent(siteType, body);
-    return { speedMs, result: valid ? 'ok' : 'empty' };
+    return valid
+      ? { speedMs, result: 'ok', httpStatus: resp.status }
+      : { speedMs: null, result: 'empty', httpStatus: resp.status, failureKind: 'transient' };
   } catch (e: unknown) {
     if (e instanceof Error && e.name === 'AbortError') {
-      return { speedMs: null, result: 'timeout' };
+      return { speedMs: null, result: 'timeout', failureKind: 'transient' };
     }
-    return { speedMs: null, result: 'error' };
+    return { speedMs: null, result: 'error', failureKind: 'transient' };
   } finally {
     clearTimeout(timer);
     externalSignal?.removeEventListener('abort', abortFromExternal);
@@ -68,7 +82,7 @@ async function siteProbeWithRetry(
   retries = 1,
   options: SiteProbeOptions = {},
   externalSignal?: AbortSignal,
-): Promise<{ speedMs: number | null; result: ProbeResult }> {
+): Promise<{ speedMs: number | null; result: ProbeResult; httpStatus?: number; failureKind?: ProbeFailureKind }> {
   for (let attempt = 0; attempt <= retries; attempt++) {
     // 外部硬预算已中止时立即退出，不再重试，避免拖住聚合。
     if (externalSignal?.aborted) return { speedMs: null, result: 'not_probed' };
@@ -77,13 +91,13 @@ async function siteProbeWithRetry(
 
     const attemptTimeoutMs = Math.min(timeoutMs, remainingMs);
     const result = await siteProbe(url, siteType, attemptTimeoutMs, deep, options, externalSignal);
-    if (result.result !== 'timeout' && result.result !== 'error') return result;
+    if (result.result === 'ok' || result.result === 'not_probed' || result.failureKind === 'invalid') return result;
     if (attempt === retries || Date.now() >= deadline) return result;
 
     const waitMs = Math.min(500, Math.max(0, deadline - Date.now()));
     if (waitMs > 0) await new Promise(r => setTimeout(r, waitMs));
   }
-  return { speedMs: null, result: 'error' };
+  return { speedMs: null, result: 'error', failureKind: 'transient' };
 }
 
 function validateResponseContent(siteType: number, body: string): boolean {
@@ -225,8 +239,9 @@ export async function batchSiteSpeedTest(
   const ok = [...probeMap.values()].filter(v => v.result === 'ok').length;
   const empty = [...probeMap.values()].filter(v => v.result === 'empty').length;
   const timedOut = [...probeMap.values()].filter(v => v.result === 'timeout').length;
+  const invalid = [...probeMap.values()].filter(v => isInvalidProbeFailure(v)).length;
   const notProbed = [...probeMap.values()].filter(v => v.result === 'not_probed').length;
-  logger.infoFields('speedtest', 'batch-done', { ok, empty, timeout: timedOut, notProbed, error: probeMap.size - ok - empty - timedOut - notProbed, total: probeMap.size });
+  logger.infoFields('speedtest', 'batch-done', { ok, empty, timeout: timedOut, invalid, notProbed, error: probeMap.size - ok - empty - timedOut - notProbed, total: probeMap.size });
 
   return probeMap;
 }
@@ -262,9 +277,9 @@ export function filterUnreachableSites(
   if (speedMap.size === 0) return { sites, filtered: 0 };
 
   const reachable: TVBoxSite[] = [];
-  const unreachable: TVBoxSite[] = [];
+  const invalid: TVBoxSite[] = [];
   let probed = 0;
-  let reachableProbed = 0;
+  let transientFailures = 0;
 
   for (const site of sites) {
     if (protectedKeys.has(site.key)) {
@@ -281,19 +296,24 @@ export function filterUnreachableSites(
     probed++;
     if (probe.result === 'ok') {
       reachable.push(site);
-      reachableProbed++;
+    } else if (isInvalidProbeFailure(probe)) {
+      invalid.push(site);
     } else {
-      unreachable.push(site);
+      // 超时、空响应、401/403、429、5xx、反爬和网络错误都可能恢复，
+      // 必须保留在候选池中；否则一次局部波动会让源永久消失。
+      transientFailures++;
+      reachable.push(site);
     }
   }
 
-  if (probed > 0 && reachableProbed / probed < 0.1) {
-    logger.warn('speedtest', 'Safety valve: only ' + reachableProbed + '/' + probed + ' probed sites ok (<10%), keeping all');
-    return { sites, filtered: 0 };
-  }
-
-  logger.infoFields('speedtest', 'filter-done', { filtered: unreachable.length, kept: reachable.length, probed, notProbed: speedMap.size - probed });
-  return { sites: reachable, filtered: unreachable.length };
+  logger.infoFields('speedtest', 'filter-done', {
+    filtered: invalid.length,
+    kept: reachable.length,
+    transientFailures,
+    probed,
+    notProbed: speedMap.size - probed,
+  });
+  return { sites: reachable, filtered: invalid.length };
 }
 
 export function getTestableUrl(site: TVBoxSite): string | null {

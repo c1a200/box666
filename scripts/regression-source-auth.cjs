@@ -144,7 +144,18 @@ assert(conflictingLimits.authCodes[0].maxSites === 2, 'current maxSites must win
 
 (async () => {
   bundle('src/core/quality.ts', 'quality.cjs', 'true');
-  const { runQualityGrading } = require(path.join(outDir, 'quality.cjs'));
+  const { runQualityGrading, loadQualitySnapshot, gradeForProbe, isHardJarProbeFailure } = require(path.join(outDir, 'quality.cjs'));
+  assert(gradeForProbe({ key: 'http-404', result: 'error', speedMs: null, httpStatus: 404, failureKind: 'transient' }) === 'unusable', 'HTTP 404 must override stale transient classification');
+  assert(gradeForProbe({ key: 'http-410', result: 'error', speedMs: null, httpStatus: 410 }) === 'unusable', 'HTTP 410 must be permanently invalid');
+  assert(gradeForProbe({ key: 'http-401', result: 'error', speedMs: null, httpStatus: 401 }) === 'transient', 'HTTP 401 must remain recoverable');
+  assert(gradeForProbe({ key: 'http-403', result: 'error', speedMs: null, httpStatus: 403 }) === 'transient', 'HTTP 403 must remain recoverable');
+  assert(gradeForProbe({ key: 'http-500', result: 'error', speedMs: null, httpStatus: 500 }) === 'transient', 'HTTP 5xx must remain recoverable');
+  assert(gradeForProbe({ key: 'network-error', result: 'error', speedMs: null }) === 'transient', 'network errors must remain recoverable');
+  assert(gradeForProbe({ key: 'empty-response', result: 'empty', speedMs: null, httpStatus: 200 }) === 'transient', 'empty responses must remain recoverable');
+  assert(isHardJarProbeFailure({ key: 'jar-404', siteKey: 'jar-404', result: 'error', speedMs: null, httpStatus: 404 }), 'JAR 404 must remain a hard failure');
+  assert(isHardJarProbeFailure({ key: 'jar-410', siteKey: 'jar-410', result: 'error', speedMs: null, httpStatus: 410 }), 'JAR 410 must remain a hard failure');
+  assert(!isHardJarProbeFailure({ key: 'jar-401', siteKey: 'jar-401', result: 'error', speedMs: null, httpStatus: 401 }), 'JAR 401 must remain client-verifiable');
+  assert(!isHardJarProbeFailure({ key: 'jar-403', siteKey: 'jar-403', result: 'error', speedMs: null, httpStatus: 403 }), 'JAR 403 must remain client-verifiable');
   const persisted = new Map();
   const storage = {
     async get(key) { return persisted.has(key) ? persisted.get(key) : null; },
@@ -202,12 +213,35 @@ assert(conflictingLimits.authCodes[0].maxSites === 2, 'current maxSites must win
   assert(hardJarSnapshot.entries[0].grade === 'unusable', 'explicit HTTP rejection should mark a client JAR unusable');
   global.fetch = originalFetch;
 
-  const { loadQualitySnapshot } = require(path.join(outDir, 'quality.cjs'));
   const legacy = await loadQualitySnapshot(legacyStorage);
   assert(legacy.grades.poolTotal === 2, 'legacy snapshots must rebuild the complete quality pool count');
   assert(legacy.grades.serverVerifiedTotal === 1, 'legacy snapshots must classify verified grades');
   assert(legacy.grades.clientFallbackTotal === 1, 'legacy credential-ready grade must migrate to client fallback');
   assert(legacy.entries[0].key === 'legacy-good', 'legacy snapshots must be deterministically re-sorted');
+
+  const migrationStorage = {
+    async get(key) {
+      if (key !== 'search_quality_pool') return null;
+      return JSON.stringify({
+        updatedAt: new Date().toISOString(),
+        entries: [
+          { key: 'legacy-500', name: '历史 500', grade: 'unusable', result: 'error', speedMs: null, httpStatus: 500, failureKind: 'transient', consecutiveFailures: 2 },
+          { key: 'legacy-404', name: '历史 404', grade: 'unusable', result: 'error', speedMs: null, httpStatus: 404, failureKind: 'transient', consecutiveFailures: 2 },
+          { key: 'legacy-410', name: '历史 410', grade: 'unusable', result: 'error', speedMs: null, httpStatus: 410, consecutiveFailures: 2 },
+          { key: 'legacy-invalid', name: '历史明确失效', grade: 'unusable', result: 'error', speedMs: null, failureKind: 'invalid', consecutiveFailures: 2 },
+          { key: 'legacy-jar-401', name: '历史 JAR 401', grade: 'unusable', result: 'not_probed', speedMs: null, jarProbeResult: 'error', jarHttpStatus: 401, consecutiveFailures: 2 },
+        ],
+      });
+    },
+    async put() {},
+  };
+  const migratedPool = await loadQualitySnapshot(migrationStorage);
+  const migratedEntries = new Map(migratedPool.entries.map((entry) => [entry.key, entry]));
+  assert(migratedEntries.get('legacy-500').grade === 'transient', 'legacy unusable 5xx must migrate to transient');
+  assert(migratedEntries.get('legacy-404').grade === 'unusable', 'legacy unusable 404 must remain unusable');
+  assert(migratedEntries.get('legacy-410').grade === 'unusable', 'legacy unusable 410 must remain unusable');
+  assert(migratedEntries.get('legacy-invalid').grade === 'unusable', 'explicit invalid failure must remain unusable');
+  assert(migratedEntries.get('legacy-jar-401').grade === 'untestable', 'legacy JAR 401 must migrate to client-verifiable untestable');
   console.log('regression: source merge and client auth policy checks passed');
 })().catch((error) => {
   console.error(error && error.stack ? error.stack : error);

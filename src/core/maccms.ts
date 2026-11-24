@@ -1,10 +1,14 @@
 // MacCMS 源验证与 TVBoxSite 转换
 
-import type { MacCMSSourceEntry, TVBoxSite } from './types';
+import { failureKindForHttpStatus, isInvalidProbeFailure } from './probe-classification';
+import type { MacCMSSourceEntry, ProbeFailureKind, TVBoxSite } from './types';
 
 export interface MacCMSValidation {
   ok: boolean;
   speedMs: number;
+  result: 'ok' | 'empty' | 'error' | 'timeout';
+  httpStatus?: number;
+  failureKind?: ProbeFailureKind;
 }
 
 /**
@@ -17,24 +21,50 @@ export async function validateMacCMS(
 ): Promise<MacCMSValidation> {
   const url = api.includes('?') ? `${api}&ac=list` : `${api}?ac=list`;
   const start = Date.now();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-
     const resp = await fetch(url, { signal: controller.signal });
-    clearTimeout(timer);
-
     const speedMs = Date.now() - start;
 
-    if (!resp.ok) return { ok: false, speedMs };
+    if (!resp.ok) {
+      return {
+        ok: false,
+        speedMs,
+        result: 'error',
+        httpStatus: resp.status,
+        failureKind: failureKindForHttpStatus(resp.status),
+      };
+    }
 
-    const data = (await resp.json()) as Record<string, unknown>;
+    let data: Record<string, unknown>;
+    try {
+      data = (await resp.json()) as Record<string, unknown>;
+    } catch {
+      return {
+        ok: false,
+        speedMs,
+        result: 'empty',
+        httpStatus: resp.status,
+        failureKind: 'transient',
+      };
+    }
     // MacCMS 标准响应包含 class（分类）或 list（视频列表）
     const ok = !!(data && (data.class || data.list));
-    return { ok, speedMs };
-  } catch {
-    return { ok: false, speedMs: Date.now() - start };
+    return ok
+      ? { ok: true, speedMs, result: 'ok', httpStatus: resp.status }
+      : { ok: false, speedMs, result: 'empty', httpStatus: resp.status, failureKind: 'transient' };
+  } catch (error: unknown) {
+    const timedOut = error instanceof Error && error.name === 'AbortError';
+    return {
+      ok: false,
+      speedMs: Date.now() - start,
+      result: timedOut ? 'timeout' : 'error',
+      failureKind: 'transient',
+    };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -98,8 +128,17 @@ export async function processMacCMSForLocal(
       if (validation.ok) {
         passed.push(entry);
         speedMap.set(entry.key, validation.speedMs);
+      } else if (!isInvalidProbeFailure(validation)) {
+        // 本地验证只淘汰确定性失效的 MacCMS API。超时、限流、5xx、
+        // 403/反爬或临时无效 JSON 都保留，稍后由站点探测/质量任务重试。
+        passed.push(entry);
+        console.log(
+          `[maccms] Kept ${entry.key} after transient failure (${validation.httpStatus || validation.result})`,
+        );
       } else {
-        console.log(`[maccms] Filtered out ${entry.key}: validation failed (${validation.speedMs}ms)`);
+        console.log(
+          `[maccms] Filtered out ${entry.key}: permanent failure (${validation.httpStatus || validation.result})`,
+        );
       }
     } else {
       console.log(`[maccms] Filtered out unknown: ${result.reason}`);
@@ -107,7 +146,7 @@ export async function processMacCMSForLocal(
   }
 
   console.log(
-    `[maccms] ${passed.length}/${entries.length} MacCMS sources passed validation`,
+    `[maccms] ${passed.length}/${entries.length} MacCMS sources retained`,
   );
   return { passed, speedMap };
 }
