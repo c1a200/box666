@@ -580,7 +580,7 @@ const INTERNATIONAL_SUBGROUP_ORDER = [
   '国际·体育',
   '国际·少儿',
   '国际·纪录',
-  ...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map((letter) => `国际·英语${letter}`),
+  '国际·英语',
   '国际·俄语',
   '国际·亚洲',
   '国际·其他',
@@ -620,85 +620,19 @@ const TOGETHER_SUBGROUP_ORDER = [
   '一起看·虎牙音乐',
   '一起看·虎牙生活',
   '一起看·虎牙知识',
-  '一起看·虎牙中文A',
-  '一起看·虎牙中文B',
-  '一起看·虎牙中文C',
-  '一起看·虎牙中文D',
-  '一起看·虎牙中文E',
-  '一起看·虎牙中文F',
-  '一起看·虎牙中文G',
-  '一起看·虎牙中文H',
-  '一起看·虎牙中文J',
-  '一起看·虎牙中文K',
-  '一起看·虎牙中文L',
-  '一起看·虎牙中文M',
-  '一起看·虎牙中文N',
-  '一起看·虎牙中文P',
-  '一起看·虎牙中文Q',
-  '一起看·虎牙中文R',
-  '一起看·虎牙中文S',
-  '一起看·虎牙中文T',
-  '一起看·虎牙中文W',
-  '一起看·虎牙中文X',
-  '一起看·虎牙中文Y',
-  '一起看·虎牙中文Z',
-  '一起看·虎牙字母数字',
+  '一起看·虎牙其他',
   '一起看·斗鱼影视',
   '一起看·斗鱼游戏',
   '一起看·斗鱼音乐',
   '一起看·斗鱼生活',
   '一起看·斗鱼知识',
-  '一起看·斗鱼中文A',
-  '一起看·斗鱼中文B',
-  '一起看·斗鱼中文C',
-  '一起看·斗鱼中文D',
-  '一起看·斗鱼中文E',
-  '一起看·斗鱼中文F',
-  '一起看·斗鱼中文G',
-  '一起看·斗鱼中文H',
-  '一起看·斗鱼中文J',
-  '一起看·斗鱼中文K',
-  '一起看·斗鱼中文L',
-  '一起看·斗鱼中文M',
-  '一起看·斗鱼中文N',
-  '一起看·斗鱼中文P',
-  '一起看·斗鱼中文Q',
-  '一起看·斗鱼中文R',
-  '一起看·斗鱼中文S',
-  '一起看·斗鱼中文T',
-  '一起看·斗鱼中文W',
-  '一起看·斗鱼中文X',
-  '一起看·斗鱼中文Y',
-  '一起看·斗鱼中文Z',
-  '一起看·斗鱼字母数字',
+  '一起看·斗鱼其他',
   '一起看·YY影视',
   '一起看·YY游戏',
   '一起看·YY音乐',
   '一起看·YY生活',
   '一起看·YY知识',
-  '一起看·YY中文A',
-  '一起看·YY中文B',
-  '一起看·YY中文C',
-  '一起看·YY中文D',
-  '一起看·YY中文E',
-  '一起看·YY中文F',
-  '一起看·YY中文G',
-  '一起看·YY中文H',
-  '一起看·YY中文J',
-  '一起看·YY中文K',
-  '一起看·YY中文L',
-  '一起看·YY中文M',
-  '一起看·YY中文N',
-  '一起看·YY中文P',
-  '一起看·YY中文Q',
-  '一起看·YY中文R',
-  '一起看·YY中文S',
-  '一起看·YY中文T',
-  '一起看·YY中文W',
-  '一起看·YY中文X',
-  '一起看·YY中文Y',
-  '一起看·YY中文Z',
-  '一起看·YY字母数字',
+  '一起看·YY其他',
   '一起看·B站影视',
   '一起看·B站游戏',
   '一起看·B站音乐',
@@ -729,10 +663,6 @@ const OTHER_SUBGROUP_ORDER = [
   '其他·音乐',
   '其他·影视',
   '其他·地方',
-  ...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map((letter) => `其他·字母${letter}`),
-  '其他·数字',
-  ...'ABCDEFGHJKLMNOPQRSTWXYZ'.split('').map((letter) => `其他·中文${letter}`),
-  '其他·中文其他',
   '其他·综合',
 ] as const;
 
@@ -910,50 +840,7 @@ function classifyTogetherSubgroup(
     kind = '知识';
   }
   if (kind) return '一起看·' + platform + kind;
-  if (platform === 'B站' || platform === '短视频' || platform === '其他') return '一起看·' + platform + '其他';
-  return '一起看·' + platform + togetherFallbackBucket(platform, channel);
-}
-
-function togetherFallbackBucket(platform: string, channel?: TVBoxLiveChannel): string {
-  if (platform === 'YY') {
-    const name = (channel?.name || '').trim().replace(/^[\s\[【（(]+/, '');
-    const first = Array.from(name)[0] || '';
-    const initial = 'ABCDEFGHJKLMNOPQRSTWXYZ'.includes(first.toUpperCase()) ? first.toUpperCase() : '';
-    if (initial) return '字母数字';
-    if (/[0-9a-z]/i.test(first)) return '字母数字';
-    if (/[\u4e00-\u9fff]/.test(first)) return '中文' + chineseBucketInitial(name);
-    return '其他';
-  }
-  const idText = (channel?.urls || [])
-    .map((url) => url.match(/\/(?:huya|douyu)\/(\d+)/i)?.[1] || '')
-    .find(Boolean) || '';
-  const id = Number(idText);
-  if (!Number.isFinite(id) || id <= 0) return '字母数字';
-  // 平台 ID 跨度从万级到千万级且中高号段密集，使用 16 档对数桶控制单桶规模。
-  const bucket = Math.floor(Math.log2(id) * 1.5);
-  const labels = [
-    '中文A', '中文B', '中文C', '中文D',
-    '中文E', '中文F', '中文G', '中文H',
-    '中文J', '中文K', '中文L', '中文M',
-    '中文N', '中文P', '中文Q', '中文R',
-  ];
-  return labels[Math.min(labels.length - 1, Math.max(0, bucket - 18))];
-}
-
-function chineseBucketInitial(name: string): string {
-  const first = Array.from(name)[0] || '';
-  const ranges = [
-    ['A', '啊', '芭'], ['B', '芭', '擦'], ['C', '擦', '搭'], ['D', '搭', '蛾'],
-    ['E', '蛾', '发'], ['F', '发', '噶'], ['G', '噶', '哈'], ['H', '哈', '击'],
-    ['J', '击', '喀'], ['K', '喀', '垃'], ['L', '垃', '妈'], ['M', '妈', '拿'],
-    ['N', '拿', '哦'], ['O', '哦', '啪'], ['P', '啪', '期'], ['Q', '期', '然'],
-    ['R', '然', '撒'], ['S', '撒', '塌'], ['T', '塌', '挖'], ['W', '挖', '昔'],
-    ['X', '昔', '压'], ['Y', '压', '匝'], ['Z', '匝', '\u9fff'],
-  ] as const;
-  for (const [initial, start, end] of ranges) {
-    if (first >= start && first < end) return initial;
-  }
-  return '其他';
+  return '一起看·' + platform + '其他';
 }
 
 function classifyInternationalSubgroup(
@@ -987,11 +874,6 @@ function classifyInternationalSubgroup(
   if (/movie|cinema|film|drama|series|hbo|cinemax|starmovies|影视|电影|剧场/i.test(text)) return '国际·影视';
   if (/俄语|俄罗斯|俄羅斯|russia|russian|русск|россия|перв|тнт|стс|нтв|карусель|ukraine|бел|kazakh|哈萨克/i.test(text)) return '国际·俄语';
   if (/日本|japan|nhk|韩国|korea|kbs|mbc|sbs|arirang|tvn|jtbc|印度|india|asianet|astro|亚洲|asia|singapore|malaysia|thai|vietnam|印尼|泰国|越南|菲律宾/i.test(text)) return '国际·亚洲';
-  if (latinOnly) {
-    const first = (name.replace(/^[^a-z0-9]+/i, '')[0] || 'A').toUpperCase();
-    const bucket = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.includes(first) ? first : 'A';
-    return '国际·英语' + bucket;
-  }
   return '国际·英语';
 }
 
@@ -1048,10 +930,6 @@ function classifyOtherSubgroup(
   const region = detectLocalRegion(rawGroup, channelName);
   if (region) return '地方·' + region;
   if (/生活|美食|健康|汽车|房产|家居|时尚|美妆|旅游|民生|都市|法治|茶|教育/.test(text)) return '其他·生活服务';
-  const first = name.replace(/^[^a-z0-9\u4e00-\u9fff]+/i, '')[0] || '';
-  if (/[a-z]/i.test(first)) return '其他·字母' + first.toUpperCase();
-  if (/[0-9]/.test(first)) return '其他·数字';
-  if (/[\u4e00-\u9fff]/.test(first)) return '其他·中文' + chineseBucketInitial(name);
   return '其他·综合';
 }
 

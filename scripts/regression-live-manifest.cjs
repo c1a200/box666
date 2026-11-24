@@ -1148,17 +1148,24 @@ const subgroupGroups = [{
     { name: '虎牙电影1', urls: ['http://sub.example/huya$虎牙电影#11111111'] },
     { name: '斗鱼游戏1', urls: ['http://sub.example/douyu$斗鱼游戏#22222222'] },
     { name: 'YY音乐1', urls: ['http://sub.example/yy$YY音乐#33333333'] },
+    { name: '虎牙随便看看1', urls: ['http://sub.example/huya/1000001$虎牙#44444444'] },
+    { name: '斗鱼随便看看1', urls: ['http://sub.example/douyu/2000001$斗鱼#55555555'] },
+    { name: 'YY随便看看1', urls: ['http://sub.example/yy/3000001$YY#66666666'] },
   ],
 }, {
   group: '其他',
   channels: [
     { name: 'abc news', urls: ['http://sub.example/abc'] },
+    { name: 'Zeta TV', urls: ['http://sub.example/zeta'] },
+    { name: 'Alpha TV', urls: ['http://sub.example/alpha'] },
     { name: '咪咕视频1', urls: ['http://sub.example/migu'] },
     { name: 'NewTv超级电影', urls: ['http://sub.example/newtv'] },
     { name: '测试频道', urls: ['http://sub.example/test'] },
     { name: '购物频道', urls: ['http://sub.example/shop'] },
     { name: '生活服务频道', urls: ['http://sub.example/life'] },
     { name: '未分类频道', urls: ['http://sub.example/other'] },
+    { name: 'Z频道', urls: ['http://sub.example/other-z'] },
+    { name: '123频道', urls: ['http://sub.example/other-123'] },
   ],
 }, {
   group: '影视',
@@ -1196,13 +1203,20 @@ const subgroupOfChannel = (name) => {
 assert(subgroupOfChannel('虎牙电影1') === '一起看·虎牙影视', 'huya movie channel must use platform + content subgroup');
 assert(subgroupOfChannel('斗鱼游戏1') === '一起看·斗鱼游戏', 'douyu game channel must use platform + content subgroup');
 assert(subgroupOfChannel('YY音乐1') === '一起看·YY音乐', 'YY music channel must use platform + content subgroup');
+assert(subgroupOfChannel('虎牙随便看看1') === '一起看·虎牙其他', 'unclassified Huya channel must use one stable fallback subgroup');
+assert(subgroupOfChannel('斗鱼随便看看1') === '一起看·斗鱼其他', 'unclassified Douyu channel must use one stable fallback subgroup');
+assert(subgroupOfChannel('YY随便看看1') === '一起看·YY其他', 'unclassified YY channel must use one stable fallback subgroup');
 assert(subgroupOfChannel('abc news') === '国际·新闻', 'English news channel must use international news subgroup');
+assert(subgroupOfChannel('Zeta TV') === '国际·英语', 'English channel must not be split by initial letter');
+assert(subgroupOfChannel('Alpha TV') === '国际·英语', 'English channels must share the semantic English subgroup');
 assert(subgroupOfChannel('咪咕视频1') === '其他·咪咕', 'Migu channel must use Migu subgroup');
 assert(subgroupOfChannel('NewTv超级电影') === '其他·NewTV', 'NewTV channel must use NewTV subgroup');
 assert(subgroupOfChannel('测试频道') === '其他·测试备用', 'test channel must use test/backup subgroup');
 assert(subgroupOfChannel('购物频道') === '其他·购物生活', 'shopping channel must use shopping/life subgroup');
 assert(subgroupOfChannel('生活服务频道') === '其他·生活服务', 'life-service channel must use life-service subgroup');
-assert(subgroupOfChannel('未分类频道') === '其他·中文A', 'unclassified Chinese channel must use a stable Chinese-initial subgroup');
+assert(subgroupOfChannel('未分类频道') === '其他·综合', 'unclassified channel must use one stable fallback subgroup');
+assert(subgroupOfChannel('Z频道') === '其他·综合', 'Latin-prefixed Chinese channel must not use an initial-letter bucket');
+assert(subgroupOfChannel('123频道') === '其他·综合', 'numeric-prefixed channel must not use a numeric bucket');
 assert(subgroupOfChannel('经典电影') === '影视·电影', 'movie channel must use film subgroup');
 assert(subgroupOfChannel('电影剧场') === '影视·剧场', 'drama theater channel must use theater subgroup');
 assert(subgroupOfChannel('经典歌曲') === '音乐·歌曲', 'song channel must use song subgroup');
@@ -1213,6 +1227,10 @@ assert(subgroupOfChannel('历史人文') === '纪录·人文', 'humanity channel
 assert(subgroupOfChannel('科学探索') === '纪录·探索', 'science channel must use exploration subgroup');
 assert(subgroupOfChannel('景区直播') === '风景·景区', 'scenic channel must use scenic subgroup');
 assert(subgroupOfChannel('城市街景') === '风景·城市', 'city channel must use city subgroup');
+assert(
+  subgroupParsed.every((group) => !/^(?:国际·英语[A-Z]|其他·(?:字母[A-Z]|数字|中文[A-Z])|一起看·[^·]+(?:中文[A-Z]|字母数字))$/.test(group.group)),
+  'aggregate subgroups must not split channels into meaningless initial-letter or numeric buckets',
+);
 assert(
   subgroupParsed.reduce((sum, group) => sum + group.channels.length, 0) === subgroupGroups.reduce((sum, group) => sum + group.channels.length, 0),
   'subgrouping must not change channel count',
@@ -1239,7 +1257,7 @@ const pagedGroups = [{
 const pagedTxt = formatAggregatedLiveGroupsAsTxt(pagedGroups);
 const pagedParsed = parseLiveGroupsFromTxt(pagedTxt);
 const pagedHeaders = pagedParsed.map((group) => group.group);
-const huyaPages = pagedParsed.filter((group) => group.group.startsWith('一起看·虎牙中文'));
+const huyaPages = pagedParsed.filter((group) => group.group.startsWith('一起看·虎牙其他'));
 const huyaPageBase = huyaPages[0]?.group.replace(/\d{2}$/, '') || '';
 assert(huyaPages.length === 3, '401 Huya channels must split into three controlled pages');
 assert(huyaPages[0].channels.length === 180 && huyaPages[1].channels.length === 180 && huyaPages[2].channels.length === 41, 'Huya pages must keep stable 180/180/41 capacity');
