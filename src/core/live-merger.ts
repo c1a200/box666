@@ -579,6 +579,7 @@ const INTERNATIONAL_SUBGROUP_ORDER = [
   '国际·影视',
   '国际·体育',
   '国际·少儿',
+  '国际·音乐',
   '国际·纪录',
   '国际·英语',
   '国际·俄语',
@@ -742,9 +743,21 @@ const LOCAL_REGION_ALIASES: ReadonlyArray<readonly [string, readonly string[]]> 
 const LOCAL_CHANNEL_SUFFIX_RE = /频道|电视台|广播电视台|新闻|综合|公共|都市|生活|影视|电影|电视剧|经济|经视|科教|教育|文化|旅游|体育|少儿|国际|资讯|导视|党建|农村|乡村|农业|民生|社会|法制|城市|一套|二套|三套|四套|五套|六套|七套|八套|台$/;
 const LOCAL_CHANNEL_BRAND_RE = /哈哈炫动|ics|上视|珠江|南国|中国蓝|htv|长影|普陀|蒙语|兵团|可克达拉|石河子|胡杨河/;
 const NON_LOCAL_PROGRAM_RE = /电影节|颁奖|典礼|开幕式|闭幕式|晚会|演唱会/;
-const HK_MACAU_TAIWAN_CHANNEL_RE = /港澳台|港台|香港|澳门|台湾|tvb|翡翠|明珠|凤凰(?!传奇)|东森|中视|中天|台视|华视|民视|公视|三立|大爱|纬来|tvbs|rthk|澳视|澳广视|非凡新闻|年代新闻|寰宇新闻|龙华|靖天|美亚|viutv|hoytv|香港开电视|莲花卫视/;
+const HK_MACAU_TAIWAN_CHANNEL_RE = /港澳台|港台|香港|澳门|台湾|taiwan|hong\s*kong|macau|macao|翡翠(?:台|高清|明珠)?|明珠台|凤凰(?:卫视|中文|资讯|香港|电影|戏剧)|^凤凰$|东森|中视|中天|台视|华视|民视|公视|三立|大爱(?:电视台|电视|一台|二台|海外|新闻|剧场|频道)|^大爱$|纬来|rthk|澳视|澳广视|非凡新闻|年代新闻|寰宇新闻|龙华(?:频道|电视|影剧|电影|戏剧|综合|新闻|洋片|卡通)|靖天|美亚|viutv|hoytv|香港开电视|莲花卫视/i;
+// 不能用裸 `tvb` 判断：MTVBiggestPop、TV Brasil 里也包含这个子串。
+const HK_TV_BRAND_RE = /(?:^|[^a-z])(?:tvb(?:plus|星河|新闻|财经|明珠|翡翠)?|tvbs(?:新闻|亚洲)?)(?:$|[^a-z])/i;
+const STRONG_SCENIC_LIVE_RE = /熊猫直播|中央电视塔|直播中国|风景|景区|景点|旅游区|文化旅游区|观景台|玻璃栈道|都江堰|核桃坪|卧龙臭水|大丰麋鹿|白马雪山|凤凰古城|翡翠湾|六鳌|九华山|普陀山|张家界|少林寺|婺源江岭|南山文化旅游区|白水台|瞻鲁台|迷魂台|千玺广场|世界之窗|中心广场|梵净山|基地(?:别墅|成年园|母子园|幼儿园|幼年园)/;
+const CLEAR_FILM_TITLE_RE = /经典(?:香港|台湾|澳门|港产|怀旧)?电影|(?:香港|台湾|澳门|港产|怀旧)电影|电影频道|影院频道|电影台|大爱撑天/;
+const ANIMAL_DOCUMENTARY_TITLE_RE = /(?:动物|野生|猎食|捕食|自然).*(?:搏击|竞技|冠军|运动会|足球|赛车)|(?:搏击|竞技|冠军|足球|赛车).*(?:动物|野生|猎食|捕食|自然)/;
+const CHILDREN_CHANNEL_RE = /少儿|儿童|卡通|动漫|动画|青少|猫和老鼠|七龙珠|中华小当家|tom(?:and|&)?jerry|kids?|junior|newkid|rtejr|boomerang|minimax|jimjam|yoyo|disney|nickelodeon|nick|cartoon|babyfirst|babytv|ducktv|kika|^(?:boing(?:plus)?|tooncast(?:brasil|brazil)?|cbeebies|pbskids|cartoonito|teletoon\+?|canalpanda|super3|sx3|piwi\+?|tiji|gulli|clan(?:tv)?)(?:hd|sd|tv)?$/i;
+// 频道名压缩空格后，`adoram tv`、`gem tv` 等尾部会拼出 `mtv`，不能用裸子串。
+const INTERNATIONAL_MUSIC_CHANNEL_START_RE = /^(?:mtv|vh1|vevo|9xm|muz-?tv|deejay(?:tv)?|melody(?:tv)?|trt(?:müzik|muzik)|nrj(?:hits|music)|stingray|m6music|4music|music(?:box|hits|black|il|latino|pop|tv|channel|classics)|trace(?:urban|tv)?|rotana(?:music|clip|classic))/i;
+const INTERNATIONAL_MUSIC_CHANNEL_WORD_RE = /(?:^|[^a-z])(?:mtv|vh1|vevo|9xm|muz[\s-]*tv|deejay\s*tv|melody\s*tv|trt\s*(?:müzik|muzik)|nrj\s*(?:hits|music)|stingray|m6\s*music|4music|music(?:\s*(?:box|hits|black|il|latino|pop|tv|channel|classics))?|trace(?:\s*(?:urban|tv))?|rotana\s*(?:music|clip|classic))(?:$|[^a-z])/i;
+const INTERNATIONAL_FILM_CHANNEL_START_RE = /^(?:hbo|cinemax|star\s*movies|starmovies|megapix|telecine|on\s*cine|cine\s*sony|viasat\s*kino|kino\s*\d+|axn|paris\s*premiere)/i;
+const INTERNATIONAL_DOCUMENTARY_CHANNEL_START_RE = /^(?:dmax|viasat\s*explore|animaux|toute\s*l['’]?histoire|rai\s*storia|canal\s*futura)/i;
+const STRONG_INTERNATIONAL_CHANNEL_BRAND_RE = /^(?:hbo|cinemax|star\s*movies|starmovies|megapix|telecine|on\s*cine|cine\s*sony|viasat\s*kino|kino\s*\d+|axn|paris\s*premiere|cartoon(?:\s*network|\s*classics|\s*ito)?|disney|nick(?:elodeon|toons|jr)?|boing(?:plus)?|tooncast(?:brasil|brazil)?|cbeebies|pbskids|cartoonito|teletoon\+?|canalpanda|super3|sx3|piwi\+?|tiji|gulli|clan(?:tv)?|boomerang|babyfirst|babytv|ducktv|minimax|jimjam|mtv|vh1|vevo|9xm|muz-?tv|deejay(?:tv)?|melody(?:tv)?|trt(?:müzik|muzik)|nrj(?:hits|music)|stingray|m6\s*music|4music|music(?:\s*(?:box|hits|black|il|latino|pop|tv|channel|classics))?|trace(?:\s*(?:urban|tv))?|rotana\s*(?:music|clip|classic)|dmax|viasat\s*explore|animaux|toute\s*l['’]?histoire|rai\s*storia|canal\s*futura|fightbox|formula\s*1|real\s*madrid\s*tv)/i;
 const DOCUMENTARY_CHANNEL_RE = /全纪实|金鹰纪实|纪实科教|精品纪录|精品记录|纪录频道|记录频道|纪实频道|探索频道|发现频道|科教频道|科学频道|历史频道|人文频道|地理频道|自然频道|动物频道|纪录片|求索|发现之旅|探索发现|走近科学|百家讲坛|国家记忆|记住乡愁|之江纪录|飞碟之谜|航拍中国|中国村庄|文物宝库|老故事/;
-const SPORTS_CHANNEL_RE = /体育|足球|篮球|排球|网球|台球|斯诺克|羽毛球|乒乓球|棒球|冰球|赛车|赛事|运动|竞技|格斗|搏击|拳击|武术|垂钓|钓鱼|高尔夫|全运|电竞|游戏风云|espn|sports?|football|premierleague|tennis|golf|fishing|snooker|billiards|nba|nfl|mlb|nhl|ufc|wwe|motogp|motorvision|bikechannel/i;
+const SPORTS_CHANNEL_RE = /体育|足球|篮球|排球|网球|台球|斯诺克|羽毛球|乒乓球|棒球|冰球|赛车|赛事|运动|竞技|格斗|搏击|拳击|武术|垂钓|钓鱼|高尔夫|全运|电竞|游戏风云|espn|sports?|football|futbol|fútbol|deportes|calcio|fußball|fussball|premierleague|tennis|golf|fishing|snooker|billiards|nba|nfl|mlb|nhl|ufc|wwe|motogp|formula\s*1|real\s*madrid|fightbox|motorvision|bikechannel/i;
 const EDUCATION_CHANNEL_RE = /教育|教科|科教|学习|课堂|学堂|公开课|慕课|空中课堂|名师讲堂|国学|书法/i;
 const NEWS_LAW_TRAFFIC_CHANNEL_RE = /新闻|资讯|财经|商业|法治|法制|社会与法|中国交通|交通频道|城市交通|交通电视|红绿灯|交警|庭审/i;
 const OPERA_CHANNEL_RE = /戏曲|梨园|京剧|越剧|豫剧|黄梅|评剧|昆曲|曲艺|沪剧|淮剧|川剧|粤剧|潮剧|晋剧|秦腔|梆子|花鼓戏|采茶戏|二人转|评弹/i;
@@ -772,7 +785,7 @@ function detectLocalRegion(rawGroup: string, channelName: string): string | null
   const name = compactChannelText(channelName);
   const text = raw + name;
   if (!text) return null;
-  if (HK_MACAU_TAIWAN_CHANNEL_RE.test(text)) return null;
+  if (HK_MACAU_TAIWAN_CHANNEL_RE.test(text) || HK_TV_BRAND_RE.test(text)) return null;
   if (/卫视/.test(name) || /卫视/.test(raw)) return null;
   // “甘南县”属于黑龙江，不能与甘肃“甘南”混淆；“海南州”属于青海。
   if (/甘南县/.test(text)) return '黑龙江';
@@ -884,18 +897,20 @@ function classifyInternationalSubgroup(
   const raw = compactChannelText(rawGroup);
   const name = compactChannelText(channelName);
   const sourceLabels = collectLiveSourceLabels(channel);
+  const tokenText = sanitizeTxtLabel(channelName, '').toLowerCase() + ' ' + sourceLabels;
   // 旧运行时的二级目录名（例如“国际·新闻”）不能参与语义打分。
   // 否则 BBC One、ABC 地方台会被所在旧新闻桶永久锁死在新闻分类里。
   const text = name + ' ' + sourceLabels;
   if (!name) return null;
 
   if (/^(?:cctv|cetv|newtv|migu|咪咕|中国教育电视台|中央电视|央视)/i.test(name)
-    || /卫视|港澳台|香港|澳门|台湾|tvb|翡翠|明珠|凤凰|东森|中视|台视|三立|纬来|tvbs|rthk|澳视|中天/.test(text)
+    || HK_MACAU_TAIWAN_CHANNEL_RE.test(text)
+    || HK_TV_BRAND_RE.test(text)
     || /地方频道|省频道|市频道|县频道/.test(text)) return null;
   if (/4k|8k|uhd/i.test(text)) return null;
 
   const hasExplicitInternationalGroup = /国际|海外|外语|境外/.test(raw);
-  const hasInternationalBrand = /cgtn|中国国际电视台|中国环球电视|bbc|cnn|abc|nbc|cbs|fox|bloomberg|cnbc|aljazeera|jazeera|euronews|france24|dw|nhk|arirang|kbs|mbc|sbs|tv5|skynews|discovery|animalplanet|natgeo|nationalgeographic|cartoonnetwork|disney|nickelodeon|espn|hbo|cinemax|starmovies|tvbs?|foxnews|rtdoc/i.test(text);
+  const hasInternationalBrand = /cgtn|中国国际电视台|中国环球电视|bbc|cnn|abc|nbc|cbs|fox|bloomberg|cnbc|aljazeera|jazeera|euronews|france24|dw|nhk|arirang|kbs|mbc|sbs|skynews|discovery|animalplanet|natgeo|nationalgeographic|cartoonnetwork|disney|nickelodeon|espn|hbo|cinemax|starmovies|foxnews|rtdoc/i.test(text);
   const latinOnly = /[a-z]{2,}/i.test(name) && !/[\u4e00-\u9fff]/.test(name);
   const hasCyrillicName = /[\u0400-\u04FF]/.test(name);
   const hasForeignLanguageHint = /英语|英文|俄语|俄罗斯|俄羅斯|法语|法語|法文|西班牙语|西语|阿拉伯语|阿语|德语|德語|葡萄牙语|葡语|意大利语|意语|土耳其语|日本|日本语|韩国|韩国语|印度|亚洲|南亚|东南亚|新加坡|马来西亚|泰国|越南|菲律宾/.test(text);
@@ -910,28 +925,42 @@ function classifyInternationalSubgroup(
     && !hasInternationalBrand && !hasForeignLanguageHint
     && !/新闻|体育|少儿|纪录|影视|电影/.test(text)) return null;
 
+  const hasEnglishHint = /英语|英文|english/i.test(name + sourceLabels);
+
+  // 明确的内容品牌优先于地区/语言标签。Nickelodeon Arabia、Cartoon Network
+  // Arabic 仍属于少儿，MTV Arabia 仍属于音乐，不能因为 `Arabia` 被拆进
+  // 阿拉伯语目录。影视品牌也要先于纪录片判断，避免 HBO Signature 中的
+  // `nature` 子串把电影频道吸进国际纪录片目录。
+  if (INTERNATIONAL_FILM_CHANNEL_START_RE.test(name)) return '国际·影视';
+  if (CHILDREN_CHANNEL_RE.test(name)) return '国际·少儿';
+  if (INTERNATIONAL_MUSIC_CHANNEL_START_RE.test(name)
+    || INTERNATIONAL_MUSIC_CHANNEL_WORD_RE.test(tokenText)) return '国际·音乐';
+
   // 语言标签优先于泛资讯标签。“CGTN 法语”“DW Español”“France 2”
   // 不应继续落入英语或新闻大桶。带 English 明确后缀时仍按英语频道处理。
   // 旧运行时可能已把外语频道放在“国际·英语”，不能把分组名当成语言标签。
-  const hasEnglishHint = /英语|英文|english/i.test(name + sourceLabels);
   if (!hasEnglishHint) {
     if (/俄语|俄罗斯|俄羅斯|russia|russian|русск|россия|перв|тнт|стс|нтв|карусель|ukraine|беларусь|белорус|украин|україн|kazakh|哈萨克/i.test(text)
       || /[\u0400-\u04FF]/.test(name)) return '国际·俄语';
-    if (/法语|法語|法文|français|francais|french|\bfrance\b|france\d|franceinfo|cgtnf|\bw9\b|tv5/i.test(text)) return '国际·法语';
+    if (/法语|法語|法文|français|francais|french|\bfrance\b|france\d|franceinfo|cgtnf|\bw9\b|\btv5\b/i.test(tokenText)
+      || /france\d|franceinfo|cgtnf/i.test(name)) return '国际·法语';
     if (/西班牙语|西语|español|espanol|spanish|castellano/i.test(text)) return '国际·西班牙语';
     if (/阿拉伯语|阿语|arabic|arabia|العربية|عربي|الجزيرة|al\s*jazeera|aljazeera/i.test(text)
       || /[\u0600-\u06FF]/.test(name)) return '国际·阿拉伯语';
     if (/德语|德語|deutsch|german|\bdw\b|\bard\b|\bzdf\b/i.test(text)) return '国际·德语';
     if (/葡萄牙语|葡语|português|portugues|portuguese|brasil|brazil/i.test(text)) return '国际·葡萄牙语';
     if (/意大利语|意语|italiano|italian|italia/i.test(text)) return '国际·意大利语';
-    if (/土耳其语|türk|turkish|turk|trt|t24/i.test(text)) return '国际·土耳其语';
+    if (/土耳其语|türk|turkish|\bcnn\s*turk\b|\bt24\b/i.test(tokenText)
+      || /\btrt\b(?!\s*(?:world|news))/i.test(tokenText)) return '国际·土耳其语';
     if (/日本|日本语|japan|japanese|nhk|韩国|韩国语|korea|korean|arirang|hindi|urdu|bengali|tamil|telugu|marathi|gujarati|punjabi|印度|asia|亚洲|南亚|东南亚|新加坡|马来西亚|thai|vietnam|印尼|泰国|越南|菲律宾/i.test(text)
       || /[\u3040-\u30FF\uAC00-\uD7AF\u0900-\u097F\u0980-\u09FF\u0B80-\u0BFF\u0C00-\u0C7F\u0E00-\u0E7F]/.test(name)) return '国际·亚洲';
   }
 
   // 纪录片品牌必须先于新闻判断，避免 BBC Earth、RT Documentary 被 BBC/RT
-  // 的新闻品牌带进国际新闻。
-  if (/documentary|documentar|纪录|紀錄|记录|纪实|探索|发现|自然|nature|wild|history|science|discovery|animalplanet|natgeo|nationalgeographic|bbcearth|travel/i.test(text)) {
+  // 的新闻品牌带进国际新闻。英文词按完整词判断，不能用裸子串。
+  if (/documentary|documentar|纪录|紀錄|记录|纪实|探索|发现|自然|动物|discovery|animalplanet|natgeo|nationalgeographic|bbcearth/i.test(text)
+    || INTERNATIONAL_DOCUMENTARY_CHANNEL_START_RE.test(name)
+    || /\b(?:nature|wild|history|science|travel)\b/i.test(tokenText)) {
     return '国际·纪录';
   }
 
@@ -940,8 +969,7 @@ function classifyInternationalSubgroup(
     && (hasEnglishHint || !/记录|紀錄|纪录|documentary/i.test(text))) return '国际·新闻';
 
   if (SPORTS_CHANNEL_RE.test(text)) return '国际·体育';
-  if (/cartoon|kids|少儿|儿童|卡通|disney|nickelodeon|nick/i.test(text)) return '国际·少儿';
-  if (/movie|cinema|film|drama|series|hbo|cinemax|starmovies|影视|电影|剧场/i.test(text)) return '国际·影视';
+  if (/movie|cinema|film|drama|series|影视|电影|剧场/i.test(text)) return '国际·影视';
   // 只有带明确新闻语义或完整新闻品牌时才进入国际新闻。普通 BBC One、
   // ABC KGO-TV、NBC 地方台仍是国际综合频道，不能被三字母品牌一刀切。
   if (/news|新闻|资讯|business|财经|bloomberg|cnbc|cnn|aljazeera|euronews|france\s*24|dw|nhk|arirang|abcnews|nbcnews|cbsnews|foxnews|skynews|gbnews|i24news|trtworld|rtnews/i.test(text)) return '国际·新闻';
@@ -952,15 +980,15 @@ function classifyFilmSubgroup(compact: string): string {
   if (/剧场|电视剧|连续剧|剧集|港剧|美剧|韩剧|短剧|经典剧|大剧|戏剧|电视轮播|电视轮|电视剧场/.test(compact)) {
     return '影视·剧场';
   }
-  if (/电影|影院|大片|动作片|喜剧片|科幻片|恐怖片|战争片|武侠片|港片|周星驰|成龙|林正英|周润发|邵氏|好片|经典怀旧|警匪悬疑|科幻梦工场|速度与激情|视觉/.test(compact)) {
+  if (/电影|影院|大片|动作片|喜剧片|科幻片|恐怖片|战争片|武侠片|港片|周星驰|成龙|林正英|周润发|邵氏|好片|经典怀旧|警匪悬疑|科幻梦工场|速度与激情|视觉|大爱撑天/.test(compact)) {
     return '影视·电影';
   }
   return '影视·综合';
 }
 
-function classifyMusicSubgroup(compact: string): string {
+function classifyMusicSubgroup(compact: string, rawChannelName = compact): string {
   if (OPERA_CHANNEL_RE.test(compact)) return '音乐·戏曲';
-  if (/dj|电音|舞曲|慢摇|酒吧/i.test(compact)) return '音乐·DJ';
+  if (/(?:^|[^a-z])dj(?:$|[^a-z])|电音|舞曲|慢摇|酒吧/i.test(rawChannelName.toLowerCase())) return '音乐·DJ';
   if (/演唱会|现场|音乐会|音乐节|live/i.test(compact)) return '音乐·现场';
   if (/歌曲|歌手|港乐|经典|金曲|情歌|串烧|风云音乐|欣赏音乐|凤凰传奇/.test(compact)) return '音乐·歌曲';
   return '音乐·综合';
@@ -971,7 +999,7 @@ function classifyDocumentarySubgroup(compact: string): string {
     && !/动物|自然|野生|纪录|纪实|探索|科学/.test(compact)) return '地方·其他';
   // “金鹰纪实”等品牌名含动物词，先按明确纪实频道分流，避免被“鹰”误判为自然。
   if (/全纪实|金鹰纪实|纪实科教|精品纪录|精品记录|纪录片/.test(compact)) return '纪录·探索';
-  if (/动物|自然|野生|丛林|大象|海豚|海鬣蜥|棕熊|潜水|田园|地理|世界地理|风光|生态|狮子|狮|老虎|虎|猎豹|豹|北极熊|熊|狼|鳄鱼|鳄|蟒蛇|蛇|鲸鱼|鲸|鲨鱼|鲨|海獭|水獭|猴子|猴|猩猩|猫科|大猫|角马|斑马|长颈鹿|犀牛|河马|企鹅|雪鸮|鸮|鸟|鹰|鹤|鹿|马|牛|羊|兔|鼠|鱼|龟|昆虫|捕食|捕猎|猎手|生存|进化|家族|幼崽|幼狮|幼虎|幼豹|海洋|深海|海底|河流|河|湖泊|湖|森林|草原|荒野|沙漠|冰川|冰雪|极地|雨林|湿地|山脉|巨兽|宠物|狗|猫/.test(compact)) return '纪录·自然';
+  if (/动物|自然|野生|丛林|大象|海豚|海鬣蜥|棕熊|潜水|田园|地理|世界地理|风光|生态|狮子|狮|老虎|虎|猎豹|豹|北极熊|熊|狼|鳄鱼|鳄|蟒蛇|蛇|鲸鱼|鲸|鲨鱼|鲨|海獭|水獭|猴子|猴|猩猩|猫科|大猫|角马|斑马|长颈鹿|犀牛|河马|企鹅|雪鸮|鸮|鸟|鹰|鹤|鹿|马|牛|羊|兔|鼠|鱼|龟|昆虫|捕食|捕猎|猎食|猎手|生存|进化|家族|幼崽|幼狮|幼虎|幼豹|海洋|深海|海底|河流|河|湖泊|湖|森林|草原|荒野|沙漠|冰川|冰雪|极地|雨林|湿地|山脉|巨兽|宠物|狗|猫/.test(compact)) return '纪录·自然';
   if (/人文|历史|老故事|中国村庄|人物|文化|考古|文物|美食|旅行|地理中国|美丽中国|美丽云南|乘着火车看中国|国家公园|世界遗产|古镇|民俗|非遗|百家讲坛|国家记忆|记住乡愁|档案/.test(compact)) return '纪录·人文';
   if (/探索|发现|科学|科技|宇宙|军事|兵器|神秘|未解|纪录|纪实|真相|谜|UFO|飞碟|未来|工程|机械|医学|走近科学|探索发现/.test(compact)) return '纪录·探索';
   return '纪录·综合';
@@ -1045,15 +1073,18 @@ function normalizeAggregateChannelGroupBase(
   if (!compact) return group;
 
   // 实时风景机位名称可能包含“中央”，必须先于央视兜底判断。
-  if (/熊猫直播|中央电视塔|直播中国|风景|景区|都江堰|核桃坪|卧龙臭水|大丰麋鹿|白马雪山|基地(?:别墅|成年园|母子园|幼儿园|幼年园)/.test(compact)
+  if (STRONG_SCENIC_LIVE_RE.test(compact)
     || (/航拍/.test(compact) && !/航拍中国/.test(compact))) return '风景直播';
 
   // “凤凰传奇”是演唱组合，不是凤凰卫视。旧“港澳台”分组不能把这些
   // 歌曲永久锁进港澳台目录；其明确品牌语义应优先回到音乐分类。
   if (/^凤凰传奇(?:[-—《]|$)/.test(compact)) return '音乐';
 
+  // 明确片名不能仅因含“香港/台湾”等地名就锁进港澳台。
+  if (CLEAR_FILM_TITLE_RE.test(compact)) return '影视';
+
   // 港澳台先于地方和主题判断，避免“香港/台湾”被地方别名误吸。
-  if (HK_MACAU_TAIWAN_CHANNEL_RE.test(compact)) return '港澳台';
+  if (HK_MACAU_TAIWAN_CHANNEL_RE.test(compact) || HK_TV_BRAND_RE.test(compact)) return '港澳台';
 
   // 国际、教育及常见数字付费频道品牌先于央视兜底，避免混入央视。
   if (/cgtn|中国国际电视台|中国环球电视/.test(compact)) return '国际';
@@ -1063,8 +1094,8 @@ function normalizeAggregateChannelGroupBase(
   if (/求索/.test(compact)) return '纪录';
   if (/家庭理财/.test(compact)) return '新闻财经';
   if (/置业频道/.test(compact)) return '其他';
-  // 动物纪录片标题常含“搏击/竞技/冠军”，不能只凭这些词进入体育目录。
-  if (/^动物(?:搏击|冠军|竞技)|\b动物.*(?:搏击|竞技|运动会|冠军)/.test(compact)) return '纪录';
+  // 动物纪录片标题常含“搏击/竞技/冠军/足球”，不能只凭这些词进入体育目录。
+  if (ANIMAL_DOCUMENTARY_TITLE_RE.test(compact)) return '纪录';
   if (SPORTS_CHANNEL_RE.test(compact)) return '体育';
 
   // 央视付费频道和超高清频道先于央视主频道判断。
@@ -1098,7 +1129,7 @@ function normalizeAggregateChannelGroupBase(
     return '其他';
   }
   if (SPORTS_CHANNEL_RE.test(compact)) return '体育';
-  if (/少儿|儿童|卡通|动漫|动画|青少|猫和老鼠|七龙珠|中华小当家/.test(compact)) return '少儿';
+  if (CHILDREN_CHANNEL_RE.test(compact)) return '少儿';
   if (/音乐|歌曲|演唱会|港乐|dj|串烧|风云音乐|音乐现场|广场舞/.test(compact) || OPERA_CHANNEL_RE.test(compact)) return '音乐';
   if (/春晚|春节|贺岁/.test(compact)) return '春晚';
   if (/直播中国|风景|景区|航拍/.test(compact)) return '风景直播';
@@ -1135,6 +1166,18 @@ function normalizeAggregateChannelGroup(
   if (/咪咕视频|咪视界/.test(compact)) return '其他·咪咕';
   if (/4k|8k|uhd/i.test(compact)) return '4K/8K';
 
+  // 上游常把风景机位、国际品牌混进地方或港澳台旧分组。明确内容语义
+  // 必须先于“频道名里出现地名”判断，否则九华山机位、HBO、Cartoon
+  // Classics 会被永久锁死在地方目录。
+  if (STRONG_SCENIC_LIVE_RE.test(compact)
+    || (/航拍/.test(compact) && !/航拍中国/.test(compact))) {
+    return classifyScenerySubgroup(compact);
+  }
+  if (STRONG_INTERNATIONAL_CHANNEL_BRAND_RE.test(compact)) {
+    const international = classifyInternationalSubgroup(rawGroup, name, channel);
+    if (international) return international;
+  }
+
   // 明确地方台必须优先于平台归类。部分上游会把“张家港新闻综合”这类
   // 地方频道混进“一起看”，不能因为原始分组是平台就永久留在平台兜底桶。
   const explicitRegion = detectLocalRegion(rawGroup, name);
@@ -1150,9 +1193,19 @@ function normalizeAggregateChannelGroup(
   }
 
   const base = normalizeAggregateChannelGroupBase(rawGroup, rawChannelName);
-  if (base === '国际') return classifyInternationalSubgroup(rawGroup, name, channel) || '国际·其他';
+  // 国际父目录必须优先保留国际语义细分。通用主题判断可能先把
+  // Disney Junior、国际体育频道归成“少儿/体育”，从而丢掉国际二级目录。
+  if (base === '国际' || group === '国际' || group.startsWith('国际·')) {
+    return classifyInternationalSubgroup(rawGroup, name, channel)
+      || (base === '国际' ? '国际·其他' : base);
+  }
+  // 旧版裸 `tvb` 规则会把 MTV、TV Brasil 等锁进港澳台；明确非港澳台
+  // 国际品牌应重新进入语义分类，没有新证据的港澳台频道仍保持原组。
+  if (base === '港澳台') {
+    return classifyInternationalSubgroup(rawGroup, name, channel) || base;
+  }
   if (base === '影视') return classifyFilmSubgroup(compact);
-  if (base === '音乐') return classifyMusicSubgroup(compact);
+  if (base === '音乐') return classifyMusicSubgroup(compact, name);
   if (base === '纪录') return classifyDocumentarySubgroup(compact);
   if (base === '风景直播') return classifyScenerySubgroup(compact);
   if (base === '一起看') return classifyTogetherSubgroup(rawGroup, name, channel);

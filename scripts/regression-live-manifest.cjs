@@ -1543,6 +1543,189 @@ assert(
   'legacy bucket normalization must not change channel count',
 );
 
+// 17c-3. 旧分组中的裸子串误命中必须按频道语义重新归类。
+const semanticFalsePositiveGroups = [{
+  group: '港澳台',
+  channels: [
+    { name: '大爱撑天', urls: ['http://semantic.example/big-love'] },
+    { name: '凤凰古城东关门', urls: ['http://semantic.example/fenghuang-scenic'] },
+    { name: '福建-漳州六鳌翡翠湾', urls: ['http://semantic.example/emerald-bay'] },
+    { name: '经典香港电影', urls: ['http://semantic.example/hk-movie'] },
+    { name: 'MTVBiggestPop', urls: ['http://semantic.example/mtv-pop'] },
+    { name: 'MTVBlockParty', urls: ['http://semantic.example/mtv-party'] },
+    { name: 'tv brasil', urls: ['http://semantic.example/tv-brasil'] },
+    { name: 'TVB Plus', urls: ['http://semantic.example/tvb-plus'] },
+    { name: 'TVB星河', urls: ['http://semantic.example/tvb-galaxy'] },
+    { name: 'TVBS新闻', urls: ['http://semantic.example/tvbs-news'] },
+    { name: '凤凰卫视', urls: ['http://semantic.example/phoenix-tv'] },
+    { name: '东森新闻', urls: ['http://semantic.example/ettoday'] },
+    { name: '三立戏剧', urls: ['http://semantic.example/set-drama'] },
+  ],
+}, {
+  group: '体育',
+  channels: [
+    { name: '野生世界竞技场(上)', urls: ['http://semantic.example/wild-arena-1'] },
+    { name: '野生世界竞技场(下)', urls: ['http://semantic.example/wild-arena-2'] },
+    { name: '足球超级猎食者(上)', urls: ['http://semantic.example/football-predator-1'] },
+    { name: '足球超级猎食者(下)', urls: ['http://semantic.example/football-predator-2'] },
+    { name: '足球高清', urls: ['http://semantic.example/football-hd'] },
+  ],
+}, {
+  group: '国际·英语',
+  channels: [
+    { name: 'HBO Signature', urls: ['http://semantic.example/hbo-signature'] },
+    { name: 'IPTV5', urls: ['http://semantic.example/iptv5'] },
+    { name: 'tv5 news', urls: ['http://semantic.example/tv5-news'] },
+    { name: 'Music Hits', urls: ['http://semantic.example/music-hits'] },
+    { name: 'Music Box', urls: ['http://semantic.example/music-box'] },
+    { name: 'junior', urls: ['http://semantic.example/junior'] },
+    { name: 'newkid4', urls: ['http://semantic.example/newkid4'] },
+    { name: 'rtejr', urls: ['http://semantic.example/rtejr'] },
+    { name: 'adoram tv', urls: ['http://semantic.example/adoram-tv'] },
+    { name: 'bfm tv', urls: ['http://semantic.example/bfm-tv'] },
+    { name: 'gem tv', urls: ['http://semantic.example/gem-tv'] },
+    { name: 'sairam tv', urls: ['http://semantic.example/sairam-tv'] },
+    { name: 'sharnam tv', urls: ['http://semantic.example/sharnam-tv'] },
+    { name: 'boing', urls: ['http://semantic.example/boing'] },
+    { name: 'cbeebies', urls: ['http://semantic.example/cbeebies'] },
+    { name: 'pbs kids', urls: ['http://semantic.example/pbs-kids'] },
+    { name: 'cartoonito', urls: ['http://semantic.example/cartoonito'] },
+    { name: 'muz-tv', urls: ['http://semantic.example/muz-tv'] },
+    { name: '9xm', urls: ['http://semantic.example/9xm'] },
+    { name: 'deejay tv', urls: ['http://semantic.example/deejay-tv'] },
+    { name: 'megapix', urls: ['http://semantic.example/megapix'] },
+    { name: 'telecine action', urls: ['http://semantic.example/telecine-action'] },
+    { name: 'dmax', urls: ['http://semantic.example/dmax'] },
+    { name: 'viasat explore', urls: ['http://semantic.example/viasat-explore'] },
+    { name: 'bicolor plus deportes', urls: ['http://semantic.example/bicolor-deportes'] },
+    { name: 'real madrid tv', urls: ['http://semantic.example/real-madrid'] },
+  ],
+}, {
+  group: '音乐',
+  channels: [
+    { name: 'Tom and Jerry', urls: ['http://semantic.example/tom-jerry'] },
+  ],
+}, {
+  group: '国际·阿拉伯语',
+  channels: [
+    { name: 'nickelodeon arabia', urls: ['http://semantic.example/nickelodeon-arabia'] },
+    { name: 'cartoon network arabic', urls: ['http://semantic.example/cartoon-network-arabic'] },
+    { name: 'disney junior arabia', urls: ['http://semantic.example/disney-junior-arabia'] },
+    { name: 'mtv arabia', urls: ['http://semantic.example/mtv-arabia'] },
+    { name: 'cinemax arabia', urls: ['http://semantic.example/cinemax-arabia'] },
+  ],
+}, {
+  group: '国际·土耳其语',
+  channels: [
+    { name: 'trt müzik', urls: ['http://semantic.example/trt-muzik'] },
+  ],
+}, {
+  group: '国际·法语',
+  channels: [
+    { name: "toute l'histoire", urls: ['http://semantic.example/toute-histoire'] },
+  ],
+}, {
+  group: '国际·意大利语',
+  channels: [
+    { name: 'rai storia', urls: ['http://semantic.example/rai-storia'] },
+  ],
+}, {
+  group: '国际·葡萄牙语',
+  channels: [
+    { name: 'tooncast brazil', urls: ['http://semantic.example/tooncast-brazil'] },
+    { name: 'canal panda', urls: ['http://semantic.example/canal-panda'] },
+  ],
+}, {
+  group: '地方·上海',
+  channels: [
+    { name: 'cartoon classics', urls: ['http://semantic.example/cartoon-classics'] },
+    { name: 'boing plus', urls: ['http://semantic.example/boing-plus'] },
+    { name: 'music classics', urls: ['http://semantic.example/music-classics'] },
+    { name: 'HBO Signature Asia', urls: ['http://semantic.example/hbo-signature-asia'] },
+  ],
+}, {
+  group: '地方·安徽',
+  channels: [
+    { name: '安徽池州九华山风景区拜经台', urls: ['http://semantic.example/jiuhua-prayer'] },
+    { name: '安徽-九华山花台', urls: ['http://semantic.example/jiuhua-flower-terrace'] },
+  ],
+}, {
+  group: '纪录·综合',
+  channels: [
+    { name: '沙滩上的盛宴', urls: ['http://semantic.example/beach-feast'] },
+  ],
+}];
+const semanticFalsePositiveTxt = formatAggregatedLiveGroupsAsTxt(semanticFalsePositiveGroups);
+const semanticFalsePositiveParsed = parseLiveGroupsFromTxt(semanticFalsePositiveTxt);
+const semanticFalsePositiveGroupOfChannel = (name) => {
+  const match = semanticFalsePositiveParsed.find((group) => group.channels.some((channel) => channel.name === name));
+  return match ? match.group : '';
+};
+assert(semanticFalsePositiveGroupOfChannel('大爱撑天') === '影视·电影', 'an explicit film title must not remain in the Hong Kong/Macau/Taiwan group');
+assert(semanticFalsePositiveGroupOfChannel('凤凰古城东关门') === '风景·景区', 'a Fenghuang scenic camera must not be mistaken for Phoenix TV');
+assert(semanticFalsePositiveGroupOfChannel('福建-漳州六鳌翡翠湾') === '风景·景区', 'an Emerald Bay scenic camera must not be mistaken for a Hong Kong/Macau/Taiwan channel');
+assert(semanticFalsePositiveGroupOfChannel('经典香港电影') === '影视·电影', 'a Hong Kong movie title must not be locked into the Hong Kong/Macau/Taiwan group');
+assert(semanticFalsePositiveGroupOfChannel('MTVBiggestPop') === '国际·音乐', 'MTV pop channels must not match the bare TVB brand substring');
+assert(semanticFalsePositiveGroupOfChannel('MTVBlockParty') === '国际·音乐', 'MTV party channels must use the international music group');
+assert(semanticFalsePositiveGroupOfChannel('tv brasil') === '国际·葡萄牙语', 'TV Brasil must not match the bare TVB brand substring');
+assert(semanticFalsePositiveGroupOfChannel('TVB Plus') === '港澳台', 'the real TVB Plus brand must remain in Hong Kong/Macau/Taiwan');
+assert(semanticFalsePositiveGroupOfChannel('TVB星河') === '港澳台', 'the real TVB Galaxy brand must remain in Hong Kong/Macau/Taiwan');
+assert(semanticFalsePositiveGroupOfChannel('TVBS新闻') === '港澳台', 'the real TVBS news brand must remain in Hong Kong/Macau/Taiwan');
+assert(semanticFalsePositiveGroupOfChannel('凤凰卫视') === '港澳台', 'Phoenix TV must remain in Hong Kong/Macau/Taiwan');
+assert(semanticFalsePositiveGroupOfChannel('东森新闻') === '港澳台', 'EBC news must remain in Hong Kong/Macau/Taiwan');
+assert(semanticFalsePositiveGroupOfChannel('三立戏剧') === '港澳台', 'SET drama must remain in Hong Kong/Macau/Taiwan');
+assert(semanticFalsePositiveGroupOfChannel('野生世界竞技场(上)') === '纪录·自然', 'wild-world arena documentaries must not use sports');
+assert(semanticFalsePositiveGroupOfChannel('足球超级猎食者(上)') === '纪录·自然', 'football-predator documentaries must not use sports');
+assert(semanticFalsePositiveGroupOfChannel('足球高清') === '体育', 'a real football channel must remain in sports');
+assert(semanticFalsePositiveGroupOfChannel('HBO Signature') === '国际·影视', 'HBO Signature must use international film instead of the documentary subgroup');
+assert(semanticFalsePositiveGroupOfChannel('IPTV5') === '国际·英语', 'IPTV5 must not match TV5 as a whole-word French brand');
+assert(semanticFalsePositiveGroupOfChannel('tv5 news') === '国际·法语', 'TV5 News must use the French-language subgroup');
+assert(semanticFalsePositiveGroupOfChannel('Music Hits') === '国际·音乐', 'Music Hits must use the international music subgroup');
+assert(semanticFalsePositiveGroupOfChannel('Music Box') === '国际·音乐', 'Music Box must use the international music subgroup');
+assert(semanticFalsePositiveGroupOfChannel('junior') === '国际·少儿', 'Junior must use the international children subgroup');
+assert(semanticFalsePositiveGroupOfChannel('newkid4') === '国际·少儿', 'NewKid must use the international children subgroup');
+assert(semanticFalsePositiveGroupOfChannel('rtejr') === '国际·少儿', 'RTEjr must use the international children subgroup');
+assert(semanticFalsePositiveGroupOfChannel('Tom and Jerry') === '少儿', 'Tom and Jerry must use the children group instead of music');
+assert(semanticFalsePositiveGroupOfChannel('adoram tv') === '国际·英语', 'Adoram TV must not match MTV through a compressed-name substring');
+assert(semanticFalsePositiveGroupOfChannel('bfm tv') === '国际·英语', 'BFM TV must not match MTV through a compressed-name substring');
+assert(semanticFalsePositiveGroupOfChannel('gem tv') === '国际·英语', 'GEM TV must not match MTV through a compressed-name substring');
+assert(semanticFalsePositiveGroupOfChannel('sairam tv') === '国际·英语', 'Sairam TV must not match MTV through a compressed-name substring');
+assert(semanticFalsePositiveGroupOfChannel('sharnam tv') === '国际·英语', 'Sharnam TV must not match MTV through a compressed-name substring');
+assert(semanticFalsePositiveGroupOfChannel('boing') === '国际·少儿', 'Boing must use the international children group');
+assert(semanticFalsePositiveGroupOfChannel('cbeebies') === '国际·少儿', 'CBeebies must use the international children group');
+assert(semanticFalsePositiveGroupOfChannel('pbs kids') === '国际·少儿', 'PBS Kids must use the international children group');
+assert(semanticFalsePositiveGroupOfChannel('cartoonito') === '国际·少儿', 'Cartoonito must use the international children group');
+assert(semanticFalsePositiveGroupOfChannel('muz-tv') === '国际·音乐', 'Muz-TV must use the international music group');
+assert(semanticFalsePositiveGroupOfChannel('9xm') === '国际·音乐', '9XM must use the international music group');
+assert(semanticFalsePositiveGroupOfChannel('deejay tv') === '国际·音乐', 'Deejay TV must use the international music group');
+assert(semanticFalsePositiveGroupOfChannel('megapix') === '国际·影视', 'MegaPix must use the international film group');
+assert(semanticFalsePositiveGroupOfChannel('telecine action') === '国际·影视', 'Telecine Action must use the international film group');
+assert(semanticFalsePositiveGroupOfChannel('dmax') === '国际·纪录', 'DMAX must use the international documentary group');
+assert(semanticFalsePositiveGroupOfChannel('viasat explore') === '国际·纪录', 'Viasat Explore must use the international documentary group');
+assert(semanticFalsePositiveGroupOfChannel('bicolor plus deportes') === '国际·体育', 'Spanish sports channels must use the international sports group');
+assert(semanticFalsePositiveGroupOfChannel('real madrid tv') === '国际·体育', 'Real Madrid TV must use the international sports group');
+assert(semanticFalsePositiveGroupOfChannel('nickelodeon arabia') === '国际·少儿', 'Nickelodeon Arabia must retain its children-brand semantics');
+assert(semanticFalsePositiveGroupOfChannel('cartoon network arabic') === '国际·少儿', 'Cartoon Network Arabic must retain its children-brand semantics');
+assert(semanticFalsePositiveGroupOfChannel('disney junior arabia') === '国际·少儿', 'Disney Junior Arabia must retain its children-brand semantics');
+assert(semanticFalsePositiveGroupOfChannel('mtv arabia') === '国际·音乐', 'MTV Arabia must retain its music-brand semantics');
+assert(semanticFalsePositiveGroupOfChannel('cinemax arabia') === '国际·影视', 'Cinemax Arabia must retain its film-brand semantics');
+assert(semanticFalsePositiveGroupOfChannel('trt müzik') === '国际·音乐', 'TRT Müzik must retain its music-brand semantics');
+assert(semanticFalsePositiveGroupOfChannel("toute l'histoire") === '国际·纪录', 'Toute l’histoire must retain its documentary semantics');
+assert(semanticFalsePositiveGroupOfChannel('rai storia') === '国际·纪录', 'Rai Storia must retain its documentary semantics');
+assert(semanticFalsePositiveGroupOfChannel('tooncast brazil') === '国际·少儿', 'Tooncast Brazil must retain its children-brand semantics');
+assert(semanticFalsePositiveGroupOfChannel('canal panda') === '国际·少儿', 'Canal Panda must retain its children-brand semantics');
+assert(semanticFalsePositiveGroupOfChannel('cartoon classics') === '国际·少儿', 'an international cartoon brand must escape a stale local group');
+assert(semanticFalsePositiveGroupOfChannel('boing plus') === '国际·少儿', 'an international children brand must escape a stale local group');
+assert(semanticFalsePositiveGroupOfChannel('music classics') === '国际·音乐', 'an international music brand must escape a stale local group');
+assert(semanticFalsePositiveGroupOfChannel('HBO Signature Asia') === '国际·影视', 'an international film brand must escape a stale local group');
+assert(semanticFalsePositiveGroupOfChannel('安徽池州九华山风景区拜经台') === '风景·景区', 'a scenic camera must escape a stale local group');
+assert(semanticFalsePositiveGroupOfChannel('安徽-九华山花台') === '风景·景区', 'a landmark camera without the word 景区 must still use scenery');
+assert(semanticFalsePositiveGroupOfChannel('沙滩上的盛宴') === '纪录·综合', 'a documentary title containing 沙滩 must not be mistaken for a scenic camera');
+assert(
+  semanticFalsePositiveParsed.reduce((sum, group) => sum + group.channels.length, 0) === semanticFalsePositiveGroups.reduce((sum, group) => sum + group.channels.length, 0),
+  'semantic false-positive correction must not change channel count',
+);
+
 // 17d. 超大主题目录按稳定顺序分页；地方省市目录保持完整，频道和线路不丢失。
 const pagedGroups = [{
   group: '一起看',
