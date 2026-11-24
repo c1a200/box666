@@ -1151,6 +1151,7 @@ const subgroupGroups = [{
     { name: '虎牙随便看看1', urls: ['http://sub.example/huya/1000001$虎牙#44444444'] },
     { name: '斗鱼随便看看1', urls: ['http://sub.example/douyu/2000001$斗鱼#55555555'] },
     { name: 'YY随便看看1', urls: ['http://sub.example/yy/3000001$YY#66666666'] },
+    { name: '随便看看频道1', urls: ['http://sub.example/generic/4000001'] },
   ],
 }, {
   group: '其他',
@@ -1206,6 +1207,7 @@ assert(subgroupOfChannel('YY音乐1') === '一起看·YY音乐', 'YY music chann
 assert(subgroupOfChannel('虎牙随便看看1') === '一起看·虎牙其他', 'unclassified Huya channel must use one stable fallback subgroup');
 assert(subgroupOfChannel('斗鱼随便看看1') === '一起看·斗鱼其他', 'unclassified Douyu channel must use one stable fallback subgroup');
 assert(subgroupOfChannel('YY随便看看1') === '一起看·YY其他', 'unclassified YY channel must use one stable fallback subgroup');
+assert(subgroupOfChannel('随便看看频道1') === '一起看·其他', 'unclassified together channel must not produce 一起看·其他其他');
 assert(subgroupOfChannel('abc news') === '国际·新闻', 'English news channel must use international news subgroup');
 assert(subgroupOfChannel('Zeta TV') === '国际·英语', 'English channel must not be split by initial letter');
 assert(subgroupOfChannel('Alpha TV') === '国际·英语', 'English channels must share the semantic English subgroup');
@@ -1238,6 +1240,115 @@ assert(
 assert(
   subgroupParsed.every((group) => group.group !== '一起看' && group.group !== '其他' && group.group !== '影视' && group.group !== '音乐' && group.group !== '纪录' && group.group !== '风景直播'),
   'oversized parent groups must not be emitted after subgrouping',
+);
+const subgroupRoundTripTxt = formatAggregatedLiveGroupsAsTxt(subgroupParsed);
+const subgroupRoundTrip = parseLiveGroupsFromTxt(subgroupRoundTripTxt);
+assert(
+  subgroupRoundTrip.map((group) => group.group).join('|') === subgroupParsed.map((group) => group.group).join('|'),
+  'semantic aggregate subgroups must be idempotent across persisted TXT round trips: '
+    + subgroupParsed.map((group) => group.group).join('|') + ' => '
+    + subgroupRoundTrip.map((group) => group.group).join('|'),
+);
+
+// 17c-2. 历史首字母/平台ID桶和容量页尾再次进入聚合器时，必须按当前语义重新归类。
+const legacyBucketGroups = [{
+  group: '国际·英语A',
+  channels: [
+    { name: 'Alpha TV', urls: ['http://legacy.example/alpha'] },
+    { name: 'CCTV-5', urls: ['http://legacy.example/cctv5'] },
+  ],
+}, {
+  group: '国际·新闻',
+  channels: [
+    { name: '小虎牙频道甲', urls: ['http://legacy.example/huya$虎牙一起看#aaaabbbb'] },
+  ],
+}, {
+  group: '国际·英语R01',
+  channels: [
+    { name: '湖南卫视', urls: ['http://legacy.example/hunan'] },
+  ],
+}, {
+  group: '其他·中文A',
+  channels: [
+    { name: '购物频道', urls: ['http://legacy.example/shop'] },
+  ],
+}, {
+  group: '其他·字母C',
+  channels: [
+    { name: '测试频道', urls: ['http://legacy.example/test'] },
+  ],
+}, {
+  group: '其他·数字',
+  channels: [
+    { name: '未分类频道', urls: ['http://legacy.example/other'] },
+  ],
+}, {
+  group: '一起看·虎牙中文R01',
+  channels: [
+    { name: '虎牙随便看看2', urls: ['http://legacy.example/huya2$虎牙#ccccdddd'] },
+  ],
+}, {
+  group: '一起看·斗鱼字母数字',
+  channels: [
+    { name: '斗鱼随便看看2', urls: ['http://legacy.example/douyu2$斗鱼#eeeeffff'] },
+  ],
+}, {
+  group: '一起看·YY中文A',
+  channels: [
+    { name: 'YY随便看看2', urls: ['http://legacy.example/yy2$YY#11112222'] },
+  ],
+}, {
+  group: '影视·电影01',
+  channels: [
+    { name: '经典电影', urls: ['http://legacy.example/movie'] },
+  ],
+}, {
+  group: '纪录·自然01',
+  channels: [
+    { name: '自然动物', urls: ['http://legacy.example/nature'] },
+  ],
+}, {
+  group: '风景·景区02',
+  channels: [
+    { name: '景区直播', urls: ['http://legacy.example/scenic'] },
+  ],
+}, {
+  group: '其他·生活服务',
+  channels: [
+    { name: '生活服务频道', urls: ['http://legacy.example/life'] },
+  ],
+}];
+const legacyBucketTxt = formatAggregatedLiveGroupsAsTxt(legacyBucketGroups);
+const legacyBucketParsed = parseLiveGroupsFromTxt(legacyBucketTxt);
+const legacyGroupOfChannel = (name) => {
+  const match = legacyBucketParsed.find((group) => group.channels.some((channel) => channel.name === name));
+  return match ? match.group : '';
+};
+assert(legacyGroupOfChannel('Alpha TV') === '国际·英语', 'legacy international letter bucket must collapse into 国际·英语');
+assert(legacyGroupOfChannel('CCTV-5') === '央视', 'legacy international bucket must not hide a real CCTV channel');
+assert(legacyGroupOfChannel('小虎牙频道甲') === '一起看·虎牙其他', 'legacy international bucket must not hide a Huya source');
+assert(legacyGroupOfChannel('湖南卫视') === '卫视', 'legacy international bucket must not hide a satellite channel');
+assert(legacyGroupOfChannel('购物频道') === '其他·购物生活', 'legacy Chinese-letter bucket must retain semantic subgrouping');
+assert(legacyGroupOfChannel('测试频道') === '其他·测试备用', 'legacy Latin-letter bucket must retain semantic subgrouping');
+assert(legacyGroupOfChannel('未分类频道') === '其他·综合', 'legacy numeric bucket must collapse into 其他·综合');
+assert(legacyGroupOfChannel('虎牙随便看看2') === '一起看·虎牙其他', 'legacy Huya page bucket must collapse into one platform fallback');
+assert(legacyGroupOfChannel('斗鱼随便看看2') === '一起看·斗鱼其他', 'legacy Douyu bucket must collapse into one platform fallback');
+assert(legacyGroupOfChannel('YY随便看看2') === '一起看·YY其他', 'legacy YY bucket must collapse into one platform fallback');
+assert(legacyGroupOfChannel('经典电影') === '影视·电影', 'legacy movie page must round-trip into its semantic subgroup');
+assert(legacyGroupOfChannel('自然动物') === '纪录·自然', 'legacy documentary page must round-trip into its semantic subgroup');
+assert(legacyGroupOfChannel('景区直播') === '风景·景区', 'legacy scenery page must round-trip into its semantic subgroup');
+assert(legacyGroupOfChannel('生活服务频道') === '其他·生活服务', 'persisted semantic subgroup must remain idempotent');
+assert(
+  legacyBucketParsed.every((group) => !/^(?:国际·英语[A-Z](?:\d{2})?|其他·(?:字母[A-Z]|数字|中文[A-Z]|中文其他)(?:\d{2})?|一起看·[^·]+(?:中文[A-Z]|字母数字)(?:\d{2})?)$/.test(group.group)),
+  'legacy initial-letter and numeric buckets must never be emitted',
+);
+assert(
+  legacyBucketParsed.every((group) => group.group !== '一起看·其他其他'),
+  'generic together fallback must not duplicate 其他',
+);
+assert(
+  legacyBucketParsed.reduce((sum, group) => sum + group.channels.length, 0) === legacyBucketGroups.reduce((sum, group) => sum + group.channels.length, 0),
+  'legacy bucket normalization must not change channel count',
 );
 
 // 17d. 超大主题目录按稳定顺序分页；地方省市目录保持完整，频道和线路不丢失。

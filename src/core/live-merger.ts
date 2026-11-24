@@ -840,7 +840,7 @@ function classifyTogetherSubgroup(
     kind = '知识';
   }
   if (kind) return '一起看·' + platform + kind;
-  return '一起看·' + platform + '其他';
+  return platform === '其他' ? '一起看·其他' : '一起看·' + platform + '其他';
 }
 
 function classifyInternationalSubgroup(
@@ -1052,11 +1052,13 @@ function normalizeAggregateChannelGroup(
   if (/咪咕视频|咪视界/.test(compact)) return '其他·咪咕';
   if (/4k|8k|uhd/i.test(compact)) return '4K/8K';
 
-  const international = classifyInternationalSubgroup(rawGroup, name, channel);
-  if (international) return international;
-
-  if (group === '一起看' || group.startsWith('一起看·')) return classifyTogetherSubgroup(rawGroup, name, channel);
-  if (/一起看|虎牙|斗鱼|b站|原创|zonghe|综合直播|抖音|快手/i.test(compact)) return classifyTogetherSubgroup(rawGroup, name, channel);
+  // 历史运行时曾经按首字母/平台ID拆桶。旧分桶不能覆盖频道自身的明确语义，
+  // 否则“国际·新闻”里的虎牙频道、“国际·综合”里的央视频道会被永久误留。
+  const togetherText = compact + collectLiveSourceLabels(channel);
+  if (group === '一起看'
+    || /一起看|虎牙|斗鱼|b站|原创|zonghe|综合直播|抖音|快手/i.test(togetherText)) {
+    return classifyTogetherSubgroup(rawGroup, name, channel);
+  }
 
   const base = normalizeAggregateChannelGroupBase(rawGroup, rawChannelName);
   if (base === '国际') return classifyInternationalSubgroup(rawGroup, name, channel) || '国际·其他';
@@ -1065,7 +1067,10 @@ function normalizeAggregateChannelGroup(
   if (base === '纪录') return classifyDocumentarySubgroup(compact);
   if (base === '风景直播') return classifyScenerySubgroup(compact);
   if (base === '一起看') return classifyTogetherSubgroup(rawGroup, name, channel);
-  if (base === '其他') return classifyOtherSubgroup(rawGroup, name, channel);
+  if (base === '其他') {
+    return classifyInternationalSubgroup(rawGroup, name, channel)
+      || classifyOtherSubgroup(rawGroup, name, channel);
+  }
   return base;
 }
 function normalizeAggregateGroupName(raw: string): string {
@@ -1082,7 +1087,9 @@ function normalizeAggregateGroupName(raw: string): string {
   }
   if (/^地方(?:频道|台|省频道|市频道|县频道)?$/.test(compact)) return '地方';
 
-  if (compact === '国际' || /cgtn|中国国际电视台/.test(compact)) return '国际';
+  // 已下发的“国际·英语/新闻/亚洲…”等二级目录必须能再次归一到父类，
+  // 再结合频道名重新进入语义子类；不能把旧字母桶原样带进新一轮输出。
+  if (/^国际/.test(compact) || /cgtn|中国国际电视台/.test(compact)) return '国际';
   if (/cetv|中国教育电视台/.test(compact)) return '教育';
   if (/咪咕/.test(compact)) return '其他';
   if (/求索/.test(compact)) return '纪录';
@@ -1090,6 +1097,15 @@ function normalizeAggregateGroupName(raw: string): string {
   if (/港澳台|港台/.test(compact)) return '港澳台';
   const region = detectLocalRegion(label, '');
   if (region && !/卫视/.test(compact)) return `地方·${region}`;
+
+  // 固定父类先行识别，不能被二级语义中的“音乐/影视/风景”等关键词抢走。
+  // 例如“一起看·YY音乐”必须先回到“一起看”，否则会退化成“音乐·综合”。
+  if (/^一起看/.test(compact)) return '一起看';
+  if (/^影视/.test(compact)) return '影视';
+  if (/^音乐/.test(compact)) return '音乐';
+  if (/^纪录/.test(compact)) return '纪录';
+  if (/^风景/.test(compact)) return '风景直播';
+  if (/^其他/.test(compact)) return '其他';
 
   if (/cctv|央视|中央电视|央卫/.test(compact)) {
     if (/第一剧场|怀旧剧场|文化精品|风云剧场|兵器科技|电视指南|发现之旅|老故事/.test(compact)) return '影视';
